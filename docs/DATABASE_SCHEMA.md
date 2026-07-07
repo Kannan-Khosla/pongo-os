@@ -2,8 +2,8 @@
 
 This document describes the PostgreSQL tables for Pongo Inventory OS.
 The initial SQLAlchemy models and Alembic migration were scaffolded in
-`backend/` on July 7, 2026. The schema is ready for local development, but
-stock-changing workflows and WooCommerce sync are not implemented yet.
+`backend/` on July 7, 2026. Direct receiving is now the first stock-changing
+workflow; WooCommerce sync and other stock workflows are not implemented yet.
 
 Implementation notes:
 - Models live under `backend/app/models/`.
@@ -20,6 +20,8 @@ Implementation notes:
 - Revision `20260707_0002` adds flat item fields needed for the current
   CSV-canonical Items API: `inventory_location`, `default_location`, and
   `non_inventory`.
+- Revision `20260707_0004` adds direct receiving fields to receipts, receipt
+  items, and stock movements.
 
 ## Canonical CSV Mapping
 
@@ -227,14 +229,19 @@ Fields:
 - quantity_change
 - old_stock
 - new_stock
+- warehouse
+- inventory_location
+- reference_number
 - unit_cost
 - reason
+- notes
 - reference_type
 - reference_id
 - created_by
 - created_at
 
 Movement type values:
+- receive_direct
 - direct_receiving
 - cycle_count
 - manual_adjustment
@@ -259,12 +266,18 @@ Purpose: Direct receiving session header. Pongo does not use purchase orders.
 Fields:
 - id
 - receipt_number
+- receipt_type
+- status
 - client
 - warehouse
+- reference_number
+- created_by
 - received_by
 - received_date
+- received_at
 - notes
 - created_at
+- updated_at
 
 Relationships:
 - Has many `receipt_items`.
@@ -273,8 +286,8 @@ Index/uniqueness suggestions:
 - Unique `receipt_number`.
 - Index `client`, `warehouse`, and `received_date`.
 
-Receipt number format:
-- `RCPT-YYYY-NNNNN`, for example `RCPT-2026-00045`.
+Direct receipt number format:
+- `DR-YYYYMMDD-NNNN`, for example `DR-20260707-0001`.
 
 ## receipt_items
 
@@ -303,9 +316,12 @@ Fields:
 - item_number
 - pallet_number
 - warehouse
+- default_location
+- quantity_received
 - received_date
 - po_or_receipt_number
 - name
+- notes
 - created_at
 
 Relationships:
@@ -315,6 +331,16 @@ Relationships:
 
 Calculated fields:
 - unit_cost_total = quantity * unit_cost.
+
+Direct receiving behavior:
+- Direct receiving creates one receipt row with `receipt_type = direct` and
+  `status = posted`.
+- Every successful received line creates one receipt item row and one stock
+  movement row.
+- Item In Stock is increased; Allocated is unchanged.
+- Sellable, Under Par, and Storage Volume are recalculated on the item.
+- Unit Cost on the receipt line and stock movement does not overwrite item Unit
+  Cost in this phase.
 
 ## orders
 

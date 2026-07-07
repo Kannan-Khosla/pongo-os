@@ -152,6 +152,28 @@ Do not include frontend-only/internal fields such as:
 - wooProductId
 - wooVariationId
 
+## Inventory Export by Location
+
+Current implementation: `GET /api/inventory/export/by-location` emits a
+warehouse/location-oriented CSV using current item text fields.
+
+Canonical header order:
+
+```csv
+Warehouse,Inventory Location,Default Location,SKU,Barcode,Description,Category,Brand,In Stock,Allocated,Sellable,Under Par,On Order,Par Level,Unit Cost,Inventory Value,Weight,Storage Length,Storage Width,Storage Height,Storage Volume,Manufacturer,Manufacturer Website,Client,Unit of Measurement,Recommended Retail Price,Sales Price,Default Econ Order,Default Lead Time Days,Assembly,Serializable,Track Lot,Perishable,Re-Order
+```
+
+Calculated export fields:
+- Sellable = In Stock - Allocated
+- Under Par = In Stock <= Par Level
+- Storage Volume = Storage Length x Storage Width x Storage Height
+- Inventory Value = In Stock x Unit Cost
+
+Current limitation:
+- Warehouse, Inventory Location, and Default Location are flat item text fields
+  for this export.
+- Item-to-location foreign keys are not globally enforced yet.
+
 ## Received Inventory Report
 
 | Column | Source | Required | Notes |

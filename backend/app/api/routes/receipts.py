@@ -1,8 +1,71 @@
-from fastapi import APIRouter
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
+
+from app.db.session import get_db
+from app.models.receipts import Receipt, ReceiptItem
+from app.schemas.receipts import DirectReceiptCommitResponse, DirectReceiptPreviewResponse, DirectReceiptRequest, ReceiptDetail, ReceiptListResponse
+from app.services.receiving import build_direct_receipt_preview, commit_direct_receipt, receipt_to_detail, receipt_to_read
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 
 
-@router.get("")
-def list_receipts_placeholder() -> dict[str, str]:
-    return {"module": "receipts", "status": "placeholder"}
+@router.post("/direct/preview", response_model=DirectReceiptPreviewResponse)
+def preview_direct_receipt(payload: DirectReceiptRequest, db: Session = Depends(get_db)) -> DirectReceiptPreviewResponse:
+    return build_direct_receipt_preview(payload, db)
+
+
+@router.post("/direct/commit", response_model=DirectReceiptCommitResponse)
+def commit_direct_receipt_endpoint(payload: DirectReceiptRequest, db: Session = Depends(get_db)) -> DirectReceiptCommitResponse:
+    receipt, movement_count, total_quantity, total_value, warnings = commit_direct_receipt(payload, db)
+    return DirectReceiptCommitResponse(
+        receipt_id=receipt.id,
+        receipt_number=receipt.receipt_number,
+        status=receipt.status or "posted",
+        total_lines=len(receipt.items),
+        total_quantity_received=float(total_quantity),
+        total_inventory_value=float(total_value),
+        created_movements=movement_count,
+        warnings=warnings,
+    )
+
+
+@router.get("", response_model=ReceiptListResponse)
+def list_receipts(
+    receipt_type: str | None = None,
+    status: str | None = None,
+    warehouse: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    reference_number: str | None = None,
+    db: Session = Depends(get_db),
+) -> ReceiptListResponse:
+    statement = select(Receipt).options(selectinload(Receipt.items)).order_by(Receipt.created_at.desc(), Receipt.id.desc())
+    if receipt_type:
+        statement = statement.where(Receipt.receipt_type == receipt_type)
+    if status:
+        statement = statement.where(Receipt.status == status)
+    if warehouse:
+        statement = statement.where(Receipt.warehouse == warehouse)
+    if date_from:
+        statement = statement.where(Receipt.received_date >= date_from)
+    if date_to:
+        statement = statement.where(Receipt.received_date <= date_to)
+    if reference_number:
+        statement = statement.where(Receipt.reference_number == reference_number)
+    receipts = list(db.scalars(statement).all())
+    return ReceiptListResponse(receipts=[receipt_to_read(receipt) for receipt in receipts], total=len(receipts))
+
+
+@router.get("/{receipt_id}", response_model=ReceiptDetail)
+def get_receipt(receipt_id: int, db: Session = Depends(get_db)) -> ReceiptDetail:
+    receipt = db.scalars(
+        select(Receipt)
+        .where(Receipt.id == receipt_id)
+        .options(selectinload(Receipt.items).selectinload(ReceiptItem.inventory_item), selectinload(Receipt.items).selectinload(ReceiptItem.inventory_location))
+    ).one_or_none()
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    return receipt_to_detail(receipt)

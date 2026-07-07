@@ -234,6 +234,15 @@ Pongo Inventory columns:
 - Inventory Location when in location view
 - Actions
 
+Current Pongo Inventory page:
+- Shows summary cards for Total Items, Total In Stock, Total Sellable, Total
+  Inventory Value, and Under Par Items.
+- Filters: warehouse, inventory location, default location, category, brand,
+  and under-par status.
+- Grouped table: Warehouse, Inventory Location, Item Count, In Stock, Allocated,
+  Sellable, On Order, Inventory Value, Under Par Count.
+- Export CSV calls the backend inventory-by-location export.
+
 ## Locations
 
 Pongo Locations screen:
@@ -307,6 +316,17 @@ Pongo Direct Receiving:
 - Destination should map to Pongo inventory location.
 - Submit must eventually create receipt, receipt item rows, location stock updates, and stock movement/audit rows.
 - Do not add purchase order receiving.
+
+Current Pongo Direct Receiving page:
+- Header fields: Warehouse, Reference Number, Notes.
+- Line fields: SKU/barcode scanner input, readonly description, inventory
+  location, quantity received, unit cost, notes, remove line.
+- Buttons: Add Line, Preview Receiving, Commit Receiving, Reset Form.
+- Preview shows line status, previous stock, new stock, total quantity, and
+  estimated value without writing data.
+- Commit posts the full receipt only when all lines are valid.
+- Receipt History table shows posted direct receiving sessions.
+- Recent Stock Movements table shows the audit trail.
 
 ## Cycle Count
 

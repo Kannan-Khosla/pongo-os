@@ -311,6 +311,10 @@ select:focus-visible {
   grid-template-columns: minmax(280px, 1.4fr) repeat(3, minmax(170px, 1fr)) 210px;
 }
 
+.inventory-filter-grid {
+  grid-template-columns: repeat(6, minmax(160px, 1fr));
+}
+
 .field {
   display: grid;
   gap: 6px;
@@ -569,6 +573,17 @@ tbody tr:nth-child(even) {
   min-width: 1280px;
 }
 
+.inventory-summary-table {
+  min-width: 1180px;
+}
+
+.summary-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
 .items-data-table th,
 .items-data-table td {
   height: 50px;
@@ -669,6 +684,16 @@ tbody tr:nth-child(even) .sticky-col {
   border-color: #c9d9dd;
   background: #eef5f7;
   color: var(--teal-800);
+}
+
+.success-strip {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid #b9dcca;
+  background: #edf8f2;
+  color: #287251;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .empty-table-row {
@@ -883,6 +908,49 @@ tbody tr:nth-child(even) .sticky-col {
 .receiving-strip {
   gap: 24px;
   margin-bottom: 20px;
+}
+
+.receiving-page {
+  display: grid;
+  gap: 26px;
+}
+
+.receiving-form {
+  border: 1px solid var(--line);
+  background: var(--white);
+}
+
+.receiving-header-fields {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(240px, 1fr) minmax(320px, 1.4fr);
+  gap: 16px;
+  padding: 18px;
+  background: var(--filter);
+}
+
+.receiving-header-fields input,
+.receiving-line-table input,
+.receiving-line-table select {
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  border-bottom: 1px solid #cbd5d8;
+  background: var(--white);
+  padding: 0 10px;
+}
+
+.receiving-line-scroll {
+  border-top: 1px solid var(--line);
+}
+
+.receiving-line-table {
+  min-width: 1180px;
+}
+
+.receiving-line-table th,
+.receiving-line-table td {
+  height: 54px;
+  font-size: 12px;
 }
 
 .scan-field {
@@ -1227,8 +1295,13 @@ tbody tr:nth-child(even) .sticky-col {
 
   .items-filter-grid,
   .locations-filter-grid,
+  .inventory-filter-grid,
   .form-grid {
     grid-template-columns: repeat(2, minmax(170px, 1fr));
+  }
+
+  .summary-strip {
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
   }
 
   .detail-layout {

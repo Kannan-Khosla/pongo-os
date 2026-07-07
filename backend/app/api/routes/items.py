@@ -21,6 +21,8 @@ router = APIRouter(prefix="/items", tags=["items"])
 
 def build_items_statement(
     search: str | None = None,
+    sku: str | None = None,
+    barcode: str | None = None,
     category: str | None = None,
     warehouse: str | None = None,
     inventory_location: str | None = None,
@@ -43,6 +45,10 @@ def build_items_statement(
                 InventoryItem.inventory_location.ilike(pattern),
             )
         )
+    if sku:
+        statement = statement.where(InventoryItem.sku == sku)
+    if barcode:
+        statement = statement.where(InventoryItem.barcode == barcode)
     if category:
         statement = statement.where(InventoryItem.category == category)
     if warehouse:
@@ -61,6 +67,8 @@ def build_items_statement(
 @router.get("", response_model=InventoryItemListResponse)
 def list_items(
     search: str | None = None,
+    sku: str | None = None,
+    barcode: str | None = None,
     category: str | None = None,
     warehouse: str | None = None,
     inventory_location: str | None = None,
@@ -69,7 +77,7 @@ def list_items(
     include_non_inventory: bool = True,
     db: Session = Depends(get_db),
 ) -> InventoryItemListResponse:
-    statement = build_items_statement(search, category, warehouse, inventory_location, brand, active, include_non_inventory)
+    statement = build_items_statement(search, sku, barcode, category, warehouse, inventory_location, brand, active, include_non_inventory)
     items = list(db.scalars(statement).all())
     for item in items:
         apply_calculated_fields(item)
@@ -79,6 +87,8 @@ def list_items(
 @router.get("/export")
 def export_items(
     search: str | None = None,
+    sku: str | None = None,
+    barcode: str | None = None,
     category: str | None = None,
     warehouse: str | None = None,
     inventory_location: str | None = None,
@@ -87,7 +97,7 @@ def export_items(
     include_non_inventory: bool = True,
     db: Session = Depends(get_db),
 ) -> Response:
-    statement = build_items_statement(search, category, warehouse, inventory_location, brand, active, include_non_inventory)
+    statement = build_items_statement(search, sku, barcode, category, warehouse, inventory_location, brand, active, include_non_inventory)
     items = list(db.scalars(statement).all())
     buffer = StringIO()
     writer = csv.DictWriter(buffer, fieldnames=CANONICAL_ITEM_COLUMNS)

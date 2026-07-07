@@ -93,6 +93,16 @@ const NUMERIC_FIELDS = new Set([
 const CALCULATED_FIELDS = new Set(['Sellable', 'Under Par', 'Storage Volume']);
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
 const CANONICAL_LOCATION_COLUMNS = ['Warehouse', 'Location Code', 'Location Name', 'Description', 'Zone', 'Aisle', 'Rack', 'Shelf', 'Bin', 'Default', 'Active'];
+const emptyInventorySummary = {
+  groups: [],
+  total_items: 0,
+  total_in_stock: 0,
+  total_allocated: 0,
+  total_sellable: 0,
+  total_on_order: 0,
+  total_inventory_value: 0,
+  under_par_count: 0,
+};
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -477,6 +487,15 @@ export default function App() {
   const [locations, setLocations] = useState([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
   const [locationsError, setLocationsError] = useState('');
+  const [inventorySummary, setInventorySummary] = useState(emptyInventorySummary);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [inventoryError, setInventoryError] = useState('');
+  const [receipts, setReceipts] = useState([]);
+  const [receiptsLoading, setReceiptsLoading] = useState(false);
+  const [receiptsError, setReceiptsError] = useState('');
+  const [stockMovements, setStockMovements] = useState([]);
+  const [stockMovementsLoading, setStockMovementsLoading] = useState(false);
+  const [stockMovementsError, setStockMovementsError] = useState('');
 
   useEffect(() => {
     const handleHashChange = () => setRoute(parseHashRoute());
@@ -485,8 +504,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (route.pageId === 'items') {
+    if (route.pageId === 'items' || route.pageId === 'inventory') {
       loadItems();
+    }
+    if (route.pageId === 'receiving') {
+      loadItems();
+      loadLocations({ status: 'active' });
+      loadReceipts();
+      loadStockMovements({ movement_type: 'receive_direct' });
     }
     if (route.pageId === 'locations') {
       loadLocations();
@@ -587,6 +612,56 @@ export default function App() {
     navigate(`/locations/${saved.id}`);
   }
 
+  async function loadInventorySummary(filters = {}) {
+    setInventoryLoading(true);
+    setInventoryError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/inventory/summary/by-location${inventoryFiltersToQueryString(filters)}`);
+      if (!response.ok) {
+        throw new Error(`Inventory API returned ${response.status}`);
+      }
+      setInventorySummary(await response.json());
+    } catch (error) {
+      setInventoryError('Unable to load inventory summary from the backend. Start the FastAPI server and try again.');
+    } finally {
+      setInventoryLoading(false);
+    }
+  }
+
+  async function loadReceipts(filters = {}) {
+    setReceiptsLoading(true);
+    setReceiptsError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/receipts${plainFiltersToQueryString(filters)}`);
+      if (!response.ok) {
+        throw new Error(`Receipts API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setReceipts(body.receipts || []);
+    } catch (error) {
+      setReceiptsError('Unable to load receipt history from the backend.');
+    } finally {
+      setReceiptsLoading(false);
+    }
+  }
+
+  async function loadStockMovements(filters = {}) {
+    setStockMovementsLoading(true);
+    setStockMovementsError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/stock-movements${plainFiltersToQueryString(filters)}`);
+      if (!response.ok) {
+        throw new Error(`Stock movements API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setStockMovements(body.movements || []);
+    } catch (error) {
+      setStockMovementsError('Unable to load stock movement history from the backend.');
+    } finally {
+      setStockMovementsLoading(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <Sidebar activePage={route.pageId} onNavigate={(pageId) => setRoute({ pageId })} />
@@ -607,6 +682,18 @@ export default function App() {
             locationsError={locationsError}
             onLoadLocations={loadLocations}
             onSaveLocation={saveLocation}
+            inventorySummary={inventorySummary}
+            inventoryLoading={inventoryLoading}
+            inventoryError={inventoryError}
+            onLoadInventorySummary={loadInventorySummary}
+            receipts={receipts}
+            receiptsLoading={receiptsLoading}
+            receiptsError={receiptsError}
+            onLoadReceipts={loadReceipts}
+            stockMovements={stockMovements}
+            stockMovementsLoading={stockMovementsLoading}
+            stockMovementsError={stockMovementsError}
+            onLoadStockMovements={loadStockMovements}
           />
         </main>
       </div>
@@ -701,7 +788,32 @@ function PageHeader({ meta, route }) {
   );
 }
 
-function PageBody({ route, items, itemsLoading, itemsError, onLoadItems, onSaveItem, onCloneItem, locations, locationsLoading, locationsError, onLoadLocations, onSaveLocation }) {
+function PageBody({
+  route,
+  items,
+  itemsLoading,
+  itemsError,
+  onLoadItems,
+  onSaveItem,
+  onCloneItem,
+  locations,
+  locationsLoading,
+  locationsError,
+  onLoadLocations,
+  onSaveLocation,
+  inventorySummary,
+  inventoryLoading,
+  inventoryError,
+  onLoadInventorySummary,
+  receipts,
+  receiptsLoading,
+  receiptsError,
+  onLoadReceipts,
+  stockMovements,
+  stockMovementsLoading,
+  stockMovementsError,
+  onLoadStockMovements,
+}) {
   if (route.pageId === 'items') {
     return <ItemsPage route={route} items={items} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
   }
@@ -711,18 +823,25 @@ function PageBody({ route, items, itemsLoading, itemsError, onLoadItems, onSaveI
   }
 
   if (route.pageId === 'inventory') {
-    return (
-      <StandardPage
-        icon={Boxes}
-        title="Inventory list"
-        description="Stock-by-location table layout for Main Warehouse."
-        columns={['SKU', 'Category', 'Description', 'UOM', 'In Stock', 'Allocated', 'Sellable', 'Location']}
-      />
-    );
+    return <InventoryPage items={items} summary={inventorySummary} loading={inventoryLoading} error={inventoryError || itemsError} onLoadSummary={onLoadInventorySummary} />;
   }
 
   if (route.pageId === 'receiving') {
-    return <ReceivingPlaceholder />;
+    return (
+      <DirectReceivingPage
+        items={items}
+        locations={locations}
+        receipts={receipts}
+        receiptsLoading={receiptsLoading}
+        receiptsError={receiptsError}
+        onLoadReceipts={onLoadReceipts}
+        stockMovements={stockMovements}
+        stockMovementsLoading={stockMovementsLoading}
+        stockMovementsError={stockMovementsError}
+        onLoadStockMovements={onLoadStockMovements}
+        onLoadInventorySummary={onLoadInventorySummary}
+      />
+    );
   }
 
   if (route.pageId === 'dashboard') {
@@ -767,6 +886,161 @@ function ItemsPage({ route, items, itemsLoading, itemsError, onLoadItems, onSave
   }
 
   return <ItemsList items={items} loading={itemsLoading} error={itemsError} onLoadItems={onLoadItems} />;
+}
+
+function InventoryPage({ items, summary, loading, error, onLoadSummary }) {
+  const [filters, setFilters] = useState({
+    warehouse: '',
+    inventoryLocation: '',
+    defaultLocation: '',
+    category: '',
+    brand: '',
+    underPar: '',
+  });
+
+  const options = useMemo(
+    () => ({
+      warehouses: uniqueOptions(items, 'Warehouse'),
+      locations: uniqueOptions(items, 'Inventory Location'),
+      defaultLocations: uniqueOptions(items, 'Default Location'),
+      categories: uniqueOptions(items, 'Category'),
+      brands: uniqueOptions(items, 'Brand'),
+    }),
+    [items],
+  );
+
+  useEffect(() => {
+    onLoadSummary(filters);
+  }, [filters]);
+
+  function updateFilter(name, value) {
+    setFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function clearFilters() {
+    setFilters({
+      warehouse: '',
+      inventoryLocation: '',
+      defaultLocation: '',
+      category: '',
+      brand: '',
+      underPar: '',
+    });
+  }
+
+  return (
+    <section className="content-panel inventory-page">
+      <div className="summary-strip">
+        <Metric label="Total Items" value={summary.total_items || 0} />
+        <Metric label="In Stock" value={formatNumber(summary.total_in_stock || 0)} />
+        <Metric label="Sellable" value={formatNumber(summary.total_sellable || 0)} />
+        <Metric label="Inventory Value" value={formatCurrency(summary.total_inventory_value || 0)} />
+        <Metric label="Under Par" value={summary.under_par_count || 0} />
+      </div>
+      <div className="toolbar items-toolbar">
+        <div className="filter-grid inventory-filter-grid">
+          <FilterSelect label="Warehouse" value={filters.warehouse} options={options.warehouses} onChange={(value) => updateFilter('warehouse', value)} />
+          <FilterSelect label="Inventory Location" value={filters.inventoryLocation} options={options.locations} onChange={(value) => updateFilter('inventoryLocation', value)} />
+          <FilterSelect label="Default Location" value={filters.defaultLocation} options={options.defaultLocations} onChange={(value) => updateFilter('defaultLocation', value)} />
+          <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
+          <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
+          <label className="field">
+            <span>Under Par</span>
+            <div className="select-shell">
+              <select value={filters.underPar} onChange={(event) => updateFilter('underPar', event.target.value)}>
+                <option value="">All</option>
+                <option value="true">Under Par</option>
+                <option value="false">Not Under Par</option>
+              </select>
+              <Filter size={18} />
+            </div>
+          </label>
+        </div>
+        <div className="button-row items-actions">
+          <button className="primary-button" onClick={() => onLoadSummary(filters)} type="button">
+            <RefreshCw size={17} />
+            Refresh
+          </button>
+          <button className="muted-button" onClick={clearFilters} type="button">
+            Clear
+          </button>
+          <button className="action-button" onClick={() => exportInventoryByLocationCsv(filters)} type="button">
+            <Download size={17} />
+            Export CSV
+          </button>
+        </div>
+      </div>
+      <div className="csv-note">Inventory by location currently uses item Warehouse, Inventory Location, and Default Location text fields.</div>
+      {error && <div className="api-error">{error}</div>}
+      {loading && <div className="loading-strip">Loading inventory summary...</div>}
+      <InventorySummaryTable groups={summary.groups || []} />
+    </section>
+  );
+}
+
+function InventorySummaryTable({ groups }) {
+  return (
+    <div className="table-wrap">
+      <div className="table-meta">
+        <span>
+          Showing records 1-{groups.length} out of {groups.length}
+        </span>
+        <div className="table-pager">
+          <span>{groups.length} Results</span>
+          <button className="pager-button" aria-label="Previous page" type="button">
+            <ChevronLeft size={18} />
+          </button>
+          <span>1 / 1</span>
+          <button className="pager-button active" aria-label="Next page" type="button">
+            <ChevronRight size={18} />
+          </button>
+        </div>
+      </div>
+      <div className="table-action-band">
+        <span>Actions</span>
+        <ChevronDown size={18} />
+      </div>
+      <div className="table-scroll">
+        <table className="inventory-summary-table">
+          <thead>
+            <tr>
+              <th>Warehouse</th>
+              <th>Inventory Location</th>
+              <th>Item Count</th>
+              <th>In Stock</th>
+              <th>Allocated</th>
+              <th>Sellable</th>
+              <th>On Order</th>
+              <th>Inventory Value</th>
+              <th>Under Par Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map((group) => (
+              <tr key={`${group.warehouse}-${group.inventory_location}`}>
+                <td>{group.warehouse || 'Unassigned'}</td>
+                <td>{group.inventory_location || 'Unassigned'}</td>
+                <td>{group.item_count}</td>
+                <td>{formatNumber(group.total_in_stock)}</td>
+                <td>{formatNumber(group.total_allocated)}</td>
+                <td>{formatNumber(group.total_sellable)}</td>
+                <td>{formatNumber(group.total_on_order)}</td>
+                <td>{formatCurrency(group.total_inventory_value)}</td>
+                <td>{group.under_par_count}</td>
+              </tr>
+            ))}
+            {groups.length === 0 && (
+              <tr>
+                <td colSpan={9}>
+                  <div className="empty-table-row">No inventory groups match the current filters.</div>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 function LocationsPage({ route, locations, loading, error, onLoadLocations, onSaveLocation }) {
@@ -1818,53 +2092,317 @@ function DashboardPlaceholder() {
   );
 }
 
-function ReceivingPlaceholder() {
+function DirectReceivingPage({ items, locations, receipts, receiptsLoading, receiptsError, onLoadReceipts, stockMovements, stockMovementsLoading, stockMovementsError, onLoadStockMovements, onLoadInventorySummary }) {
+  const [form, setForm] = useState({
+    warehouse: 'Main Warehouse',
+    reference_number: '',
+    notes: '',
+    lines: [emptyReceivingLine()],
+  });
+  const [preview, setPreview] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const activeLocations = locations.filter((location) => location.isActive);
+  const locationOptions = activeLocations.filter((location) => !form.warehouse || location.warehouse === form.warehouse);
+
+  function updateHeader(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+    setPreview(null);
+    setSummary(null);
+  }
+
+  function updateLine(index, field, value) {
+    setForm((current) => ({
+      ...current,
+      lines: current.lines.map((line, lineIndex) => (lineIndex === index ? { ...line, [field]: value } : line)),
+    }));
+    setPreview(null);
+    setSummary(null);
+  }
+
+  function addLine() {
+    setForm((current) => ({ ...current, lines: [...current.lines, emptyReceivingLine()] }));
+  }
+
+  function removeLine(index) {
+    setForm((current) => ({ ...current, lines: current.lines.filter((_, lineIndex) => lineIndex !== index) }));
+  }
+
+  function resetForm() {
+    setForm({ warehouse: 'Main Warehouse', reference_number: '', notes: '', lines: [emptyReceivingLine()] });
+    setPreview(null);
+    setSummary(null);
+    setError('');
+  }
+
+  async function previewReceiving() {
+    setLoading(true);
+    setError('');
+    setSummary(null);
+    try {
+      setPreview(await postJson('/api/receipts/direct/preview', receivingPayload(form, items)));
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to preview receiving.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function commitReceiving() {
+    setLoading(true);
+    setError('');
+    try {
+      const result = await postJson('/api/receipts/direct/commit', receivingPayload(form, items));
+      setSummary(result);
+      await onLoadReceipts();
+      await onLoadStockMovements({ movement_type: 'receive_direct' });
+      await onLoadInventorySummary();
+      setForm({ warehouse: 'Main Warehouse', reference_number: '', notes: '', lines: [emptyReceivingLine()] });
+      setPreview(null);
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to commit receiving.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <section className="content-panel">
-      <div className="receiving-strip">
-        <label className="field scan-field">
-          <span>Add New Item</span>
-          <div className="input-with-icon">
-            <input placeholder="Scan SKU or barcode" />
-            <Search size={18} />
+    <section className="content-panel receiving-page">
+      <div className="receiving-form">
+        <div className="section-heading">
+          <div>
+            <h2>Direct Receiving</h2>
+            <p>Receive stock without a purchase order</p>
           </div>
-        </label>
-        <button className="add-button" aria-label="Add receiving row" type="button">
-          <Plus size={22} />
-        </button>
-        <label className="toggle-label">
-          <span>Enable One to One Scanning</span>
-          <input type="checkbox" />
-        </label>
+          <button className="muted-button" onClick={resetForm} type="button">
+            Reset Form
+          </button>
+        </div>
+        <div className="receiving-header-fields">
+          <FilterSelect label="Warehouse" value={form.warehouse} options={uniqueOptions(activeLocations, 'warehouse')} onChange={(value) => updateHeader('warehouse', value || 'Main Warehouse')} />
+          <label className="field">
+            <span>Reference Number</span>
+            <input value={form.reference_number} onChange={(event) => updateHeader('reference_number', event.target.value)} placeholder="Invoice, delivery note, or manual reference" />
+          </label>
+          <label className="field wide-field">
+            <span>Notes</span>
+            <input value={form.notes} onChange={(event) => updateHeader('notes', event.target.value)} placeholder="Optional receiving notes" />
+          </label>
+        </div>
+        <div className="table-scroll receiving-line-scroll">
+          <table className="receiving-line-table">
+            <thead>
+              <tr>
+                <th>SKU / Barcode</th>
+                <th>Description</th>
+                <th>Inventory Location</th>
+                <th>Quantity Received</th>
+                <th>Unit Cost</th>
+                <th>Notes</th>
+                <th>Remove</th>
+              </tr>
+            </thead>
+            <tbody>
+              {form.lines.map((line, index) => {
+                const item = findReceivingItem(items, line.query);
+                return (
+                  <tr key={line.localId}>
+                    <td>
+                      <input value={line.query} onChange={(event) => updateLine(index, 'query', event.target.value)} placeholder="Scan or type SKU/barcode" />
+                    </td>
+                    <td className="description-cell">{item?.Description || ''}</td>
+                    <td>
+                      <select value={line.inventory_location} onChange={(event) => updateLine(index, 'inventory_location', event.target.value)}>
+                        <option value="">Select location</option>
+                        {locationOptions.map((location) => (
+                          <option key={location.id} value={location.code}>
+                            {location.warehouse} / {location.code}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td>
+                      <input value={line.quantity_received} onChange={(event) => updateLine(index, 'quantity_received', event.target.value)} inputMode="decimal" />
+                    </td>
+                    <td>
+                      <input value={line.unit_cost} onChange={(event) => updateLine(index, 'unit_cost', event.target.value)} inputMode="decimal" />
+                    </td>
+                    <td>
+                      <input value={line.notes} onChange={(event) => updateLine(index, 'notes', event.target.value)} />
+                    </td>
+                    <td>
+                      <button className="pager-button" onClick={() => removeLine(index)} disabled={form.lines.length === 1} type="button">
+                        <MoreVertical size={17} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="detail-actions">
+          <button className="muted-button" onClick={addLine} type="button">
+            <Plus size={17} />
+            Add Line
+          </button>
+          <button className="primary-button" disabled={loading} onClick={previewReceiving} type="button">
+            Preview Receiving
+          </button>
+          <button className="primary-button" disabled={loading || !preview || preview.invalid_lines > 0} onClick={commitReceiving} type="button">
+            Commit Receiving
+          </button>
+        </div>
+        {loading && <div className="loading-strip">Working on receiving...</div>}
+        {error && <div className="api-error">{error}</div>}
+        {summary && (
+          <div className="success-strip">
+            Receipt {summary.receipt_number} posted. {summary.total_quantity_received} units received across {summary.total_lines} line(s).
+          </div>
+        )}
+        {preview && <ReceivingPreview preview={preview} />}
       </div>
-      <TableShell
-        caption="Receiving rows"
-        columns={['Image', 'SKU', 'PKG #', 'Item #', 'Unit Cost', 'UOM', 'Expires', 'Lot No', 'Delivered', 'Destination', 'Total']}
-      >
-        <tr>
-          <td>
-            <div className="image-cell">No Image</div>
-          </td>
-          <td className="mono">100107</td>
-          <td></td>
-          <td></td>
-          <td>48.25</td>
-          <td>Each</td>
-          <td></td>
-          <td></td>
-          <td>1</td>
-          <td>Receiving</td>
-          <td>48.25</td>
-        </tr>
-      </TableShell>
-      <div className="footer-actions">
-        <span>Delivered: 1</span>
-        <button className="primary-button" type="button">
-          Next
-        </button>
-        <span>Total: 48.25</span>
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Receipt History</h2>
+            <p>Posted direct receiving sessions.</p>
+          </div>
+          <button className="muted-button" onClick={() => onLoadReceipts()} type="button">
+            <RefreshCw size={17} />
+            Refresh
+          </button>
+        </div>
+        {receiptsError && <div className="api-error">{receiptsError}</div>}
+        {receiptsLoading && <div className="loading-strip">Loading receipt history...</div>}
+        <ReceiptHistoryTable receipts={receipts} />
+      </div>
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Recent Stock Movements</h2>
+            <p>Audit trail for direct receiving.</p>
+          </div>
+          <button className="muted-button" onClick={() => onLoadStockMovements({ movement_type: 'receive_direct' })} type="button">
+            <RefreshCw size={17} />
+            Refresh
+          </button>
+        </div>
+        {stockMovementsError && <div className="api-error">{stockMovementsError}</div>}
+        {stockMovementsLoading && <div className="loading-strip">Loading stock movements...</div>}
+        <StockMovementsTable movements={stockMovements} />
       </div>
     </section>
+  );
+}
+
+function ReceivingPreview({ preview }) {
+  return (
+    <div className="import-results receiving-preview">
+      <div className="import-metrics">
+        <Metric label="Lines" value={preview.total_lines} />
+        <Metric label="Valid" value={preview.valid_lines} />
+        <Metric label="Invalid" value={preview.invalid_lines} />
+        <Metric label="Quantity" value={formatNumber(preview.total_quantity)} />
+        <Metric label="Value" value={formatCurrency(preview.estimated_inventory_value)} />
+      </div>
+      {preview.errors?.length > 0 && (
+        <div className="import-errors">
+          <h4>Validation Errors</h4>
+          {preview.errors.map((previewError) => (
+            <div key={previewError}>{previewError}</div>
+          ))}
+        </div>
+      )}
+      <div className="table-scroll">
+        <table className="preview-table">
+          <thead>
+            <tr>
+              <th>Line</th>
+              <th>Status</th>
+              <th>SKU</th>
+              <th>Description</th>
+              <th>Location</th>
+              <th>Qty</th>
+              <th>Previous</th>
+              <th>New</th>
+              <th>Line Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {preview.preview_lines.map((line) => (
+              <tr key={line.line_number}>
+                <td>{line.line_number}</td>
+                <td>{line.status}</td>
+                <td>{line.sku}</td>
+                <td>{line.description}</td>
+                <td>{line.inventory_location}</td>
+                <td>{formatNumber(line.quantity_received)}</td>
+                <td>{formatNumber(line.previous_in_stock)}</td>
+                <td>{formatNumber(line.new_in_stock)}</td>
+                <td>{formatCurrency(line.line_value)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ReceiptHistoryTable({ receipts }) {
+  return (
+    <TableShell caption={`${receipts.length} receipt(s)`} columns={['Receipt Number', 'Warehouse', 'Reference Number', 'Status', 'Total Lines', 'Total Quantity', 'Received At', 'Created By']}>
+      {receipts.map((receipt) => (
+        <tr key={receipt.id}>
+          <td className="mono">{receipt.receipt_number}</td>
+          <td>{receipt.warehouse}</td>
+          <td>{receipt.reference_number}</td>
+          <td>{receipt.status}</td>
+          <td>{receipt.total_lines}</td>
+          <td>{formatNumber(receipt.total_quantity)}</td>
+          <td>{formatDateTime(receipt.received_at || receipt.created_at)}</td>
+          <td>{receipt.created_by}</td>
+        </tr>
+      ))}
+      {receipts.length === 0 && (
+        <tr>
+          <td colSpan={8}>
+            <div className="empty-table-row">No receipts posted yet.</div>
+          </td>
+        </tr>
+      )}
+    </TableShell>
+  );
+}
+
+function StockMovementsTable({ movements }) {
+  return (
+    <TableShell caption={`${movements.length} movement(s)`} columns={['Created At', 'SKU', 'Barcode', 'Movement Type', 'Quantity Delta', 'Previous In Stock', 'New In Stock', 'Warehouse', 'Inventory Location', 'Reference Number']}>
+      {movements.map((movement) => (
+        <tr key={movement.id}>
+          <td>{formatDateTime(movement.created_at)}</td>
+          <td className="mono">{movement.sku}</td>
+          <td className="mono">{movement.barcode}</td>
+          <td>{movement.movement_type}</td>
+          <td>{formatNumber(movement.quantity_delta)}</td>
+          <td>{formatNumber(movement.previous_in_stock)}</td>
+          <td>{formatNumber(movement.new_in_stock)}</td>
+          <td>{movement.warehouse}</td>
+          <td>{movement.inventory_location}</td>
+          <td className="mono">{movement.reference_number}</td>
+        </tr>
+      ))}
+      {movements.length === 0 && (
+        <tr>
+          <td colSpan={10}>
+            <div className="empty-table-row">No stock movements yet.</div>
+          </td>
+        </tr>
+      )}
+    </TableShell>
   );
 }
 
@@ -2058,6 +2596,17 @@ function normalizeLocation(location) {
   };
 }
 
+function emptyReceivingLine() {
+  return {
+    localId: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : String(Date.now()),
+    query: '',
+    inventory_location: '',
+    quantity_received: 1,
+    unit_cost: '',
+    notes: '',
+  };
+}
+
 function toNumber(value) {
   if (value === null || value === undefined || value === '') {
     return 0;
@@ -2118,6 +2667,13 @@ function formatNumber(value) {
   return Number.isInteger(number) ? String(number) : number.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }
 
+function formatDateTime(value) {
+  if (!value) {
+    return '';
+  }
+  return new Intl.DateTimeFormat('en-US', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
+}
+
 function BooleanBadge({ value }) {
   return <span className={value ? 'boolean-badge yes' : 'boolean-badge no'}>{value ? 'Yes' : 'No'}</span>;
 }
@@ -2160,6 +2716,23 @@ async function exportLocationsCsv(filters) {
   URL.revokeObjectURL(url);
 }
 
+async function exportInventoryByLocationCsv(filters) {
+  const response = await fetch(`${API_BASE_URL}/api/inventory/export/by-location${inventoryFiltersToQueryString(filters)}`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export inventory by location from the backend. Start the FastAPI server and try again.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'pongo-inventory-by-location-export.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 async function uploadImportFile(path, file) {
   const formData = new FormData();
   formData.append('file', file);
@@ -2170,6 +2743,25 @@ async function uploadImportFile(path, file) {
   if (!response.ok) {
     const detail = await safeResponseText(response);
     throw new Error(detail || `Import API returned ${response.status}`);
+  }
+  return response.json();
+}
+
+async function postJson(path, payload) {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const body = await response.json();
+      detail = body.detail?.errors?.join(' ') || JSON.stringify(body.detail || body);
+    } catch {
+      detail = await safeResponseText(response);
+    }
+    throw new Error(detail || `API returned ${response.status}`);
   }
   return response.json();
 }
@@ -2293,6 +2885,29 @@ function locationsFiltersToQueryString(filters = {}) {
   return query ? `?${query}` : '';
 }
 
+function plainFiltersToQueryString(filters = {}) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      params.set(key, value);
+    }
+  });
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+function inventoryFiltersToQueryString(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.warehouse) params.set('warehouse', filters.warehouse);
+  if (filters.inventoryLocation) params.set('inventory_location', filters.inventoryLocation);
+  if (filters.defaultLocation) params.set('default_location', filters.defaultLocation);
+  if (filters.category) params.set('category', filters.category);
+  if (filters.brand) params.set('brand', filters.brand);
+  if (filters.underPar) params.set('under_par', filters.underPar);
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
 function itemToApiPayload(item) {
   const payload = {};
   CANONICAL_ITEM_COLUMNS.forEach((column) => {
@@ -2319,6 +2934,37 @@ function locationToApiPayload(location) {
     bin: location.bin || '',
     isDefault: Boolean(location.isDefault),
     isActive: Boolean(location.isActive),
+  };
+}
+
+function findReceivingItem(items, query) {
+  const normalizedQuery = String(query || '').trim().toLowerCase();
+  if (!normalizedQuery) {
+    return null;
+  }
+  return items.find((item) => String(item.SKU || '').toLowerCase() === normalizedQuery || String(item.Barcode || '').toLowerCase() === normalizedQuery) || null;
+}
+
+function receivingPayload(form, items) {
+  return {
+    warehouse: form.warehouse,
+    reference_number: form.reference_number,
+    notes: form.notes,
+    created_by: 'system',
+    lines: form.lines.map((line) => {
+      const item = findReceivingItem(items, line.query);
+      const query = String(line.query || '').trim();
+      return {
+        item_id: item?.id || null,
+        sku: item?.SKU || query || null,
+        barcode: item?.Barcode || null,
+        inventory_location: line.inventory_location,
+        default_location: line.inventory_location,
+        quantity_received: toNumber(line.quantity_received),
+        unit_cost: line.unit_cost === '' ? null : toNumber(line.unit_cost),
+        notes: line.notes,
+      };
+    }),
   };
 }
 

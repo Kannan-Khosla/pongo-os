@@ -18,12 +18,18 @@ class Receipt(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     receipt_number: Mapped[str] = mapped_column(String(80), unique=True, index=True, nullable=False)
+    receipt_type: Mapped[str | None] = mapped_column(String(40), index=True)
+    status: Mapped[str | None] = mapped_column(String(40), index=True)
     client: Mapped[str | None] = mapped_column(String(120), index=True)
     warehouse: Mapped[str | None] = mapped_column(String(120), index=True)
+    reference_number: Mapped[str | None] = mapped_column(String(120), index=True)
+    created_by: Mapped[str | None] = mapped_column(String(120), index=True)
     received_by: Mapped[str | None] = mapped_column(String(120))
     received_date: Mapped[date | None] = mapped_column(Date, index=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     items: Mapped[list["ReceiptItem"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
 
@@ -53,9 +59,12 @@ class ReceiptItem(Base):
     item_number: Mapped[str | None] = mapped_column(String(120))
     pallet_number: Mapped[str | None] = mapped_column(String(120))
     warehouse: Mapped[str | None] = mapped_column(String(120), index=True)
+    default_location: Mapped[str | None] = mapped_column(String(200))
+    quantity_received: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
     received_date: Mapped[date | None] = mapped_column(Date, index=True)
     po_or_receipt_number: Mapped[str | None] = mapped_column(String(120))
     name: Mapped[str | None] = mapped_column(String(300))
+    notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     receipt: Mapped[Receipt] = relationship(back_populates="items")

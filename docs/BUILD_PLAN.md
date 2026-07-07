@@ -188,6 +188,12 @@ What not to build yet:
 
 Goal: Receive stock directly into locations.
 
+Status: Completed for direct receiving preview/commit, receipt history,
+receipt detail, stock movement audit rows, frontend receiving form, and recent
+movement table. Receiving requires an active warehouse/location and existing
+item match. Purchase orders, suppliers, lot workflows, expiry workflows, cycle
+count, allocation, picking, and WooCommerce stock writes remain later work.
+
 Deliverables:
 - Receipt creation
 - Receipt items
@@ -196,9 +202,13 @@ Deliverables:
 
 Acceptance criteria:
 - Receiving increases location stock and creates audit rows.
+- Direct receiving increases item In Stock, leaves Allocated unchanged, and
+  recalculates Sellable.
+- Direct receiving commits atomically: invalid lines prevent all stock updates.
 
 Safety notes:
 - WooCommerce stock update remains disabled or queued.
+- Every committed receiving line creates a stock movement row.
 
 What not to build yet:
 - Received inventory report

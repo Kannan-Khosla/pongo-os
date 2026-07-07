@@ -73,3 +73,16 @@ external services.
 Safety: Environment examples contain placeholders only. WooCommerce and map
 provider credentials are not committed, and no external WooCommerce or map API
 calls are attempted in the scaffold.
+
+## ADR-012: Direct Receiving Is the First Stock-Changing Workflow
+
+Decision: Implement direct receiving without purchase orders as the first
+stock-changing workflow.
+
+Reason: Pongo receives inventory directly and needs item stock increases before
+cycle count, allocation, picking, or WooCommerce stock writeback are safe.
+
+Safety: Direct receiving validates the full receipt before commit. If any line
+is invalid, no item stock is changed. Every successful received line creates a
+stock movement/audit row. Unit cost is stored on receipt lines and movements but
+does not overwrite item Unit Cost in this phase.

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 
 class MovementType(str, Enum):
+    receive_direct = "receive_direct"
     direct_receiving = "direct_receiving"
     cycle_count = "cycle_count"
     manual_adjustment = "manual_adjustment"
@@ -108,7 +109,7 @@ class InventoryLocation(TimestampMixin, Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
 
     item_locations: Mapped[list["InventoryItemLocation"]] = relationship(back_populates="location", cascade="all, delete-orphan")
-    stock_movements: Mapped[list["StockMovement"]] = relationship(back_populates="inventory_location")
+    stock_movements: Mapped[list["StockMovement"]] = relationship(back_populates="location")
     receipt_items: Mapped[list["ReceiptItem"]] = relationship(back_populates="inventory_location")
 
     __table_args__ = (
@@ -150,12 +151,16 @@ class StockMovement(Base):
     quantity_change: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
     old_stock: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
     new_stock: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
+    warehouse: Mapped[str | None] = mapped_column(String(120), index=True)
+    inventory_location_name: Mapped[str | None] = mapped_column("inventory_location", String(200), index=True)
+    reference_number: Mapped[str | None] = mapped_column(String(120), index=True)
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     reason: Mapped[str | None] = mapped_column(String(500))
+    notes: Mapped[str | None] = mapped_column(String(500))
     reference_type: Mapped[str | None] = mapped_column(String(80), index=True)
     reference_id: Mapped[int | None] = mapped_column(Integer, index=True)
     created_by: Mapped[str | None] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
     inventory_item: Mapped[InventoryItem] = relationship(back_populates="stock_movements")
-    inventory_location: Mapped[InventoryLocation | None] = relationship(back_populates="stock_movements")
+    location: Mapped[InventoryLocation | None] = relationship(back_populates="stock_movements")

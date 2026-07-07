@@ -1,8 +1,9 @@
 # Planned API Specification
 
 This document describes planned backend endpoints. The backend now implements
-`/health`, backend-persistent Items CRUD/export/import, and backend-persistent
-Locations CRUD/export/import. Other workflow routers remain structural
+`/health`, backend-persistent Items CRUD/export/import, backend-persistent
+Locations CRUD/export/import, inventory by-location reporting/export, and
+direct receiving without PO. Other workflow routers remain structural
 placeholders until their modules are built.
 
 ## API Rules
@@ -33,7 +34,6 @@ Current response:
 These routes are wired for frontend/API structure only. They do not perform
 business workflows, external calls, or database mutations yet.
 
-- `GET /api/receipts`
 - `GET /api/orders`
 - `GET /api/reports`
 - `GET /api/routes`
@@ -290,7 +290,89 @@ Returns:
 - `warnings`
 - `errors`
 
+## Inventory
+
+### GET /api/inventory/export/by-location
+
+Export inventory by warehouse/location as CSV.
+
+Implemented. Uses current item text fields for `Warehouse`,
+`Inventory Location`, and `Default Location`; item-location foreign keys are
+not globally enforced yet.
+
+Supported query params:
+- `warehouse`
+- `inventory_location`
+- `default_location`
+- `category`
+- `brand`
+- `under_par`
+- `non_inventory`
+
+CSV columns are documented in `docs/CSV_COLUMNS.md`.
+
+Calculated fields are recomputed at export time:
+- `Sellable = In Stock - Allocated`
+- `Under Par = In Stock <= Par Level`
+- `Storage Volume = Storage Length * Storage Width * Storage Height`
+- `Inventory Value = In Stock * Unit Cost`
+
+### GET /api/inventory/summary/by-location
+
+Return inventory totals grouped by warehouse and inventory location.
+
+Implemented. Supports the same filters as the by-location CSV export.
+
+Each group includes:
+- `warehouse`
+- `inventory_location`
+- `item_count`
+- `total_in_stock`
+- `total_allocated`
+- `total_sellable`
+- `total_on_order`
+- `total_inventory_value`
+- `under_par_count`
+
 ## Receiving
+
+### POST /api/receipts/direct/preview
+
+Validate a direct receiving payload without database writes.
+
+Implemented. Preview does not update item stock, create receipts, create
+receipt lines, or create stock movements.
+
+Validation rules:
+- Receipt warehouse is required.
+- Each line must match an existing item by `item_id`, exact SKU, or exact Barcode.
+- If SKU and Barcode match different items, the line is invalid.
+- Unknown items are rejected; receiving does not auto-create items.
+- Each line requires an active location matching warehouse + Location Code or
+  warehouse + Location Name.
+- Quantity Received must be greater than zero.
+
+### POST /api/receipts/direct/commit
+
+Commit direct receiving without PO.
+
+Implemented. The commit is atomic: if any line is invalid, the full receipt is
+rejected and no stock is updated.
+
+On success:
+- Creates a `receipts` row with `receipt_type = direct` and `status = posted`.
+- Creates receipt line rows.
+- Increases item `In Stock`.
+- Leaves `Allocated` unchanged.
+- Recalculates item Sellable, Under Par, and Storage Volume.
+- Creates one stock movement/audit row per received line.
+
+Intentional exclusions:
+- No purchase orders.
+- No supplier management.
+- No WooCommerce calls.
+- No cycle count, allocation, picking, route, or fulfillment workflow.
+- No weighted average cost update.
 
 ### POST /api/receipts
 
@@ -303,6 +385,22 @@ List receipts.
 ### GET /api/receipts/{id}
 
 Return receipt details and item rows.
+
+### GET /api/stock-movements
+
+List stock movement audit rows.
+
+Implemented filters:
+- `item_id`
+- `sku`
+- `barcode`
+- `warehouse`
+- `inventory_location`
+- `movement_type`
+- `reference_type`
+- `reference_id`
+- `date_from`
+- `date_to`
 
 ### GET /api/reports/received-inventory
 

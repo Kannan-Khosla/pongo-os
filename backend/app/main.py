@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import health, import_jobs, items, locations, orders, receipts, reports, routes
+from app.api.routes import health, import_jobs, inventory, items, locations, orders, receipts, reports, routes, stock_movements
 from app.core.config import get_settings
 
 
@@ -18,9 +18,11 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(items.router, prefix="/api")
+    app.include_router(inventory.router, prefix="/api")
     app.include_router(import_jobs.router, prefix="/api")
     app.include_router(locations.router, prefix="/api")
     app.include_router(receipts.router, prefix="/api")
+    app.include_router(stock_movements.router, prefix="/api")
     app.include_router(orders.router, prefix="/api")
     app.include_router(reports.router, prefix="/api")
     app.include_router(routes.router, prefix="/api")
