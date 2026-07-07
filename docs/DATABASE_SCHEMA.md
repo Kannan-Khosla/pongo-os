@@ -22,6 +22,7 @@ Implementation notes:
   `non_inventory`.
 - Revision `20260707_0004` adds direct receiving fields to receipts, receipt
   items, and stock movements.
+- Revision `20260707_0005` adds cycle count header and line tables.
 
 ## Canonical CSV Mapping
 
@@ -244,6 +245,7 @@ Movement type values:
 - receive_direct
 - direct_receiving
 - cycle_count
+- cycle_count_adjustment
 - manual_adjustment
 - order_allocation
 - order_pick
@@ -258,6 +260,95 @@ Relationships:
 
 Index suggestions:
 - Index `inventory_item_id`, `inventory_location_id`, `sku`, `barcode`, `movement_type`, `reference_type`, `reference_id`, and `created_at`.
+
+## cycle_counts
+
+Purpose: Cycle count header for physical inventory counts. Cycle Count is the
+second stock-changing workflow after Direct Receiving.
+
+Fields:
+- id
+- count_number
+- status
+- warehouse
+- inventory_location
+- count_type
+- notes
+- created_by
+- created_at
+- updated_at
+- posted_at
+
+Status values:
+- draft
+- posted
+- cancelled
+
+Current MVP behavior:
+- Counts post immediately with `status = posted`.
+- Draft cancellation is not implemented yet.
+
+Count type values:
+- full_location
+- selected_items
+
+Rules:
+- `count_number` is generated as `CC-YYYYMMDD-NNNN`.
+- Warehouse is required.
+- Inventory Location is required for `full_location`.
+- Inventory Location is optional for `selected_items`.
+- If Inventory Location is provided, it must match an active location by
+  Warehouse + Location Code or Warehouse + Location Name.
+
+Relationships:
+- Has many `cycle_count_lines`.
+
+Index suggestions:
+- Unique `count_number`.
+- Index `status`, `warehouse`, `inventory_location`, `count_type`,
+  `created_by`, and `posted_at`.
+
+## cycle_count_lines
+
+Purpose: Item rows counted during a cycle count.
+
+Fields:
+- id
+- cycle_count_id
+- item_id
+- sku
+- barcode
+- description
+- warehouse
+- inventory_location
+- system_quantity
+- counted_quantity
+- variance_quantity
+- unit_cost
+- variance_value
+- notes
+- created_at
+- updated_at
+
+Relationships:
+- Belongs to `cycle_counts`.
+- Belongs to `inventory_items`.
+
+Calculation rules:
+- system_quantity = item In Stock at preview/commit time.
+- variance_quantity = counted_quantity - system_quantity.
+- variance_value = variance_quantity * unit_cost.
+- Counted quantity must be greater than or equal to zero.
+- Unit Cost is captured from the item and defaults to zero when blank.
+
+Commit behavior:
+- A line is created for every valid count line.
+- Item In Stock is updated to Counted Quantity only when variance is non-zero.
+- Allocated is unchanged.
+- Sellable, Under Par, and Storage Volume are recalculated.
+- A stock movement row is created only for non-zero variance lines with
+  `movement_type = cycle_count_adjustment`,
+  `reference_type = cycle_count`, and the cycle count id/number.
 
 ## receipts
 

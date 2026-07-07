@@ -347,8 +347,31 @@ Pongo Cycle Count:
 - Must support scan/search by SKU or barcode.
 - Must support location-based counting.
 - Staff selects location, scans/searches item, sees current stock, enters counted stock, and sees difference.
-- Reason is required when difference is not zero.
 - Submit must eventually create stock movement/audit row.
+
+Current Pongo Cycle Count page:
+- Header fields: Warehouse, Inventory Location, Count Type, Notes.
+- Count Type options: Selected Items and Full Location.
+- Inventory Location is optional for selected item counts and required by the
+  backend for full location counts.
+- Line fields: SKU/barcode scanner input, readonly description, system
+  quantity, counted quantity, notes, remove line.
+- Buttons: Add Line, Preview Count, Post Count, Reset Form.
+- Preview calls the backend and shows total lines, adjustment lines, positive
+  variance, negative variance, absolute variance, variance value, and per-line
+  system/count/variance details without writing data.
+- Post Count is disabled when preview has invalid lines.
+- Successful posting updates local item stock through the backend, creates
+  cycle count lines, and creates stock movement/audit rows only for non-zero
+  variance lines.
+- Cycle Count History shows count number, status, warehouse, inventory
+  location, count type, total lines, adjustment lines, created/posted dates, and
+  created by.
+- Clicking a count number loads a basic detail panel with counted lines.
+- Export CSV is available from history and detail.
+- Line notes are optional in the current MVP.
+- WooCommerce stock updates, purchase orders, supplier workflows, allocation,
+  picking, route, and fulfillment workflows are not included.
 
 ## Open Orders
 

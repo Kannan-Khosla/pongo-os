@@ -100,3 +100,19 @@ sessions, receipt numbers, reference numbers, line notes, and receipt notes.
 Safety: The report endpoints are read-only. They do not modify inventory,
 create stock movements, call WooCommerce, or introduce purchase order, supplier,
 cycle count, allocation, picking, route, or fulfillment workflows.
+
+## ADR-014: Cycle Count Posts Atomic Stock Adjustments
+
+Decision: Implement Cycle Count as the second stock-changing workflow after
+Direct Receiving, with preview and atomic commit endpoints.
+
+Reason: Staff need to compare physical stock with system stock and post audited
+adjustments without connecting WooCommerce stock writeback yet. Preview lets
+staff review variances before stock changes, while commit revalidates the full
+payload and rejects the entire count if any line is invalid.
+
+Safety: Cycle Count updates item In Stock only on posted variance lines, leaves
+Allocated unchanged, recalculates derived item fields, creates cycle count
+header/line records, and creates stock movement rows only for adjusted lines.
+No WooCommerce calls, credentials, external APIs, purchase orders, supplier
+workflows, allocation, picking, route, or fulfillment workflows are added.

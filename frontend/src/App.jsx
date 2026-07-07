@@ -513,6 +513,9 @@ export default function App() {
   const [receivedInventorySummary, setReceivedInventorySummary] = useState(emptyReceivedInventorySummary);
   const [receivedInventoryLoading, setReceivedInventoryLoading] = useState(false);
   const [receivedInventoryError, setReceivedInventoryError] = useState('');
+  const [cycleCounts, setCycleCounts] = useState([]);
+  const [cycleCountsLoading, setCycleCountsLoading] = useState(false);
+  const [cycleCountsError, setCycleCountsError] = useState('');
 
   useEffect(() => {
     const handleHashChange = () => setRoute(parseHashRoute());
@@ -535,6 +538,11 @@ export default function App() {
     }
     if (route.pageId === 'reports') {
       loadReceivedInventoryReport();
+    }
+    if (route.pageId === 'cycle-count') {
+      loadItems();
+      loadLocations({ status: 'active' });
+      loadCycleCounts();
     }
   }, [route.pageId]);
 
@@ -703,6 +711,23 @@ export default function App() {
     }
   }
 
+  async function loadCycleCounts(filters = {}) {
+    setCycleCountsLoading(true);
+    setCycleCountsError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/cycle-counts${plainFiltersToQueryString(filters)}`);
+      if (!response.ok) {
+        throw new Error(`Cycle Counts API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setCycleCounts(body.cycle_counts || []);
+    } catch (error) {
+      setCycleCountsError('Unable to load cycle count history from the backend.');
+    } finally {
+      setCycleCountsLoading(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <Sidebar activePage={route.pageId} onNavigate={(pageId) => setRoute({ pageId })} />
@@ -740,6 +765,10 @@ export default function App() {
             receivedInventoryLoading={receivedInventoryLoading}
             receivedInventoryError={receivedInventoryError}
             onLoadReceivedInventoryReport={loadReceivedInventoryReport}
+            cycleCounts={cycleCounts}
+            cycleCountsLoading={cycleCountsLoading}
+            cycleCountsError={cycleCountsError}
+            onLoadCycleCounts={loadCycleCounts}
           />
         </main>
       </div>
@@ -864,6 +893,10 @@ function PageBody({
   receivedInventoryLoading,
   receivedInventoryError,
   onLoadReceivedInventoryReport,
+  cycleCounts,
+  cycleCountsLoading,
+  cycleCountsError,
+  onLoadCycleCounts,
 }) {
   if (route.pageId === 'items') {
     return <ItemsPage route={route} items={items} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
@@ -903,6 +936,21 @@ function PageBody({
         loading={receivedInventoryLoading}
         error={receivedInventoryError}
         onLoadReport={onLoadReceivedInventoryReport}
+      />
+    );
+  }
+
+  if (route.pageId === 'cycle-count') {
+    return (
+      <CycleCountPage
+        items={items}
+        locations={locations}
+        cycleCounts={cycleCounts}
+        cycleCountsLoading={cycleCountsLoading}
+        cycleCountsError={cycleCountsError}
+        onLoadCycleCounts={onLoadCycleCounts}
+        onLoadItems={onLoadItems}
+        onLoadInventorySummary={onLoadInventorySummary}
       />
     );
   }
@@ -2155,6 +2203,359 @@ function DashboardPlaceholder() {
   );
 }
 
+function CycleCountPage({ items, locations, cycleCounts, cycleCountsLoading, cycleCountsError, onLoadCycleCounts, onLoadItems, onLoadInventorySummary }) {
+  const [form, setForm] = useState({
+    warehouse: 'Main Warehouse',
+    inventory_location: '',
+    count_type: 'selected_items',
+    notes: '',
+    lines: [emptyCycleCountLine()],
+  });
+  const [preview, setPreview] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const activeLocations = locations.filter((location) => location.isActive);
+  const locationOptions = activeLocations.filter((location) => !form.warehouse || location.warehouse === form.warehouse);
+
+  function updateHeader(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+    setPreview(null);
+    setSummary(null);
+  }
+
+  function updateLine(index, field, value) {
+    setForm((current) => ({
+      ...current,
+      lines: current.lines.map((line, lineIndex) => (lineIndex === index ? { ...line, [field]: value } : line)),
+    }));
+    setPreview(null);
+    setSummary(null);
+  }
+
+  function addLine() {
+    setForm((current) => ({ ...current, lines: [...current.lines, emptyCycleCountLine()] }));
+  }
+
+  function removeLine(index) {
+    setForm((current) => ({ ...current, lines: current.lines.filter((_, lineIndex) => lineIndex !== index) }));
+  }
+
+  function resetForm() {
+    setForm({ warehouse: 'Main Warehouse', inventory_location: '', count_type: 'selected_items', notes: '', lines: [emptyCycleCountLine()] });
+    setPreview(null);
+    setSummary(null);
+    setError('');
+  }
+
+  async function previewCount() {
+    setLoading(true);
+    setError('');
+    setSummary(null);
+    try {
+      setPreview(await postJson('/api/cycle-counts/preview', cycleCountPayload(form, items)));
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to preview cycle count.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function postCount() {
+    setLoading(true);
+    setError('');
+    try {
+      const result = await postJson('/api/cycle-counts/commit', cycleCountPayload(form, items));
+      setSummary(result);
+      await onLoadCycleCounts();
+      await onLoadItems();
+      await onLoadInventorySummary();
+      setForm({ warehouse: 'Main Warehouse', inventory_location: '', count_type: 'selected_items', notes: '', lines: [emptyCycleCountLine()] });
+      setPreview(null);
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to post cycle count.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadDetail(cycleCountId) {
+    setDetailLoading(true);
+    setError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/cycle-counts/${cycleCountId}`);
+      if (!response.ok) {
+        throw new Error(`Cycle Count detail returned ${response.status}`);
+      }
+      setDetail(await response.json());
+    } catch (apiError) {
+      setError('Unable to load cycle count detail.');
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  return (
+    <section className="content-panel receiving-page cycle-count-page">
+      <div className="receiving-form">
+        <div className="section-heading">
+          <div>
+            <h2>New Cycle Count</h2>
+            <p>Count physical stock and post audited adjustments</p>
+          </div>
+          <button className="muted-button" onClick={resetForm} type="button">
+            Reset Form
+          </button>
+        </div>
+        <div className="receiving-header-fields cycle-count-header-fields">
+          <FilterSelect label="Warehouse" value={form.warehouse} options={uniqueOptions(activeLocations, 'warehouse')} onChange={(value) => updateHeader('warehouse', value || 'Main Warehouse')} />
+          <label className="field">
+            <span>Inventory Location</span>
+            <div className="select-shell">
+              <select value={form.inventory_location} onChange={(event) => updateHeader('inventory_location', event.target.value)}>
+                <option value="">Optional for selected items</option>
+                {locationOptions.map((location) => (
+                  <option key={location.id} value={location.code}>
+                    {location.warehouse} / {location.code}
+                  </option>
+                ))}
+              </select>
+              <Filter size={18} />
+            </div>
+          </label>
+          <label className="field">
+            <span>Count Type</span>
+            <div className="select-shell">
+              <select value={form.count_type} onChange={(event) => updateHeader('count_type', event.target.value)}>
+                <option value="selected_items">Selected Items</option>
+                <option value="full_location">Full Location</option>
+              </select>
+              <Filter size={18} />
+            </div>
+          </label>
+          <label className="field wide-field">
+            <span>Notes</span>
+            <input value={form.notes} onChange={(event) => updateHeader('notes', event.target.value)} placeholder="Optional count notes" />
+          </label>
+        </div>
+        <div className="table-scroll receiving-line-scroll">
+          <table className="receiving-line-table cycle-count-line-table">
+            <thead>
+              <tr>
+                <th>SKU / Barcode</th>
+                <th>Description</th>
+                <th>System Qty</th>
+                <th>Counted Quantity</th>
+                <th>Notes</th>
+                <th>Remove</th>
+              </tr>
+            </thead>
+            <tbody>
+              {form.lines.map((line, index) => {
+                const item = findReceivingItem(items, line.query);
+                return (
+                  <tr key={line.localId}>
+                    <td>
+                      <input value={line.query} onChange={(event) => updateLine(index, 'query', event.target.value)} placeholder="Scan or type SKU/barcode" />
+                    </td>
+                    <td className="description-cell">{item?.Description || ''}</td>
+                    <td>{item ? formatNumber(item['In Stock']) : ''}</td>
+                    <td>
+                      <input value={line.counted_quantity} onChange={(event) => updateLine(index, 'counted_quantity', event.target.value)} inputMode="decimal" />
+                    </td>
+                    <td>
+                      <input value={line.notes} onChange={(event) => updateLine(index, 'notes', event.target.value)} />
+                    </td>
+                    <td>
+                      <button className="pager-button" onClick={() => removeLine(index)} disabled={form.lines.length === 1} type="button">
+                        <MoreVertical size={17} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="detail-actions">
+          <button className="muted-button" onClick={addLine} type="button">
+            <Plus size={17} />
+            Add Line
+          </button>
+          <button className="primary-button" disabled={loading} onClick={previewCount} type="button">
+            Preview Count
+          </button>
+          <button className="primary-button" disabled={loading || !preview || preview.invalid_lines > 0} onClick={postCount} type="button">
+            Post Count
+          </button>
+        </div>
+        {loading && <div className="loading-strip">Working on cycle count...</div>}
+        {error && <div className="api-error">{error}</div>}
+        {summary && (
+          <div className="success-strip">
+            Cycle count {summary.count_number} posted. {summary.adjustment_lines} adjustment line(s), {summary.created_movements} movement(s) created.
+          </div>
+        )}
+        {preview && <CycleCountPreview preview={preview} />}
+      </div>
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Cycle Count History</h2>
+            <p>Posted physical inventory counts.</p>
+          </div>
+          <button className="muted-button" onClick={() => onLoadCycleCounts()} type="button">
+            <RefreshCw size={17} />
+            Refresh
+          </button>
+        </div>
+        {cycleCountsError && <div className="api-error">{cycleCountsError}</div>}
+        {cycleCountsLoading && <div className="loading-strip">Loading cycle count history...</div>}
+        <CycleCountHistoryTable counts={cycleCounts} onLoadDetail={loadDetail} />
+      </div>
+      {detailLoading && <div className="loading-strip">Loading cycle count detail...</div>}
+      {detail && <CycleCountDetailPanel detail={detail} onClose={() => setDetail(null)} />}
+    </section>
+  );
+}
+
+function CycleCountPreview({ preview }) {
+  return (
+    <div className="import-results receiving-preview">
+      <div className="import-metrics cycle-count-metrics">
+        <Metric label="Lines" value={preview.total_lines} />
+        <Metric label="Adjustments" value={preview.adjustment_lines} />
+        <Metric label="Positive Var" value={formatNumber(preview.total_positive_variance)} />
+        <Metric label="Negative Var" value={formatNumber(preview.total_negative_variance)} />
+        <Metric label="Absolute Var" value={formatNumber(preview.total_absolute_variance)} />
+        <Metric label="Variance Value" value={formatCurrency(preview.total_variance_value)} />
+      </div>
+      {preview.errors?.length > 0 && (
+        <div className="import-errors">
+          <h4>Validation Errors</h4>
+          {preview.errors.map((previewError) => (
+            <div key={previewError}>{previewError}</div>
+          ))}
+        </div>
+      )}
+      <div className="table-scroll">
+        <table className="preview-table cycle-count-preview-table">
+          <thead>
+            <tr>
+              <th>Line</th>
+              <th>Status</th>
+              <th>SKU</th>
+              <th>Description</th>
+              <th>Location</th>
+              <th>System Qty</th>
+              <th>Counted Qty</th>
+              <th>Variance</th>
+              <th>Variance Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {preview.preview_lines.map((line) => (
+              <tr key={line.line_number}>
+                <td>{line.line_number}</td>
+                <td>{line.status}</td>
+                <td>{line.sku}</td>
+                <td>{line.description}</td>
+                <td>{line.inventory_location}</td>
+                <td>{formatNumber(line.system_quantity)}</td>
+                <td>{formatNumber(line.counted_quantity)}</td>
+                <td>{formatNumber(line.variance_quantity)}</td>
+                <td>{formatCurrency(line.variance_value)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function CycleCountHistoryTable({ counts, onLoadDetail }) {
+  return (
+    <TableShell caption={`${counts.length} cycle count(s)`} columns={['Count Number', 'Status', 'Warehouse', 'Inventory Location', 'Count Type', 'Total Lines', 'Adjustment Lines', 'Created At', 'Posted At', 'Created By', 'Export']}>
+      {counts.map((count) => (
+        <tr key={count.id}>
+          <td>
+            <button className="link-button mono" onClick={() => onLoadDetail(count.id)} type="button">
+              {count.count_number}
+            </button>
+          </td>
+          <td>{count.status}</td>
+          <td>{count.warehouse}</td>
+          <td>{count.inventory_location}</td>
+          <td>{formatCountType(count.count_type)}</td>
+          <td>{count.total_lines}</td>
+          <td>{count.adjustment_lines}</td>
+          <td>{formatDateTime(count.created_at)}</td>
+          <td>{formatDateTime(count.posted_at)}</td>
+          <td>{count.created_by}</td>
+          <td>
+            <button className="action-button" onClick={() => exportCycleCountCsv(count.id, count.count_number)} type="button">
+              <Download size={17} />
+              Export
+            </button>
+          </td>
+        </tr>
+      ))}
+      {counts.length === 0 && (
+        <tr>
+          <td colSpan={11}>
+            <div className="empty-table-row">No cycle counts posted yet.</div>
+          </td>
+        </tr>
+      )}
+    </TableShell>
+  );
+}
+
+function CycleCountDetailPanel({ detail, onClose }) {
+  return (
+    <div className="wide-panel">
+      <div className="panel-title">
+        <div>
+          <h2>{detail.count_number}</h2>
+          <p>
+            {formatCountType(detail.count_type)} / {detail.status}
+          </p>
+        </div>
+        <div className="button-row compact">
+          <button className="action-button" onClick={() => exportCycleCountCsv(detail.id, detail.count_number)} type="button">
+            <Download size={17} />
+            Export CSV
+          </button>
+          <button className="muted-button" onClick={onClose} type="button">
+            Close
+          </button>
+        </div>
+      </div>
+      <TableShell caption={`${detail.lines.length} counted line(s)`} columns={['SKU', 'Barcode', 'Description', 'Warehouse', 'Inventory Location', 'System Quantity', 'Counted Quantity', 'Variance Quantity', 'Unit Cost', 'Variance Value', 'Notes']}>
+        {detail.lines.map((line) => (
+          <tr key={line.id}>
+            <td className="mono">{line.sku}</td>
+            <td className="mono">{line.barcode}</td>
+            <td className="description-cell">{line.description}</td>
+            <td>{line.warehouse}</td>
+            <td>{line.inventory_location}</td>
+            <td>{formatNumber(line.system_quantity)}</td>
+            <td>{formatNumber(line.counted_quantity)}</td>
+            <td>{formatNumber(line.variance_quantity)}</td>
+            <td>{formatCurrency(line.unit_cost)}</td>
+            <td>{formatCurrency(line.variance_value)}</td>
+            <td>{line.notes}</td>
+          </tr>
+        ))}
+      </TableShell>
+    </div>
+  );
+}
+
 function DirectReceivingPage({ items, locations, receipts, receiptsLoading, receiptsError, onLoadReceipts, stockMovements, stockMovementsLoading, stockMovementsError, onLoadStockMovements, onLoadInventorySummary }) {
   const [form, setForm] = useState({
     warehouse: 'Main Warehouse',
@@ -2898,6 +3299,15 @@ function emptyReceivingLine() {
   };
 }
 
+function emptyCycleCountLine() {
+  return {
+    localId: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : String(Date.now()),
+    query: '',
+    counted_quantity: '',
+    notes: '',
+  };
+}
+
 function emptyReceivedInventoryFilters() {
   return {
     dateFrom: '',
@@ -2981,6 +3391,10 @@ function formatDateTime(value) {
   return new Intl.DateTimeFormat('en-US', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
 }
 
+function formatCountType(value) {
+  return value === 'full_location' ? 'Full Location' : 'Selected Items';
+}
+
 function BooleanBadge({ value }) {
   return <span className={value ? 'boolean-badge yes' : 'boolean-badge no'}>{value ? 'Yes' : 'No'}</span>;
 }
@@ -3051,6 +3465,23 @@ async function exportReceivedInventoryCsv(filters) {
   const link = document.createElement('a');
   link.href = url;
   link.download = 'pongo-received-inventory-report.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+async function exportCycleCountCsv(cycleCountId, countNumber) {
+  const response = await fetch(`${API_BASE_URL}/api/cycle-counts/${cycleCountId}/export`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export cycle count CSV from the backend. Start the FastAPI server and try again.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `pongo-cycle-count-${countNumber || cycleCountId}.csv`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -3302,6 +3733,27 @@ function receivingPayload(form, items) {
         default_location: line.inventory_location,
         quantity_received: toNumber(line.quantity_received),
         unit_cost: line.unit_cost === '' ? null : toNumber(line.unit_cost),
+        notes: line.notes,
+      };
+    }),
+  };
+}
+
+function cycleCountPayload(form, items) {
+  return {
+    warehouse: form.warehouse,
+    inventory_location: form.inventory_location || null,
+    count_type: form.count_type,
+    notes: form.notes,
+    created_by: 'system',
+    lines: form.lines.map((line) => {
+      const item = findReceivingItem(items, line.query);
+      const query = String(line.query || '').trim();
+      return {
+        item_id: item?.id || null,
+        sku: item?.SKU || query || null,
+        barcode: item?.Barcode || null,
+        counted_quantity: toNumber(line.counted_quantity),
         notes: line.notes,
       };
     }),

@@ -404,13 +404,127 @@ Implemented filters:
 
 ## Cycle Count
 
-### POST /api/cycle-counts
+Cycle Count is implemented as the second stock-changing workflow after Direct
+Receiving. It does not call WooCommerce and does not run allocation, picking,
+route, fulfillment, purchase order, or supplier workflows.
 
-Submit a count for an item/location. Requires reason when the difference is not zero. Creates a stock movement row.
+### POST /api/cycle-counts/preview
+
+Validate a cycle count payload and calculate variances without writing stock
+changes.
+
+Implemented behavior:
+- Does not update item stock.
+- Does not create cycle count rows.
+- Does not create stock movements.
+- Matches items by `item_id`, exact SKU, or exact Barcode.
+- Rejects a line when SKU and Barcode match different existing items.
+- Rejects unknown items.
+- Requires warehouse.
+- Requires an active location when `inventory_location` is provided.
+- Requires `inventory_location` for `count_type = full_location`.
+- Requires `counted_quantity >= 0`.
+
+Response fields:
+- `total_lines`
+- `valid_lines`
+- `invalid_lines`
+- `adjustment_lines`
+- `total_positive_variance`
+- `total_negative_variance`
+- `total_absolute_variance`
+- `total_variance_value`
+- `errors`
+- `warnings`
+- `preview_lines`
+
+Preview line fields:
+- `line_number`
+- `item_id`
+- `sku`
+- `barcode`
+- `description`
+- `warehouse`
+- `inventory_location`
+- `system_quantity`
+- `counted_quantity`
+- `variance_quantity`
+- `unit_cost`
+- `variance_value`
+- `status`
+- `warnings`
+- `errors`
+
+### POST /api/cycle-counts/commit
+
+Validate and post a cycle count atomically.
+
+Implemented behavior:
+- Rejects the full count if any line is invalid.
+- Creates a `cycle_counts` header row with `status = posted`.
+- Creates one `cycle_count_lines` row per valid line.
+- Updates item `In Stock` to `counted_quantity` only when variance is non-zero.
+- Leaves `Allocated` unchanged.
+- Recalculates Sellable, Under Par, and Storage Volume.
+- Creates stock movement rows only for variance lines.
+
+Stock movement audit fields:
+- `movement_type = cycle_count_adjustment`
+- `quantity_delta = counted_quantity - system_quantity`
+- `previous_in_stock = system_quantity`
+- `new_in_stock = counted_quantity`
+- `reference_type = cycle_count`
+- `reference_id = cycle_count id`
+- `reference_number = count_number`
+
+Calculation rules:
+- `system_quantity` is captured from current item `In Stock`.
+- `variance_quantity = counted_quantity - system_quantity`.
+- `variance_value = variance_quantity * unit_cost`.
+- Null or blank unit cost is treated as zero.
 
 ### GET /api/cycle-counts
 
 List cycle count events.
+
+Implemented filters:
+- `status`
+- `warehouse`
+- `inventory_location`
+- `count_type`
+- `date_from`
+- `date_to`
+- `created_by`
+
+### GET /api/cycle-counts/{id}
+
+Return cycle count detail with lines.
+
+### GET /api/cycle-counts/{id}/export
+
+Export one cycle count as CSV.
+
+CSV header order:
+- Count Number
+- Status
+- Created At
+- Posted At
+- Warehouse
+- Inventory Location
+- SKU
+- Barcode
+- Description
+- System Quantity
+- Counted Quantity
+- Variance Quantity
+- Unit Cost
+- Variance Value
+- Notes
+
+### POST /api/cycle-counts/{id}/cancel
+
+Not implemented. The current MVP posts counts immediately and does not persist
+draft counts.
 
 ## Orders
 

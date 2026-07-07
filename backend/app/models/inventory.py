@@ -21,6 +21,7 @@ class MovementType(str, Enum):
     receive_direct = "receive_direct"
     direct_receiving = "direct_receiving"
     cycle_count = "cycle_count"
+    cycle_count_adjustment = "cycle_count_adjustment"
     manual_adjustment = "manual_adjustment"
     order_allocation = "order_allocation"
     order_pick = "order_pick"

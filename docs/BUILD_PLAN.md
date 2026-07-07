@@ -244,16 +244,31 @@ What not to build yet:
 
 Goal: Adjust stock through audited counts.
 
+Status: Completed for selected-item and full-location cycle count posting.
+The backend supports preview, atomic commit, history, detail, and per-count CSV
+export. The frontend Cycle Count page supports scanner-friendly line entry,
+preview results, posting, history, detail lines, and export.
+
 Deliverables:
 - Count submission
 - Reason handling
 - Stock movement rows
+- Count preview
+- Count history/detail/export
 
 Acceptance criteria:
-- Non-zero differences require reason.
+- Line notes are optional in the current MVP.
+- Preview does not change stock.
+- Commit updates item In Stock to counted quantity.
+- Commit leaves Allocated unchanged.
+- Commit recalculates Sellable and Under Par.
+- Commit creates stock movement rows only for variance lines.
+- Invalid counts do not partially commit.
 
 Safety notes:
 - WooCommerce stock update remains disabled or explicitly queued.
+- No purchase order, supplier, allocation, picking, route, or fulfillment
+  workflows are included.
 
 What not to build yet:
 - Order sync

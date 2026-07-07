@@ -1,4 +1,5 @@
 from app.db.base import Base
+from app.models.cycle_counts import CycleCount, CycleCountLine
 from app.models.imports import ImportError, ImportJob
 from app.models.inventory import InventoryItem, InventoryItemLocation, InventoryLocation, MovementType, StockMovement
 from app.models.orders import Order, OrderItem
@@ -7,6 +8,8 @@ from app.models.routes import Route, RouteStop
 
 __all__ = [
     "Base",
+    "CycleCount",
+    "CycleCountLine",
     "ImportError",
     "ImportJob",
     "InventoryItem",

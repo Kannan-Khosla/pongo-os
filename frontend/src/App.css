@@ -585,6 +585,11 @@ tbody tr:nth-child(even) {
   min-width: 1900px;
 }
 
+.cycle-count-line-table,
+.cycle-count-preview-table {
+  min-width: 980px;
+}
+
 .summary-strip {
   display: grid;
   grid-template-columns: repeat(5, minmax(150px, 1fr));
@@ -930,6 +935,14 @@ tbody tr:nth-child(even) .sticky-col {
 .report-page {
   display: grid;
   gap: 20px;
+}
+
+.cycle-count-header-fields {
+  grid-template-columns: minmax(220px, 0.8fr) minmax(240px, 1fr) minmax(220px, 0.8fr) minmax(320px, 1.2fr);
+}
+
+.cycle-count-metrics {
+  grid-template-columns: repeat(6, minmax(90px, 1fr));
 }
 
 .grouped-report-panel {
@@ -1295,6 +1308,16 @@ tbody tr:nth-child(even) .sticky-col {
   text-decoration: none;
 }
 
+.link-button {
+  border: 0;
+  background: transparent;
+  color: var(--teal-800);
+  cursor: pointer;
+  font-weight: 900;
+  padding: 0;
+  text-decoration: underline;
+}
+
 @media (max-width: 1320px) {
   .toolbar {
     align-items: stretch;
@@ -1318,6 +1341,7 @@ tbody tr:nth-child(even) .sticky-col {
   .locations-filter-grid,
   .inventory-filter-grid,
   .report-filter-grid,
+  .cycle-count-header-fields,
   .form-grid {
     grid-template-columns: repeat(2, minmax(170px, 1fr));
   }
