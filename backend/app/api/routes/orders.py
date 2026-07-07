@@ -1,8 +1,11 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.orders import OpenOrderDetail, OpenOrderListResponse
+from app.schemas.orders import CompletedOrderListResponse, OpenOrderDetail, OpenOrderListResponse
+from app.services.completed_orders import CompletedOrderFilters, export_completed_orders_csv, list_completed_orders
 from app.services.woocommerce_orders import export_open_orders_csv, get_open_order_detail, list_open_orders
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -32,6 +35,41 @@ def export_open_order_queue(
         content=csv_text,
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="pongo-open-orders-export.csv"'},
+    )
+
+
+@router.get("/completed", response_model=CompletedOrderListResponse)
+def list_completed_order_queue(
+    local_status: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    customer_email: str | None = None,
+    woo_order_number: str | None = None,
+    sku: str | None = None,
+    barcode: str | None = None,
+    search: str | None = None,
+    db: Session = Depends(get_db),
+) -> CompletedOrderListResponse:
+    return list_completed_orders(db, CompletedOrderFilters(local_status=local_status, date_from=date_from, date_to=date_to, customer_email=customer_email, woo_order_number=woo_order_number, sku=sku, barcode=barcode, search=search))
+
+
+@router.get("/completed/export")
+def export_completed_order_queue(
+    local_status: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    customer_email: str | None = None,
+    woo_order_number: str | None = None,
+    sku: str | None = None,
+    barcode: str | None = None,
+    search: str | None = None,
+    db: Session = Depends(get_db),
+) -> Response:
+    csv_text = export_completed_orders_csv(db, CompletedOrderFilters(local_status=local_status, date_from=date_from, date_to=date_to, customer_email=customer_email, woo_order_number=woo_order_number, sku=sku, barcode=barcode, search=search))
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="pongo-completed-orders-export.csv"'},
     )
 
 

@@ -1,5 +1,18 @@
 # UI Reference
 
+## Current Admin Upgrade
+
+- Dashboard is now the Command Center with live local backend data, inventory
+  health cards, order operation cards, route cards, data quality warnings,
+  recent activity, and quick actions.
+- Settings includes WooCommerce remap controls for local-only mapping preview
+  and commit.
+- Orders includes scanner-style Pick Orders controls for SKU/barcode entry.
+- Reports includes SKU Orders Report with summary, filters, table, and CSV
+  export.
+- Routes includes metadata editing, stop reordering, stop notes/coordinates,
+  map payload status, and disabled provider controls for geocode/optimization.
+
 This document describes UI style, screens, and workflows for Pongo Inventory OS.
 It is the visual reference for frontend work, not a source of business logic.
 The current React admin shell implements the global layout and placeholder
@@ -242,6 +255,10 @@ Current Pongo Inventory page:
 - Grouped table: Warehouse, Inventory Location, Item Count, In Stock, Allocated,
   Sellable, On Order, Inventory Value, Under Par Count.
 - Export CSV calls the backend inventory-by-location export.
+- Location Stock table lists item-location rows with SKU, description,
+  warehouse, location, In Stock, Allocated, and Sellable.
+- Location Operations includes local Transfer and Adjustment panels. These call
+  backend Pongo OS APIs only and never call WooCommerce.
 
 ## Locations
 
@@ -249,7 +266,8 @@ Pongo Locations screen:
 - Page title: Locations.
 - Tabs: Add Location, All Locations, Location Stock.
 - All Locations is real for MVP; Add Location opens the location form. Location
-  Stock remains a placeholder until stock-by-location workflows are built.
+  Stock now maps to the Inventory page stock-location rows and local
+  transfer/adjustment operations.
 - Filters: search, warehouse, zone, aisle, active/inactive.
 - Actions: Add Location, Import, Export, Clear.
 - Import opens a CSV modal that previews and commits the canonical location CSV
@@ -408,19 +426,75 @@ Pongo Open Orders:
 - Show order number, customer, placed on, WooCommerce status, line count,
   match status, availability status, order total, and line-level SKU/barcode
   detail.
-- Do not show allocate/pick/route actions in the current read-only foundation.
+- Show allocation, picking, and fulfillment controls only for local Pongo OS
+  workflow steps.
+- Do not show route, shipping label, PO, supplier, notification, or WooCommerce
+  writeback actions.
 
 Current Pongo Open Orders page:
 - Summary cards: Open Orders, Available, Partial, Unavailable, Unknown.
 - Filters: search, Woo status, availability, matched status.
-- Actions: Refresh local open orders, Export filtered CSV, Clear, Apply.
+- Actions: Refresh local open orders, Export filtered CSV, Preview Allocation,
+  Commit Allocation, Preview Pick, Commit Pick, Preview Fulfillment, Commit
+  Fulfillment, Clear, Apply.
 - Dense operational table with order number, Woo status, customer, email,
-  total, availability, matched status, lines, created date, and last sync.
+  local status, total, availability, matched status, lines, created date, and
+  last sync.
 - Detail panel shows selected order customer/contact/address summary and order
-  lines with SKU, barcode, name, quantity, sellable snapshot, shortage, match
-  status, and availability.
-- Safety copy states that this queue does not allocate, reserve, pick, route,
-  change stock, or update WooCommerce statuses.
+  lines with SKU, barcode, name, ordered quantity, allocated quantity, picked
+  quantity, fulfilled quantity, remaining to pick, remaining to fulfill,
+  remaining to allocate, match status, availability, pick status, fulfillment
+  status, shortage, local sellable, Woo Product ID, and Woo Variation ID.
+- Safety copy states that fulfillment reduces local Pongo OS In Stock and
+  Allocated quantities and does not update WooCommerce order status,
+  WooCommerce stock, routes, shipping labels, or notifications.
+
+Current Allocation UI:
+- Preview Allocation runs a local backend preview for the selected order.
+- Preview summary cards: Orders, Lines, Allocatable, Partial, Skipped, Qty
+  Allocate, Shortage.
+- Preview table columns: Order, SKU, Barcode, Description, Ordered, Previously
+  Allocated, Remaining, In Stock, Allocated, Sellable, Recommended, Shortage,
+  Status, Warnings, Errors.
+- Commit Allocation posts a local allocation, refreshes Open Orders, Items, and
+  Inventory summary.
+- Allocation History appears below the Open Orders table with allocation
+  number, status, Woo order number, total lines, total quantity allocated,
+  created by, created at, and posted at.
+- Selecting an allocation shows detail lines and allows allocation CSV export.
+
+Current Picking UI:
+- Preview Pick runs a local backend preview for the selected order.
+- Preview summary cards: Orders, Lines, Pickable, Partial, Skipped, Qty Pick.
+- Preview table columns: Order, SKU, Barcode, Description, Warehouse, Location,
+  Ordered, Allocated, Previously Picked, Remaining To Pick, Recommended,
+  Picked After, Status, Warnings, Errors.
+- Commit Pick posts a local pick, refreshes Open Orders, and refreshes Pick
+  History.
+- Pick History appears below Allocation History with pick number, status, Woo
+  order number, total lines, total quantity picked, created by, created at, and
+  posted at.
+- Selecting a pick shows detail lines and allows pick CSV export.
+- Pick UI does not reduce In Stock, reduce Allocated, write WooCommerce, route,
+  fulfill, create shipping labels, create purchase orders, or notify customers.
+
+Current Fulfillment UI:
+- Preview Fulfillment runs a local backend preview for the selected picked
+  order.
+- Preview summary cards: Orders, Lines, Fulfillable, Partial, Skipped, Qty
+  Fulfill.
+- Preview table columns: Order, SKU, Barcode, Description, Ordered, Allocated,
+  Picked, Previously Fulfilled, Remaining To Fulfill, Recommended, Status, In
+  Stock, Allocated Stock, Sellable, Warehouse, Location, Warnings, Errors.
+- Commit Fulfillment posts a local fulfillment, refreshes Open Orders, Items,
+  Inventory summary, and Fulfillment History.
+- Fulfillment History appears below Pick History with fulfillment number,
+  status, Woo order number, total lines, total quantity fulfilled, created by,
+  created at, and posted at.
+- Selecting a fulfillment shows detail lines and allows fulfillment CSV export.
+- Fulfillment UI reduces local In Stock and Allocated only through the backend
+  commit endpoint. It does not write WooCommerce, route, create shipping
+  labels, create purchase orders, or notify customers.
 
 Current Settings WooCommerce Order Sync section:
 - Shows default statuses `processing, on-hold`.
@@ -492,8 +566,25 @@ Pongo Pick Orders:
 - Staff opens an allocated order, scans SKU/barcode, and the system matches to an order line.
 - Show ordered, allocated, picked, and remaining quantity.
 - Prevent overpicking.
-- Complete order when all items are picked.
-- Completion can later update WooCommerce order status through backend API.
+- Current foundation supports backend pick preview/commit for selected allocated
+  orders and tracks Remaining To Pick.
+- Future scanner work should build on the same allocated-quantity guardrails.
+- Fulfillment/completion now exists as a backend-only local workflow after
+  picking. WooCommerce writeback, shipping, and routing remain future work.
+
+## Fulfillment / Completion
+
+Pongo Fulfillment:
+- Complete picked local orders after staff verifies picked quantities.
+- Reduce local item In Stock and Allocated by the fulfilled quantity.
+- Recalculate Sellable and Under Par.
+- Show ordered, allocated, picked, fulfilled, and remaining-to-fulfill
+  quantities.
+- Prevent fulfillment beyond picked, allocated, or available local In Stock.
+- Fulfillment is local-only and does not update WooCommerce order status or
+  stock.
+- Route planning, shipping labels, notifications, purchase orders, and supplier
+  workflows remain separate future phases.
 
 ## Order Search
 
@@ -590,20 +681,47 @@ Current Pongo Reports page:
 - The report is read-only and currently reflects direct receiving records only
   because purchase order receiving is not built.
 
+Current Fulfillment Report:
+- Appears on the Reports page as a read-only section.
+- Summary cards show Total Fulfillments, Total Orders, Total Lines, Total
+  Quantity Fulfilled, Total Fulfilled Value, Unique SKUs, and Unique Locations.
+- Filters: Date From, Date To, Warehouse, Inventory Location, SKU, Barcode,
+  Category, Brand, Fulfillment Number, Woo Order Number, Customer Email, Local
+  Status, and Created By.
+- Actions: Apply Filters, Clear Filters, Refresh, Export CSV.
+- Main table shows fulfillment number, posted date, Woo order number, local
+  status, customer, warehouse, inventory location, SKU, barcode, description,
+  category, brand, quantity fulfilled, unit cost, fulfilled value, stock
+  before/after, allocated before/after, and created by.
+- Grouped summaries show fulfillment totals by Location and by SKU.
+- Completed Orders section on Orders shows fulfilled and partially fulfilled
+  local orders with summary cards, filters, and CSV export.
+- Report endpoints do not modify inventory, allocated quantities, orders,
+  WooCommerce, routes, shipping labels, or notifications.
+
 ## Routes
 
-No route screenshot was present. Routes should still use the global shell.
+No route screenshot was present. Routes use the global Pongo admin shell and
+the same dense operational table language as Orders, Reports, and Fulfillment.
 
-Planned behavior:
-- Select route date.
-- Show eligible WooCommerce orders with shipping addresses.
-- Select orders to include.
-- Create route stops.
-- Show stops on map.
-- Optimize stop sequence through backend provider abstraction.
-- Save route.
+Current behavior:
+- Show eligible completed local orders with shipping/customer snapshots.
+- Filter candidates by status, customer email, Woo order number, and search.
+- Select orders to include as route stops.
+- Enter route date, route name, driver, vehicle, and notes.
+- Preview selected stops before saving.
+- Create a local draft route.
+- List route history.
+- View route stop detail.
+- Export one route CSV.
+- Finalize or cancel a local route.
 
-Do not expose map provider keys in frontend code.
+Safety / not yet built:
+- Do not expose map provider keys in frontend code.
+- Do not call map, geocoding, or route optimization APIs.
+- Do not update WooCommerce.
+- Do not change local inventory quantities.
+- Do not add shipping labels, delivery tracking, or notifications.
 
 ## Frontend Build Priority
 

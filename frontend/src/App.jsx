@@ -116,6 +116,41 @@ const emptyReceivedInventorySummary = {
   by_location: [],
   by_sku: [],
 };
+const emptyFulfillmentSummary = {
+  total_fulfillments: 0,
+  total_orders: 0,
+  total_lines: 0,
+  total_quantity_fulfilled: 0,
+  total_fulfilled_value: 0,
+  unique_skus: 0,
+  unique_locations: 0,
+  date_from: null,
+  date_to: null,
+  by_warehouse: [],
+  by_location: [],
+  by_sku: [],
+  by_order: [],
+};
+const emptySkuOrdersSummary = {
+  total_skus: 0,
+  total_quantity_ordered: 0,
+  total_quantity_fulfilled: 0,
+  total_unfulfilled_quantity: 0,
+  unmatched_lines_count: 0,
+  top_sku_by_quantity: null,
+};
+const emptyDashboard = {
+  generated_at: null,
+  inventory_health: {},
+  order_operations: {},
+  routes: {},
+  warnings: [],
+  activity: [],
+};
+const emptyCompletedOrders = {
+  orders: [],
+  total: 0,
+};
 const emptyWooStatus = {
   configured: false,
   base_url_present: false,
@@ -147,7 +182,7 @@ const navItems = [
 
 const pageMeta = {
   dashboard: {
-    title: 'Dashboard',
+    title: 'Command Center',
     kicker: 'Operational snapshot',
     tabs: ['Today', 'Work Queues', 'Exceptions'],
   },
@@ -528,6 +563,17 @@ export default function App() {
   const [receivedInventorySummary, setReceivedInventorySummary] = useState(emptyReceivedInventorySummary);
   const [receivedInventoryLoading, setReceivedInventoryLoading] = useState(false);
   const [receivedInventoryError, setReceivedInventoryError] = useState('');
+  const [fulfillmentReportRows, setFulfillmentReportRows] = useState([]);
+  const [fulfillmentReportSummary, setFulfillmentReportSummary] = useState(emptyFulfillmentSummary);
+  const [fulfillmentReportLoading, setFulfillmentReportLoading] = useState(false);
+  const [fulfillmentReportError, setFulfillmentReportError] = useState('');
+  const [skuOrdersRows, setSkuOrdersRows] = useState([]);
+  const [skuOrdersSummary, setSkuOrdersSummary] = useState(emptySkuOrdersSummary);
+  const [skuOrdersLoading, setSkuOrdersLoading] = useState(false);
+  const [skuOrdersError, setSkuOrdersError] = useState('');
+  const [dashboard, setDashboard] = useState(emptyDashboard);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState('');
   const [cycleCounts, setCycleCounts] = useState([]);
   const [cycleCountsLoading, setCycleCountsLoading] = useState(false);
   const [cycleCountsError, setCycleCountsError] = useState('');
@@ -537,12 +583,50 @@ export default function App() {
   const [wooOrderPreview, setWooOrderPreview] = useState(null);
   const [wooOrderCommitSummary, setWooOrderCommitSummary] = useState(null);
   const [wooSyncRuns, setWooSyncRuns] = useState([]);
+  const [wooRemapCandidates, setWooRemapCandidates] = useState({ candidates: [], total: 0 });
+  const [wooRemapMappings, setWooRemapMappings] = useState({ mappings: [], total: 0 });
+  const [wooRemapPreview, setWooRemapPreview] = useState(null);
+  const [wooRemapMessage, setWooRemapMessage] = useState('');
   const [wooLoading, setWooLoading] = useState(false);
   const [wooError, setWooError] = useState('');
   const [openOrders, setOpenOrders] = useState(emptyOpenOrders);
   const [openOrdersLoading, setOpenOrdersLoading] = useState(false);
   const [openOrdersError, setOpenOrdersError] = useState('');
   const [openOrderDetail, setOpenOrderDetail] = useState(null);
+  const [completedOrders, setCompletedOrders] = useState(emptyCompletedOrders);
+  const [completedOrdersLoading, setCompletedOrdersLoading] = useState(false);
+  const [completedOrdersError, setCompletedOrdersError] = useState('');
+  const [allocationPreview, setAllocationPreview] = useState(null);
+  const [allocationCommitSummary, setAllocationCommitSummary] = useState(null);
+  const [allocationHistory, setAllocationHistory] = useState([]);
+  const [allocationDetail, setAllocationDetail] = useState(null);
+  const [allocationLoading, setAllocationLoading] = useState(false);
+  const [allocationError, setAllocationError] = useState('');
+  const [pickPreview, setPickPreview] = useState(null);
+  const [pickCommitSummary, setPickCommitSummary] = useState(null);
+  const [pickHistory, setPickHistory] = useState([]);
+  const [pickDetail, setPickDetail] = useState(null);
+  const [pickScannerOrder, setPickScannerOrder] = useState(null);
+  const [pickScannerMessage, setPickScannerMessage] = useState('');
+  const [pickLoading, setPickLoading] = useState(false);
+  const [pickError, setPickError] = useState('');
+  const [fulfillmentPreview, setFulfillmentPreview] = useState(null);
+  const [fulfillmentCommitSummary, setFulfillmentCommitSummary] = useState(null);
+  const [fulfillmentHistory, setFulfillmentHistory] = useState([]);
+  const [fulfillmentDetail, setFulfillmentDetail] = useState(null);
+  const [fulfillmentLoading, setFulfillmentLoading] = useState(false);
+  const [fulfillmentError, setFulfillmentError] = useState('');
+  const [routeCandidates, setRouteCandidates] = useState({ total_candidates: 0, candidates: [] });
+  const [routeCandidatesLoading, setRouteCandidatesLoading] = useState(false);
+  const [routeCandidatesError, setRouteCandidatesError] = useState('');
+  const [routePreview, setRoutePreview] = useState(null);
+  const [routeCommitSummary, setRouteCommitSummary] = useState(null);
+  const [routesHistory, setRoutesHistory] = useState({ routes: [], total: 0 });
+  const [routeDetail, setRouteDetail] = useState(null);
+  const [routeMapPayload, setRouteMapPayload] = useState(null);
+  const [routeProviderMessage, setRouteProviderMessage] = useState('');
+  const [routesLoading, setRoutesLoading] = useState(false);
+  const [routesError, setRoutesError] = useState('');
 
   useEffect(() => {
     const handleHashChange = () => setRoute(parseHashRoute());
@@ -551,6 +635,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (route.pageId === 'dashboard') {
+      loadDashboard();
+    }
     if (route.pageId === 'items' || route.pageId === 'inventory') {
       loadItems();
     }
@@ -565,6 +652,8 @@ export default function App() {
     }
     if (route.pageId === 'reports') {
       loadReceivedInventoryReport();
+      loadFulfillmentReport();
+      loadSkuOrdersReport();
     }
     if (route.pageId === 'cycle-count') {
       loadItems();
@@ -573,10 +662,19 @@ export default function App() {
     }
     if (route.pageId === 'orders') {
       loadOpenOrders();
+      loadAllocations();
+      loadPicks();
+      loadFulfillments();
+      loadCompletedOrders();
     }
     if (route.pageId === 'settings') {
       loadWooStatus();
       loadWooSyncRuns();
+      loadWooRemap();
+    }
+    if (route.pageId === 'routes') {
+      loadRouteCandidates();
+      loadRoutes();
     }
   }, [route.pageId]);
 
@@ -745,6 +843,64 @@ export default function App() {
     }
   }
 
+  async function loadFulfillmentReport(filters = {}) {
+    setFulfillmentReportLoading(true);
+    setFulfillmentReportError('');
+    try {
+      const queryString = plainFiltersToQueryString(fulfillmentReportFiltersToApi(filters));
+      const [rowsResponse, summaryResponse] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/reports/fulfillments${queryString}`),
+        fetch(`${API_BASE_URL}/api/reports/fulfillments/summary${queryString}`),
+      ]);
+      if (!rowsResponse.ok || !summaryResponse.ok) {
+        throw new Error('Fulfillment report API returned an error.');
+      }
+      setFulfillmentReportRows(await rowsResponse.json());
+      setFulfillmentReportSummary(await summaryResponse.json());
+    } catch (error) {
+      setFulfillmentReportError('Unable to load fulfillment report from the backend.');
+    } finally {
+      setFulfillmentReportLoading(false);
+    }
+  }
+
+  async function loadSkuOrdersReport(filters = {}) {
+    setSkuOrdersLoading(true);
+    setSkuOrdersError('');
+    try {
+      const queryString = plainFiltersToQueryString(skuOrdersFiltersToApi(filters));
+      const [rowsResponse, summaryResponse] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/reports/sku-orders${queryString}`),
+        fetch(`${API_BASE_URL}/api/reports/sku-orders/summary${queryString}`),
+      ]);
+      if (!rowsResponse.ok || !summaryResponse.ok) {
+        throw new Error('SKU Orders report API returned an error.');
+      }
+      setSkuOrdersRows(await rowsResponse.json());
+      setSkuOrdersSummary(await summaryResponse.json());
+    } catch (error) {
+      setSkuOrdersError('Unable to load SKU Orders report from the backend.');
+    } finally {
+      setSkuOrdersLoading(false);
+    }
+  }
+
+  async function loadDashboard() {
+    setDashboardLoading(true);
+    setDashboardError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/dashboard?limit=30`);
+      if (!response.ok) {
+        throw new Error(`Dashboard API returned ${response.status}`);
+      }
+      setDashboard({ ...emptyDashboard, ...(await response.json()) });
+    } catch (error) {
+      setDashboardError('Unable to load Command Center data from the backend.');
+    } finally {
+      setDashboardLoading(false);
+    }
+  }
+
   async function loadCycleCounts(filters = {}) {
     setCycleCountsLoading(true);
     setCycleCountsError('');
@@ -792,6 +948,23 @@ export default function App() {
     }
   }
 
+  async function loadWooRemap() {
+    setWooError('');
+    try {
+      const [candidatesResponse, mappingsResponse] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/candidates`),
+        fetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/mappings`),
+      ]);
+      if (!candidatesResponse.ok || !mappingsResponse.ok) {
+        throw new Error('Remap API returned an error.');
+      }
+      setWooRemapCandidates(await candidatesResponse.json());
+      setWooRemapMappings(await mappingsResponse.json());
+    } catch (error) {
+      setWooError('Unable to load WooCommerce remap data.');
+    }
+  }
+
   async function loadOpenOrders(filters = {}) {
     setOpenOrdersLoading(true);
     setOpenOrdersError('');
@@ -814,6 +987,23 @@ export default function App() {
     }
   }
 
+  async function loadCompletedOrders(filters = {}) {
+    setCompletedOrdersLoading(true);
+    setCompletedOrdersError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/orders/completed${plainFiltersToQueryString(completedOrderFiltersToApi(filters))}`);
+      if (!response.ok) {
+        throw new Error(`Completed Orders API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setCompletedOrders({ ...emptyCompletedOrders, ...body });
+    } catch (error) {
+      setCompletedOrdersError('Unable to load completed orders from the backend.');
+    } finally {
+      setCompletedOrdersLoading(false);
+    }
+  }
+
   async function loadOpenOrderDetail(orderId) {
     if (!orderId) {
       setOpenOrderDetail(null);
@@ -827,6 +1017,466 @@ export default function App() {
       setOpenOrderDetail(await response.json());
     } catch (error) {
       setOpenOrdersError('Unable to load order detail from the backend.');
+    }
+  }
+
+  async function loadAllocations(filters = {}) {
+    setAllocationError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/allocations${plainFiltersToQueryString(filters)}`);
+      if (!response.ok) {
+        throw new Error(`Allocations API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setAllocationHistory(body.allocations || []);
+    } catch (error) {
+      setAllocationError('Unable to load allocation history from the backend.');
+    }
+  }
+
+  async function loadAllocationDetail(allocationId) {
+    if (!allocationId) {
+      setAllocationDetail(null);
+      return;
+    }
+    setAllocationError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/allocations/${allocationId}`);
+      if (!response.ok) {
+        throw new Error(`Allocation detail API returned ${response.status}`);
+      }
+      setAllocationDetail(await response.json());
+    } catch (error) {
+      setAllocationError('Unable to load allocation detail from the backend.');
+    }
+  }
+
+  async function loadPicks(filters = {}) {
+    setPickError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/picks${plainFiltersToQueryString(filters)}`);
+      if (!response.ok) {
+        throw new Error(`Picks API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setPickHistory(body.picks || []);
+    } catch (error) {
+      setPickError('Unable to load pick history from the backend.');
+    }
+  }
+
+  async function loadFulfillments(filters = {}) {
+    setFulfillmentError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/fulfillments${plainFiltersToQueryString(filters)}`);
+      if (!response.ok) {
+        throw new Error(`Fulfillments API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setFulfillmentHistory(body.fulfillments || []);
+    } catch (error) {
+      setFulfillmentError('Unable to load fulfillment history from the backend.');
+    }
+  }
+
+  async function loadFulfillmentDetail(fulfillmentId) {
+    if (!fulfillmentId) {
+      setFulfillmentDetail(null);
+      return;
+    }
+    setFulfillmentError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/fulfillments/${fulfillmentId}`);
+      if (!response.ok) {
+        throw new Error(`Fulfillment detail API returned ${response.status}`);
+      }
+      setFulfillmentDetail(await response.json());
+    } catch (error) {
+      setFulfillmentError('Unable to load fulfillment detail from the backend.');
+    }
+  }
+
+  async function loadRouteCandidates(filters = {}) {
+    setRouteCandidatesLoading(true);
+    setRouteCandidatesError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/routes/candidates${plainFiltersToQueryString(routeCandidateFiltersToApi(filters))}`);
+      if (!response.ok) {
+        throw new Error(`Route candidates API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setRouteCandidates({ total_candidates: body.total_candidates || 0, candidates: body.candidates || [] });
+    } catch (error) {
+      setRouteCandidatesError('Unable to load route candidates from the backend.');
+    } finally {
+      setRouteCandidatesLoading(false);
+    }
+  }
+
+  async function loadRoutes(filters = {}) {
+    setRoutesLoading(true);
+    setRoutesError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/routes${plainFiltersToQueryString(routeFiltersToApi(filters))}`);
+      if (!response.ok) {
+        throw new Error(`Routes API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setRoutesHistory({ routes: body.routes || [], total: body.total || 0 });
+      if (!body.routes?.length) {
+        setRouteDetail(null);
+      }
+    } catch (error) {
+      setRoutesError('Unable to load routes from the backend.');
+    } finally {
+      setRoutesLoading(false);
+    }
+  }
+
+  async function loadRouteDetail(routeId) {
+    if (!routeId) {
+      setRouteDetail(null);
+      return;
+    }
+    setRoutesError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/routes/${routeId}`);
+      if (!response.ok) {
+        throw new Error(`Route detail API returned ${response.status}`);
+      }
+      const detail = await response.json();
+      setRouteDetail(detail);
+      await loadRouteMap(routeId);
+    } catch (error) {
+      setRoutesError('Unable to load route detail from the backend.');
+    }
+  }
+
+  async function loadRouteMap(routeId) {
+    if (!routeId) {
+      setRouteMapPayload(null);
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/routes/${routeId}/map`);
+      if (response.ok) {
+        setRouteMapPayload(await response.json());
+      }
+    } catch {
+      setRouteMapPayload(null);
+    }
+  }
+
+  async function previewRoute(payload) {
+    setRoutesLoading(true);
+    setRoutesError('');
+    setRouteCommitSummary(null);
+    try {
+      setRoutePreview(await postJson('/api/routes/preview', payload));
+    } catch (error) {
+      setRoutesError(error.message || 'Unable to preview route.');
+    } finally {
+      setRoutesLoading(false);
+    }
+  }
+
+  async function commitRoute(payload) {
+    const confirmed = window.confirm('This creates a local draft route only. It does not update WooCommerce, maps, shipping labels, order status, or inventory quantities.');
+    if (!confirmed) {
+      return;
+    }
+    setRoutesLoading(true);
+    setRoutesError('');
+    try {
+      const result = await postJson('/api/routes/commit', payload);
+      setRouteCommitSummary(result);
+      if (result.route_id) {
+        await loadRouteDetail(result.route_id);
+      }
+      await loadRouteCandidates();
+      await loadRoutes();
+    } catch (error) {
+      setRoutesError(error.message || 'Unable to create route.');
+    } finally {
+      setRoutesLoading(false);
+    }
+  }
+
+  async function finalizeRoute(routeId) {
+    const confirmed = window.confirm('Finalize marks the local route finalized. It does not notify customers, update WooCommerce, or perform delivery tracking.');
+    if (!confirmed) {
+      return;
+    }
+    setRoutesLoading(true);
+    setRoutesError('');
+    try {
+      const result = await postJson(`/api/routes/${routeId}/finalize`, {});
+      setRouteCommitSummary(result);
+      await loadRoutes();
+      await loadRouteDetail(routeId);
+    } catch (error) {
+      setRoutesError(error.message || 'Unable to finalize route.');
+    } finally {
+      setRoutesLoading(false);
+    }
+  }
+
+  async function cancelRoute(routeId) {
+    const confirmed = window.confirm('Cancel releases these orders for future local route planning. It does not modify inventory, WooCommerce, labels, or notifications.');
+    if (!confirmed) {
+      return;
+    }
+    setRoutesLoading(true);
+    setRoutesError('');
+    try {
+      const result = await postJson(`/api/routes/${routeId}/cancel`, {});
+      setRouteCommitSummary(result);
+      await loadRouteCandidates();
+      await loadRoutes();
+      await loadRouteDetail(routeId);
+    } catch (error) {
+      setRoutesError(error.message || 'Unable to cancel route.');
+    } finally {
+      setRoutesLoading(false);
+    }
+  }
+
+  async function saveRouteMetadata(routeId, payload) {
+    setRoutesLoading(true);
+    setRoutesError('');
+    try {
+      const response = await patchJson(`/api/routes/${routeId}`, payload);
+      setRouteDetail(response);
+      await loadRoutes();
+    } catch (error) {
+      setRoutesError(error.message || 'Unable to save route metadata.');
+    } finally {
+      setRoutesLoading(false);
+    }
+  }
+
+  async function reorderRouteStops(routeId, orderedStopIds) {
+    setRoutesLoading(true);
+    setRoutesError('');
+    try {
+      const response = await postJson(`/api/routes/${routeId}/stops/reorder`, { ordered_stop_ids: orderedStopIds });
+      setRouteDetail(response);
+      await loadRouteMap(routeId);
+    } catch (error) {
+      setRoutesError(error.message || 'Unable to reorder route stops.');
+    } finally {
+      setRoutesLoading(false);
+    }
+  }
+
+  async function saveRouteStop(routeId, stopId, payload) {
+    setRoutesLoading(true);
+    setRoutesError('');
+    try {
+      const response = await patchJson(`/api/routes/${routeId}/stops/${stopId}`, payload);
+      setRouteDetail(response);
+      await loadRouteMap(routeId);
+    } catch (error) {
+      setRoutesError(error.message || 'Unable to save route stop.');
+    } finally {
+      setRoutesLoading(false);
+    }
+  }
+
+  async function routeProviderAction(routeId, action) {
+    setRoutesLoading(true);
+    setRouteProviderMessage('');
+    setRoutesError('');
+    try {
+      const result = await postJson(`/api/routes/${routeId}/${action}`, {});
+      setRouteProviderMessage(result.message || result.status);
+      await loadRouteMap(routeId);
+    } catch (error) {
+      setRoutesError(error.message || 'Unable to run route provider action.');
+    } finally {
+      setRoutesLoading(false);
+    }
+  }
+
+  async function loadPickDetail(pickId) {
+    if (!pickId) {
+      setPickDetail(null);
+      return;
+    }
+    setPickError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/picks/${pickId}`);
+      if (!response.ok) {
+        throw new Error(`Pick detail API returned ${response.status}`);
+      }
+      setPickDetail(await response.json());
+    } catch (error) {
+      setPickError('Unable to load pick detail from the backend.');
+    }
+  }
+
+  async function loadPickScanner(orderId) {
+    if (!orderId) {
+      setPickScannerOrder(null);
+      return;
+    }
+    setPickError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/picks/orders/${orderId}/scanner`);
+      if (!response.ok) {
+        throw new Error(`Pick scanner API returned ${response.status}`);
+      }
+      setPickScannerOrder(await response.json());
+    } catch (error) {
+      setPickError('Unable to load scanner view for this order.');
+    }
+  }
+
+  async function commitPickScan(orderId, skuOrBarcode, quantity) {
+    if (!orderId) {
+      setPickError('Select an order before scanning.');
+      return;
+    }
+    setPickLoading(true);
+    setPickScannerMessage('');
+    setPickError('');
+    try {
+      const result = await postJson(`/api/picks/orders/${orderId}/scan/commit`, { sku_or_barcode: skuOrBarcode, quantity: toNumber(quantity) || 1, created_by: 'system', note: 'Scanner pick' });
+      setPickScannerMessage(result.errors?.length ? result.errors.join(' ') : `Scan ${result.status}.`);
+      await loadPickScanner(orderId);
+      await loadOpenOrderDetail(orderId);
+      await loadPicks();
+    } catch (error) {
+      setPickError(error.message || 'Unable to commit scan.');
+    } finally {
+      setPickLoading(false);
+    }
+  }
+
+  async function previewPick(orderId) {
+    if (!orderId) {
+      setPickError('Select an allocated order before previewing picking.');
+      return;
+    }
+    setPickLoading(true);
+    setPickError('');
+    setPickCommitSummary(null);
+    try {
+      setPickPreview(await postJson('/api/picks/preview', { order_ids: [orderId], pick_strategy: 'allocated_first', allow_partial: true, created_by: 'system' }));
+    } catch (error) {
+      setPickError(error.message || 'Unable to preview picking.');
+    } finally {
+      setPickLoading(false);
+    }
+  }
+
+  async function commitPick(orderId) {
+    if (!orderId) {
+      setPickError('Select an allocated order before committing a pick.');
+      return;
+    }
+    const confirmed = window.confirm('Picking only records operational progress against allocated quantities. It does not update WooCommerce, reduce In Stock, reduce Allocated, or fulfill the order.');
+    if (!confirmed) {
+      return;
+    }
+    setPickLoading(true);
+    setPickError('');
+    try {
+      const result = await postJson('/api/picks/commit', { order_ids: [orderId], pick_strategy: 'allocated_first', allow_partial: true, created_by: 'system', notes: 'Picked from Open Orders' });
+      setPickCommitSummary(result);
+      await loadOpenOrders();
+      await loadOpenOrderDetail(orderId);
+      await loadPicks();
+    } catch (error) {
+      setPickError(error.message || 'Unable to commit pick.');
+    } finally {
+      setPickLoading(false);
+    }
+  }
+
+  async function previewFulfillment(orderId) {
+    if (!orderId) {
+      setFulfillmentError('Select a picked order before previewing fulfillment.');
+      return;
+    }
+    setFulfillmentLoading(true);
+    setFulfillmentError('');
+    setFulfillmentCommitSummary(null);
+    try {
+      setFulfillmentPreview(await postJson('/api/fulfillments/preview', { order_ids: [orderId], fulfillment_strategy: 'picked_first', allow_partial: true, created_by: 'system' }));
+    } catch (error) {
+      setFulfillmentError(error.message || 'Unable to preview fulfillment.');
+    } finally {
+      setFulfillmentLoading(false);
+    }
+  }
+
+  async function commitFulfillment(orderId) {
+    if (!orderId) {
+      setFulfillmentError('Select a picked order before committing fulfillment.');
+      return;
+    }
+    const confirmed = window.confirm('Fulfillment reduces local Pongo OS In Stock and Allocated quantities. It does not update WooCommerce order status, WooCommerce stock, routes, shipping labels, or notifications.');
+    if (!confirmed) {
+      return;
+    }
+    setFulfillmentLoading(true);
+    setFulfillmentError('');
+    try {
+      const result = await postJson('/api/fulfillments/commit', { order_ids: [orderId], fulfillment_strategy: 'picked_first', allow_partial: true, created_by: 'system', notes: 'Fulfilled from Open Orders' });
+      setFulfillmentCommitSummary(result);
+      await loadOpenOrders();
+      await loadOpenOrderDetail(orderId);
+      await loadFulfillments();
+      await loadItems();
+      await loadInventorySummary();
+    } catch (error) {
+      setFulfillmentError(error.message || 'Unable to commit fulfillment.');
+    } finally {
+      setFulfillmentLoading(false);
+    }
+  }
+
+  async function previewAllocation(orderId) {
+    if (!orderId) {
+      setAllocationError('Select an open order before previewing allocation.');
+      return;
+    }
+    setAllocationLoading(true);
+    setAllocationError('');
+    setAllocationCommitSummary(null);
+    try {
+      setAllocationPreview(await postJson('/api/allocations/preview', { order_ids: [orderId], allocation_strategy: 'available_first', allow_partial: true, created_by: 'system' }));
+    } catch (error) {
+      setAllocationError(error.message || 'Unable to preview allocation.');
+    } finally {
+      setAllocationLoading(false);
+    }
+  }
+
+  async function commitAllocation(orderId) {
+    if (!orderId) {
+      setAllocationError('Select an open order before committing allocation.');
+      return;
+    }
+    const confirmed = window.confirm('Allocation only reserves local Pongo OS inventory. It does not update WooCommerce, does not reduce In Stock, and does not pick the order.');
+    if (!confirmed) {
+      return;
+    }
+    setAllocationLoading(true);
+    setAllocationError('');
+    try {
+      const result = await postJson('/api/allocations/commit', { order_ids: [orderId], allocation_strategy: 'available_first', allow_partial: true, created_by: 'system', notes: 'Allocated from Open Orders' });
+      setAllocationCommitSummary(result);
+      await loadOpenOrders();
+      await loadOpenOrderDetail(orderId);
+      await loadAllocations();
+      await loadItems();
+      await loadInventorySummary();
+    } catch (error) {
+      setAllocationError(error.message || 'Unable to commit allocation.');
+    } finally {
+      setAllocationLoading(false);
     }
   }
 
@@ -894,6 +1544,39 @@ export default function App() {
     }
   }
 
+  async function previewWooRemap(payload) {
+    setWooLoading(true);
+    setWooError('');
+    setWooRemapMessage('');
+    try {
+      setWooRemapPreview(await postJson('/api/integrations/woocommerce/remap/preview', payload));
+    } catch (error) {
+      setWooError(error.message || 'Unable to preview remap.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function commitWooRemap(payload) {
+    const confirmed = window.confirm('This only changes local WooCommerce mapping metadata. It does not update WooCommerce or inventory quantities.');
+    if (!confirmed) {
+      return;
+    }
+    setWooLoading(true);
+    setWooError('');
+    try {
+      const result = await postJson('/api/integrations/woocommerce/remap/commit', payload);
+      setWooRemapMessage(result.safe_message || `Mapping ${result.status}.`);
+      setWooRemapPreview(null);
+      await loadWooRemap();
+      await loadItems();
+    } catch (error) {
+      setWooError(error.message || 'Unable to commit remap.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <Sidebar activePage={route.pageId} onNavigate={(pageId) => setRoute({ pageId })} />
@@ -931,6 +1614,20 @@ export default function App() {
             receivedInventoryLoading={receivedInventoryLoading}
             receivedInventoryError={receivedInventoryError}
             onLoadReceivedInventoryReport={loadReceivedInventoryReport}
+            fulfillmentReportRows={fulfillmentReportRows}
+            fulfillmentReportSummary={fulfillmentReportSummary}
+            fulfillmentReportLoading={fulfillmentReportLoading}
+            fulfillmentReportError={fulfillmentReportError}
+            onLoadFulfillmentReport={loadFulfillmentReport}
+            skuOrdersRows={skuOrdersRows}
+            skuOrdersSummary={skuOrdersSummary}
+            skuOrdersLoading={skuOrdersLoading}
+            skuOrdersError={skuOrdersError}
+            onLoadSkuOrdersReport={loadSkuOrdersReport}
+            dashboard={dashboard}
+            dashboardLoading={dashboardLoading}
+            dashboardError={dashboardError}
+            onLoadDashboard={loadDashboard}
             cycleCounts={cycleCounts}
             cycleCountsLoading={cycleCountsLoading}
             cycleCountsError={cycleCountsError}
@@ -941,6 +1638,10 @@ export default function App() {
             wooOrderPreview={wooOrderPreview}
             wooOrderCommitSummary={wooOrderCommitSummary}
             wooSyncRuns={wooSyncRuns}
+            wooRemapCandidates={wooRemapCandidates}
+            wooRemapMappings={wooRemapMappings}
+            wooRemapPreview={wooRemapPreview}
+            wooRemapMessage={wooRemapMessage}
             wooLoading={wooLoading}
             wooError={wooError}
             onLoadWooStatus={loadWooStatus}
@@ -948,12 +1649,72 @@ export default function App() {
             onCommitWooProductSync={commitWooProductSync}
             onPreviewWooOrderSync={previewWooOrderSync}
             onCommitWooOrderSync={commitWooOrderSync}
+            onPreviewWooRemap={previewWooRemap}
+            onCommitWooRemap={commitWooRemap}
+            onLoadWooRemap={loadWooRemap}
             openOrders={openOrders}
             openOrdersLoading={openOrdersLoading}
             openOrdersError={openOrdersError}
             openOrderDetail={openOrderDetail}
             onLoadOpenOrders={loadOpenOrders}
             onLoadOpenOrderDetail={loadOpenOrderDetail}
+            completedOrders={completedOrders}
+            completedOrdersLoading={completedOrdersLoading}
+            completedOrdersError={completedOrdersError}
+            onLoadCompletedOrders={loadCompletedOrders}
+            allocationPreview={allocationPreview}
+            allocationCommitSummary={allocationCommitSummary}
+            allocationHistory={allocationHistory}
+            allocationDetail={allocationDetail}
+            allocationLoading={allocationLoading}
+            allocationError={allocationError}
+            onPreviewAllocation={previewAllocation}
+            onCommitAllocation={commitAllocation}
+            onLoadAllocationDetail={loadAllocationDetail}
+            pickPreview={pickPreview}
+            pickCommitSummary={pickCommitSummary}
+            pickHistory={pickHistory}
+            pickDetail={pickDetail}
+            pickScannerOrder={pickScannerOrder}
+            pickScannerMessage={pickScannerMessage}
+            pickLoading={pickLoading}
+            pickError={pickError}
+            onPreviewPick={previewPick}
+            onCommitPick={commitPick}
+            onLoadPickDetail={loadPickDetail}
+            onLoadPickScanner={loadPickScanner}
+            onCommitPickScan={commitPickScan}
+            fulfillmentPreview={fulfillmentPreview}
+            fulfillmentCommitSummary={fulfillmentCommitSummary}
+            fulfillmentHistory={fulfillmentHistory}
+            fulfillmentDetail={fulfillmentDetail}
+            fulfillmentLoading={fulfillmentLoading}
+            fulfillmentError={fulfillmentError}
+            onPreviewFulfillment={previewFulfillment}
+            onCommitFulfillment={commitFulfillment}
+            onLoadFulfillmentDetail={loadFulfillmentDetail}
+            routeCandidates={routeCandidates}
+            routeCandidatesLoading={routeCandidatesLoading}
+            routeCandidatesError={routeCandidatesError}
+            routePreview={routePreview}
+            routeCommitSummary={routeCommitSummary}
+            routesHistory={routesHistory}
+            routeDetail={routeDetail}
+            routeMapPayload={routeMapPayload}
+            routeProviderMessage={routeProviderMessage}
+            routesLoading={routesLoading}
+            routesError={routesError}
+            onLoadRouteCandidates={loadRouteCandidates}
+            onPreviewRoute={previewRoute}
+            onCommitRoute={commitRoute}
+            onLoadRoutes={loadRoutes}
+            onLoadRouteDetail={loadRouteDetail}
+            onFinalizeRoute={finalizeRoute}
+            onCancelRoute={cancelRoute}
+            onSaveRouteMetadata={saveRouteMetadata}
+            onReorderRouteStops={reorderRouteStops}
+            onSaveRouteStop={saveRouteStop}
+            onRouteProviderAction={routeProviderAction}
           />
         </main>
       </div>
@@ -1078,6 +1839,20 @@ function PageBody({
   receivedInventoryLoading,
   receivedInventoryError,
   onLoadReceivedInventoryReport,
+  fulfillmentReportRows,
+  fulfillmentReportSummary,
+  fulfillmentReportLoading,
+  fulfillmentReportError,
+  onLoadFulfillmentReport,
+  skuOrdersRows,
+  skuOrdersSummary,
+  skuOrdersLoading,
+  skuOrdersError,
+  onLoadSkuOrdersReport,
+  dashboard,
+  dashboardLoading,
+  dashboardError,
+  onLoadDashboard,
   cycleCounts,
   cycleCountsLoading,
   cycleCountsError,
@@ -1088,6 +1863,10 @@ function PageBody({
   wooOrderPreview,
   wooOrderCommitSummary,
   wooSyncRuns,
+  wooRemapCandidates,
+  wooRemapMappings,
+  wooRemapPreview,
+  wooRemapMessage,
   wooLoading,
   wooError,
   onLoadWooStatus,
@@ -1095,12 +1874,72 @@ function PageBody({
   onCommitWooProductSync,
   onPreviewWooOrderSync,
   onCommitWooOrderSync,
+  onPreviewWooRemap,
+  onCommitWooRemap,
+  onLoadWooRemap,
   openOrders,
   openOrdersLoading,
   openOrdersError,
   openOrderDetail,
   onLoadOpenOrders,
   onLoadOpenOrderDetail,
+  completedOrders,
+  completedOrdersLoading,
+  completedOrdersError,
+  onLoadCompletedOrders,
+  allocationPreview,
+  allocationCommitSummary,
+  allocationHistory,
+  allocationDetail,
+  allocationLoading,
+  allocationError,
+  onPreviewAllocation,
+  onCommitAllocation,
+  onLoadAllocationDetail,
+  pickPreview,
+  pickCommitSummary,
+  pickHistory,
+  pickDetail,
+  pickScannerOrder,
+  pickScannerMessage,
+  pickLoading,
+  pickError,
+  onPreviewPick,
+  onCommitPick,
+  onLoadPickDetail,
+  onLoadPickScanner,
+  onCommitPickScan,
+  fulfillmentPreview,
+  fulfillmentCommitSummary,
+  fulfillmentHistory,
+  fulfillmentDetail,
+  fulfillmentLoading,
+  fulfillmentError,
+  onPreviewFulfillment,
+  onCommitFulfillment,
+  onLoadFulfillmentDetail,
+  routeCandidates,
+  routeCandidatesLoading,
+  routeCandidatesError,
+  routePreview,
+  routeCommitSummary,
+  routesHistory,
+  routeDetail,
+  routeMapPayload,
+  routeProviderMessage,
+  routesLoading,
+  routesError,
+  onLoadRouteCandidates,
+  onPreviewRoute,
+  onCommitRoute,
+  onLoadRoutes,
+  onLoadRouteDetail,
+  onFinalizeRoute,
+  onCancelRoute,
+  onSaveRouteMetadata,
+  onReorderRouteStops,
+  onSaveRouteStop,
+  onRouteProviderAction,
 }) {
   if (route.pageId === 'items') {
     return <ItemsPage route={route} items={items} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
@@ -1134,12 +1973,22 @@ function PageBody({
 
   if (route.pageId === 'reports') {
     return (
-      <ReceivedInventoryReportPage
-        rows={receivedInventoryRows}
-        summary={receivedInventorySummary}
-        loading={receivedInventoryLoading}
-        error={receivedInventoryError}
-        onLoadReport={onLoadReceivedInventoryReport}
+      <ReportsPage
+        receivedRows={receivedInventoryRows}
+        receivedSummary={receivedInventorySummary}
+        receivedLoading={receivedInventoryLoading}
+        receivedError={receivedInventoryError}
+        onLoadReceivedReport={onLoadReceivedInventoryReport}
+        fulfillmentRows={fulfillmentReportRows}
+        fulfillmentSummary={fulfillmentReportSummary}
+        fulfillmentLoading={fulfillmentReportLoading}
+        fulfillmentError={fulfillmentReportError}
+        onLoadFulfillmentReport={onLoadFulfillmentReport}
+        skuOrdersRows={skuOrdersRows}
+        skuOrdersSummary={skuOrdersSummary}
+        skuOrdersLoading={skuOrdersLoading}
+        skuOrdersError={skuOrdersError}
+        onLoadSkuOrdersReport={onLoadSkuOrdersReport}
       />
     );
   }
@@ -1168,6 +2017,41 @@ function PageBody({
         detail={openOrderDetail}
         onLoadOpenOrders={onLoadOpenOrders}
         onLoadOpenOrderDetail={onLoadOpenOrderDetail}
+        completedOrders={completedOrders}
+        completedOrdersLoading={completedOrdersLoading}
+        completedOrdersError={completedOrdersError}
+        onLoadCompletedOrders={onLoadCompletedOrders}
+        allocationPreview={allocationPreview}
+        allocationCommitSummary={allocationCommitSummary}
+        allocationHistory={allocationHistory}
+        allocationDetail={allocationDetail}
+        allocationLoading={allocationLoading}
+        allocationError={allocationError}
+        onPreviewAllocation={onPreviewAllocation}
+        onCommitAllocation={onCommitAllocation}
+        onLoadAllocationDetail={onLoadAllocationDetail}
+        pickPreview={pickPreview}
+        pickCommitSummary={pickCommitSummary}
+        pickHistory={pickHistory}
+        pickDetail={pickDetail}
+        pickScannerOrder={pickScannerOrder}
+        pickScannerMessage={pickScannerMessage}
+        pickLoading={pickLoading}
+        pickError={pickError}
+        onPreviewPick={onPreviewPick}
+        onCommitPick={onCommitPick}
+        onLoadPickDetail={onLoadPickDetail}
+        onLoadPickScanner={onLoadPickScanner}
+        onCommitPickScan={onCommitPickScan}
+        fulfillmentPreview={fulfillmentPreview}
+        fulfillmentCommitSummary={fulfillmentCommitSummary}
+        fulfillmentHistory={fulfillmentHistory}
+        fulfillmentDetail={fulfillmentDetail}
+        fulfillmentLoading={fulfillmentLoading}
+        fulfillmentError={fulfillmentError}
+        onPreviewFulfillment={onPreviewFulfillment}
+        onCommitFulfillment={onCommitFulfillment}
+        onLoadFulfillmentDetail={onLoadFulfillmentDetail}
       />
     );
   }
@@ -1181,6 +2065,10 @@ function PageBody({
         orderPreview={wooOrderPreview}
         orderCommitSummary={wooOrderCommitSummary}
         syncRuns={wooSyncRuns}
+        remapCandidates={wooRemapCandidates}
+        remapMappings={wooRemapMappings}
+        remapPreview={wooRemapPreview}
+        remapMessage={wooRemapMessage}
         loading={wooLoading}
         error={wooError}
         onCheckConnection={() => onLoadWooStatus(true)}
@@ -1188,12 +2076,44 @@ function PageBody({
         onCommit={onCommitWooProductSync}
         onPreviewOrders={onPreviewWooOrderSync}
         onCommitOrders={onCommitWooOrderSync}
+        onPreviewRemap={onPreviewWooRemap}
+        onCommitRemap={onCommitWooRemap}
+        onLoadRemap={onLoadWooRemap}
+      />
+    );
+  }
+
+  if (route.pageId === 'routes') {
+    return (
+      <RoutesPage
+        candidatesData={routeCandidates}
+        candidatesLoading={routeCandidatesLoading}
+        candidatesError={routeCandidatesError}
+        preview={routePreview}
+        commitSummary={routeCommitSummary}
+        routesData={routesHistory}
+        detail={routeDetail}
+        mapPayload={routeMapPayload}
+        providerMessage={routeProviderMessage}
+        loading={routesLoading}
+        error={routesError}
+        onLoadCandidates={onLoadRouteCandidates}
+        onPreview={onPreviewRoute}
+        onCommit={onCommitRoute}
+        onLoadRoutes={onLoadRoutes}
+        onLoadDetail={onLoadRouteDetail}
+        onFinalize={onFinalizeRoute}
+        onCancel={onCancelRoute}
+        onSaveMetadata={onSaveRouteMetadata}
+        onReorderStops={onReorderRouteStops}
+        onSaveStop={onSaveRouteStop}
+        onProviderAction={onRouteProviderAction}
       />
     );
   }
 
   if (route.pageId === 'dashboard') {
-    return <DashboardPlaceholder />;
+    return <CommandCenterPage dashboard={dashboard} loading={dashboardLoading} error={dashboardError} onRefresh={onLoadDashboard} />;
   }
 
   return <StandardPage icon={pageIcon(route.pageId)} title={pageMeta[route.pageId].title} description="Main Warehouse workspace." columns={['Area', 'Status', 'Type', 'Notes']} />;
@@ -1245,6 +2165,12 @@ function InventoryPage({ items, summary, loading, error, onLoadSummary }) {
     brand: '',
     underPar: '',
   });
+  const [locationRows, setLocationRows] = useState([]);
+  const [locationRowsLoading, setLocationRowsLoading] = useState(false);
+  const [locationRowsError, setLocationRowsError] = useState('');
+  const [operationMessage, setOperationMessage] = useState('');
+  const [transferForm, setTransferForm] = useState({ itemLocationId: '', toWarehouse: '', toInventoryLocation: '', quantity: '', notes: '' });
+  const [adjustmentForm, setAdjustmentForm] = useState({ itemLocationId: '', adjustmentType: 'correction', quantityChange: '', reason: '', notes: '' });
 
   const options = useMemo(
     () => ({
@@ -1259,6 +2185,7 @@ function InventoryPage({ items, summary, loading, error, onLoadSummary }) {
 
   useEffect(() => {
     onLoadSummary(filters);
+    loadLocationRows(filters);
   }, [filters]);
 
   function updateFilter(name, value) {
@@ -1274,6 +2201,111 @@ function InventoryPage({ items, summary, loading, error, onLoadSummary }) {
       brand: '',
       underPar: '',
     });
+  }
+
+  async function loadLocationRows(nextFilters = filters) {
+    setLocationRowsLoading(true);
+    setLocationRowsError('');
+    try {
+      const query = plainFiltersToQueryString({
+        warehouse: nextFilters.warehouse || undefined,
+        inventory_location: nextFilters.inventoryLocation || undefined,
+        category: nextFilters.category || undefined,
+        brand: nextFilters.brand || undefined,
+        under_par: nextFilters.underPar || undefined,
+        limit: 50,
+      });
+      const response = await fetch(`${API_BASE_URL}/api/inventory/locations${query}`);
+      if (!response.ok) {
+        throw new Error(`Location inventory API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setLocationRows(body.rows || []);
+    } catch (error) {
+      setLocationRowsError('Unable to load location stock rows from the backend.');
+    } finally {
+      setLocationRowsLoading(false);
+    }
+  }
+
+  async function commitTransfer() {
+    setOperationMessage('');
+    const source = locationRows.find((row) => String(row.id) === String(transferForm.itemLocationId));
+    if (!source) {
+      setOperationMessage('Select a source location row before transferring stock.');
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/inventory/transfers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          created_by: 'frontend',
+          notes: transferForm.notes || null,
+          lines: [
+            {
+              item_id: source.item_id,
+              from_inventory_item_location_id: source.id,
+              to_warehouse: transferForm.toWarehouse,
+              to_inventory_location: transferForm.toInventoryLocation,
+              quantity: Number(transferForm.quantity || 0),
+              notes: transferForm.notes || null,
+            },
+          ],
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || `Transfer API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setOperationMessage(`Transfer ${body.transfer_number} committed.`);
+      setTransferForm({ itemLocationId: '', toWarehouse: '', toInventoryLocation: '', quantity: '', notes: '' });
+      await onLoadSummary(filters);
+      await loadLocationRows(filters);
+    } catch (error) {
+      setOperationMessage(error.message || 'Unable to commit transfer.');
+    }
+  }
+
+  async function commitAdjustment() {
+    setOperationMessage('');
+    const source = locationRows.find((row) => String(row.id) === String(adjustmentForm.itemLocationId));
+    if (!source) {
+      setOperationMessage('Select a location row before adjusting stock.');
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/inventory/adjustments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          adjustment_type: adjustmentForm.adjustmentType,
+          reason: adjustmentForm.reason,
+          notes: adjustmentForm.notes || null,
+          created_by: 'frontend',
+          lines: [
+            {
+              item_id: source.item_id,
+              inventory_item_location_id: source.id,
+              quantity_change: Number(adjustmentForm.quantityChange || 0),
+              notes: adjustmentForm.notes || null,
+            },
+          ],
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || `Adjustment API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setOperationMessage(`Adjustment ${body.adjustment_number} committed.`);
+      setAdjustmentForm({ itemLocationId: '', adjustmentType: 'correction', quantityChange: '', reason: '', notes: '' });
+      await onLoadSummary(filters);
+      await loadLocationRows(filters);
+    } catch (error) {
+      setOperationMessage(error.message || 'Unable to commit adjustment.');
+    }
   }
 
   return (
@@ -1320,9 +2352,141 @@ function InventoryPage({ items, summary, loading, error, onLoadSummary }) {
       </div>
       <div className="csv-note">Inventory by location currently uses item Warehouse, Inventory Location, and Default Location text fields.</div>
       {error && <div className="api-error">{error}</div>}
+      {locationRowsError && <div className="api-error">{locationRowsError}</div>}
+      {operationMessage && <div className="api-success">{operationMessage}</div>}
       {loading && <div className="loading-strip">Loading inventory summary...</div>}
       <InventorySummaryTable groups={summary.groups || []} />
+      <LocationInventoryOperations
+        rows={locationRows}
+        loading={locationRowsLoading}
+        transferForm={transferForm}
+        setTransferForm={setTransferForm}
+        adjustmentForm={adjustmentForm}
+        setAdjustmentForm={setAdjustmentForm}
+        onCommitTransfer={commitTransfer}
+        onCommitAdjustment={commitAdjustment}
+      />
     </section>
+  );
+}
+
+function LocationInventoryOperations({ rows, loading, transferForm, setTransferForm, adjustmentForm, setAdjustmentForm, onCommitTransfer, onCommitAdjustment }) {
+  const rowOptions = rows.map((row) => ({
+    value: row.id,
+    label: `${row.sku || `Item ${row.item_id}`} · ${row.warehouse || 'Unassigned'} / ${row.inventory_location || 'Unassigned'} · ${formatNumber(row.sellable)} sellable`,
+  }));
+  return (
+    <div className="location-operations">
+      <div className="section-heading">
+        <div>
+          <h3>Location Stock</h3>
+          <p>{loading ? 'Loading rows...' : `${rows.length} location rows`}</p>
+        </div>
+        <a className="muted-button" href={`${API_BASE_URL}/api/inventory/locations/export`}>
+          <Download size={16} />
+          Export Rows
+        </a>
+      </div>
+      <div className="table-wrap compact-table-wrap">
+        <div className="table-scroll">
+          <table className="inventory-summary-table">
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th>Description</th>
+                <th>Warehouse</th>
+                <th>Location</th>
+                <th>In Stock</th>
+                <th>Allocated</th>
+                <th>Sellable</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id}>
+                  <td>{row.sku || 'Unassigned'}</td>
+                  <td>{row.description || ''}</td>
+                  <td>{row.warehouse || 'Unassigned'}</td>
+                  <td>{row.inventory_location || 'Unassigned'}</td>
+                  <td>{formatNumber(row.in_stock)}</td>
+                  <td>{formatNumber(row.allocated)}</td>
+                  <td>{formatNumber(row.sellable)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="operation-grid">
+        <div className="operation-panel">
+          <h3>Transfer</h3>
+          <label className="field">
+            <span>Source Row</span>
+            <select value={transferForm.itemLocationId} onChange={(event) => setTransferForm((current) => ({ ...current, itemLocationId: event.target.value }))}>
+              <option value="">Select row</option>
+              {rowOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>To Warehouse</span>
+            <input value={transferForm.toWarehouse} onChange={(event) => setTransferForm((current) => ({ ...current, toWarehouse: event.target.value }))} />
+          </label>
+          <label className="field">
+            <span>To Location</span>
+            <input value={transferForm.toInventoryLocation} onChange={(event) => setTransferForm((current) => ({ ...current, toInventoryLocation: event.target.value }))} />
+          </label>
+          <label className="field">
+            <span>Quantity</span>
+            <input min="0" step="0.001" type="number" value={transferForm.quantity} onChange={(event) => setTransferForm((current) => ({ ...current, quantity: event.target.value }))} />
+          </label>
+          <button className="primary-button" onClick={onCommitTransfer} type="button">
+            <Save size={16} />
+            Commit Transfer
+          </button>
+        </div>
+        <div className="operation-panel">
+          <h3>Adjustment</h3>
+          <label className="field">
+            <span>Location Row</span>
+            <select value={adjustmentForm.itemLocationId} onChange={(event) => setAdjustmentForm((current) => ({ ...current, itemLocationId: event.target.value }))}>
+              <option value="">Select row</option>
+              {rowOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Type</span>
+            <select value={adjustmentForm.adjustmentType} onChange={(event) => setAdjustmentForm((current) => ({ ...current, adjustmentType: event.target.value }))}>
+              <option value="correction">Correction</option>
+              <option value="damage">Damage</option>
+              <option value="loss">Loss</option>
+              <option value="found">Found</option>
+              <option value="manual_increase">Manual Increase</option>
+              <option value="manual_decrease">Manual Decrease</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Quantity Change</span>
+            <input step="0.001" type="number" value={adjustmentForm.quantityChange} onChange={(event) => setAdjustmentForm((current) => ({ ...current, quantityChange: event.target.value }))} />
+          </label>
+          <label className="field">
+            <span>Reason</span>
+            <input value={adjustmentForm.reason} onChange={(event) => setAdjustmentForm((current) => ({ ...current, reason: event.target.value }))} />
+          </label>
+          <button className="primary-button" onClick={onCommitAdjustment} type="button">
+            <Save size={16} />
+            Commit Adjustment
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2353,90 +3517,110 @@ function renderBooleanField(field, item, updateField, options = {}) {
   );
 }
 
-function DashboardPlaceholder() {
+function CommandCenterPage({ dashboard, loading, error, onRefresh }) {
+  const inventory = dashboard.inventory_health || {};
+  const orders = dashboard.order_operations || {};
+  const routes = dashboard.routes || {};
+  const warnings = dashboard.warnings || [];
+  const activity = dashboard.activity || [];
   return (
     <section className="dashboard-grid">
-      {dashboardCards.map(([label, value, caption, Icon]) => (
-        <article className="summary-card" key={label}>
-          <div className="summary-icon">
-            <Icon size={24} />
-          </div>
-          <div>
-            <span>{label}</span>
-            <strong>{value}</strong>
-            <small>{caption}</small>
-          </div>
-        </article>
-      ))}
-      <div className="dashboard-chart">
-        <div className="section-heading">
-          <div>
-            <h2>Warehouse Activity</h2>
-            <p>Activity by week</p>
-          </div>
-          <button className="muted-button" type="button">
-            <SlidersHorizontal size={17} />
-            View
-          </button>
-        </div>
-        <div className="chart-placeholder" aria-label="Placeholder warehouse activity chart">
-          <div className="chart-axis">
-            <span></span>
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-          <div className="chart-bars">
-            <i style={{ '--bar-height': '42%' }}></i>
-            <i style={{ '--bar-height': '68%' }}></i>
-            <i style={{ '--bar-height': '54%' }}></i>
-            <i style={{ '--bar-height': '78%' }}></i>
-            <i style={{ '--bar-height': '47%' }}></i>
-            <i style={{ '--bar-height': '62%' }}></i>
-          </div>
-        </div>
-      </div>
-      <aside className="dashboard-widgets">
-        <div className="section-heading compact-heading">
-          <div>
-            <h2>Widgets</h2>
-            <p>Operations</p>
-          </div>
-        </div>
-        <div className="widget-list">
-          {widgetRows.map(([title, status, owner]) => (
-            <article className="widget-row" key={title}>
-              <div>
-                <strong>{title}</strong>
-                <span>{status}</span>
-              </div>
-              <em>{owner}</em>
-            </article>
-          ))}
-        </div>
-      </aside>
       <div className="wide-panel">
         <div className="panel-title">
           <div>
-            <h2>Work queues</h2>
-            <p>Main Warehouse activity overview.</p>
+            <h2>Command Center</h2>
+            <p>Last refreshed {dashboard.generated_at ? formatDateTime(dashboard.generated_at) : 'not yet'}.</p>
           </div>
-          <button className="muted-button" type="button">
-            <SlidersHorizontal size={17} />
-            View
-          </button>
+          <button className="primary-button" onClick={onRefresh} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
         </div>
-        <TableShell caption="Main Warehouse queues" columns={['Queue', 'Status', 'Owner', 'Updated']}>
-          {genericRows.map((row) => (
-            <tr key={row[0]}>
-              {row.map((cell) => (
-                <td key={cell}>{cell}</td>
-              ))}
+        {error && <div className="api-error">{error}</div>}
+        {loading && <div className="loading-strip">Loading Command Center...</div>}
+      </div>
+      <DashboardCardSection title="Inventory Health" cards={[
+        ['Items', inventory.total_items, 'Total records', PackageSearch],
+        ['Active', inventory.active_items, 'Active items', CheckCircle2],
+        ['Inventory Value', formatCurrency(inventory.total_inventory_value), 'Local value', Boxes],
+        ['Under Par', inventory.under_par_count, 'Needs review', TriangleAlert],
+        ['Negative Sellable', inventory.negative_sellable_count, 'Data warning', TriangleAlert],
+        ['Missing SKU', inventory.missing_sku_count, 'Match risk', Search],
+      ]} />
+      <DashboardCardSection title="Order Operations" cards={[
+        ['Open', orders.open_orders_count, 'Local open orders', ShoppingCart],
+        ['Allocated', orders.allocated_orders_count, 'Fully allocated', ClipboardList],
+        ['Part Allocated', orders.partially_allocated_orders_count, 'Partial reservations', ClipboardList],
+        ['Picked', orders.picked_orders_count, 'Ready for fulfillment', ClipboardCheck],
+        ['Fulfilled', orders.fulfilled_orders_count, 'Completed locally', CheckCircle2],
+        ['Attention', orders.orders_needing_attention_count, 'Needs review', TriangleAlert],
+      ]} />
+      <DashboardCardSection title="Routes" cards={[
+        ['Candidates', routes.route_candidates_count, 'Ready for routes', Route],
+        ['Draft', routes.draft_routes_count, 'Editable routes', CalendarDays],
+        ['Finalized', routes.finalized_routes_count, 'Locked locally', CheckCircle2],
+        ['Cancelled', routes.cancelled_routes_count, 'Released orders', TriangleAlert],
+      ]} />
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Data Quality Warnings</h2>
+            <p>Local records that need cleanup.</p>
+          </div>
+        </div>
+        <TableShell caption={`${warnings.length} warning group(s)`} columns={['Severity', 'Title', 'Count', 'Description', 'Samples']}>
+          {warnings.map((warning) => (
+            <tr key={warning.code}>
+              <td>{StatusText(warning.severity)}</td>
+              <td>{warning.title}</td>
+              <td>{warning.count}</td>
+              <td className="description-cell">{warning.description}</td>
+              <td className="description-cell">{(warning.sample_records || []).map((sample) => sample.label).join(', ')}</td>
             </tr>
           ))}
+          {warnings.length === 0 && <tr><td colSpan={5}><div className="empty-table-row">No data quality warnings right now.</div></td></tr>}
         </TableShell>
       </div>
+      <div className="wide-panel">
+        <div className="panel-title"><div><h2>Recent Activity</h2><p>Latest local operational records.</p></div></div>
+        <TableShell caption={`${activity.length} activity item(s)`} columns={['When', 'Type', 'Title', 'Details', 'Severity']}>
+          {activity.map((item) => (
+            <tr key={item.id}><td>{formatDateTime(item.created_at)}</td><td>{item.type}</td><td>{item.title}</td><td className="description-cell">{item.subtitle}</td><td>{StatusText(item.severity)}</td></tr>
+          ))}
+          {activity.length === 0 && <tr><td colSpan={5}><div className="empty-table-row">No recent local activity yet.</div></td></tr>}
+        </TableShell>
+      </div>
+      <aside className="dashboard-widgets">
+        <div className="section-heading compact-heading"><div><h2>Quick Actions</h2><p>Common workflows</p></div></div>
+        <div className="widget-list">
+          {[
+            ['Import Items', '#items'],
+            ['Sync Woo Products', '#settings'],
+            ['Sync Woo Orders', '#settings'],
+            ['Receive Inventory', '#receiving'],
+            ['Cycle Count', '#cycle-count'],
+            ['Allocate Orders', '#orders'],
+            ['Pick Orders', '#orders'],
+            ['Fulfill Orders', '#orders'],
+            ['Create Route', '#routes'],
+            ['Reports', '#reports'],
+          ].map(([title, href]) => <a className="widget-row" href={href} key={title}><strong>{title}</strong><span>Open</span></a>)}
+        </div>
+      </aside>
     </section>
+  );
+}
+
+function DashboardCardSection({ title, cards }) {
+  return (
+    <div className="wide-panel dashboard-card-section">
+      <div className="section-heading compact-heading"><div><h2>{title}</h2></div></div>
+      <div className="summary-strip report-summary-strip">
+        {cards.map(([label, value, caption, Icon]) => (
+          <article className="summary-card" key={`${title}-${label}`}>
+            <div className="summary-icon"><Icon size={22} /></div>
+            <div><span>{label}</span><strong>{value ?? 0}</strong><small>{caption}</small></div>
+          </article>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -3107,6 +4291,16 @@ function StockMovementsTable({ movements }) {
   );
 }
 
+function ReportsPage({ receivedRows, receivedSummary, receivedLoading, receivedError, onLoadReceivedReport, fulfillmentRows, fulfillmentSummary, fulfillmentLoading, fulfillmentError, onLoadFulfillmentReport, skuOrdersRows, skuOrdersSummary, skuOrdersLoading, skuOrdersError, onLoadSkuOrdersReport }) {
+  return (
+    <section className="content-panel report-page">
+      <ReceivedInventoryReportPage rows={receivedRows} summary={receivedSummary} loading={receivedLoading} error={receivedError} onLoadReport={onLoadReceivedReport} />
+      <FulfillmentReportPage rows={fulfillmentRows} summary={fulfillmentSummary} loading={fulfillmentLoading} error={fulfillmentError} onLoadReport={onLoadFulfillmentReport} />
+      <SkuOrdersReportPage rows={skuOrdersRows} summary={skuOrdersSummary} loading={skuOrdersLoading} error={skuOrdersError} onLoadReport={onLoadSkuOrdersReport} />
+    </section>
+  );
+}
+
 function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadReport }) {
   const [filters, setFilters] = useState(emptyReceivedInventoryFilters);
   const [activeFilters, setActiveFilters] = useState(emptyReceivedInventoryFilters);
@@ -3137,7 +4331,13 @@ function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadRepo
   }
 
   return (
-    <section className="content-panel report-page">
+    <section className="wide-panel report-section">
+      <div className="panel-title">
+        <div>
+          <h2>Received Inventory Report</h2>
+          <p>Read-only receiving rows from posted direct receipts.</p>
+        </div>
+      </div>
       <div className="summary-strip report-summary-strip">
         <Metric label="Total Receipts" value={summary.total_receipts || 0} />
         <Metric label="Total Lines" value={summary.total_lines || 0} />
@@ -3335,9 +4535,299 @@ function ReceivedInventoryLocationSummaryTable({ groups }) {
   );
 }
 
-function OpenOrdersPage({ ordersData, loading, error, detail, onLoadOpenOrders, onLoadOpenOrderDetail }) {
+function FulfillmentReportPage({ rows, summary, loading, error, onLoadReport }) {
+  const [filters, setFilters] = useState(emptyFulfillmentReportFilters);
+  const [activeFilters, setActiveFilters] = useState(emptyFulfillmentReportFilters);
+  const options = useMemo(
+    () => ({
+      warehouses: uniqueOptions(rows, 'warehouse'),
+      locations: uniqueOptions(rows, 'inventory_location'),
+      categories: uniqueOptions(rows, 'category'),
+      brands: uniqueOptions(rows, 'brand'),
+      statuses: ['fulfilled', 'partially_fulfilled'],
+    }),
+    [rows],
+  );
+
+  function updateFilter(name, value) {
+    setFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function applyFilters() {
+    setActiveFilters(filters);
+    onLoadReport(filters);
+  }
+
+  function clearFilters() {
+    const cleared = emptyFulfillmentReportFilters();
+    setFilters(cleared);
+    setActiveFilters(cleared);
+    onLoadReport(cleared);
+  }
+
+  return (
+    <section className="wide-panel report-section">
+      <div className="panel-title">
+        <div>
+          <h2>Fulfillment Report</h2>
+          <p>Read-only audit of completed local fulfillment lines.</p>
+        </div>
+      </div>
+      <div className="summary-strip report-summary-strip">
+        <Metric label="Fulfillments" value={summary.total_fulfillments || 0} />
+        <Metric label="Orders" value={summary.total_orders || 0} />
+        <Metric label="Lines" value={summary.total_lines || 0} />
+        <Metric label="Qty Fulfilled" value={formatNumber(summary.total_quantity_fulfilled || 0)} />
+        <Metric label="Fulfilled Value" value={formatCurrency(summary.total_fulfilled_value || 0)} />
+        <Metric label="Unique SKUs" value={summary.unique_skus || 0} />
+        <Metric label="Locations" value={summary.unique_locations || 0} />
+      </div>
+      <div className="toolbar report-toolbar">
+        <div className="filter-grid report-filter-grid">
+          <label className="field">
+            <span>Date From</span>
+            <div className="input-with-icon">
+              <input value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} type="date" />
+              <CalendarDays size={18} />
+            </div>
+          </label>
+          <label className="field">
+            <span>Date To</span>
+            <div className="input-with-icon">
+              <input value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} type="date" />
+              <CalendarDays size={18} />
+            </div>
+          </label>
+          <FilterSelect label="Warehouse" value={filters.warehouse} options={options.warehouses} onChange={(value) => updateFilter('warehouse', value)} />
+          <FilterSelect label="Inventory Location" value={filters.inventoryLocation} options={options.locations} onChange={(value) => updateFilter('inventoryLocation', value)} />
+          <label className="field"><span>SKU</span><div className="input-with-icon"><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} /><Search size={18} /></div></label>
+          <label className="field"><span>Barcode</span><div className="input-with-icon"><input value={filters.barcode} onChange={(event) => updateFilter('barcode', event.target.value)} /><Search size={18} /></div></label>
+          <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
+          <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
+          <label className="field"><span>Fulfillment Number</span><div className="input-with-icon"><input value={filters.fulfillmentNumber} onChange={(event) => updateFilter('fulfillmentNumber', event.target.value)} /><Search size={18} /></div></label>
+          <label className="field"><span>Woo Order Number</span><div className="input-with-icon"><input value={filters.wooOrderNumber} onChange={(event) => updateFilter('wooOrderNumber', event.target.value)} /><Search size={18} /></div></label>
+          <label className="field"><span>Customer Email</span><div className="input-with-icon"><input value={filters.customerEmail} onChange={(event) => updateFilter('customerEmail', event.target.value)} /><Search size={18} /></div></label>
+          <FilterSelect label="Local Status" value={filters.localStatus} options={options.statuses} onChange={(value) => updateFilter('localStatus', value)} />
+          <label className="field"><span>Created By</span><div className="input-with-icon"><input value={filters.createdBy} onChange={(event) => updateFilter('createdBy', event.target.value)} /><UserCircle size={18} /></div></label>
+        </div>
+        <div className="button-row items-actions">
+          <button className="primary-button" onClick={applyFilters} type="button"><Filter size={17} />Apply Filters</button>
+          <button className="muted-button" onClick={clearFilters} type="button">Clear Filters</button>
+          <button className="action-button" onClick={() => onLoadReport(activeFilters)} type="button"><RefreshCw size={17} />Refresh</button>
+          <button className="action-button" onClick={() => exportFulfillmentReportCsv(activeFilters)} type="button"><Download size={17} />Export CSV</button>
+        </div>
+      </div>
+      <div className="csv-note">Fulfillment Report is read-only. It does not modify inventory, allocated quantities, WooCommerce, routes, shipping labels, or notifications.</div>
+      {error && <div className="api-error">{error}</div>}
+      {loading && <div className="loading-strip">Loading fulfillment report...</div>}
+      <FulfillmentReportTable rows={rows} />
+      <div className="orders-grid allocation-history-grid">
+        <div className="wide-panel grouped-report-panel">
+          <div className="panel-title"><div><h2>Grouped by Location</h2><p>Quantity and value fulfilled by warehouse location.</p></div></div>
+          <FulfillmentLocationSummaryTable groups={summary.by_location || []} />
+        </div>
+        <div className="wide-panel grouped-report-panel">
+          <div className="panel-title"><div><h2>Grouped by SKU</h2><p>Fulfilled value and count by item.</p></div></div>
+          <FulfillmentSkuSummaryTable groups={summary.by_sku || []} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function FulfillmentReportTable({ rows }) {
+  return (
+    <TableShell caption={`${rows.length} fulfillment row(s)`} columns={['Fulfillment', 'Posted At', 'Woo Order', 'Local Status', 'Customer', 'Warehouse', 'Location', 'SKU', 'Barcode', 'Description', 'Category', 'Brand', 'Qty Fulfilled', 'Unit Cost', 'Fulfilled Value', 'Stock Before', 'Stock After', 'Allocated Before', 'Allocated After', 'Created By']}>
+      {rows.map((row) => (
+        <tr key={`${row.fulfillment_id}-${row.sku}-${row.order_id}`}>
+          <td className="mono">{row.fulfillment_number}</td>
+          <td>{formatDateTime(row.posted_at || row.created_at)}</td>
+          <td className="mono">{row.woo_order_number}</td>
+          <td>{StatusText(row.local_status)}</td>
+          <td>{row.customer_name}</td>
+          <td>{row.warehouse}</td>
+          <td>{row.inventory_location}</td>
+          <td className="mono">{row.sku}</td>
+          <td className="mono">{row.barcode}</td>
+          <td className="description-cell">{row.description}</td>
+          <td>{row.category}</td>
+          <td>{row.brand}</td>
+          <td>{formatNumber(row.quantity_fulfilled)}</td>
+          <td>{formatCurrency(row.unit_cost)}</td>
+          <td>{formatCurrency(row.fulfilled_value)}</td>
+          <td>{formatNumber(row.in_stock_before)}</td>
+          <td>{formatNumber(row.in_stock_after)}</td>
+          <td>{formatNumber(row.allocated_before)}</td>
+          <td>{formatNumber(row.allocated_after)}</td>
+          <td>{row.created_by}</td>
+        </tr>
+      ))}
+      {rows.length === 0 && (
+        <tr><td colSpan={20}><div className="empty-table-row">No fulfillment rows match the current filters.</div></td></tr>
+      )}
+    </TableShell>
+  );
+}
+
+function FulfillmentLocationSummaryTable({ groups }) {
+  return (
+    <TableShell caption={`${groups.length} location group(s)`} columns={['Warehouse', 'Inventory Location', 'Total Lines', 'Qty Fulfilled', 'Fulfilled Value']}>
+      {groups.map((group) => (
+        <tr key={`${group.warehouse}-${group.inventory_location}`}><td>{group.warehouse || 'Unassigned'}</td><td>{group.inventory_location || 'Unassigned'}</td><td>{group.total_lines}</td><td>{formatNumber(group.total_quantity_fulfilled)}</td><td>{formatCurrency(group.total_fulfilled_value)}</td></tr>
+      ))}
+      {groups.length === 0 && <tr><td colSpan={5}><div className="empty-table-row">No location groups match the current filters.</div></td></tr>}
+    </TableShell>
+  );
+}
+
+function FulfillmentSkuSummaryTable({ groups }) {
+  return (
+    <TableShell caption={`${groups.length} SKU group(s)`} columns={['SKU', 'Description', 'Brand', 'Category', 'Qty Fulfilled', 'Fulfilled Value', 'Fulfillments', 'Orders']}>
+      {groups.map((group) => (
+        <tr key={group.sku}><td className="mono">{group.sku}</td><td className="description-cell">{group.description}</td><td>{group.brand}</td><td>{group.category}</td><td>{formatNumber(group.total_quantity_fulfilled)}</td><td>{formatCurrency(group.total_fulfilled_value)}</td><td>{group.fulfillment_count}</td><td>{group.order_count}</td></tr>
+      ))}
+      {groups.length === 0 && <tr><td colSpan={8}><div className="empty-table-row">No SKU groups match the current filters.</div></td></tr>}
+    </TableShell>
+  );
+}
+
+function SkuOrdersReportPage({ rows, summary, loading, error, onLoadReport }) {
+  const [filters, setFilters] = useState(emptySkuOrdersFilters);
+  const [activeFilters, setActiveFilters] = useState(emptySkuOrdersFilters);
+
+  function updateFilter(name, value) {
+    setFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function applyFilters() {
+    setActiveFilters(filters);
+    onLoadReport(filters);
+  }
+
+  function clearFilters() {
+    const cleared = emptySkuOrdersFilters();
+    setFilters(cleared);
+    setActiveFilters(cleared);
+    onLoadReport(cleared);
+  }
+
+  return (
+    <section className="wide-panel report-section">
+      <div className="panel-title">
+        <div>
+          <h2>SKU Orders Report</h2>
+          <p>Read-only demand report from locally synced WooCommerce order snapshots.</p>
+        </div>
+      </div>
+      <div className="summary-strip report-summary-strip">
+        <Metric label="SKUs" value={summary.total_skus || 0} />
+        <Metric label="Qty Ordered" value={formatNumber(summary.total_quantity_ordered || 0)} />
+        <Metric label="Qty Fulfilled" value={formatNumber(summary.total_quantity_fulfilled || 0)} />
+        <Metric label="Unfulfilled" value={formatNumber(summary.total_unfulfilled_quantity || 0)} />
+        <Metric label="Unmatched Lines" value={summary.unmatched_lines_count || 0} />
+        <Metric label="Top SKU" value={summary.top_sku_by_quantity || 'None'} />
+      </div>
+      <div className="toolbar report-toolbar">
+        <div className="filter-grid report-filter-grid">
+          <label className="field"><span>Start Date</span><div className="input-with-icon"><input value={filters.startDate} onChange={(event) => updateFilter('startDate', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
+          <label className="field"><span>End Date</span><div className="input-with-icon"><input value={filters.endDate} onChange={(event) => updateFilter('endDate', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
+          <label className="field"><span>SKU</span><div className="input-with-icon"><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} /><Search size={18} /></div></label>
+          <label className="field"><span>Brand</span><input value={filters.brand} onChange={(event) => updateFilter('brand', event.target.value)} /></label>
+          <label className="field"><span>Category</span><input value={filters.category} onChange={(event) => updateFilter('category', event.target.value)} /></label>
+          <FilterSelect label="Group By" value={filters.groupBy} options={['sku', 'brand', 'category', 'location']} onChange={(value) => updateFilter('groupBy', value)} />
+          <label className="toggle-card"><input checked={filters.includeUnmatched} onChange={(event) => updateFilter('includeUnmatched', event.target.checked)} type="checkbox" /><span>Include Unmatched</span></label>
+        </div>
+        <div className="button-row items-actions">
+          <button className="primary-button" onClick={applyFilters} type="button"><Filter size={17} />Apply Filters</button>
+          <button className="muted-button" onClick={clearFilters} type="button">Clear Filters</button>
+          <button className="action-button" onClick={() => onLoadReport(activeFilters)} type="button"><RefreshCw size={17} />Refresh</button>
+          <button className="action-button" onClick={() => exportSkuOrdersCsv(activeFilters)} type="button"><Download size={17} />Export CSV</button>
+        </div>
+      </div>
+      <div className="csv-note">SKU Orders is read-only and does not modify orders, inventory, allocation, picking, fulfillment, routes, or WooCommerce.</div>
+      {error && <div className="api-error">{error}</div>}
+      {loading && <div className="loading-strip">Loading SKU Orders report...</div>}
+      <TableShell caption={`${rows.length} SKU order row(s)`} columns={['SKU', 'Item', 'Description', 'Brand', 'Category', 'Location', 'Orders', 'Ordered', 'Allocated', 'Picked', 'Fulfilled', 'Unfulfilled', 'Unmatched Lines', 'First Order', 'Last Order', 'In Stock', 'Sellable', 'Woo Snapshot']}>
+        {rows.map((row) => (
+          <tr key={`${row.sku}-${row.item_id || row.location || row.brand || row.category}`}>
+            <td className="mono">{row.sku}</td>
+            <td>{row.item_id || ''}</td>
+            <td className="description-cell">{row.description}</td>
+            <td>{row.brand}</td>
+            <td>{row.category}</td>
+            <td>{row.location}</td>
+            <td>{row.total_orders_count}</td>
+            <td>{formatNumber(row.total_quantity_ordered)}</td>
+            <td>{formatNumber(row.total_quantity_allocated)}</td>
+            <td>{formatNumber(row.total_quantity_picked)}</td>
+            <td>{formatNumber(row.total_quantity_fulfilled)}</td>
+            <td>{formatNumber(row.unfulfilled_quantity)}</td>
+            <td>{row.unmatched_order_line_count}</td>
+            <td>{formatDateTime(row.first_order_date)}</td>
+            <td>{formatDateTime(row.last_order_date)}</td>
+            <td>{row.current_in_stock == null ? '' : formatNumber(row.current_in_stock)}</td>
+            <td>{row.current_sellable == null ? '' : formatNumber(row.current_sellable)}</td>
+            <td>{row.woo_stock_snapshot == null ? '' : formatNumber(row.woo_stock_snapshot)}</td>
+          </tr>
+        ))}
+        {rows.length === 0 && <tr><td colSpan={18}><div className="empty-table-row">No SKU order rows match the current filters.</div></td></tr>}
+      </TableShell>
+    </section>
+  );
+}
+
+function OpenOrdersPage({
+  ordersData,
+  loading,
+  error,
+  detail,
+  onLoadOpenOrders,
+  onLoadOpenOrderDetail,
+  completedOrders,
+  completedOrdersLoading,
+  completedOrdersError,
+  onLoadCompletedOrders,
+  allocationPreview,
+  allocationCommitSummary,
+  allocationHistory,
+  allocationDetail,
+  allocationLoading,
+  allocationError,
+  onPreviewAllocation,
+  onCommitAllocation,
+  onLoadAllocationDetail,
+  pickPreview,
+  pickCommitSummary,
+  pickHistory,
+  pickDetail,
+  pickScannerOrder,
+  pickScannerMessage,
+  pickLoading,
+  pickError,
+  onPreviewPick,
+  onCommitPick,
+  onLoadPickDetail,
+  onLoadPickScanner,
+  onCommitPickScan,
+  fulfillmentPreview,
+  fulfillmentCommitSummary,
+  fulfillmentHistory,
+  fulfillmentDetail,
+  fulfillmentLoading,
+  fulfillmentError,
+  onPreviewFulfillment,
+  onCommitFulfillment,
+  onLoadFulfillmentDetail,
+}) {
   const [filters, setFilters] = useState({ search: '', wooStatus: '', availabilityStatus: '', matchedStatus: '' });
   const orders = ordersData.orders || [];
+  const selectedOrderId = detail?.id;
+
+  useEffect(() => {
+    if (selectedOrderId) {
+      onLoadPickScanner(selectedOrderId);
+    }
+  }, [selectedOrderId]);
 
   function updateFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -3365,6 +4855,30 @@ function OpenOrdersPage({ ordersData, loading, error, detail, onLoadOpenOrders, 
             <button className="action-button" onClick={() => exportOpenOrdersCsv(filters)} type="button">
               <Download size={17} />
               Export
+            </button>
+            <button className="primary-button" onClick={() => onPreviewAllocation(selectedOrderId)} disabled={!selectedOrderId || allocationLoading} type="button">
+              <ClipboardList size={17} />
+              Preview Allocation
+            </button>
+            <button className="action-button" onClick={() => onCommitAllocation(selectedOrderId)} disabled={!selectedOrderId || allocationLoading || !allocationPreview} type="button">
+              <CheckCircle2 size={17} />
+              Commit Allocation
+            </button>
+            <button className="primary-button" onClick={() => onPreviewPick(selectedOrderId)} disabled={!selectedOrderId || pickLoading} type="button">
+              <ClipboardCheck size={17} />
+              Preview Pick
+            </button>
+            <button className="action-button" onClick={() => onCommitPick(selectedOrderId)} disabled={!selectedOrderId || pickLoading || !pickPreview} type="button">
+              <CheckCircle2 size={17} />
+              Commit Pick
+            </button>
+            <button className="primary-button" onClick={() => onPreviewFulfillment(selectedOrderId)} disabled={!selectedOrderId || fulfillmentLoading} type="button">
+              <PackagePlus size={17} />
+              Preview Fulfillment
+            </button>
+            <button className="action-button" onClick={() => onCommitFulfillment(selectedOrderId)} disabled={!selectedOrderId || fulfillmentLoading || !fulfillmentPreview} type="button">
+              <CheckCircle2 size={17} />
+              Commit Fulfillment
             </button>
           </div>
         </div>
@@ -3399,24 +4913,57 @@ function OpenOrdersPage({ ordersData, loading, error, detail, onLoadOpenOrders, 
             </button>
           </div>
         </div>
-        <div className="csv-note">Order sync is read-only: this queue does not allocate, reserve, pick, route, change stock, or update WooCommerce statuses.</div>
+        <div className="csv-note">Fulfillment reduces local Pongo OS In Stock and Allocated quantities. It does not update WooCommerce order status, WooCommerce stock, routes, shipping labels, or notifications.</div>
         {loading && <div className="loading-strip">Loading open orders...</div>}
+        {allocationLoading && <div className="loading-strip">Working on allocation...</div>}
+        {pickLoading && <div className="loading-strip">Working on picking...</div>}
+        {fulfillmentLoading && <div className="loading-strip">Working on fulfillment...</div>}
         {error && <div className="api-error">{error}</div>}
+        {allocationError && <div className="api-error">{allocationError}</div>}
+        {pickError && <div className="api-error">{pickError}</div>}
+        {fulfillmentError && <div className="api-error">{fulfillmentError}</div>}
+        {allocationCommitSummary && (
+          <div className={allocationCommitSummary.errors?.length ? 'api-error' : 'success-strip'}>
+            Allocation {allocationCommitSummary.allocation_number || ''} finished with status {allocationCommitSummary.status}. Allocated {formatNumber(allocationCommitSummary.total_quantity_allocated)} unit(s).
+            {(allocationCommitSummary.errors || []).join(' ')}
+          </div>
+        )}
+        {pickCommitSummary && (
+          <div className={pickCommitSummary.errors?.length ? 'api-error' : 'success-strip'}>
+            Pick {pickCommitSummary.pick_number || ''} finished with status {pickCommitSummary.status}. Picked {formatNumber(pickCommitSummary.total_quantity_picked)} unit(s).
+            {(pickCommitSummary.errors || []).join(' ')}
+          </div>
+        )}
+        {fulfillmentCommitSummary && (
+          <div className={fulfillmentCommitSummary.errors?.length ? 'api-error' : 'success-strip'}>
+            Fulfillment {fulfillmentCommitSummary.fulfillment_number || ''} finished with status {fulfillmentCommitSummary.status}. Fulfilled {formatNumber(fulfillmentCommitSummary.total_quantity_fulfilled)} unit(s).
+            {(fulfillmentCommitSummary.errors || []).join(' ')}
+          </div>
+        )}
       </div>
+      {allocationPreview && <AllocationPreviewPanel preview={allocationPreview} />}
+      <PickScannerPanel order={pickScannerOrder} message={pickScannerMessage} loading={pickLoading} onScan={(skuOrBarcode, quantity) => onCommitPickScan(selectedOrderId, skuOrBarcode, quantity)} />
+      {pickPreview && <PickPreviewPanel preview={pickPreview} />}
+      {fulfillmentPreview && <FulfillmentPreviewPanel preview={fulfillmentPreview} />}
       <div className="orders-grid">
         <OpenOrdersTable orders={orders} selectedOrderId={detail?.id} onSelect={onLoadOpenOrderDetail} />
         <OpenOrderDetailPanel order={detail} />
       </div>
+      <AllocationHistoryPanel allocations={allocationHistory} detail={allocationDetail} onSelect={onLoadAllocationDetail} />
+      <PickHistoryPanel picks={pickHistory} detail={pickDetail} onSelect={onLoadPickDetail} />
+      <FulfillmentHistoryPanel fulfillments={fulfillmentHistory} detail={fulfillmentDetail} onSelect={onLoadFulfillmentDetail} />
+      <CompletedOrdersPanel ordersData={completedOrders} loading={completedOrdersLoading} error={completedOrdersError} onLoadCompletedOrders={onLoadCompletedOrders} />
     </section>
   );
 }
 
 function OpenOrdersTable({ orders, selectedOrderId, onSelect }) {
   return (
-    <TableShell caption={`${orders.length} open order(s)`} columns={['Order', 'Woo Status', 'Customer', 'Email', 'Total', 'Availability', 'Matched', 'Lines', 'Created', 'Last Sync']}>
+    <TableShell caption={`${orders.length} open order(s)`} columns={['Order', 'Local Status', 'Woo Status', 'Customer', 'Email', 'Total', 'Availability', 'Matched', 'Lines', 'Created', 'Last Sync']}>
       {orders.map((order) => (
         <tr key={order.id} className={selectedOrderId === order.id ? 'selected-row' : ''} onClick={() => onSelect(order.id)}>
           <td className="mono">{order.woo_order_number || order.woo_order_id}</td>
+          <td>{StatusText(order.local_status)}</td>
           <td>{StatusText(order.woo_status)}</td>
           <td>{order.customer_name}</td>
           <td>{order.customer_email}</td>
@@ -3430,7 +4977,7 @@ function OpenOrdersTable({ orders, selectedOrderId, onSelect }) {
       ))}
       {orders.length === 0 && (
         <tr>
-          <td colSpan={10}>
+          <td colSpan={11}>
             <div className="empty-table-row">No local open orders match the current filters.</div>
           </td>
         </tr>
@@ -3459,6 +5006,7 @@ function OpenOrderDetailPanel({ order }) {
         </div>
       </div>
       <div className="detail-kv-grid">
+        <Metric label="Local Status" value={order.local_status || ''} />
         <Metric label="Woo Status" value={order.woo_status || ''} />
         <Metric label="Availability" value={order.availability_status || ''} />
         <Metric label="Matched" value={order.matched_status || ''} />
@@ -3469,17 +5017,27 @@ function OpenOrderDetailPanel({ order }) {
         <span>{order.customer_phone || 'No phone'}</span>
         <span>{formatAddressSummary(order.shipping_summary)}</span>
       </div>
-      <TableShell caption={`${order.lines?.length || 0} line(s)`} columns={['SKU', 'Barcode', 'Name', 'Qty', 'Sellable', 'Short', 'Match', 'Availability']}>
+      <TableShell caption={`${order.lines?.length || 0} line(s)`} columns={['SKU', 'Barcode', 'Name', 'Ordered', 'Allocated', 'Picked', 'Fulfilled', 'Remaining To Pick', 'Remaining To Fulfill', 'Remaining To Allocate', 'Match', 'Availability', 'Pick Status', 'Fulfillment Status', 'Short', 'Local Sellable', 'Woo Product', 'Woo Variation']}>
         {(order.lines || []).map((line) => (
           <tr key={line.id}>
             <td className="mono">{line.sku}</td>
             <td className="mono">{line.barcode}</td>
             <td className="description-cell">{line.name}</td>
             <td>{formatNumber(line.quantity_ordered)}</td>
-            <td>{formatNumber(line.sellable_snapshot)}</td>
-            <td>{formatNumber(line.shortage_quantity)}</td>
+            <td>{formatNumber(line.quantity_allocated)}</td>
+            <td>{formatNumber(line.quantity_picked)}</td>
+            <td>{formatNumber(line.quantity_fulfilled)}</td>
+            <td>{formatNumber(line.remaining_to_pick)}</td>
+            <td>{formatNumber(line.remaining_to_fulfill)}</td>
+            <td>{formatNumber(line.remaining_to_allocate)}</td>
             <td>{StatusText(line.matched_status)}</td>
             <td>{StatusText(line.availability_status)}</td>
+            <td>{StatusText(line.picking_status)}</td>
+            <td>{StatusText(line.fulfillment_status)}</td>
+            <td>{formatNumber(line.shortage_quantity)}</td>
+            <td>{formatNumber(line.local_sellable ?? line.sellable_snapshot)}</td>
+            <td className="mono">{line.woo_product_id}</td>
+            <td className="mono">{line.woo_variation_id}</td>
           </tr>
         ))}
       </TableShell>
@@ -3487,11 +5045,931 @@ function OpenOrderDetailPanel({ order }) {
   );
 }
 
+function PickScannerPanel({ order, message, loading, onScan }) {
+  const [scan, setScan] = useState('');
+  const [quantity, setQuantity] = useState(1);
+
+  useEffect(() => {
+    const input = document.querySelector('[data-pick-scan-input="true"]');
+    if (input) input.focus();
+  }, [order?.order_id, message]);
+
+  function submit(event) {
+    event.preventDefault();
+    if (!scan.trim()) return;
+    onScan(scan.trim(), quantity);
+    setScan('');
+  }
+
+  const lines = order?.lines || [];
+  return (
+    <div className="wide-panel allocation-panel">
+      <div className="panel-title">
+        <div>
+          <h2>Pick Scanner</h2>
+          <p>{order ? `Order ${order.woo_order_number || order.order_id}: ${order.complete_lines}/${order.line_count} lines complete.` : 'Select an allocated order to scan picks.'}</p>
+        </div>
+      </div>
+      <form className="receiving-form route-form" onSubmit={submit}>
+        <div className="receiving-header-fields route-header-fields">
+          <label className="field wide-field"><span>SKU / Barcode</span><input data-pick-scan-input="true" value={scan} onChange={(event) => setScan(event.target.value)} placeholder="Scan or type SKU/barcode" /></label>
+          <label className="field"><span>Qty</span><input value={quantity} onChange={(event) => setQuantity(event.target.value)} inputMode="decimal" /></label>
+        </div>
+        <div className="button-row"><button className="primary-button" disabled={!order || loading || !scan.trim()} type="submit"><ClipboardCheck size={17} />Commit Scan</button></div>
+      </form>
+      {message && <div className={message.includes('exceeds') || message.includes('not') ? 'api-error' : 'success-strip'}>{message}</div>}
+      <TableShell caption={`${lines.length} scanner line(s)`} columns={['Status', 'SKU', 'Barcode', 'Description', 'Ordered', 'Allocated', 'Picked', 'Remaining', 'Location', 'Warnings']}>
+        {lines.map((line) => (
+          <tr key={line.order_line_id}>
+            <td>{StatusText(line.status)}</td>
+            <td className="mono">{line.sku}</td>
+            <td className="mono">{line.barcode}</td>
+            <td className="description-cell">{line.description}</td>
+            <td>{formatNumber(line.ordered_quantity)}</td>
+            <td>{formatNumber(line.allocated_quantity)}</td>
+            <td>{formatNumber(line.picked_quantity)}</td>
+            <td>{formatNumber(line.remaining_to_pick)}</td>
+            <td>{line.inventory_location}</td>
+            <td className="description-cell">{(line.warnings || []).join(' ')}</td>
+          </tr>
+        ))}
+        {lines.length === 0 && <tr><td colSpan={10}><div className="empty-table-row">No scanner lines loaded for the selected order.</div></td></tr>}
+      </TableShell>
+    </div>
+  );
+}
+
+function PickPreviewPanel({ preview }) {
+  const rows = (preview.preview_orders || []).flatMap((order) => (order.lines || []).map((line) => ({ order, line })));
+  return (
+    <div className="wide-panel allocation-panel">
+      <div className="panel-title">
+        <div>
+          <h2>Pick Preview</h2>
+          <p>Recommended pick quantities from already allocated order lines.</p>
+        </div>
+      </div>
+      <div className="summary-strip allocation-summary-strip">
+        <Metric label="Orders" value={preview.total_orders} />
+        <Metric label="Lines" value={preview.total_lines} />
+        <Metric label="Pickable" value={preview.pickable_lines} />
+        <Metric label="Partial" value={preview.partial_lines} />
+        <Metric label="Skipped" value={preview.skipped_lines} />
+        <Metric label="Qty Pick" value={formatNumber(preview.total_quantity_to_pick)} />
+      </div>
+      <TableShell caption={`${rows.length} preview line(s)`} columns={['Order', 'SKU', 'Barcode', 'Description', 'Warehouse', 'Location', 'Ordered', 'Allocated', 'Previously Picked', 'Remaining To Pick', 'Recommended', 'Picked After', 'Status', 'Warnings', 'Errors']}>
+        {rows.map(({ order, line }) => (
+          <tr key={`${order.order_id}-${line.order_line_id}`}>
+            <td className="mono">{order.woo_order_number || order.order_id}</td>
+            <td className="mono">{line.sku}</td>
+            <td className="mono">{line.barcode}</td>
+            <td className="description-cell">{line.description}</td>
+            <td>{line.warehouse}</td>
+            <td>{line.inventory_location}</td>
+            <td>{formatNumber(line.quantity_ordered)}</td>
+            <td>{formatNumber(line.quantity_allocated)}</td>
+            <td>{formatNumber(line.quantity_previously_picked)}</td>
+            <td>{formatNumber(line.remaining_to_pick)}</td>
+            <td>{formatNumber(line.recommended_pick_quantity)}</td>
+            <td>{formatNumber(line.quantity_picked_after)}</td>
+            <td>{StatusText(line.pick_status)}</td>
+            <td className="description-cell">{(line.warnings || []).join(' ')}</td>
+            <td className="description-cell">{(line.errors || []).join(' ')}</td>
+          </tr>
+        ))}
+      </TableShell>
+    </div>
+  );
+}
+
+function FulfillmentPreviewPanel({ preview }) {
+  const rows = (preview.preview_orders || []).flatMap((order) => (order.lines || []).map((line) => ({ order, line })));
+  return (
+    <div className="wide-panel allocation-panel">
+      <div className="panel-title">
+        <div>
+          <h2>Fulfillment Preview</h2>
+          <p>Recommended completion quantities from already picked order lines.</p>
+        </div>
+      </div>
+      <div className="summary-strip allocation-summary-strip">
+        <Metric label="Orders" value={preview.total_orders} />
+        <Metric label="Lines" value={preview.total_lines} />
+        <Metric label="Fulfillable" value={preview.fulfillable_lines} />
+        <Metric label="Partial" value={preview.partial_lines} />
+        <Metric label="Skipped" value={preview.skipped_lines} />
+        <Metric label="Qty Fulfill" value={formatNumber(preview.total_quantity_to_fulfill)} />
+      </div>
+      <TableShell caption={`${rows.length} preview line(s)`} columns={['Order', 'SKU', 'Barcode', 'Description', 'Ordered', 'Allocated', 'Picked', 'Previously Fulfilled', 'Remaining To Fulfill', 'Recommended', 'Status', 'In Stock', 'Allocated Stock', 'Sellable', 'Warehouse', 'Location', 'Warnings', 'Errors']}>
+        {rows.map(({ order, line }) => (
+          <tr key={`${order.order_id}-${line.order_line_id}`}>
+            <td className="mono">{order.woo_order_number || order.order_id}</td>
+            <td className="mono">{line.sku}</td>
+            <td className="mono">{line.barcode}</td>
+            <td className="description-cell">{line.description}</td>
+            <td>{formatNumber(line.quantity_ordered)}</td>
+            <td>{formatNumber(line.quantity_allocated)}</td>
+            <td>{formatNumber(line.quantity_picked)}</td>
+            <td>{formatNumber(line.quantity_previously_fulfilled)}</td>
+            <td>{formatNumber(line.remaining_to_fulfill)}</td>
+            <td>{formatNumber(line.recommended_fulfill_quantity)}</td>
+            <td>{StatusText(line.fulfillment_status)}</td>
+            <td>{formatNumber(line.in_stock)}</td>
+            <td>{formatNumber(line.allocated)}</td>
+            <td>{formatNumber(line.sellable)}</td>
+            <td>{line.warehouse}</td>
+            <td>{line.inventory_location}</td>
+            <td className="description-cell">{(line.warnings || []).join(' ')}</td>
+            <td className="description-cell">{(line.errors || []).join(' ')}</td>
+          </tr>
+        ))}
+      </TableShell>
+    </div>
+  );
+}
+
+function AllocationPreviewPanel({ preview }) {
+  const rows = (preview.preview_orders || []).flatMap((order) => (order.lines || []).map((line) => ({ order, line })));
+  return (
+    <div className="wide-panel allocation-panel">
+      <div className="panel-title">
+        <div>
+          <h2>Allocation Preview</h2>
+          <p>Recommended local reservations for the selected open order.</p>
+        </div>
+      </div>
+      <div className="summary-strip allocation-summary-strip">
+        <Metric label="Orders" value={preview.total_orders} />
+        <Metric label="Lines" value={preview.total_lines} />
+        <Metric label="Allocatable" value={preview.allocatable_lines} />
+        <Metric label="Partial" value={preview.partial_lines} />
+        <Metric label="Skipped" value={preview.skipped_lines} />
+        <Metric label="Qty Allocate" value={formatNumber(preview.total_quantity_to_allocate)} />
+        <Metric label="Shortage" value={formatNumber(preview.total_shortage_quantity)} />
+      </div>
+      <TableShell caption={`${rows.length} preview line(s)`} columns={['Order', 'SKU', 'Barcode', 'Description', 'Ordered', 'Previously Allocated', 'Remaining', 'In Stock', 'Allocated', 'Sellable', 'Recommended', 'Shortage', 'Status', 'Warnings', 'Errors']}>
+        {rows.map(({ order, line }) => (
+          <tr key={`${order.order_id}-${line.order_line_id}`}>
+            <td className="mono">{order.woo_order_number || order.order_id}</td>
+            <td className="mono">{line.sku}</td>
+            <td className="mono">{line.barcode}</td>
+            <td className="description-cell">{line.description}</td>
+            <td>{formatNumber(line.quantity_ordered)}</td>
+            <td>{formatNumber(line.quantity_previously_allocated)}</td>
+            <td>{formatNumber(line.remaining_to_allocate)}</td>
+            <td>{formatNumber(line.in_stock)}</td>
+            <td>{formatNumber(line.allocated)}</td>
+            <td>{formatNumber(line.sellable)}</td>
+            <td>{formatNumber(line.recommended_allocate_quantity)}</td>
+            <td>{formatNumber(line.shortage_quantity)}</td>
+            <td>{StatusText(line.allocation_status)}</td>
+            <td className="description-cell">{(line.warnings || []).join(' ')}</td>
+            <td className="description-cell">{(line.errors || []).join(' ')}</td>
+          </tr>
+        ))}
+      </TableShell>
+    </div>
+  );
+}
+
+function AllocationHistoryPanel({ allocations, detail, onSelect }) {
+  return (
+    <div className="orders-grid allocation-history-grid">
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Allocation History</h2>
+            <p>Posted local allocation records. Picking is not built yet.</p>
+          </div>
+        </div>
+        <TableShell caption={`${allocations.length} allocation(s)`} columns={['Allocation', 'Status', 'Woo Order', 'Lines', 'Qty Allocated', 'Created By', 'Created At', 'Posted At']}>
+          {allocations.map((allocation) => (
+            <tr key={allocation.id} className={detail?.id === allocation.id ? 'selected-row' : ''} onClick={() => onSelect(allocation.id)}>
+              <td className="mono">{allocation.allocation_number}</td>
+              <td>{StatusText(allocation.status)}</td>
+              <td className="mono">{allocation.woo_order_number}</td>
+              <td>{allocation.total_lines}</td>
+              <td>{formatNumber(allocation.total_quantity_allocated)}</td>
+              <td>{allocation.created_by}</td>
+              <td>{formatDateTime(allocation.created_at)}</td>
+              <td>{formatDateTime(allocation.posted_at)}</td>
+            </tr>
+          ))}
+          {allocations.length === 0 && (
+            <tr>
+              <td colSpan={8}>
+                <div className="empty-table-row">No allocations have been posted yet.</div>
+              </td>
+            </tr>
+          )}
+        </TableShell>
+      </div>
+      <AllocationDetailPanel allocation={detail} />
+    </div>
+  );
+}
+
+function AllocationDetailPanel({ allocation }) {
+  if (!allocation) {
+    return (
+      <aside className="order-detail-panel">
+        <div className="empty-state">
+          <h2>No allocation selected</h2>
+          <p>Select an allocation from history to review its reserved quantities.</p>
+        </div>
+      </aside>
+    );
+  }
+  return (
+    <aside className="order-detail-panel">
+      <div className="panel-title compact-title">
+        <div>
+          <h2>{allocation.allocation_number}</h2>
+          <p>{allocation.status} · {formatNumber(allocation.total_quantity_allocated)} reserved</p>
+        </div>
+        <button className="action-button" onClick={() => exportAllocationCsv(allocation.id, allocation.allocation_number)} type="button">
+          <Download size={17} />
+          Export
+        </button>
+      </div>
+      <TableShell caption={`${allocation.lines?.length || 0} allocation line(s)`} columns={['SKU', 'Qty', 'Allocated After', 'Before Sellable', 'After Sellable', 'Status']}>
+        {(allocation.lines || []).map((line) => (
+          <tr key={line.id}>
+            <td className="mono">{line.sku}</td>
+            <td>{formatNumber(line.quantity_to_allocate)}</td>
+            <td>{formatNumber(line.quantity_allocated_after)}</td>
+            <td>{formatNumber(line.sellable_before)}</td>
+            <td>{formatNumber(line.sellable_after)}</td>
+            <td>{StatusText(line.status)}</td>
+          </tr>
+        ))}
+      </TableShell>
+    </aside>
+  );
+}
+
+function PickHistoryPanel({ picks, detail, onSelect }) {
+  return (
+    <div className="orders-grid allocation-history-grid">
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Pick History</h2>
+            <p>Posted local pick records. Picking does not reduce In Stock or Allocated.</p>
+          </div>
+        </div>
+        <TableShell caption={`${picks.length} pick(s)`} columns={['Pick', 'Status', 'Woo Order', 'Lines', 'Qty Picked', 'Created By', 'Created At', 'Posted At']}>
+          {picks.map((pick) => (
+            <tr key={pick.id} className={detail?.id === pick.id ? 'selected-row' : ''} onClick={() => onSelect(pick.id)}>
+              <td className="mono">{pick.pick_number}</td>
+              <td>{StatusText(pick.status)}</td>
+              <td className="mono">{pick.woo_order_number}</td>
+              <td>{pick.total_lines}</td>
+              <td>{formatNumber(pick.total_quantity_picked)}</td>
+              <td>{pick.created_by}</td>
+              <td>{formatDateTime(pick.created_at)}</td>
+              <td>{formatDateTime(pick.posted_at)}</td>
+            </tr>
+          ))}
+          {picks.length === 0 && (
+            <tr>
+              <td colSpan={8}>
+                <div className="empty-table-row">No picks have been posted yet.</div>
+              </td>
+            </tr>
+          )}
+        </TableShell>
+      </div>
+      <PickDetailPanel pick={detail} />
+    </div>
+  );
+}
+
+function PickDetailPanel({ pick }) {
+  if (!pick) {
+    return (
+      <aside className="order-detail-panel">
+        <div className="empty-state">
+          <h2>No pick selected</h2>
+          <p>Select a pick from history to review picked quantities.</p>
+        </div>
+      </aside>
+    );
+  }
+  return (
+    <aside className="order-detail-panel">
+      <div className="panel-title compact-title">
+        <div>
+          <h2>{pick.pick_number}</h2>
+          <p>{pick.status} · {formatNumber(pick.total_quantity_picked)} picked</p>
+        </div>
+        <button className="action-button" onClick={() => exportPickCsv(pick.id, pick.pick_number)} type="button">
+          <Download size={17} />
+          Export
+        </button>
+      </div>
+      <TableShell caption={`${pick.lines?.length || 0} pick line(s)`} columns={['SKU', 'Picked', 'Picked After', 'Remaining', 'Warehouse', 'Location', 'Status']}>
+        {(pick.lines || []).map((line) => (
+          <tr key={line.id}>
+            <td className="mono">{line.sku}</td>
+            <td>{formatNumber(line.quantity_to_pick)}</td>
+            <td>{formatNumber(line.quantity_picked_after)}</td>
+            <td>{formatNumber(line.remaining_to_pick)}</td>
+            <td>{line.warehouse}</td>
+            <td>{line.inventory_location}</td>
+            <td>{StatusText(line.status)}</td>
+          </tr>
+        ))}
+      </TableShell>
+    </aside>
+  );
+}
+
+function FulfillmentHistoryPanel({ fulfillments, detail, onSelect }) {
+  return (
+    <div className="orders-grid allocation-history-grid">
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Fulfillment History</h2>
+            <p>Posted local completion records that reduce In Stock and Allocated.</p>
+          </div>
+        </div>
+        <TableShell caption={`${fulfillments.length} fulfillment(s)`} columns={['Fulfillment', 'Status', 'Woo Order', 'Lines', 'Qty Fulfilled', 'Created By', 'Created At', 'Posted At']}>
+          {fulfillments.map((fulfillment) => (
+            <tr key={fulfillment.id} className={detail?.id === fulfillment.id ? 'selected-row' : ''} onClick={() => onSelect(fulfillment.id)}>
+              <td className="mono">{fulfillment.fulfillment_number}</td>
+              <td>{StatusText(fulfillment.status)}</td>
+              <td className="mono">{fulfillment.woo_order_number}</td>
+              <td>{fulfillment.total_lines}</td>
+              <td>{formatNumber(fulfillment.total_quantity_fulfilled)}</td>
+              <td>{fulfillment.created_by}</td>
+              <td>{formatDateTime(fulfillment.created_at)}</td>
+              <td>{formatDateTime(fulfillment.posted_at)}</td>
+            </tr>
+          ))}
+          {fulfillments.length === 0 && (
+            <tr>
+              <td colSpan={8}>
+                <div className="empty-table-row">No fulfillments have been posted yet.</div>
+              </td>
+            </tr>
+          )}
+        </TableShell>
+      </div>
+      <FulfillmentDetailPanel fulfillment={detail} />
+    </div>
+  );
+}
+
+function FulfillmentDetailPanel({ fulfillment }) {
+  if (!fulfillment) {
+    return (
+      <aside className="order-detail-panel">
+        <div className="empty-state">
+          <h2>No fulfillment selected</h2>
+          <p>Select a fulfillment from history to review completed quantities.</p>
+        </div>
+      </aside>
+    );
+  }
+  return (
+    <aside className="order-detail-panel">
+      <div className="panel-title compact-title">
+        <div>
+          <h2>{fulfillment.fulfillment_number}</h2>
+          <p>{fulfillment.status} · {formatNumber(fulfillment.total_quantity_fulfilled)} fulfilled</p>
+        </div>
+        <button className="action-button" onClick={() => exportFulfillmentCsv(fulfillment.id, fulfillment.fulfillment_number)} type="button">
+          <Download size={17} />
+          Export
+        </button>
+      </div>
+      <TableShell caption={`${fulfillment.lines?.length || 0} fulfillment line(s)`} columns={['SKU', 'Fulfilled', 'Fulfilled After', 'Remaining', 'Before Stock', 'After Stock', 'Before Allocated', 'After Allocated', 'Status']}>
+        {(fulfillment.lines || []).map((line) => (
+          <tr key={line.id}>
+            <td className="mono">{line.sku}</td>
+            <td>{formatNumber(line.quantity_to_fulfill)}</td>
+            <td>{formatNumber(line.quantity_fulfilled_after)}</td>
+            <td>{formatNumber(line.remaining_to_fulfill)}</td>
+            <td>{formatNumber(line.in_stock_before)}</td>
+            <td>{formatNumber(line.in_stock_after)}</td>
+            <td>{formatNumber(line.allocated_before)}</td>
+            <td>{formatNumber(line.allocated_after)}</td>
+            <td>{StatusText(line.status)}</td>
+          </tr>
+        ))}
+      </TableShell>
+    </aside>
+  );
+}
+
+function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrders }) {
+  const [filters, setFilters] = useState(emptyCompletedOrderFilters);
+  const [activeFilters, setActiveFilters] = useState(emptyCompletedOrderFilters);
+  const orders = ordersData.orders || [];
+  const totals = orders.reduce(
+    (acc, order) => ({
+      quantityFulfilled: acc.quantityFulfilled + Number(order.total_quantity_fulfilled || 0),
+      remaining: acc.remaining + Number(order.total_remaining_to_fulfill || 0),
+      value: acc.value + Number(order.total_fulfilled_value || 0),
+    }),
+    { quantityFulfilled: 0, remaining: 0, value: 0 },
+  );
+
+  function updateFilter(name, value) {
+    setFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function applyFilters() {
+    setActiveFilters(filters);
+    onLoadCompletedOrders(filters);
+  }
+
+  function clearFilters() {
+    const cleared = emptyCompletedOrderFilters();
+    setFilters(cleared);
+    setActiveFilters(cleared);
+    onLoadCompletedOrders(cleared);
+  }
+
+  return (
+    <div className="wide-panel">
+      <div className="panel-title">
+        <div>
+          <h2>Completed Orders</h2>
+          <p>Read-only view of fulfilled and partially fulfilled local orders.</p>
+        </div>
+        <div className="button-row compact">
+          <button className="muted-button" onClick={() => onLoadCompletedOrders(activeFilters)} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
+          <button className="action-button" onClick={() => exportCompletedOrdersCsv(activeFilters)} type="button"><Download size={17} />Export CSV</button>
+        </div>
+      </div>
+      <div className="summary-strip report-summary-strip">
+        <Metric label="Orders" value={ordersData.total || 0} />
+        <Metric label="Qty Fulfilled" value={formatNumber(totals.quantityFulfilled)} />
+        <Metric label="Remaining" value={formatNumber(totals.remaining)} />
+        <Metric label="Fulfilled Value" value={formatCurrency(totals.value)} />
+      </div>
+      <div className="filter-panel">
+        <div className="filter-grid orders-filter-grid">
+          <FilterSelect label="Local Status" value={filters.localStatus} options={['fulfilled', 'partially_fulfilled']} onChange={(value) => updateFilter('localStatus', value)} />
+          <label className="field"><span>Date From</span><div className="input-with-icon"><input value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
+          <label className="field"><span>Date To</span><div className="input-with-icon"><input value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
+          <label className="field"><span>Customer Email</span><div className="input-with-icon"><input value={filters.customerEmail} onChange={(event) => updateFilter('customerEmail', event.target.value)} /><Search size={18} /></div></label>
+          <label className="field"><span>Woo Order Number</span><div className="input-with-icon"><input value={filters.wooOrderNumber} onChange={(event) => updateFilter('wooOrderNumber', event.target.value)} /><Search size={18} /></div></label>
+          <label className="field"><span>SKU</span><div className="input-with-icon"><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} /><Search size={18} /></div></label>
+          <label className="field"><span>Barcode</span><div className="input-with-icon"><input value={filters.barcode} onChange={(event) => updateFilter('barcode', event.target.value)} /><Search size={18} /></div></label>
+          <label className="field"><span>Search</span><div className="input-with-icon"><input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} /><Search size={18} /></div></label>
+        </div>
+        <div className="button-row">
+          <button className="muted-button" onClick={clearFilters} type="button"><SlidersHorizontal size={17} />Clear</button>
+          <button className="primary-button" onClick={applyFilters} disabled={loading} type="button"><Filter size={17} />Apply</button>
+        </div>
+      </div>
+      <div className="csv-note">Completed Orders is read-only and does not modify inventory, WooCommerce, routes, shipping labels, or notifications.</div>
+      {error && <div className="api-error">{error}</div>}
+      {loading && <div className="loading-strip">Loading completed orders...</div>}
+      <TableShell caption={`${orders.length} completed order(s)`} columns={['Woo Order', 'Woo Status', 'Local Status', 'Customer', 'Email', 'Order Total', 'Qty Ordered', 'Qty Allocated', 'Qty Picked', 'Qty Fulfilled', 'Remaining', 'Fulfilled Value', 'Date Created']}>
+        {orders.map((order) => (
+          <tr key={order.id}>
+            <td className="mono">{order.woo_order_number || order.woo_order_id}</td>
+            <td>{StatusText(order.woo_status)}</td>
+            <td>{StatusText(order.local_status)}</td>
+            <td>{order.customer_name}</td>
+            <td>{order.customer_email}</td>
+            <td>{formatCurrency(order.total)}</td>
+            <td>{formatNumber(order.total_quantity_ordered)}</td>
+            <td>{formatNumber(order.total_quantity_allocated)}</td>
+            <td>{formatNumber(order.total_quantity_picked)}</td>
+            <td>{formatNumber(order.total_quantity_fulfilled)}</td>
+            <td>{formatNumber(order.total_remaining_to_fulfill)}</td>
+            <td>{formatCurrency(order.total_fulfilled_value)}</td>
+            <td>{formatDateTime(order.date_created)}</td>
+          </tr>
+        ))}
+        {orders.length === 0 && <tr><td colSpan={13}><div className="empty-table-row">No completed orders match the current filters.</div></td></tr>}
+      </TableShell>
+    </div>
+  );
+}
+
+function RoutesPage({
+  candidatesData,
+  candidatesLoading,
+  candidatesError,
+  preview,
+  commitSummary,
+  routesData,
+  detail,
+  mapPayload,
+  providerMessage,
+  loading,
+  error,
+  onLoadCandidates,
+  onPreview,
+  onCommit,
+  onLoadRoutes,
+  onLoadDetail,
+  onFinalize,
+  onCancel,
+  onSaveMetadata,
+  onReorderStops,
+  onSaveStop,
+  onProviderAction,
+}) {
+  const [candidateFilters, setCandidateFilters] = useState(emptyRouteCandidateFilters);
+  const [routeFilters, setRouteFilters] = useState(emptyRouteFilters);
+  const [selectedOrderIds, setSelectedOrderIds] = useState([]);
+  const [routeForm, setRouteForm] = useState({
+    routeDate: todayDateInput(),
+    routeName: 'Main Warehouse Route',
+    driverName: '',
+    vehicleName: '',
+    notes: '',
+  });
+  const candidates = candidatesData.candidates || [];
+  const routes = routesData.routes || [];
+  const selectedCount = selectedOrderIds.length;
+
+  function updateCandidateFilter(name, value) {
+    setCandidateFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function updateRouteFilter(name, value) {
+    setRouteFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function updateRouteForm(name, value) {
+    setRouteForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function toggleOrder(orderId) {
+    setSelectedOrderIds((current) => (current.includes(orderId) ? current.filter((id) => id !== orderId) : [...current, orderId]));
+  }
+
+  function clearCandidateFilters() {
+    const cleared = emptyRouteCandidateFilters();
+    setCandidateFilters(cleared);
+    onLoadCandidates(cleared);
+  }
+
+  function clearRouteFilters() {
+    const cleared = emptyRouteFilters();
+    setRouteFilters(cleared);
+    onLoadRoutes(cleared);
+  }
+
+  function payload() {
+    return {
+      route_date: routeForm.routeDate,
+      route_name: routeForm.routeName,
+      driver_name: routeForm.driverName,
+      vehicle_name: routeForm.vehicleName,
+      notes: routeForm.notes,
+      created_by: 'system',
+      order_ids: selectedOrderIds,
+    };
+  }
+
+  function createRoute() {
+    onCommit(payload());
+  }
+
+  return (
+    <section className="content-panel routes-page">
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Route Creation</h2>
+            <p>Create local draft routes from completed local orders. No maps, optimization, WooCommerce, labels, notifications, or inventory changes are performed.</p>
+          </div>
+          <div className="button-row compact">
+            <button className="muted-button" onClick={() => onLoadCandidates(candidateFilters)} disabled={candidatesLoading} type="button">
+              <RefreshCw size={17} />
+              Refresh Candidates
+            </button>
+            <button className="primary-button" onClick={() => onPreview(payload())} disabled={loading || selectedCount === 0} type="button">
+              <Search size={17} />
+              Preview Route
+            </button>
+            <button className="action-button" onClick={createRoute} disabled={loading || selectedCount === 0} type="button">
+              <Plus size={17} />
+              Create Draft
+            </button>
+          </div>
+        </div>
+        <div className="summary-strip route-summary-strip">
+          <Metric label="Candidates" value={candidatesData.total_candidates || 0} />
+          <Metric label="Selected Stops" value={selectedCount} />
+          <Metric label="Preview Valid" value={preview?.valid_orders || 0} />
+          <Metric label="Preview Invalid" value={preview?.invalid_orders || 0} />
+          <Metric label="Routes" value={routesData.total || 0} />
+        </div>
+        <div className="toolbar report-toolbar routes-toolbar">
+          <div className="filter-grid route-filter-grid">
+            <label className="field">
+              <span>Search</span>
+              <div className="input-with-icon">
+                <input value={candidateFilters.search} onChange={(event) => updateCandidateFilter('search', event.target.value)} />
+                <Search size={18} />
+              </div>
+            </label>
+            <FilterSelect label="Local Status" value={candidateFilters.localStatus} options={['fulfilled', 'partially_fulfilled']} onChange={(value) => updateCandidateFilter('localStatus', value)} />
+            <label className="field">
+              <span>Customer Email</span>
+              <div className="input-with-icon">
+                <input value={candidateFilters.customerEmail} onChange={(event) => updateCandidateFilter('customerEmail', event.target.value)} />
+                <Search size={18} />
+              </div>
+            </label>
+            <label className="field">
+              <span>Woo Order Number</span>
+              <div className="input-with-icon">
+                <input value={candidateFilters.wooOrderNumber} onChange={(event) => updateCandidateFilter('wooOrderNumber', event.target.value)} />
+                <Search size={18} />
+              </div>
+            </label>
+          </div>
+          <div className="button-row items-actions">
+            <button className="primary-button" onClick={() => onLoadCandidates(candidateFilters)} type="button">
+              <Filter size={17} />
+              Apply
+            </button>
+            <button className="muted-button" onClick={clearCandidateFilters} type="button">
+              Clear
+            </button>
+          </div>
+        </div>
+        <div className="receiving-form route-form">
+          <div className="receiving-header-fields route-header-fields">
+            <label className="field">
+              <span>Route Date</span>
+              <input value={routeForm.routeDate} onChange={(event) => updateRouteForm('routeDate', event.target.value)} type="date" />
+            </label>
+            <label className="field">
+              <span>Route Name</span>
+              <input value={routeForm.routeName} onChange={(event) => updateRouteForm('routeName', event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Driver Name</span>
+              <input value={routeForm.driverName} onChange={(event) => updateRouteForm('driverName', event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Vehicle Name</span>
+              <input value={routeForm.vehicleName} onChange={(event) => updateRouteForm('vehicleName', event.target.value)} />
+            </label>
+            <label className="field wide-field">
+              <span>Notes</span>
+              <input value={routeForm.notes} onChange={(event) => updateRouteForm('notes', event.target.value)} />
+            </label>
+          </div>
+        </div>
+        <div className="csv-note">Eligible candidates are local orders in fulfilled or partially fulfilled status. Already-routed orders are hidden unless their route is cancelled.</div>
+        {candidatesError && <div className="api-error">{candidatesError}</div>}
+        {error && <div className="api-error">{error}</div>}
+        {(candidatesLoading || loading) && <div className="loading-strip">Working with local routes...</div>}
+        {commitSummary && (
+          <div className={commitSummary.status === 'draft' || commitSummary.status === 'finalized' || commitSummary.status === 'cancelled' ? 'success-strip' : 'api-error'}>
+            Route action finished with status {commitSummary.status}. {commitSummary.route_number ? `Route ${commitSummary.route_number}.` : ''} {(commitSummary.errors || []).join(' ')}
+          </div>
+        )}
+        <RouteCandidatesTable candidates={candidates} selectedOrderIds={selectedOrderIds} onToggle={toggleOrder} />
+      </div>
+      {preview && <RoutePreviewPanel preview={preview} />}
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Route History</h2>
+            <p>Local draft, finalized, and cancelled routes.</p>
+          </div>
+          <button className="muted-button" onClick={() => onLoadRoutes(routeFilters)} disabled={loading} type="button">
+            <RefreshCw size={17} />
+            Refresh Routes
+          </button>
+        </div>
+        <div className="filter-panel">
+          <div className="filter-grid route-history-filter-grid">
+            <FilterSelect label="Status" value={routeFilters.status} options={['draft', 'finalized', 'cancelled']} onChange={(value) => updateRouteFilter('status', value)} />
+            <label className="field"><span>Date From</span><div className="input-with-icon"><input value={routeFilters.dateFrom} onChange={(event) => updateRouteFilter('dateFrom', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
+            <label className="field"><span>Date To</span><div className="input-with-icon"><input value={routeFilters.dateTo} onChange={(event) => updateRouteFilter('dateTo', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
+            <label className="field"><span>Search</span><div className="input-with-icon"><input value={routeFilters.search} onChange={(event) => updateRouteFilter('search', event.target.value)} /><Search size={18} /></div></label>
+            <label className="field"><span>Driver</span><div className="input-with-icon"><input value={routeFilters.driverName} onChange={(event) => updateRouteFilter('driverName', event.target.value)} /><UserCircle size={18} /></div></label>
+            <label className="field"><span>Vehicle</span><div className="input-with-icon"><input value={routeFilters.vehicleName} onChange={(event) => updateRouteFilter('vehicleName', event.target.value)} /><Truck size={18} /></div></label>
+          </div>
+          <div className="button-row">
+            <button className="muted-button" onClick={clearRouteFilters} type="button"><SlidersHorizontal size={17} />Clear</button>
+            <button className="primary-button" onClick={() => onLoadRoutes(routeFilters)} disabled={loading} type="button"><Filter size={17} />Apply</button>
+          </div>
+        </div>
+        {routesErrorOrLoading(routesLoading, routesError)}
+        <RouteHistoryTable routes={routes} detail={detail} onSelect={onLoadDetail} onFinalize={onFinalize} onCancel={onCancel} />
+      </div>
+      <RouteDetailPanel route={detail} mapPayload={mapPayload} providerMessage={providerMessage} loading={loading} onSaveMetadata={onSaveMetadata} onReorderStops={onReorderStops} onSaveStop={onSaveStop} onProviderAction={onProviderAction} />
+    </section>
+  );
+}
+
+function RouteCandidatesTable({ candidates, selectedOrderIds, onToggle }) {
+  return (
+    <TableShell caption={`${candidates.length} candidate order(s)`} columns={['Select', 'Woo Order', 'Local Status', 'Customer', 'Email', 'Phone', 'Shipping', 'Order Total', 'Fulfilled Lines', 'Qty Fulfilled', 'Date Created', 'Warning']}>
+      {candidates.map((candidate) => (
+        <tr key={candidate.order_id} className={selectedOrderIds.includes(candidate.order_id) ? 'selected-row' : ''}>
+          <td><input checked={selectedOrderIds.includes(candidate.order_id)} onChange={() => onToggle(candidate.order_id)} type="checkbox" /></td>
+          <td className="mono">{candidate.woo_order_number || candidate.woo_order_id}</td>
+          <td>{StatusText(candidate.local_status)}</td>
+          <td>{candidate.customer_name}</td>
+          <td>{candidate.customer_email}</td>
+          <td>{candidate.customer_phone}</td>
+          <td className="description-cell">{formatAddressSummary(candidate.shipping_summary)}</td>
+          <td>{formatCurrency(candidate.order_total)}</td>
+          <td>{candidate.fulfilled_line_count}</td>
+          <td>{formatNumber(candidate.total_quantity_fulfilled)}</td>
+          <td>{formatDateTime(candidate.date_created)}</td>
+          <td className="description-cell">{candidate.route_warning || ''}</td>
+        </tr>
+      ))}
+      {candidates.length === 0 && <tr><td colSpan={12}><div className="empty-table-row">No completed orders are available for routing.</div></td></tr>}
+    </TableShell>
+  );
+}
+
+function RoutePreviewPanel({ preview }) {
+  const route = preview.preview_route || {};
+  const stops = route.stops || [];
+  return (
+    <div className="wide-panel allocation-panel">
+      <div className="panel-title">
+        <div>
+          <h2>Route Preview</h2>
+          <p>{route.route_name || 'Route'} on {route.route_date || 'selected date'} with {preview.valid_orders} valid stop(s).</p>
+        </div>
+      </div>
+      <div className="summary-strip allocation-summary-strip">
+        <Metric label="Orders" value={preview.total_orders} />
+        <Metric label="Valid" value={preview.valid_orders} />
+        <Metric label="Invalid" value={preview.invalid_orders} />
+        <Metric label="Warnings" value={preview.warning_count} />
+        <Metric label="Driver" value={route.driver_name || 'Unassigned'} />
+        <Metric label="Vehicle" value={route.vehicle_name || 'Unassigned'} />
+        <Metric label="Stops" value={route.estimated_stop_count || 0} />
+      </div>
+      {(preview.errors || []).length > 0 && <div className="api-error">{preview.errors.join(' ')}</div>}
+      <TableShell caption={`${stops.length} preview stop(s)`} columns={['Seq', 'Status', 'Woo Order', 'Local Status', 'Customer', 'Email', 'Shipping', 'Fulfilled Lines', 'Qty Fulfilled', 'Warnings', 'Errors']}>
+        {stops.map((stop) => (
+          <tr key={`${stop.stop_sequence}-${stop.order_id}`}>
+            <td>{stop.stop_sequence}</td>
+            <td>{StatusText(stop.status)}</td>
+            <td className="mono">{stop.woo_order_number || stop.woo_order_id || stop.order_id}</td>
+            <td>{StatusText(stop.local_status)}</td>
+            <td>{stop.customer_name}</td>
+            <td>{stop.customer_email}</td>
+            <td className="description-cell">{formatAddressSummary(stop.shipping_summary)}</td>
+            <td>{stop.fulfilled_line_count}</td>
+            <td>{formatNumber(stop.total_quantity_fulfilled)}</td>
+            <td className="description-cell">{(stop.warnings || []).join(' ')}</td>
+            <td className="description-cell">{(stop.errors || []).join(' ')}</td>
+          </tr>
+        ))}
+      </TableShell>
+    </div>
+  );
+}
+
+function RouteHistoryTable({ routes, detail, onSelect, onFinalize, onCancel }) {
+  return (
+    <TableShell caption={`${routes.length} route(s)`} columns={['Route', 'Status', 'Date', 'Name', 'Driver', 'Vehicle', 'Stops', 'Created By', 'Created At', 'Actions']}>
+      {routes.map((route) => (
+        <tr key={route.id} className={detail?.id === route.id ? 'selected-row' : ''} onClick={() => onSelect(route.id)}>
+          <td className="mono">{route.route_number}</td>
+          <td>{StatusText(route.status)}</td>
+          <td>{route.route_date}</td>
+          <td>{route.route_name}</td>
+          <td>{route.driver_name}</td>
+          <td>{route.vehicle_name}</td>
+          <td>{route.total_stops}</td>
+          <td>{route.created_by}</td>
+          <td>{formatDateTime(route.created_at)}</td>
+          <td>
+            <div className="button-row compact table-button-row">
+              <button className="muted-button" onClick={(event) => { event.stopPropagation(); onSelect(route.id); }} type="button">View</button>
+              <button className="action-button" onClick={(event) => { event.stopPropagation(); exportRouteCsv(route.id, route.route_number); }} type="button"><Download size={15} />CSV</button>
+              <button className="primary-button" onClick={(event) => { event.stopPropagation(); onFinalize(route.id); }} disabled={route.status !== 'draft'} type="button">Finalize</button>
+              <button className="muted-button" onClick={(event) => { event.stopPropagation(); onCancel(route.id); }} disabled={route.status === 'cancelled'} type="button">Cancel</button>
+            </div>
+          </td>
+        </tr>
+      ))}
+      {routes.length === 0 && <tr><td colSpan={10}><div className="empty-table-row">No routes have been created yet.</div></td></tr>}
+    </TableShell>
+  );
+}
+
+function RouteDetailPanel({ route, mapPayload, providerMessage, loading, onSaveMetadata, onReorderStops, onSaveStop, onProviderAction }) {
+  const [meta, setMeta] = useState({ route_name: '', driver_name: '', vehicle_name: '', route_date: '', notes: '' });
+  const [stopDrafts, setStopDrafts] = useState({});
+
+  useEffect(() => {
+    if (route) {
+      setMeta({ route_name: route.route_name || '', driver_name: route.driver_name || '', vehicle_name: route.vehicle_name || '', route_date: route.route_date || '', notes: route.notes || '' });
+      setStopDrafts(Object.fromEntries((route.stops || []).map((stop) => [stop.id, { delivery_notes: stop.delivery_notes || '', internal_notes: stop.internal_notes || '', latitude: stop.latitude ?? '', longitude: stop.longitude ?? '' }])));
+    }
+  }, [route?.id]);
+
+  if (!route) {
+    return (
+      <aside className="order-detail-panel route-detail-panel">
+        <div className="empty-state">
+          <h2>No route selected</h2>
+          <p>Select a route from history to review its stops.</p>
+        </div>
+      </aside>
+    );
+  }
+  const stopIds = (route.stops || []).map((stop) => stop.id);
+  function moveStop(stopId, direction) {
+    const index = stopIds.indexOf(stopId);
+    const next = [...stopIds];
+    const target = index + direction;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    onReorderStops(route.id, next);
+  }
+
+  function updateStopDraft(stopId, field, value) {
+    setStopDrafts((current) => ({ ...current, [stopId]: { ...(current[stopId] || {}), [field]: value } }));
+  }
+
+  return (
+    <aside className="order-detail-panel route-detail-panel">
+      <div className="panel-title compact-title">
+        <div>
+          <h2>{route.route_number}</h2>
+          <p>{route.status} · {route.total_stops} stop(s) · {route.route_date}</p>
+        </div>
+        <button className="action-button" onClick={() => exportRouteCsv(route.id, route.route_number)} type="button">
+          <Download size={17} />
+          Export
+        </button>
+      </div>
+      {route.notes && <div className="csv-note">{route.notes}</div>}
+      <div className="receiving-form route-form">
+        <div className="receiving-header-fields route-header-fields">
+          <label className="field"><span>Route Name</span><input value={meta.route_name} onChange={(event) => setMeta((current) => ({ ...current, route_name: event.target.value }))} /></label>
+          <label className="field"><span>Date</span><input value={meta.route_date} onChange={(event) => setMeta((current) => ({ ...current, route_date: event.target.value }))} type="date" /></label>
+          <label className="field"><span>Driver</span><input value={meta.driver_name} onChange={(event) => setMeta((current) => ({ ...current, driver_name: event.target.value }))} /></label>
+          <label className="field"><span>Vehicle</span><input value={meta.vehicle_name} onChange={(event) => setMeta((current) => ({ ...current, vehicle_name: event.target.value }))} /></label>
+          <label className="field wide-field"><span>Notes</span><input value={meta.notes} onChange={(event) => setMeta((current) => ({ ...current, notes: event.target.value }))} /></label>
+        </div>
+        <button className="primary-button" disabled={loading} onClick={() => onSaveMetadata(route.id, meta)} type="button"><Save size={17} />Save Metadata</button>
+      </div>
+      <div className="csv-note">Routing tools are local-only. No WooCommerce updates are made.</div>
+      {providerMessage && <div className="success-strip">{providerMessage}</div>}
+      <div className="button-row compact">
+        <button className="muted-button" onClick={() => onProviderAction(route.id, 'geocode/preview')} type="button">Geocode Preview</button>
+        <button className="muted-button" onClick={() => onProviderAction(route.id, 'geocode/commit')} type="button">Geocode Commit</button>
+        <button className="muted-button" onClick={() => onProviderAction(route.id, 'optimize/preview')} type="button">Optimize Preview</button>
+        <button className="muted-button" onClick={() => onProviderAction(route.id, 'optimize/commit')} type="button">Optimize Commit</button>
+      </div>
+      {mapPayload && (
+        <div className="csv-note">
+          Map provider: {mapPayload.provider_config_public?.provider || 'disabled'} · Missing coordinates: {mapPayload.missing_coordinates_count}
+        </div>
+      )}
+      <TableShell caption={`${route.stops?.length || 0} stop(s)`} columns={['Seq', 'Move', 'Woo Order', 'Customer', 'Shipping', 'Lat', 'Lng', 'Delivery Notes', 'Internal Notes', 'Save']}>
+        {(route.stops || []).map((stop) => (
+          <tr key={stop.id}>
+            <td>{stop.stop_sequence}</td>
+            <td><div className="button-row compact"><button className="muted-button" onClick={() => moveStop(stop.id, -1)} type="button">Up</button><button className="muted-button" onClick={() => moveStop(stop.id, 1)} type="button">Down</button></div></td>
+            <td className="mono">{stop.woo_order_number || stop.woo_order_id}</td>
+            <td>{stop.customer_name}</td>
+            <td className="description-cell">{[stop.address_1, stop.address_2, stop.city, stop.state, stop.zip, stop.country].filter(Boolean).join(', ') || formatAddressSummary(stop.shipping_summary)}</td>
+            <td><input value={stopDrafts[stop.id]?.latitude ?? ''} onChange={(event) => updateStopDraft(stop.id, 'latitude', event.target.value)} /></td>
+            <td><input value={stopDrafts[stop.id]?.longitude ?? ''} onChange={(event) => updateStopDraft(stop.id, 'longitude', event.target.value)} /></td>
+            <td><input value={stopDrafts[stop.id]?.delivery_notes ?? ''} onChange={(event) => updateStopDraft(stop.id, 'delivery_notes', event.target.value)} /></td>
+            <td><input value={stopDrafts[stop.id]?.internal_notes ?? ''} onChange={(event) => updateStopDraft(stop.id, 'internal_notes', event.target.value)} /></td>
+            <td><button className="primary-button" onClick={() => onSaveStop(route.id, stop.id, normalizeStopDraft(stopDrafts[stop.id] || {}))} type="button">Save</button></td>
+          </tr>
+        ))}
+      </TableShell>
+    </aside>
+  );
+}
+
+function routesErrorOrLoading(loading, error) {
+  return (
+    <>
+      {error && <div className="api-error">{error}</div>}
+      {loading && <div className="loading-strip">Loading routes...</div>}
+    </>
+  );
+}
+
 function StatusText(value) {
   return <span className={`status-pill order-status-${String(value || 'unknown').replace(/[^a-z0-9-]/gi, '-').toLowerCase()}`}>{value || 'unknown'}</span>;
 }
 
-function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, loading, error, onCheckConnection, onPreview, onCommit, onPreviewOrders, onCommitOrders }) {
+function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, remapCandidates, remapMappings, remapPreview, remapMessage, loading, error, onCheckConnection, onPreview, onCommit, onPreviewOrders, onCommitOrders, onPreviewRemap, onCommitRemap, onLoadRemap }) {
   const latestRun = syncRuns.find((run) => run.sync_type === 'products') || syncRuns[0];
   const latestOrderRun = syncRuns.find((run) => run.sync_type === 'orders');
   const commitDisabled = !status.configured || !preview || preview.conflict_count > 0 || preview.error_count > 0;
@@ -3570,6 +6048,7 @@ function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview,
         )}
       </div>
       {orderPreview && <WooOrderPreviewTable orders={orderPreview.preview_orders || []} />}
+      <WooRemapPanel candidates={remapCandidates?.candidates || []} mappings={remapMappings?.mappings || []} preview={remapPreview} message={remapMessage} loading={loading} onPreview={onPreviewRemap} onCommit={onCommitRemap} onRefresh={onLoadRemap} />
       <div className="wide-panel">
         <div className="panel-title">
           <div>
@@ -3675,6 +6154,80 @@ function WooOrderPreviewTable({ orders }) {
         </tr>
       )}
     </TableShell>
+  );
+}
+
+function WooRemapPanel({ candidates, mappings, preview, message, loading, onPreview, onCommit, onRefresh }) {
+  const [selected, setSelected] = useState({ woo_product_id: '', woo_variation_id: '', item_id: '', note: '' });
+
+  function selectCandidate(candidate) {
+    const firstSuggestion = candidate.suggested_items?.[0];
+    setSelected({
+      woo_product_id: candidate.remote.woo_product_id || '',
+      woo_variation_id: candidate.remote.woo_variation_id || '',
+      item_id: firstSuggestion?.item_id || candidate.current_mapping?.item_id || '',
+      note: '',
+    });
+  }
+
+  function payload() {
+    return {
+      woo_product_id: Number(selected.woo_product_id),
+      woo_variation_id: selected.woo_variation_id === '' ? null : Number(selected.woo_variation_id),
+      item_id: Number(selected.item_id),
+      note: selected.note,
+    };
+  }
+
+  return (
+    <div className="wide-panel">
+      <div className="panel-title">
+        <div>
+          <h2>WooCommerce Remap</h2>
+          <p>Local-only relinking for Woo product/variation snapshots. It does not write WooCommerce or inventory.</p>
+        </div>
+        <button className="muted-button" onClick={onRefresh} disabled={loading} type="button"><RefreshCw size={17} />Refresh Remap</button>
+      </div>
+      <div className="csv-note">This only changes local mapping metadata. Manual Pongo OS fields and quantities are preserved.</div>
+      {message && <div className="success-strip">{message}</div>}
+      <div className="receiving-form route-form">
+        <div className="receiving-header-fields route-header-fields">
+          <label className="field"><span>Woo Product ID</span><input value={selected.woo_product_id} onChange={(event) => setSelected((current) => ({ ...current, woo_product_id: event.target.value }))} /></label>
+          <label className="field"><span>Woo Variation ID</span><input value={selected.woo_variation_id} onChange={(event) => setSelected((current) => ({ ...current, woo_variation_id: event.target.value }))} /></label>
+          <label className="field"><span>Local Item ID</span><input value={selected.item_id} onChange={(event) => setSelected((current) => ({ ...current, item_id: event.target.value }))} /></label>
+          <label className="field wide-field"><span>Note</span><input value={selected.note} onChange={(event) => setSelected((current) => ({ ...current, note: event.target.value }))} /></label>
+        </div>
+        <div className="button-row">
+          <button className="primary-button" disabled={loading || !selected.woo_product_id || !selected.item_id} onClick={() => onPreview(payload())} type="button"><Search size={17} />Preview Mapping</button>
+          <button className="action-button" disabled={loading || !preview} onClick={() => onCommit(payload())} type="button"><Link2 size={17} />Commit Mapping</button>
+        </div>
+      </div>
+      {preview && (
+        <div className="success-strip">
+          Preview maps Woo {preview.remote.woo_product_id}{preview.remote.woo_variation_id ? `/${preview.remote.woo_variation_id}` : ''} to item {preview.item.item_id}. {(preview.warnings || []).join(' ')}
+        </div>
+      )}
+      <TableShell caption={`${candidates.length} remap candidate(s)`} columns={['Woo Product', 'Variation', 'SKU', 'Reason', 'Current Item', 'Suggestions', 'Action']}>
+        {candidates.map((candidate) => (
+          <tr key={`${candidate.remote.woo_product_id}-${candidate.remote.woo_variation_id || 'simple'}`}>
+            <td className="mono">{candidate.remote.woo_product_id}</td>
+            <td className="mono">{candidate.remote.woo_variation_id}</td>
+            <td className="mono">{candidate.remote.woo_sku}</td>
+            <td>{candidate.remote.reason}</td>
+            <td>{candidate.current_mapping?.item_id || ''}</td>
+            <td className="description-cell">{(candidate.suggested_items || []).map((item) => `${item.item_id}:${item.sku || item.description}`).join(', ')}</td>
+            <td><button className="muted-button" onClick={() => selectCandidate(candidate)} type="button">Select</button></td>
+          </tr>
+        ))}
+        {candidates.length === 0 && <tr><td colSpan={7}><div className="empty-table-row">No remap candidates found.</div></td></tr>}
+      </TableShell>
+      <TableShell caption={`${mappings.length} active mapping(s)`} columns={['Item ID', 'Woo Product', 'Variation', 'SKU', 'Source', 'Active', 'Updated']}>
+        {mappings.map((mapping) => (
+          <tr key={mapping.id}><td>{mapping.item_id}</td><td className="mono">{mapping.woo_product_id}</td><td className="mono">{mapping.woo_variation_id}</td><td className="mono">{mapping.woo_sku}</td><td>{mapping.mapping_source}</td><td>{mapping.active ? 'Yes' : 'No'}</td><td>{formatDateTime(mapping.updated_at)}</td></tr>
+        ))}
+        {mappings.length === 0 && <tr><td colSpan={7}><div className="empty-table-row">No active local remap records yet.</div></td></tr>}
+      </TableShell>
+    </div>
   );
 }
 
@@ -3934,6 +6487,71 @@ function emptyReceivedInventoryFilters() {
   };
 }
 
+function emptyFulfillmentReportFilters() {
+  return {
+    dateFrom: '',
+    dateTo: '',
+    warehouse: '',
+    inventoryLocation: '',
+    sku: '',
+    barcode: '',
+    category: '',
+    brand: '',
+    fulfillmentNumber: '',
+    wooOrderNumber: '',
+    customerEmail: '',
+    localStatus: '',
+    createdBy: '',
+  };
+}
+
+function emptySkuOrdersFilters() {
+  return {
+    startDate: '',
+    endDate: '',
+    sku: '',
+    brand: '',
+    category: '',
+    orderStatus: '',
+    wooStatus: '',
+    includeUnmatched: true,
+    groupBy: 'sku',
+  };
+}
+
+function emptyCompletedOrderFilters() {
+  return {
+    localStatus: '',
+    dateFrom: '',
+    dateTo: '',
+    customerEmail: '',
+    wooOrderNumber: '',
+    sku: '',
+    barcode: '',
+    search: '',
+  };
+}
+
+function emptyRouteCandidateFilters() {
+  return {
+    localStatus: '',
+    customerEmail: '',
+    wooOrderNumber: '',
+    search: '',
+  };
+}
+
+function emptyRouteFilters() {
+  return {
+    status: '',
+    dateFrom: '',
+    dateTo: '',
+    driverName: '',
+    vehicleName: '',
+    search: '',
+  };
+}
+
 function toNumber(value) {
   if (value === null || value === undefined || value === '') {
     return 0;
@@ -4081,6 +6699,40 @@ async function exportReceivedInventoryCsv(filters) {
   URL.revokeObjectURL(url);
 }
 
+async function exportFulfillmentReportCsv(filters) {
+  const response = await fetch(`${API_BASE_URL}/api/reports/fulfillments/export${plainFiltersToQueryString(fulfillmentReportFiltersToApi(filters))}`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export fulfillment report from the backend. Start the FastAPI server and try again.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'pongo-fulfillment-report.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+async function exportSkuOrdersCsv(filters) {
+  const response = await fetch(`${API_BASE_URL}/api/reports/sku-orders/export${plainFiltersToQueryString(skuOrdersFiltersToApi(filters))}`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export SKU Orders report from the backend.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'pongo-sku-orders-report.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 async function exportOpenOrdersCsv(filters) {
   const response = await fetch(`${API_BASE_URL}/api/orders/open/export${plainFiltersToQueryString(openOrderFiltersToApi(filters))}`);
   if (!response.ok) {
@@ -4092,6 +6744,91 @@ async function exportOpenOrdersCsv(filters) {
   const link = document.createElement('a');
   link.href = url;
   link.download = 'pongo-open-orders-export.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+async function exportCompletedOrdersCsv(filters) {
+  const response = await fetch(`${API_BASE_URL}/api/orders/completed/export${plainFiltersToQueryString(completedOrderFiltersToApi(filters))}`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export completed orders from the backend. Start the FastAPI server and try again.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'pongo-completed-orders-export.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+async function exportAllocationCsv(allocationId, allocationNumber) {
+  const response = await fetch(`${API_BASE_URL}/api/allocations/${allocationId}/export`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export allocation from the backend.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `pongo-allocation-${allocationNumber || allocationId}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+async function exportPickCsv(pickId, pickNumber) {
+  const response = await fetch(`${API_BASE_URL}/api/picks/${pickId}/export`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export pick from the backend.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `pongo-pick-${pickNumber || pickId}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+async function exportFulfillmentCsv(fulfillmentId, fulfillmentNumber) {
+  const response = await fetch(`${API_BASE_URL}/api/fulfillments/${fulfillmentId}/export`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export fulfillment from the backend.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `pongo-fulfillment-${fulfillmentNumber || fulfillmentId}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+async function exportRouteCsv(routeId, routeNumber) {
+  const response = await fetch(`${API_BASE_URL}/api/routes/${routeId}/export`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export route CSV from the backend.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `pongo-route-${routeNumber || routeId}.csv`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -4132,6 +6869,25 @@ async function uploadImportFile(path, file) {
 async function postJson(path, payload) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const body = await response.json();
+      detail = body.detail?.errors?.join(' ') || JSON.stringify(body.detail || body);
+    } catch {
+      detail = await safeResponseText(response);
+    }
+    throw new Error(detail || `API returned ${response.status}`);
+  }
+  return response.json();
+}
+
+async function patchJson(path, payload) {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
@@ -4306,6 +7062,38 @@ function receivedInventoryFiltersToApi(filters = {}) {
   };
 }
 
+function fulfillmentReportFiltersToApi(filters = {}) {
+  return {
+    date_from: filters.dateFrom,
+    date_to: filters.dateTo,
+    warehouse: filters.warehouse,
+    inventory_location: filters.inventoryLocation,
+    sku: filters.sku,
+    barcode: filters.barcode,
+    category: filters.category,
+    brand: filters.brand,
+    fulfillment_number: filters.fulfillmentNumber,
+    woo_order_number: filters.wooOrderNumber,
+    customer_email: filters.customerEmail,
+    local_status: filters.localStatus,
+    created_by: filters.createdBy,
+  };
+}
+
+function skuOrdersFiltersToApi(filters = {}) {
+  return {
+    start_date: filters.startDate,
+    end_date: filters.endDate,
+    sku: filters.sku,
+    brand: filters.brand,
+    category: filters.category,
+    order_status: filters.orderStatus,
+    woo_status: filters.wooStatus,
+    include_unmatched: filters.includeUnmatched !== false,
+    group_by: filters.groupBy || 'sku',
+  };
+}
+
 function openOrderFiltersToApi(filters = {}) {
   return {
     search: filters.search,
@@ -4315,11 +7103,57 @@ function openOrderFiltersToApi(filters = {}) {
   };
 }
 
+function completedOrderFiltersToApi(filters = {}) {
+  return {
+    local_status: filters.localStatus,
+    date_from: filters.dateFrom,
+    date_to: filters.dateTo,
+    customer_email: filters.customerEmail,
+    woo_order_number: filters.wooOrderNumber,
+    sku: filters.sku,
+    barcode: filters.barcode,
+    search: filters.search,
+  };
+}
+
+function routeCandidateFiltersToApi(filters = {}) {
+  return {
+    local_status: filters.localStatus,
+    customer_email: filters.customerEmail,
+    woo_order_number: filters.wooOrderNumber,
+    search: filters.search,
+  };
+}
+
+function routeFiltersToApi(filters = {}) {
+  return {
+    status: filters.status,
+    date_from: filters.dateFrom,
+    date_to: filters.dateTo,
+    driver_name: filters.driverName,
+    vehicle_name: filters.vehicleName,
+    search: filters.search,
+  };
+}
+
+function normalizeStopDraft(draft) {
+  return {
+    delivery_notes: draft.delivery_notes || '',
+    internal_notes: draft.internal_notes || '',
+    latitude: draft.latitude === '' || draft.latitude == null ? null : Number(draft.latitude),
+    longitude: draft.longitude === '' || draft.longitude == null ? null : Number(draft.longitude),
+  };
+}
+
 function formatAddressSummary(summary) {
   if (!summary) {
     return 'No shipping address';
   }
-  return [summary.address_1, summary.address_2, summary.city, summary.state, summary.postcode, summary.country].filter(Boolean).join(', ') || 'No shipping address';
+  return [summary.address_1, summary.address_2, summary.city, summary.state, summary.postcode || summary.zip, summary.country].filter(Boolean).join(', ') || 'No shipping address';
+}
+
+function todayDateInput() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function itemToApiPayload(item) {

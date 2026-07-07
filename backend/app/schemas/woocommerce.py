@@ -186,3 +186,84 @@ class WooCommerceSyncRunDetail(WooCommerceSyncRunRead):
 class WooCommerceSyncRunListResponse(BaseModel):
     sync_runs: list[WooCommerceSyncRunRead]
     total: int
+
+
+class WooRemapItemSummary(BaseModel):
+    item_id: int
+    sku: str | None = None
+    barcode: str | None = None
+    description: str | None = None
+    brand: str | None = None
+    category: str | None = None
+    woo_product_id: int | None = None
+    woo_variation_id: int | None = None
+
+
+class WooRemapRemoteSummary(BaseModel):
+    woo_product_id: int
+    woo_variation_id: int | None = None
+    woo_sku: str | None = None
+    woo_name: str | None = None
+    reason: str = "manual_review"
+
+
+class WooRemapMappingRead(BaseModel):
+    id: int
+    item_id: int
+    woo_product_id: int
+    woo_variation_id: int | None = None
+    woo_sku: str | None = None
+    woo_name: str | None = None
+    mapping_source: str
+    confidence: float | None = None
+    active: bool
+    note: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WooRemapCandidate(BaseModel):
+    remote: WooRemapRemoteSummary
+    current_mapping: WooRemapMappingRead | None = None
+    suggested_items: list[WooRemapItemSummary] = []
+
+
+class WooRemapCandidateListResponse(BaseModel):
+    candidates: list[WooRemapCandidate]
+    total: int
+
+
+class WooRemapPreviewRequest(BaseModel):
+    woo_product_id: int
+    woo_variation_id: int | None = None
+    item_id: int
+
+
+class WooRemapPreviewResponse(BaseModel):
+    remote: WooRemapRemoteSummary
+    item: WooRemapItemSummary
+    current_mapping: WooRemapMappingRead | None = None
+    proposed_mapping: dict
+    warnings: list[str] = []
+    safe_message: str
+
+
+class WooRemapCommitRequest(WooRemapPreviewRequest):
+    note: str | None = None
+
+
+class WooRemapCommitResponse(BaseModel):
+    status: str
+    mapping: WooRemapMappingRead
+    warnings: list[str] = []
+    safe_message: str
+
+
+class WooRemapMappingListResponse(BaseModel):
+    mappings: list[WooRemapMappingRead]
+    total: int
+
+
+class WooRemapDeactivateRequest(BaseModel):
+    mapping_id: int
+    note: str | None = None

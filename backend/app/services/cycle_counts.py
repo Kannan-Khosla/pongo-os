@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.cycle_counts import CycleCount, CycleCountLine
-from app.models.inventory import InventoryItem, InventoryLocation, MovementType, StockMovement
+from app.models.inventory import InventoryItem, InventoryItemLocation, InventoryLocation
 from app.schemas.cycle_counts import (
     CycleCountDetail,
     CycleCountLineRead,
@@ -17,7 +17,7 @@ from app.schemas.cycle_counts import (
     CycleCountRequest,
 )
 from app.services.calculations import calculate_inventory_value
-from app.services.items import apply_calculated_fields
+from app.services.location_inventory import cycle_count_location, find_item_location
 
 CYCLE_COUNT_EXPORT_COLUMNS = [
     "Count Number",
@@ -42,6 +42,7 @@ CYCLE_COUNT_EXPORT_COLUMNS = [
 class ValidatedCycleCountLine:
     line_number: int
     item: InventoryItem | None
+    item_location: InventoryItemLocation | None
     warehouse: str
     inventory_location: str | None
     counted_quantity: Decimal
@@ -97,9 +98,10 @@ def validate_cycle_count(payload: CycleCountRequest, db: Session) -> tuple[list[
 
         item, item_errors = find_cycle_count_item(db, line.item_id, line.sku, line.barcode)
         line_errors.extend(item_errors)
-        system_quantity = item.in_stock if item is not None else Decimal("0")
-        unit_cost = item.unit_cost if item is not None and item.unit_cost is not None else Decimal("0")
         line_location = inventory_location or (item.inventory_location if item is not None else None)
+        item_location = find_item_location(db, item.id, warehouse, line_location) if item is not None else None
+        system_quantity = item_location.in_stock if item_location is not None else Decimal("0")
+        unit_cost = item.unit_cost if item is not None and item.unit_cost is not None else Decimal("0")
         if location is not None:
             line_location = location.location_code or location.location_name or inventory_location
 
@@ -107,6 +109,7 @@ def validate_cycle_count(payload: CycleCountRequest, db: Session) -> tuple[list[
             ValidatedCycleCountLine(
                 line_number=index,
                 item=item,
+                item_location=item_location,
                 warehouse=warehouse,
                 inventory_location=line_location,
                 counted_quantity=counted_quantity,
@@ -131,6 +134,7 @@ def build_cycle_count_preview(payload: CycleCountRequest, db: Session) -> CycleC
             CycleCountPreviewLine(
                 line_number=line.line_number,
                 item_id=item.id if item else None,
+                inventory_item_location_id=line.item_location.id if line.item_location else None,
                 sku=item.sku if item else None,
                 barcode=item.barcode if item else None,
                 description=item.description if item else None,
@@ -188,16 +192,28 @@ def commit_cycle_count(payload: CycleCountRequest, db: Session) -> tuple[CycleCo
     created_movements = 0
     for line in lines:
         item = db.get(InventoryItem, line.item.id)
-        system_quantity = item.in_stock or Decimal("0")
+        line_location = (payload.inventory_location or "").strip() or line.inventory_location or item.inventory_location
+        change = cycle_count_location(
+            db,
+            item,
+            (payload.warehouse or "").strip(),
+            line_location,
+            line.counted_quantity,
+            reference_number=count.count_number,
+            reference_id=count.id,
+            notes=line.notes or payload.notes,
+            created_by=payload.created_by or "system",
+        )
+        system_quantity = change.old_location_stock
         counted_quantity = line.counted_quantity
         variance_quantity = counted_quantity - system_quantity
         unit_cost = item.unit_cost or Decimal("0")
         variance_value = calculate_inventory_value(variance_quantity, unit_cost)
-        line_location = (payload.inventory_location or "").strip() or item.inventory_location
         db.add(
             CycleCountLine(
                 cycle_count_id=count.id,
                 item_id=item.id,
+                inventory_item_location_id=change.item_location.id,
                 sku=item.sku,
                 barcode=item.barcode,
                 description=item.description,
@@ -212,30 +228,6 @@ def commit_cycle_count(payload: CycleCountRequest, db: Session) -> tuple[CycleCo
             )
         )
         if variance_quantity != 0:
-            item.in_stock = counted_quantity
-            apply_calculated_fields(item)
-            db.add(item)
-            db.add(
-                StockMovement(
-                    inventory_item_id=item.id,
-                    inventory_location_id=None,
-                    sku=item.sku,
-                    barcode=item.barcode,
-                    movement_type=MovementType.cycle_count_adjustment,
-                    quantity_change=variance_quantity,
-                    old_stock=system_quantity,
-                    new_stock=counted_quantity,
-                    warehouse=(payload.warehouse or "").strip(),
-                    inventory_location_name=line_location,
-                    reference_number=count.count_number,
-                    unit_cost=unit_cost,
-                    reason="Cycle count adjustment",
-                    notes=line.notes or payload.notes,
-                    reference_type="cycle_count",
-                    reference_id=count.id,
-                    created_by=payload.created_by or "system",
-                )
-            )
             created_movements += 1
 
     db.commit()
@@ -340,6 +332,7 @@ def cycle_count_to_detail(count: CycleCount) -> CycleCountDetail:
         CycleCountLineRead(
             id=line.id,
             item_id=line.item_id,
+            inventory_item_location_id=line.inventory_item_location_id,
             sku=line.sku,
             barcode=line.barcode,
             description=line.description,

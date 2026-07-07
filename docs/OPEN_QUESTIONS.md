@@ -5,6 +5,7 @@
 - Should manual item creation push to WooCommerce later, or remain local-only?
 - Which WooCommerce order statuses count as open?
 - Which map provider should be used: Google Maps, Google Routes API, Mapbox, OpenRouteService, or another provider?
+- Should route optimization start/end at the warehouse, only optimize customer stops, or support both modes?
 - Should WooCommerce stock updates be automatic, queued for approval, or disabled until manually triggered?
 - Does tracking number come from a WooCommerce plugin/meta field, and if so which one?
 - What staff auth roles are required for MVP?

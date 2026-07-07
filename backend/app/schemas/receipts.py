@@ -27,6 +27,7 @@ class DirectReceiptRequest(BaseModel):
 class DirectReceiptLinePreview(BaseModel):
     line_number: int
     item_id: int | None = None
+    inventory_item_location_id: int | None = None
     sku: str | None = None
     barcode: str | None = None
     description: str | None = None
@@ -35,6 +36,10 @@ class DirectReceiptLinePreview(BaseModel):
     quantity_received: float
     previous_in_stock: float
     new_in_stock: float
+    previous_location_in_stock: float | None = None
+    new_location_in_stock: float | None = None
+    previous_item_in_stock: float | None = None
+    new_item_in_stock: float | None = None
     unit_cost: float
     line_value: float
     status: str
@@ -67,6 +72,7 @@ class DirectReceiptCommitResponse(BaseModel):
 class ReceiptLineRead(BaseModel):
     id: int
     item_id: int | None = None
+    inventory_item_location_id: int | None = None
     sku: str | None = None
     barcode: str | None = None
     description: str | None = None

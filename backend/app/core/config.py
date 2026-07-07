@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     woocommerce_order_sync_default_statuses: str = Field(default="processing,on-hold", validation_alias=AliasChoices("WOOCOMMERCE_ORDER_SYNC_DEFAULT_STATUSES", "woocommerce_order_sync_default_statuses"))
     map_provider: str = Field(default="", validation_alias=AliasChoices("MAP_PROVIDER", "map_provider"))
     map_api_key: str = Field(default="", validation_alias=AliasChoices("MAP_API_KEY", "map_api_key"))
+    route_geo_provider: str = Field(default="disabled", validation_alias=AliasChoices("ROUTE_GEO_PROVIDER", "route_geo_provider"))
+    route_map_provider: str = Field(default="disabled", validation_alias=AliasChoices("ROUTE_MAP_PROVIDER", "route_map_provider"))
+    route_optimization_provider: str = Field(default="disabled", validation_alias=AliasChoices("ROUTE_OPTIMIZATION_PROVIDER", "route_optimization_provider"))
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

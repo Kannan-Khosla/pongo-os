@@ -23,6 +23,7 @@ class CycleCountRequest(BaseModel):
 class CycleCountPreviewLine(BaseModel):
     line_number: int
     item_id: int | None = None
+    inventory_item_location_id: int | None = None
     sku: str | None = None
     barcode: str | None = None
     description: str | None = None
@@ -69,6 +70,7 @@ class CycleCountCommitResponse(BaseModel):
 class CycleCountLineRead(BaseModel):
     id: int
     item_id: int
+    inventory_item_location_id: int | None = None
     sku: str | None = None
     barcode: str | None = None
     description: str | None = None

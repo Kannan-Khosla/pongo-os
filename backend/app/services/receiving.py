@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.inventory import InventoryItem, InventoryLocation, MovementType, StockMovement
+from app.models.inventory import InventoryItem, InventoryItemLocation, InventoryLocation
 from app.models.receipts import Receipt, ReceiptItem
 from app.schemas.receipts import (
     DirectReceiptLinePreview,
@@ -18,6 +18,7 @@ from app.schemas.receipts import (
 )
 from app.services.calculations import calculate_inventory_value
 from app.services.items import apply_calculated_fields
+from app.services.location_inventory import find_item_location, receive_to_location
 
 
 @dataclass
@@ -25,6 +26,7 @@ class ValidatedReceivingLine:
     line_number: int
     item: InventoryItem | None
     location: InventoryLocation | None
+    item_location: InventoryItemLocation | None
     warehouse: str
     inventory_location: str
     default_location: str | None
@@ -65,6 +67,7 @@ def validate_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple
         item, item_errors = find_receiving_item(db, line.item_id, line.sku, line.barcode)
         line_errors.extend(item_errors)
         location = find_active_location(db, warehouse, inventory_location) if warehouse and inventory_location else None
+        item_location = find_item_location(db, item.id, warehouse, inventory_location) if item is not None else None
         if warehouse and inventory_location and location is None:
             line_errors.append("Inventory Location must exist and be active for the selected warehouse.")
         if item is not None and item.unit_cost in (None, Decimal("0")) and unit_cost > 0:
@@ -75,6 +78,7 @@ def validate_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple
                 line_number=index,
                 item=item,
                 location=location,
+                item_location=item_location,
                 warehouse=warehouse,
                 inventory_location=inventory_location,
                 default_location=(line.default_location or inventory_location or "").strip() or None,
@@ -98,8 +102,10 @@ def build_direct_receipt_preview(payload: DirectReceiptRequest, db: Session) -> 
     errors = [*receipt_errors]
 
     for line in lines:
-        previous_stock = line.item.in_stock if line.item is not None else Decimal("0")
-        new_stock = previous_stock + line.quantity_received if line.item is not None else Decimal("0")
+        previous_item_stock = line.item.in_stock if line.item is not None else Decimal("0")
+        new_item_stock = previous_item_stock + line.quantity_received if line.item is not None else Decimal("0")
+        previous_location_stock = line.item_location.in_stock if line.item_location is not None else Decimal("0")
+        new_location_stock = previous_location_stock + line.quantity_received if line.item is not None else Decimal("0")
         line_value = line.quantity_received * line.unit_cost
         if line.is_valid:
             total_quantity += line.quantity_received
@@ -109,14 +115,19 @@ def build_direct_receipt_preview(payload: DirectReceiptRequest, db: Session) -> 
             DirectReceiptLinePreview(
                 line_number=line.line_number,
                 item_id=line.item.id if line.item else None,
+                inventory_item_location_id=line.item_location.id if line.item_location else None,
                 sku=line.item.sku if line.item else None,
                 barcode=line.item.barcode if line.item else None,
                 description=line.item.description if line.item else None,
                 warehouse=line.warehouse,
                 inventory_location=line.inventory_location,
                 quantity_received=float(line.quantity_received),
-                previous_in_stock=float(previous_stock),
-                new_in_stock=float(new_stock),
+                previous_in_stock=float(previous_location_stock),
+                new_in_stock=float(new_location_stock),
+                previous_location_in_stock=float(previous_location_stock),
+                new_location_in_stock=float(new_location_stock),
+                previous_item_in_stock=float(previous_item_stock),
+                new_item_in_stock=float(new_item_stock),
                 unit_cost=float(line.unit_cost),
                 line_value=float(line_value),
                 status="valid" if line.is_valid else "invalid",
@@ -165,20 +176,28 @@ def commit_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple[R
     movement_count = 0
     for line in lines:
         item = line.item
-        previous_stock = item.in_stock or Decimal("0")
-        new_stock = previous_stock + line.quantity_received
-        item.in_stock = new_stock
-        item.warehouse = line.warehouse
-        item.inventory_location = line.inventory_location
+        change = receive_to_location(
+            db,
+            item,
+            line.warehouse,
+            line.inventory_location,
+            line.quantity_received,
+            unit_cost=line.unit_cost,
+            reference_number=receipt.receipt_number,
+            reference_type="direct_receipt",
+            reference_id=receipt.id,
+            notes=line.notes,
+            created_by=payload.created_by or "system",
+        )
         item.default_location = line.default_location or item.default_location
         apply_calculated_fields(item)
-        db.add(item)
 
         line_value = line.quantity_received * line.unit_cost
         receipt_item = ReceiptItem(
             receipt_id=receipt.id,
             inventory_item_id=item.id,
             inventory_location_id=line.location.id if line.location else None,
+            inventory_item_location_id=change.item_location.id,
             sku=item.sku,
             category=item.category,
             description=item.description,
@@ -194,6 +213,7 @@ def commit_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple[R
             lot_number=line.lot_number,
             expiration_date=line.expiry_date,
             warehouse=line.warehouse,
+            inventory_location_name=line.inventory_location,
             default_location=line.default_location,
             received_date=now.date(),
             po_or_receipt_number=receipt.receipt_number,
@@ -201,27 +221,6 @@ def commit_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple[R
             notes=line.notes,
         )
         db.add(receipt_item)
-        db.add(
-            StockMovement(
-                inventory_item_id=item.id,
-                inventory_location_id=line.location.id if line.location else None,
-                sku=item.sku,
-                barcode=item.barcode,
-                movement_type=MovementType.receive_direct,
-                quantity_change=line.quantity_received,
-                old_stock=previous_stock,
-                new_stock=new_stock,
-                warehouse=line.warehouse,
-                inventory_location_name=line.inventory_location,
-                reference_number=receipt.receipt_number,
-                unit_cost=line.unit_cost,
-                reason="Direct receiving without PO",
-                notes=line.notes,
-                reference_type="direct_receipt",
-                reference_id=receipt.id,
-                created_by=payload.created_by or "system",
-            )
-        )
         total_quantity += line.quantity_received
         total_value += calculate_inventory_value(line.quantity_received, line.unit_cost)
         movement_count += 1
@@ -286,11 +285,12 @@ def receipt_to_detail(receipt: Receipt) -> ReceiptDetail:
         ReceiptLineRead(
             id=item.id,
             item_id=item.inventory_item_id,
+            inventory_item_location_id=item.inventory_item_location_id,
             sku=item.sku,
             barcode=item.inventory_item.barcode if item.inventory_item else None,
             description=item.description,
             warehouse=item.warehouse,
-            inventory_location=item.inventory_location.location_code if item.inventory_location else None,
+            inventory_location=item.inventory_location_name or (item.inventory_location.location_code if item.inventory_location else None),
             default_location=item.default_location,
             quantity_received=float(item.quantity_received or item.quantity or Decimal("0")),
             unit_cost=float(item.unit_cost) if item.unit_cost is not None else None,

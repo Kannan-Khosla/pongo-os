@@ -1,77 +1,67 @@
 # Pongo Inventory OS
 
-Pongo Inventory OS is a standalone inventory and operations management system for Pongo Pet Supplies.
+Pongo Inventory OS is a standalone internal inventory and operations system for Pongo Pet Supplies. It is the operational inventory layer beside WooCommerce: WooCommerce remains the customer-facing storefront, while Pongo OS manages local item data, stock workflows, fulfillment, reports, and routes.
 
-It is intended to become a lightweight Zenventory replacement tailored to Pongo's real workflow: item management, WooCommerce product and variation sync, locations, direct receiving, cycle count, order allocation/picking, reports, and route planning.
+This is not a WordPress plugin, not a WooCommerce plugin, and not a shortcode app.
 
-## Why This Exists
-
-Pongo needs an operational inventory layer that is separate from the storefront. WooCommerce should remain the customer-facing product and order system, while Pongo Inventory OS manages internal inventory operations in its own PostgreSQL database.
-
-## Standalone Architecture
-
-This project is not a WordPress plugin, not a WooCommerce plugin, and not a shortcode app inside WordPress. It will be a standalone full-stack application that integrates with WooCommerce through the WooCommerce REST API.
-
-The frontend must read from the local backend/database. It must never call WooCommerce directly.
-
-## Target Stack
+## Stack
 
 - Backend: FastAPI
-- Database: PostgreSQL
 - ORM: SQLAlchemy
 - Migrations: Alembic
-- Frontend: React
-- Deployment target: Heroku
-- External integration: WooCommerce REST API
-- CSV import/export: backend-driven
-- Auth: internal staff login, starting simple for MVP
+- Local dev DB: SQLite
+- Target production DB: PostgreSQL
+- Frontend: React with Vite
+- Deployment target: Heroku later
+- WooCommerce integration: backend-only WooCommerce REST API
 
-## Main Modules
+## Current Modules
 
-- Items
-- WooCommerce product and variation sync
-- Refresh and remap
-- Bulk product import/export
-- Manual product create/edit
-- Locations and stock by location
+Implemented locally:
+- Command Center dashboard
+- Persistent Items
+- Zenventory-compatible item CSV import/export
+- Locations and inventory by location reporting/export
+- Stock by Location v2 with item-location source-of-truth rows
 - Direct receiving without purchase orders
 - Received inventory report
-- Inventory export and inventory export by location
-- Open orders, allocate orders, and pick orders
 - Cycle count
-- Fulfillment export
-- SKU/barcode order report
-- Route creation and route optimization
+- Read-only WooCommerce product/variation sync
+- Local WooCommerce remap metadata
+- Read-only WooCommerce order sync and open orders
+- Allocation
+- Scanner-style picking and pick history
+- Fulfillment/completion
+- Inventory transfers and stock adjustments
+- Fulfillment report
+- Completed orders export
+- SKU Orders report
+- Local-only route creation, metadata edit, stop reorder, map payload, disabled geocode/optimization architecture
 
-## Safety Rules
+Not implemented yet:
+- Staff auth/login
+- Live WooCommerce stock or order-status writeback
+- Real map/geocoding/routing provider calls
+- Heroku production deployment files
+- Supplier management, purchase orders, delivery issue logs, customer notifications, and shipping labels
 
-- No credentials should be committed.
-- WooCommerce credentials must only live in backend environment variables.
+## Safety Boundaries
+
+- Do not commit credentials, API keys, secrets, or real customer data.
+- WooCommerce credentials live only in backend environment variables.
 - Frontend code must never call WooCommerce directly.
-- Every stock-changing action must create a stock movement/audit row.
-- Do not update live WooCommerce stock until read-only sync and local workflows are stable.
-- Every WooCommerce simple product and every WooCommerce variation becomes its own inventory item.
+- WooCommerce sync is read-only unless explicitly approved later.
+- WooCommerce stock is stored only as a read-only snapshot.
+- Pongo OS local inventory is the operational source of truth.
+- Location stock rows are the operational quantity source; item stock fields
+  are cached aggregates for compatibility and fast display.
+- Stock-changing local workflows must create stock movement or audit rows.
+- Route, dashboard, report, remap, and metadata work must not mutate stock quantities.
+- Map/geocoding/optimization providers are disabled unless configured backend-side.
 
-## Build Phases
+## Local Setup
 
-This repository starts with documentation and structure only. The detailed phased plan lives in [docs/BUILD_PLAN.md](docs/BUILD_PLAN.md).
-
-## Local Development Status
-
-The frontend admin shell is scaffolded in `frontend/` as a Vite React app.
-It currently contains placeholder screens only and does not connect to the backend,
-WooCommerce, or live inventory logic.
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-The backend foundation is scaffolded in `backend/` as a FastAPI app with
-SQLAlchemy models, Alembic migration setup, PostgreSQL configuration, placeholder
-API routers, and tests. It does not connect to WooCommerce and does not implement
-stock-changing workflows yet.
+Backend:
 
 ```bash
 cd backend
@@ -79,30 +69,46 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+DATABASE_URL=sqlite:///local_items_dev.db .venv/bin/alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-Health check:
+Frontend:
 
 ```bash
-curl http://127.0.0.1:8000/health
+cd frontend
+npm install
+npm run dev
 ```
 
-Run backend tests:
+Local URLs:
+- Frontend: http://127.0.0.1:5173
+- Backend: http://127.0.0.1:8000
+- Health check: http://127.0.0.1:8000/health
+
+## Tests And Builds
+
+Backend tests:
 
 ```bash
-cd backend
-.venv/bin/python -m pytest
+backend/.venv/bin/pytest backend/tests -q
 ```
 
-Run the initial Alembic migration against a local PostgreSQL database after
-creating `pongo_inventory_os` and configuring `backend/.env`:
+Frontend build:
 
 ```bash
-cd backend
-.venv/bin/alembic upgrade head
+cd frontend
+npm run build
 ```
 
-The current backend route implementations are intentionally structural only.
-WooCommerce sync, receiving, allocation, picking, route optimization, and real
-stock-changing business logic will be added in later tasks.
+## Environment
+
+Use placeholders only in `.env.example`. Real values belong in local or deployment environment variables.
+
+Route provider placeholders are intentionally disabled by default:
+
+```bash
+ROUTE_GEO_PROVIDER=disabled
+ROUTE_MAP_PROVIDER=disabled
+ROUTE_OPTIMIZATION_PROVIDER=disabled
+```

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -8,6 +8,14 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.woocommerce import WooCommerceSyncRun
 from app.schemas.woocommerce import (
+    WooRemapCandidateListResponse,
+    WooRemapCommitRequest,
+    WooRemapCommitResponse,
+    WooRemapDeactivateRequest,
+    WooRemapMappingListResponse,
+    WooRemapMappingRead,
+    WooRemapPreviewRequest,
+    WooRemapPreviewResponse,
     WooCommerceOrderCommitResponse,
     WooCommerceOrderPreviewResponse,
     WooCommerceOrderSyncRequest,
@@ -22,6 +30,7 @@ from app.schemas.woocommerce import (
 )
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.woocommerce_orders import commit_order_sync, preview_order_sync
+from app.services.woocommerce_remap import commit_remap, deactivate_mapping, list_mappings, list_remap_candidates, mapping_to_read, preview_remap
 from app.services.woocommerce_sync import commit_product_sync, preview_product_sync
 
 router = APIRouter(prefix="/integrations/woocommerce", tags=["woocommerce"])
@@ -137,8 +146,6 @@ def list_sync_runs(
 def get_sync_run(sync_run_id: int, db: Session = Depends(get_db)) -> WooCommerceSyncRunDetail:
     run = db.scalars(select(WooCommerceSyncRun).where(WooCommerceSyncRun.id == sync_run_id).options(selectinload(WooCommerceSyncRun.errors))).one_or_none()
     if run is None:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail="WooCommerce sync run not found")
     base = sync_run_to_read(run).model_dump()
     base["errors"] = [
@@ -157,6 +164,47 @@ def get_sync_run(sync_run_id: int, db: Session = Depends(get_db)) -> WooCommerce
         for error in run.errors
     ]
     return WooCommerceSyncRunDetail.model_validate(base)
+
+
+@router.get("/remap/candidates", response_model=WooRemapCandidateListResponse)
+def remap_candidates(search: str | None = None, limit: int = 100, db: Session = Depends(get_db)) -> WooRemapCandidateListResponse:
+    return list_remap_candidates(db, search=search, limit=limit)
+
+
+@router.post("/remap/preview", response_model=WooRemapPreviewResponse)
+def remap_preview(payload: WooRemapPreviewRequest, db: Session = Depends(get_db)) -> WooRemapPreviewResponse:
+    result = preview_remap(db, payload)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Local item not found")
+    return result
+
+
+@router.post("/remap/commit", response_model=WooRemapCommitResponse)
+def remap_commit(payload: WooRemapCommitRequest, db: Session = Depends(get_db)) -> WooRemapCommitResponse:
+    result = commit_remap(db, payload)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Local item not found")
+    return result
+
+
+@router.get("/remap/mappings", response_model=WooRemapMappingListResponse)
+def remap_mappings(
+    sku: str | None = None,
+    item_id: int | None = None,
+    woo_product_id: int | None = None,
+    mapping_source: str | None = None,
+    active: bool | None = True,
+    db: Session = Depends(get_db),
+) -> WooRemapMappingListResponse:
+    return list_mappings(db, sku=sku, item_id=item_id, woo_product_id=woo_product_id, mapping_source=mapping_source, active=active)
+
+
+@router.post("/remap/deactivate", response_model=WooRemapMappingRead)
+def remap_deactivate(payload: WooRemapDeactivateRequest, db: Session = Depends(get_db)) -> WooRemapMappingRead:
+    mapping = deactivate_mapping(db, payload.mapping_id, payload.note)
+    if mapping is None:
+        raise HTTPException(status_code=404, detail="Mapping not found")
+    return mapping_to_read(mapping)
 
 
 def sync_run_to_read(run: WooCommerceSyncRun) -> WooCommerceSyncRunRead:

@@ -454,21 +454,27 @@ def upsert_order_lines(db: Session, order: Order, record: NormalizedWooOrder, pr
         local_line.barcode = record_line.barcode
         local_line.description = record_line.name
         local_line.name = record_line.name
+        existing_allocated = local_line.quantity_allocated or Decimal("0")
+        existing_picked = local_line.quantity_picked or Decimal("0")
+        existing_fulfilled = local_line.quantity_fulfilled or Decimal("0")
         local_line.quantity_ordered = record_line.quantity_ordered
-        local_line.quantity_allocated = Decimal("0")
-        local_line.quantity_picked = Decimal("0")
+        local_line.quantity_allocated = existing_allocated
+        local_line.quantity_picked = existing_picked
+        local_line.quantity_fulfilled = existing_fulfilled
         local_line.ordered_qty = record_line.quantity_ordered
-        local_line.allocated_qty = Decimal("0")
-        local_line.picked_qty = Decimal("0")
+        local_line.allocated_qty = existing_allocated
+        local_line.picked_qty = existing_picked
+        local_line.fulfilled_qty = existing_fulfilled
         local_line.unit_price = record_line.unit_price
         local_line.line_subtotal = record_line.line_subtotal
         local_line.line_total = record_line.line_total
         local_line.line_tax = record_line.line_tax
         local_line.total_price = record_line.line_total
         local_line.matched_status = preview_line.matched_status if preview_line else "unknown"
-        local_line.availability_status = preview_line.availability_status if preview_line else "unknown"
+        local_line.availability_status = "allocated" if existing_allocated >= record_line.quantity_ordered else (preview_line.availability_status if preview_line else "unknown")
         local_line.sellable_snapshot = Decimal(str(preview_line.sellable_snapshot)) if preview_line else Decimal("0")
-        local_line.shortage_quantity = Decimal(str(preview_line.shortage_quantity)) if preview_line else record_line.quantity_ordered
+        remaining_after_allocation = max(record_line.quantity_ordered - existing_allocated, Decimal("0"))
+        local_line.shortage_quantity = max(remaining_after_allocation - local_line.sellable_snapshot, Decimal("0")) if preview_line else remaining_after_allocation
         local_line.sync_status = "synced" if preview_line and preview_line.matched_status == "matched" else "needs_review"
         local_line.sync_error = " ".join((preview_line.errors or preview_line.warnings) if preview_line else ["Preview line missing."])
         local_line.status = "open"
@@ -481,7 +487,7 @@ def list_open_orders(
     availability_status: str | None = None,
     matched_status: str | None = None,
 ) -> OpenOrderListResponse:
-    orders = list(db.scalars(select(Order).where(Order.local_status == "open").options(selectinload(Order.items)).order_by(Order.date_created.desc().nullslast(), Order.id.desc())).all())
+    orders = list(db.scalars(select(Order).where(Order.local_status.in_(["open", "partially_allocated", "allocated", "partially_picked", "picked", "partially_fulfilled", "fulfilled"])).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.date_created.desc().nullslast(), Order.id.desc())).all())
     rows = [order_to_read(order) for order in orders]
     if search:
         needle = search.casefold()
@@ -508,7 +514,7 @@ def list_open_orders(
 
 
 def get_open_order_detail(db: Session, order_id: int) -> OpenOrderDetail | None:
-    order = db.scalars(select(Order).where(Order.id == order_id).options(selectinload(Order.items))).one_or_none()
+    order = db.scalars(select(Order).where(Order.id == order_id).options(selectinload(Order.items).selectinload(OrderItem.inventory_item))).one_or_none()
     if order is None:
         return None
     base = order_to_read(order).model_dump()
@@ -562,11 +568,16 @@ def order_to_read(order: Order) -> OpenOrderRead:
 
 
 def order_line_reads(db: Session, order_id: int) -> list[OpenOrderLineRead]:
-    order = db.scalars(select(Order).where(Order.id == order_id).options(selectinload(Order.items))).one_or_none()
+    order = db.scalars(select(Order).where(Order.id == order_id).options(selectinload(Order.items).selectinload(OrderItem.inventory_item))).one_or_none()
     return [line_to_read(line) for line in order.items] if order else []
 
 
 def line_to_read(line: OrderItem) -> OpenOrderLineRead:
+    quantity_ordered = line.quantity_ordered or Decimal("0")
+    quantity_allocated = line.quantity_allocated or Decimal("0")
+    quantity_picked = line.quantity_picked or Decimal("0")
+    quantity_fulfilled = line.quantity_fulfilled or Decimal("0")
+    item_sellable = ((line.inventory_item.in_stock or Decimal("0")) - (line.inventory_item.allocated or Decimal("0"))) if line.inventory_item else Decimal("0")
     return OpenOrderLineRead(
         id=line.id,
         woo_line_item_id=line.woo_order_item_id,
@@ -576,13 +587,20 @@ def line_to_read(line: OrderItem) -> OpenOrderLineRead:
         sku=line.sku,
         barcode=line.barcode,
         name=line.name or line.description,
-        quantity_ordered=decimal_to_float(line.quantity_ordered) or 0,
-        quantity_allocated=decimal_to_float(line.quantity_allocated) or 0,
-        quantity_picked=decimal_to_float(line.quantity_picked) or 0,
+        quantity_ordered=decimal_to_float(quantity_ordered) or 0,
+        quantity_allocated=decimal_to_float(quantity_allocated) or 0,
+        quantity_picked=decimal_to_float(quantity_picked) or 0,
+        quantity_fulfilled=decimal_to_float(quantity_fulfilled) or 0,
+        remaining_to_allocate=decimal_to_float(max(quantity_ordered - quantity_allocated, Decimal("0"))) or 0,
+        remaining_to_pick=decimal_to_float(max(quantity_allocated - quantity_picked, Decimal("0"))) or 0,
+        remaining_to_fulfill=decimal_to_float(max(quantity_picked - quantity_fulfilled, Decimal("0"))) or 0,
+        picking_status="picked" if quantity_allocated > 0 and quantity_picked >= quantity_allocated else ("partial" if quantity_picked > 0 else "unpicked"),
+        fulfillment_status="fulfilled" if quantity_picked > 0 and quantity_fulfilled >= quantity_picked else ("partial" if quantity_fulfilled > 0 else "unfulfilled"),
         unit_price=decimal_to_float(line.unit_price),
         line_total=decimal_to_float(line.line_total),
         matched_status=line.matched_status,
         availability_status=line.availability_status,
+        local_sellable=decimal_to_float(item_sellable) or 0,
         sellable_snapshot=decimal_to_float(line.sellable_snapshot) or 0,
         shortage_quantity=decimal_to_float(line.shortage_quantity) or 0,
         sync_status=line.sync_status,
@@ -625,6 +643,8 @@ def aggregate_availability_status(lines) -> str:
         return "unknown"
     if "unknown" in statuses:
         return "unknown"
+    if all(status == "allocated" for status in statuses):
+        return "allocated"
     if "unavailable" in statuses:
         return "unavailable"
     if "partial" in statuses:

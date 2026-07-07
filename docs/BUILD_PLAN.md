@@ -1,5 +1,25 @@
 # Build Plan
 
+## MVP Hardening / Admin Upgrade
+
+Status: Completed for Command Center v1, local WooCommerce remap metadata,
+scanner-style Pick Orders UX, SKU Orders report, route metadata editing, stop
+reordering, local map payload, and disabled provider architecture for geocoding
+and optimization. Stock by Location v2, inventory transfers, and stock
+adjustments are also completed locally.
+
+Safety notes:
+- No WooCommerce writes.
+- No frontend WooCommerce calls.
+- No external map/geocoding/routing calls.
+- Dashboard, reports, remap, route metadata, route map, and route provider
+  preview/disabled endpoints do not mutate stock, allocation, picked,
+  fulfilled, or order status quantities.
+- Scanner picking reuses the existing pick commit path and still does not
+  reduce In Stock, Allocated, or Sellable.
+- `inventory_item_locations` is now the operational source for stock
+  quantities; `inventory_items` stock fields are cached aggregates.
+
 ## Phase 1: Repository Documentation and Structure
 
 Goal: Establish project rules, documentation, and empty top-level structure.
@@ -318,6 +338,13 @@ What not to build yet:
 
 Goal: Support three-stage order workflow.
 
+Status: In progress. Open Orders, Allocation foundation, and Picking foundation
+are implemented. Allocation preview and commit reserve local sellable inventory
+by increasing item Allocated, leave In Stock unchanged, update local order line
+allocation quantities/statuses, and create allocation audit events. Picking
+preview and commit record operational progress against allocated quantities by
+updating local order line picked quantities and creating pick audit events.
+
 Deliverables:
 - Open Orders
 - Allocate Orders
@@ -325,9 +352,22 @@ Deliverables:
 
 Acceptance criteria:
 - Allocation uses sellable stock.
-- Picking prevents overpicking.
+- Allocation commit is atomic and cannot over-allocate.
+- Allocation creates allocation records, allocation lines, and
+  `inventory_audit_events`.
+- Picking uses already allocated quantities only.
+- Picking commit is atomic and cannot overpick allocated or remaining quantity.
+- Picking creates pick records, pick lines, and `inventory_audit_events`.
+- Open Orders exposes Remaining To Pick and picking status.
 
 Safety notes:
+- Allocation is local-only and never writes WooCommerce.
+- Allocation does not reduce In Stock and does not create stock movement rows.
+- Picking is local-only and never writes WooCommerce.
+- Picking does not reduce In Stock, reduce Allocated, or create stock movement
+  rows.
+- No route, PO, shipping label, customer notification, or supplier workflows are
+  included in the open/allocate/pick phase.
 - Every allocation/pick movement is audited.
 
 What not to build yet:
@@ -337,37 +377,100 @@ What not to build yet:
 
 Goal: Add order fulfillment exports.
 
+Status: In progress. Fulfillment/completion foundation is implemented for
+picked local orders. It previews picked quantities, posts local fulfillment
+records, reduces item In Stock and Allocated, recalculates Sellable/Under Par,
+updates order line fulfilled quantities, creates stock movement rows, and
+creates inventory audit events. Fulfillment does not write WooCommerce or add
+route, shipping label, notification, PO, or supplier workflows.
+Fulfillment Report and Completed Orders export are implemented as read-only
+audit/reporting surfaces.
+
 Deliverables:
-- Fulfillment export
+- Fulfillment preview/commit
+- Fulfillment records and fulfillment lines
+- Fulfillment CSV export
+- Fulfillment Report JSON/summary/CSV
+- Completed Orders JSON/CSV
 - SKU/barcode order report
 
 Acceptance criteria:
+- Fulfillment commit is atomic and cannot exceed picked, allocated, In Stock,
+  or remaining-to-fulfill quantities.
+- Fulfillment reduces both In Stock and Allocated.
+- Fulfillment creates `fulfill_order` stock movements and `fulfill` audit
+  events.
+- Fulfillment reports read from fulfillment lines and do not modify inventory.
+- Completed Orders export lists fulfilled and partially fulfilled local orders.
 - Reports export CSV.
 
 Safety notes:
-- Reports are read-only.
+- Fulfillment is local-only and never writes WooCommerce.
+- Fulfillment does not update WooCommerce order status or stock.
+- Fulfillment itself does not create routes, shipping labels, notifications,
+  purchase orders, or supplier workflows.
 
 What not to build yet:
-- Routes
+- Fulfillment-driven route auto-creation
+- Shipping labels
+- Notifications
 
 ## Phase 15: Route Creation
 
 Goal: Create routes from selected orders.
 
+Status: In progress / foundation completed.
+
 Deliverables:
-- Route and route stop models
-- Route creation UI
+- Route and route stop models: completed
+- Route creation migration: completed
+- Candidate list from completed local orders: completed
+- Route preview and commit endpoints: completed
+- Route list/detail/export/finalize/cancel endpoints: completed
+- Route creation UI: completed
 
 Acceptance criteria:
-- Staff can save selected order stops.
+- Staff can filter completed local orders and select route stops.
+- Staff can preview selected stops before writing a route.
+- Staff can save a local draft route from selected order stops.
+- Staff can list, view, export, finalize, and cancel local routes.
+- Cancelled routes preserve stops and allow the order to be routed again later.
 
 Safety notes:
 - No map keys in frontend.
+- No external maps, geocoding, routing, or route optimization calls.
+- No WooCommerce writes.
+- No WooCommerce order status changes.
+- No inventory quantity, allocation, sellable, or stock movement changes.
 
 What not to build yet:
 - Optimization provider
+- Delivery tracking
+- Shipping labels
+- Customer notifications
 
-## Phase 16: Route Optimization
+## Phase 16: Stock by Location v2, Transfers, and Adjustments
+
+Status: Completed locally.
+
+Deliverables:
+- Migration `20260707_0013_stock_by_location_v2_transfers.py`
+- Expanded `inventory_item_locations`
+- Extended stock movements and workflow line location references
+- Inventory transfer and stock adjustment tables
+- Central location inventory service
+- Item-location, location inventory, transfer, and adjustment APIs
+- Location-aware receiving, cycle count, allocation, pick, and fulfillment paths
+- Inventory UI location rows plus transfer/adjustment controls
+
+Safety notes:
+- No WooCommerce writes.
+- No frontend WooCommerce calls.
+- Transfers and adjustments are local only.
+- Stock-changing operations are transaction-scoped and audited with stock
+  movements or audit events.
+
+## Phase 17: Route Optimization
 
 Goal: Add provider-backed route optimization.
 

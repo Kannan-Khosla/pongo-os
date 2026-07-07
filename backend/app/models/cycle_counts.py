@@ -37,6 +37,7 @@ class CycleCountLine(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     cycle_count_id: Mapped[int] = mapped_column(ForeignKey("cycle_counts.id"), index=True, nullable=False)
     item_id: Mapped[int] = mapped_column(ForeignKey("inventory_items.id"), index=True, nullable=False)
+    inventory_item_location_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_item_locations.id"), index=True)
     sku: Mapped[str | None] = mapped_column(String(120), index=True)
     barcode: Mapped[str | None] = mapped_column(String(120), index=True)
     description: Mapped[str | None] = mapped_column(String(500))

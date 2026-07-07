@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -43,3 +43,24 @@ class WooCommerceSyncError(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     sync_run: Mapped[WooCommerceSyncRun] = relationship(back_populates="errors")
+
+
+class WooItemMapping(Base):
+    __tablename__ = "woo_item_mappings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("inventory_items.id"), index=True, nullable=False)
+    woo_product_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    woo_variation_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    woo_sku: Mapped[str | None] = mapped_column(String(120), index=True)
+    woo_name: Mapped[str | None] = mapped_column(String(500))
+    mapping_source: Mapped[str] = mapped_column(String(40), default="manual", nullable=False, index=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("item_id", "woo_product_id", "woo_variation_id", "active", name="uq_woo_item_mappings_item_remote_active"),
+    )

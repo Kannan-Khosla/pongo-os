@@ -1,10 +1,13 @@
-# Planned API Specification
+# API Specification
 
-This document describes planned backend endpoints. The backend now implements
-`/health`, backend-persistent Items CRUD/export/import, backend-persistent
-Locations CRUD/export/import, inventory by-location reporting/export, direct
-receiving without PO, and the read-only Received Inventory Report. Other workflow routers remain structural
-placeholders until their modules are built.
+This document describes the current Pongo Inventory OS backend API plus planned
+future boundaries. The backend implements health, Command Center dashboard,
+Items, item import/export, Locations, inventory by-location reporting/export,
+Stock by Location v2, inventory transfers, stock adjustments, direct receiving,
+received inventory reporting, cycle counts, read-only
+WooCommerce product and order sync, local WooCommerce remap metadata, open
+orders, allocations, scanner-style picks, fulfillments, completed orders, SKU
+Orders reporting, and local-only route creation/management.
 
 ## API Rules
 
@@ -13,6 +16,31 @@ placeholders until their modules are built.
 - WooCommerce credentials live only in backend environment variables.
 - Stock-changing endpoints must create stock movement/audit rows.
 - WooCommerce stock writeback is disabled until local workflows are stable and explicitly enabled.
+- Route map/geocoding/optimization providers are disabled unless configured
+  backend-side. Provider endpoints must never expose secrets.
+
+## Current API Groups
+
+- `GET /health`
+- Dashboard: `/api/dashboard`, `/api/dashboard/summary`, `/api/dashboard/activity`, `/api/dashboard/warnings`
+- Items and item CSV import/export: `/api/items`, `/api/items/import/*`
+- Import jobs: `/api/import-jobs`
+- Locations and location CSV import/export: `/api/locations`
+- Inventory reports/exports: `/api/inventory`
+- Location inventory: `/api/inventory/locations`, `/api/inventory/locations/export`
+- Inventory transfers: `/api/inventory/transfers`
+- Stock adjustments: `/api/inventory/adjustments`
+- Receipts/direct receiving: `/api/receipts`
+- Reports: `/api/reports/received-inventory`, `/api/reports/fulfillments`, `/api/reports/sku-orders`
+- Cycle counts: `/api/cycle-counts`
+- WooCommerce read-only product sync: `/api/integrations/woocommerce/products/*`
+- WooCommerce read-only order sync: `/api/integrations/woocommerce/orders/*`
+- WooCommerce local remap: `/api/integrations/woocommerce/remap/*`
+- Orders: `/api/orders/open`, `/api/orders/completed`, `/api/orders/{id}`
+- Allocations: `/api/allocations`
+- Picks and scanner picks: `/api/picks`
+- Fulfillments: `/api/fulfillments`
+- Routes: `/api/routes`
 
 ## Health
 
@@ -29,13 +57,78 @@ Current response:
 }
 ```
 
-## Current Placeholder Routers
+## Compatibility Note
 
-These routes are wired for frontend/API structure only. They do not perform
-business workflows, external calls, or database mutations yet.
+`GET /api/reports` remains a lightweight module index response. Workflow report
+endpoints are implemented under specific report paths.
 
-- `GET /api/reports`
-- `GET /api/routes`
+## Dashboard
+
+### GET /api/dashboard
+
+Returns Command Center data from local records only:
+- inventory health cards
+- order operations cards
+- route cards
+- recent activity
+- data quality warnings
+
+Aliases:
+- `GET /api/dashboard/summary`
+- `GET /api/dashboard/activity?limit=25`
+- `GET /api/dashboard/warnings`
+
+Dashboard endpoints are read-only.
+
+## WooCommerce Local Remap
+
+These endpoints never call or write WooCommerce. They only manage local mapping
+metadata and local item Woo ID metadata.
+
+- `GET /api/integrations/woocommerce/remap/candidates`
+- `POST /api/integrations/woocommerce/remap/preview`
+- `POST /api/integrations/woocommerce/remap/commit`
+- `GET /api/integrations/woocommerce/remap/mappings`
+- `POST /api/integrations/woocommerce/remap/deactivate`
+
+Remap preserves manual Pongo OS item fields and does not change stock,
+allocated, sellable, picked, fulfilled, or order status quantities.
+
+## Pick Scanner
+
+Scanner-style picking is additive on top of the existing pick commit service:
+
+- `GET /api/picks/orders/{order_id}/scanner`
+- `POST /api/picks/orders/{order_id}/scan/preview`
+- `POST /api/picks/orders/{order_id}/scan/commit`
+
+Scanner commit increments local picked quantity only through the existing pick
+audit path. It does not reduce `In Stock`, reduce `Allocated`, change
+`Sellable`, or write WooCommerce.
+
+## SKU Orders Report
+
+- `GET /api/reports/sku-orders`
+- `GET /api/reports/sku-orders/summary`
+- `GET /api/reports/sku-orders/export`
+
+This report is read-only over local order snapshots.
+
+## Route Local Management
+
+Local route management now includes:
+- `PATCH /api/routes/{route_id}`
+- `POST /api/routes/{route_id}/stops/reorder`
+- `PATCH /api/routes/{route_id}/stops/{stop_id}`
+- `GET /api/routes/{route_id}/map`
+- `POST /api/routes/{route_id}/geocode/preview`
+- `POST /api/routes/{route_id}/geocode/commit`
+- `POST /api/routes/{route_id}/optimize/preview`
+- `POST /api/routes/{route_id}/optimize/commit`
+
+Map/geocoding/optimization endpoints are provider-architecture endpoints. They
+do not expose keys and default to disabled/no-op behavior unless backend
+provider configuration is explicitly added later.
 
 ## Items
 
@@ -62,6 +155,37 @@ Returns canonical CSV-style field names plus internal display fields such as
 ### GET /api/items/{id}
 
 Return one item, including location stock summary.
+
+### GET /api/items/{id}/locations
+
+List stock-location rows for one item. These rows are the operational source for
+`In Stock`, `Allocated`, `Sellable`, and `On Order`.
+
+### POST /api/items/{id}/locations
+
+Create or activate an item-location row. This endpoint changes location
+metadata only; stock quantities must be changed through receiving, cycle count,
+fulfillment, transfer, or adjustment workflows.
+
+### PATCH /api/items/{id}/locations/{item_location_id}
+
+Update item-location metadata such as default flag, active flag, labels, and par
+level. This endpoint does not directly change stock.
+
+## Stock by Location v2
+
+- `GET /api/inventory/locations`
+- `GET /api/inventory/locations/export`
+- `POST /api/inventory/transfers`
+- `GET /api/inventory/transfers`
+- `GET /api/inventory/transfers/{id}`
+- `POST /api/inventory/adjustments`
+- `GET /api/inventory/adjustments`
+- `GET /api/inventory/adjustments/{id}`
+
+Transfers and adjustments are local-only. They create stock movements and keep
+item aggregate totals reconciled with active item-location rows. They do not
+write WooCommerce.
 
 ### POST /api/items
 
@@ -375,6 +499,342 @@ Return one local order with line-level match and availability detail.
 ### GET /api/orders/open/export
 
 Export filtered local open orders as CSV.
+
+### GET /api/orders/completed
+
+Read-only list of local orders whose `local_status` is `fulfilled` or
+`partially_fulfilled`.
+
+Filters:
+- `local_status`
+- `date_from`
+- `date_to`
+- `customer_email`
+- `woo_order_number`
+- `sku`
+- `barcode`
+- `search`
+
+Rows include Woo order identifiers/status, local status, customer name/email,
+order total, order dates, line count, fulfilled line count, total ordered,
+allocated, picked, fulfilled, remaining to fulfill, and fulfilled value.
+
+### GET /api/orders/completed/export
+
+Export completed/partially completed order lines as CSV using the same filters.
+
+CSV header order:
+- Woo Order Number
+- Woo Order ID
+- Woo Status
+- Local Status
+- Customer Name
+- Customer Email
+- Order Total
+- Line SKU
+- Line Barcode
+- Line Name
+- Quantity Ordered
+- Quantity Allocated
+- Quantity Picked
+- Quantity Fulfilled
+- Remaining To Fulfill
+- Fulfillment Status
+- Fulfilled Value
+- Date Created
+- Date Modified
+
+## Allocations
+
+Allocation reserves local Pongo OS sellable inventory for local open orders.
+Allocation is local-only: it does not write WooCommerce, reduce In Stock, pick
+orders, create routes, fulfill orders, or send notifications.
+
+### POST /api/allocations/preview
+
+Preview allocation recommendations for one or more local open orders.
+
+Request:
+- `order_ids`: local order IDs
+- `lines`: optional explicit order line quantities
+- `allocation_strategy`: `available_first` for the current MVP
+- `allow_partial`
+- `created_by`
+- `notes`
+
+Preview response includes:
+- `total_orders`
+- `total_lines`
+- `allocatable_lines`
+- `partial_lines`
+- `skipped_lines`
+- `conflict_lines`
+- `total_quantity_to_allocate`
+- `total_shortage_quantity`
+- `preview_orders`
+
+Preview does not update items, order lines, allocations, audit events, stock
+movements, or WooCommerce.
+
+### POST /api/allocations/commit
+
+Commit allocation after revalidating all selected lines.
+
+Commit behavior:
+- Creates a posted allocation header and allocation lines.
+- Increases local item `Allocated`.
+- Leaves local item `In Stock` unchanged.
+- Recalculates item `Sellable` and `Under Par`.
+- Updates local order line `quantity_allocated`.
+- Leaves `quantity_picked` unchanged.
+- Updates local order status to `open`, `partially_allocated`, or `allocated`.
+- Creates `inventory_audit_events` rows with `event_type = allocate`.
+- Does not create stock movement rows because allocation does not change
+  physical stock.
+- Never writes WooCommerce.
+
+Atomicity:
+- Commit revalidates current item sellable quantity and remaining order
+  quantity.
+- Requested quantity cannot exceed remaining order quantity.
+- Requested quantity cannot exceed current item Sellable.
+- Allocation cannot make item Allocated exceed item In Stock.
+- When `allow_partial` is false, any non-fully-allocatable selected line rejects
+  the entire commit.
+
+### GET /api/allocations
+
+List allocation history.
+
+Filters:
+- `status`
+- `allocation_type`
+- `order_id`
+- `woo_order_id`
+- `woo_order_number`
+- `date_from`
+- `date_to`
+- `created_by`
+
+### GET /api/allocations/{id}
+
+Return allocation header, lines, and audit event references.
+
+### GET /api/allocations/{id}/export
+
+Export one allocation as CSV.
+
+CSV columns:
+`Allocation Number`, `Status`, `Created At`, `Posted At`,
+`Woo Order Number`, `Order ID`, `SKU`, `Barcode`, `Description`, `Warehouse`,
+`Inventory Location`, `Quantity Ordered`, `Previously Allocated`,
+`Quantity Allocated`, `Allocated After`, `In Stock Before`,
+`Sellable Before`, `Sellable After`, `Shortage Quantity`, `Line Status`,
+`Notes`.
+
+## Picks
+
+Picking records operational progress against already allocated local order
+lines. Picking is local-only: it does not write WooCommerce, reduce local
+`In Stock`, reduce local `Allocated`, create routes, fulfill orders, or send
+notifications.
+
+### POST /api/picks/preview
+
+Preview pick recommendations for one or more allocated local orders.
+
+Request:
+- `order_ids`: local order IDs
+- `lines`: optional explicit order line quantities
+- `pick_strategy`: `allocated_first` for the current MVP
+- `allow_partial`
+- `created_by`
+- `notes`
+
+Preview response includes:
+- `total_orders`
+- `total_lines`
+- `pickable_lines`
+- `partial_lines`
+- `skipped_lines`
+- `conflict_lines`
+- `total_quantity_to_pick`
+- `warnings`
+- `errors`
+- `preview_orders`
+
+Line preview includes ordered quantity, allocated quantity, previously picked
+quantity, remaining to pick, recommended pick quantity, picked-after quantity,
+warehouse, inventory location, and pick status.
+
+Preview does not update items, order lines, picks, audit events, stock
+movements, or WooCommerce.
+
+### POST /api/picks/commit
+
+Commit picking after revalidating all selected lines.
+
+Commit behavior:
+- Creates a posted pick header and pick lines.
+- Updates local order line `quantity_picked` and legacy `picked_qty`.
+- Leaves local order line `quantity_allocated` unchanged.
+- Leaves item `In Stock`, `Allocated`, and `Sellable` unchanged.
+- Updates local order status to `partially_picked` or `picked` when applicable.
+- Creates `inventory_audit_events` rows with `event_type = pick`; previous and
+  new stock/allocation/sellable values are identical because picking is not a
+  stock movement.
+- Does not create stock movement rows.
+- Never writes WooCommerce.
+
+Atomicity:
+- Commit revalidates remaining quantity to pick.
+- Requested quantity cannot exceed allocated quantity.
+- Requested quantity cannot exceed allocated minus already picked.
+- When `allow_partial` is false, any non-fully-pickable selected line rejects
+  the entire commit.
+
+### GET /api/picks
+
+List pick history.
+
+Filters:
+- `status`
+- `pick_type`
+- `order_id`
+- `woo_order_id`
+- `woo_order_number`
+- `date_from`
+- `date_to`
+- `created_by`
+
+### GET /api/picks/{id}
+
+Return pick header, lines, and audit event references.
+
+### GET /api/picks/{id}/export
+
+Export one pick as CSV.
+
+CSV columns:
+`Pick Number`, `Status`, `Created At`, `Posted At`, `Woo Order Number`,
+`Order ID`, `SKU`, `Barcode`, `Description`, `Warehouse`,
+`Inventory Location`, `Quantity Ordered`, `Quantity Allocated`,
+`Previously Picked`, `Quantity Picked`, `Picked After`, `Remaining To Pick`,
+`Line Status`, `Notes`.
+
+## Fulfillments
+
+Fulfillment/completion records the local operational moment when picked items
+are completed and removed from physical available inventory. Fulfillment is
+local-only: it does not write WooCommerce, update WooCommerce order status,
+update WooCommerce stock/products, create routes, create shipping labels, send
+notifications, create purchase orders, or add supplier workflows.
+
+### POST /api/fulfillments/preview
+
+Preview fulfillment recommendations for one or more picked local orders.
+
+Request:
+- `order_ids`: local order IDs
+- `lines`: optional explicit order line quantities
+- `fulfillment_strategy`: `picked_first` for the current MVP
+- `allow_partial`
+- `created_by`
+- `notes`
+
+Preview response includes:
+- `total_orders`
+- `total_lines`
+- `fulfillable_lines`
+- `partial_lines`
+- `skipped_lines`
+- `conflict_lines`
+- `total_quantity_to_fulfill`
+- `warnings`
+- `errors`
+- `preview_orders`
+
+Line preview includes ordered, allocated, picked, previously fulfilled,
+remaining to fulfill, recommended fulfill quantity, fulfillment status, current
+item In Stock, Allocated, Sellable, warehouse, and inventory location.
+
+Preview does not update item quantities, order lines, fulfillment records,
+fulfillment lines, stock movements, audit events, or WooCommerce.
+
+### POST /api/fulfillments/commit
+
+Commit fulfillment after revalidating all selected lines.
+
+Commit behavior:
+- Creates a posted fulfillment header and fulfillment lines.
+- Updates local order line `quantity_fulfilled` and legacy `fulfilled_qty`.
+- Reduces local item `In Stock` by fulfilled quantity.
+- Reduces local item `Allocated` by fulfilled quantity.
+- Recalculates item `Sellable` and `Under Par`.
+- Updates local order status to `partially_fulfilled` or `fulfilled`.
+- Creates `stock_movements` rows with `movement_type = fulfill_order`.
+- Creates `inventory_audit_events` rows with `event_type = fulfill`.
+- Never writes WooCommerce.
+
+Atomicity:
+- Commit revalidates remaining quantity to fulfill.
+- Requested quantity cannot exceed picked quantity.
+- Requested quantity cannot exceed allocated quantity.
+- Requested quantity cannot exceed current item In Stock.
+- Requested quantity cannot exceed current item Allocated.
+- Fulfillment cannot make In Stock or Allocated negative.
+- Fulfillment cannot leave Allocated greater than In Stock.
+- When `allow_partial` is false, any non-fully-fulfillable selected line rejects
+  the entire commit.
+
+Stock movement rows:
+- `movement_type = fulfill_order`
+- `quantity_delta`/`quantity_change` is negative
+- `previous_in_stock`/`old_stock` is item In Stock before fulfillment
+- `new_in_stock`/`new_stock` is item In Stock after fulfillment
+- `reference_type = fulfillment`
+- `reference_id = fulfillments.id`
+- `reference_number = fulfillment_number`
+
+Audit event rows:
+- `event_type = fulfill`
+- `quantity_delta` is negative
+- previous/new In Stock, Allocated, and Sellable are captured
+- `reference_type = fulfillment`
+- `reference_id = fulfillments.id`
+- `reference_number = fulfillment_number`
+
+### GET /api/fulfillments
+
+List fulfillment history.
+
+Filters:
+- `status`
+- `fulfillment_type`
+- `order_id`
+- `woo_order_id`
+- `woo_order_number`
+- `date_from`
+- `date_to`
+- `created_by`
+
+### GET /api/fulfillments/{id}
+
+Return fulfillment header, lines, stock movement references, and audit event
+references.
+
+### GET /api/fulfillments/{id}/export
+
+Export one fulfillment as CSV.
+
+CSV columns:
+`Fulfillment Number`, `Status`, `Created At`, `Posted At`,
+`Woo Order Number`, `Order ID`, `SKU`, `Barcode`, `Description`, `Warehouse`,
+`Inventory Location`, `Quantity Ordered`, `Quantity Allocated`,
+`Quantity Picked`, `Previously Fulfilled`, `Quantity Fulfilled`,
+`Fulfilled After`, `Remaining To Fulfill`, `In Stock Before`,
+`Allocated Before`, `Sellable Before`, `In Stock After`, `Allocated After`,
+`Sellable After`, `Line Status`, `Notes`.
 
 ## Locations
 
@@ -720,27 +1180,36 @@ Sync eligible WooCommerce orders into the local database.
 
 ### GET /api/orders/open
 
-List open orders eligible for allocation.
+List local open/allocated/picked orders in the operational order queue.
+Line-level responses include `quantity_allocated`, `quantity_picked`,
+`quantity_fulfilled`, `remaining_to_allocate`, `remaining_to_pick`,
+`remaining_to_fulfill`, `picking_status`, `fulfillment_status`,
+`shortage_quantity`, and `local_sellable`.
 
 ### GET /api/orders/allocated
 
-List allocated orders ready for picking.
+Future endpoint. The current MVP uses `GET /api/orders/open` plus `/api/picks`
+preview/commit.
 
 ### POST /api/orders/{id}/allocate
 
-Allocate sellable stock to an order. Records allocation and stock movement/audit rows.
+Future endpoint. The current MVP uses `/api/allocations/preview` and
+`/api/allocations/commit`.
 
 ### GET /api/orders/{id}/pick
 
-Return order picking detail.
+Future endpoint. The current MVP uses `GET /api/orders/{id}` plus
+`/api/picks` detail.
 
 ### POST /api/orders/{id}/pick-scan
 
-Record a SKU/barcode scan for an allocated order item. Prevents overpicking.
+Future scanner endpoint. The current MVP supports pick preview and commit
+against allocated quantities only.
 
 ### POST /api/orders/{id}/complete
 
-Complete a picked order locally and update WooCommerce order status to completed through the backend WooCommerce REST client.
+Future fulfillment endpoint. Not implemented. Picking does not mark orders
+fulfilled and does not update WooCommerce order status.
 
 ## Reports
 
@@ -853,6 +1322,80 @@ CSV header order:
 - Line Notes
 - Receipt Notes
 
+### GET /api/reports/fulfillments
+
+Read-only fulfillment/completed-order line report. Uses `fulfillment_lines` as
+the primary source and enriches rows from `fulfillments`, local `orders`, local
+`order_items`, and `inventory_items`. It does not use WooCommerce and does not
+modify inventory or order state.
+
+Filters:
+- `date_from`
+- `date_to`
+- `warehouse`
+- `inventory_location`
+- `sku`
+- `barcode`
+- `category`
+- `brand`
+- `fulfillment_number`
+- `woo_order_number`
+- `woo_order_id`
+- `customer_email`
+- `local_status`
+- `created_by`
+
+Date filters use `fulfillments.posted_at` and fall back to
+`fulfillments.created_at` when posted time is missing.
+
+Calculation:
+- `fulfilled_value = quantity_fulfilled * unit_cost`
+- blank unit cost is treated as zero
+
+### GET /api/reports/fulfillments/summary
+
+Return totals and grouped summaries for the same filters as the fulfillment
+report. Groupings include warehouse, location, SKU, and order.
+
+### GET /api/reports/fulfillments/export
+
+Export the fulfillment report as CSV using the same filters as the JSON report.
+
+CSV header order:
+- Fulfillment Number
+- Status
+- Posted At
+- Created At
+- Woo Order Number
+- Woo Order ID
+- Local Status
+- Customer Name
+- Customer Email
+- Warehouse
+- Inventory Location
+- SKU
+- Barcode
+- Description
+- Category
+- Brand
+- Quantity Ordered
+- Quantity Allocated
+- Quantity Picked
+- Quantity Fulfilled
+- Previously Fulfilled
+- Remaining To Fulfill
+- Unit Cost
+- Fulfilled Value
+- In Stock Before
+- Allocated Before
+- Sellable Before
+- In Stock After
+- Allocated After
+- Sellable After
+- Created By
+- Line Notes
+- Fulfillment Notes
+
 ### GET /api/reports/inventory
 
 Inventory export.
@@ -871,18 +1414,92 @@ SKU/barcode order report with search by SKU, barcode, description, and date rang
 
 ## Routes
 
+Route creation is local-only. These endpoints do not call WooCommerce, maps,
+geocoding, routing, shipping label, notification, inventory stock, or stock
+movement services.
+
+Eligible route candidates are local orders with `local_status = fulfilled` or
+`local_status = partially_fulfilled` that are not already assigned to a
+non-cancelled route.
+
+### GET /api/routes/candidates
+
+List completed local orders that can be placed onto a route.
+
+Query filters:
+- `local_status`
+- `customer_email`
+- `woo_order_number`
+- `search`
+
+Response includes order/customer/shipping snapshots, fulfilled line count,
+fulfilled quantity, and a warning when an order is only partially fulfilled.
+
+### POST /api/routes/preview
+
+Validate selected local order IDs before route creation.
+
+Request body:
+- `route_date`
+- `route_name`
+- `driver_name`
+- `vehicle_name`
+- `order_ids`
+- `created_by`
+- `notes`
+
+Preview returns valid/invalid stop rows in the selected order. Preview does not
+write database rows and does not mutate orders or inventory.
+
+### POST /api/routes/commit
+
+Create a local draft route and route stops from selected valid completed orders.
+Commit revalidates selected orders before writing. If any selected order is
+invalid, no route is created.
+
+Commit writes:
+- `routes`
+- `route_stops`
+
+Commit does not update WooCommerce order status, products, or stock. It does
+not change local order status, item In Stock, Allocated, Sellable, On Order, or
+stock movements.
+
 ### GET /api/routes
 
-List routes.
+List local routes.
 
-### POST /api/routes
+Query filters:
+- `status`
+- `route_date`
+- `date_from`
+- `date_to`
+- `driver_name`
+- `vehicle_name`
+- `search`
 
-Create route from selected orders.
+### GET /api/routes/{route_id}
 
-### GET /api/routes/{id}
+Return a route with route stops.
 
-Return route with stops.
+### GET /api/routes/{route_id}/export
 
-### POST /api/routes/{id}/optimize
+Export one route as CSV with route and stop snapshots.
 
-Optimize stop sequence through a backend route provider abstraction.
+### POST /api/routes/{route_id}/finalize
+
+Mark a draft route finalized locally. This does not dispatch, notify, label,
+track delivery, or update WooCommerce.
+
+### POST /api/routes/{route_id}/cancel
+
+Mark a route cancelled locally. Stops remain for audit/review, and the orders
+become eligible for a future route because cancelled routes are ignored by the
+candidate filter.
+
+Not implemented yet:
+- route optimization
+- geocoding
+- maps
+- delivery tracking
+- customer notifications

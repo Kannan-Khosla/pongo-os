@@ -28,6 +28,12 @@ Implementation notes:
   history tables.
 - Revision `20260707_0007` adds WooCommerce order sync snapshot fields to
   `orders`, `order_items`, and order/line context fields on sync errors.
+- Revision `20260707_0008` adds allocation headers, allocation lines, and
+  inventory audit events for local allocation reservations.
+- Revision `20260707_0013` promotes `inventory_item_locations` to the
+  operational stock source, extends workflow lines with item-location
+  references, extends stock movements with location before/after fields, and
+  adds inventory transfer and stock adjustment tables.
 
 ## Canonical CSV Mapping
 
@@ -215,19 +221,26 @@ Index/uniqueness suggestions:
 
 ## inventory_item_locations
 
-Purpose: Stock split by item and location.
+Purpose: Operational stock split by item and location. Item aggregate stock
+fields are cached totals recalculated from active rows in this table.
 
 Fields:
 - id
 - inventory_item_id
 - location_id
+- client
 - warehouse
 - inventory_location
+- location_code
+- location_name
 - is_default_location
 - in_stock
 - allocated
 - sellable
 - on_order
+- par_level
+- under_par
+- active
 - created_at
 - updated_at
 
@@ -237,6 +250,17 @@ Relationships:
 
 Calculated fields:
 - sellable = in_stock - allocated.
+- under_par = in_stock <= row par_level, falling back to item par level.
+
+Rules:
+- A SKU may exist in multiple physical locations.
+- Receiving, cycle count, allocation, picking, and fulfillment resolve a
+  specific item-location row.
+- Picking records the source location without reducing stock.
+- Fulfillment reduces stock and allocated quantity from the resolved row.
+- Transfers move stock between item-location rows.
+- Adjustments require an explicit type and reason.
+- Active row totals must reconcile to `inventory_items` aggregate fields.
 
 Index/uniqueness suggestions:
 - Unique `(inventory_item_id, location_id)`.
@@ -250,6 +274,9 @@ Fields:
 - id
 - inventory_item_id
 - inventory_location_id
+- inventory_item_location_id
+- from_inventory_location_id
+- to_inventory_location_id
 - sku
 - barcode
 - movement_type
@@ -258,6 +285,16 @@ Fields:
 - new_stock
 - warehouse
 - inventory_location
+- from_warehouse
+- from_inventory_location
+- to_warehouse
+- to_inventory_location
+- old_location_stock
+- new_location_stock
+- old_item_stock
+- new_item_stock
+- movement_group_id
+- movement_source
 - reference_number
 - unit_cost
 - reason
@@ -272,6 +309,17 @@ Movement type values:
 - direct_receiving
 - cycle_count
 - cycle_count_adjustment
+- allocation
+- deallocation
+- pick
+- fulfillment
+- transfer_out
+- transfer_in
+- adjustment_increase
+- adjustment_decrease
+- damage
+- loss
+- correction
 - manual_adjustment
 - order_allocation
 - order_pick
@@ -283,6 +331,87 @@ Relationships:
 - Belongs to `inventory_items`.
 - Optionally belongs to `inventory_locations`.
 - References receipts, orders, imports, or counts through `reference_type` and `reference_id`.
+
+## inventory_transfers
+
+Purpose: Local transfer header for moving stock between item-location rows.
+
+Fields:
+- id
+- transfer_number
+- status
+- from_warehouse
+- from_inventory_location
+- to_warehouse
+- to_inventory_location
+- notes
+- created_by
+- committed_at
+- cancelled_at
+- created_at
+- updated_at
+
+## inventory_transfer_lines
+
+Purpose: Transfer line snapshots.
+
+Fields:
+- id
+- transfer_id
+- inventory_item_id
+- sku
+- barcode
+- description
+- quantity
+- from_inventory_item_location_id
+- to_inventory_item_location_id
+- from_warehouse
+- from_inventory_location
+- to_warehouse
+- to_inventory_location
+- notes
+- created_at
+- updated_at
+
+## stock_adjustments
+
+Purpose: Explicit local stock correction/damage/loss/found/manual adjustment
+header.
+
+Fields:
+- id
+- adjustment_number
+- status
+- adjustment_type
+- reason
+- notes
+- created_by
+- committed_at
+- cancelled_at
+- created_at
+- updated_at
+
+## stock_adjustment_lines
+
+Purpose: Adjustment line snapshots.
+
+Fields:
+- id
+- adjustment_id
+- inventory_item_id
+- inventory_item_location_id
+- sku
+- barcode
+- description
+- warehouse
+- inventory_location
+- old_quantity
+- new_quantity
+- quantity_change
+- unit_cost
+- notes
+- created_at
+- updated_at
 
 Index suggestions:
 - Index `inventory_item_id`, `inventory_location_id`, `sku`, `barcode`, `movement_type`, `reference_type`, `reference_id`, and `created_at`.
@@ -583,10 +712,12 @@ Fields:
 - quantity_ordered
 - quantity_allocated
 - quantity_picked
+- quantity_fulfilled
 - ordered_qty
 - ordered_uom
 - allocated_qty
 - picked_qty
+- fulfilled_qty
 - unit_cost
 - unit_price
 - line_subtotal
@@ -614,29 +745,355 @@ Read-only order sync rules:
 - Conflicts are stored as `matched_status = conflict`.
 - Missing local matches are stored as `matched_status = unmatched`; order sync
   does not create inventory items.
-- `quantity_allocated`, `quantity_picked`, legacy `allocated_qty`, and legacy
-  `picked_qty` remain zero during order sync.
+- `quantity_allocated`, `quantity_picked`, `quantity_fulfilled`, legacy
+  `allocated_qty`, legacy `picked_qty`, and legacy `fulfilled_qty` are
+  preserved during order sync.
 - `sellable_snapshot = inventory_items.in_stock - inventory_items.allocated`
   at sync time.
 - `shortage_quantity = max(quantity_ordered - sellable_snapshot, 0)`.
 - Order sync does not update `inventory_items.in_stock`,
   `inventory_items.allocated`, or `stock_movements`.
 
-## routes
+## allocations
 
-Purpose: Delivery route header.
+Purpose: Local allocation header for reserving sellable inventory against open
+orders. Allocation is between Open Orders and Picking.
 
 Fields:
 - id
+- allocation_number
+- status
+- allocation_type
+- order_id
+- woo_order_id
+- woo_order_number
+- notes
+- created_by
+- posted_at
+- cancelled_at
+- created_at
+- updated_at
+
+Status values:
+- posted
+- draft (reserved for future preview persistence)
+- cancelled (reserved for future cancellation/reversal)
+
+Allocation type values:
+- single_order
+- batch
+
+Rules:
+- `allocation_number` format is `AL-YYYYMMDD-NNNN`.
+- Current commit creates posted allocations directly.
+- Allocation does not write WooCommerce and does not reduce In Stock.
+
+## allocation_lines
+
+Purpose: Line-level allocation audit and reservation snapshot.
+
+Fields:
+- id
+- allocation_id
+- order_id
+- order_line_id
+- item_id
+- sku
+- barcode
+- description
+- warehouse
+- inventory_location
+- quantity_ordered
+- quantity_previously_allocated
+- quantity_to_allocate
+- quantity_allocated_after
+- in_stock_before
+- allocated_before
+- sellable_before
+- allocated_after
+- sellable_after
+- shortage_quantity
+- status
+- notes
+- created_at
+- updated_at
+
+Rules:
+- `quantity_to_allocate` must be greater than zero.
+- `quantity_to_allocate` cannot exceed remaining unallocated order quantity.
+- `quantity_to_allocate` cannot exceed current item Sellable.
+- Allocation cannot make item Allocated exceed item In Stock.
+
+Line status values:
+- allocated
+- partial
+- skipped
+- conflict
+- error
+
+## picks
+
+Purpose: Local pick header for recording operational picking progress against
+already allocated order lines. Picking is between Allocation and future
+Fulfillment/Ship completion.
+
+Fields:
+- id
+- pick_number
+- status
+- pick_type
+- order_id
+- woo_order_id
+- woo_order_number
+- notes
+- created_by
+- posted_at
+- cancelled_at
+- created_at
+- updated_at
+
+Status values:
+- posted
+- cancelled (reserved for future cancellation/reversal)
+
+Pick type values:
+- single_order
+- batch
+
+Rules:
+- `pick_number` format is `PK-YYYYMMDD-NNNN`.
+- Current commit creates posted picks directly.
+- Picking does not write WooCommerce.
+- Picking does not reduce item In Stock.
+- Picking does not reduce item Allocated.
+- Picking does not create stock movement rows.
+
+## pick_lines
+
+Purpose: Line-level pick audit and progress snapshot.
+
+Fields:
+- id
+- pick_id
+- order_id
+- order_line_id
+- item_id
+- sku
+- barcode
+- description
+- warehouse
+- inventory_location
+- quantity_ordered
+- quantity_allocated
+- quantity_previously_picked
+- quantity_to_pick
+- quantity_picked_after
+- remaining_to_pick
+- status
+- notes
+- created_at
+- updated_at
+
+Rules:
+- `quantity_to_pick` must be greater than zero.
+- `quantity_to_pick` cannot exceed `quantity_allocated`.
+- `quantity_to_pick` cannot exceed `quantity_allocated - quantity_picked`.
+- `quantity_picked_after = quantity_previously_picked + quantity_to_pick`.
+- `remaining_to_pick = quantity_allocated - quantity_picked_after`.
+
+Line status values:
+- picked
+- partial
+- skipped
+- conflict
+- error
+
+## fulfillments
+
+Purpose: Local fulfillment/completion header for removing picked quantities from
+local physical inventory. Fulfillment is between Picking and any future
+WooCommerce write-back, routing, or shipping workflow.
+
+Fields:
+- id
+- fulfillment_number
+- status
+- fulfillment_type
+- order_id
+- woo_order_id
+- woo_order_number
+- notes
+- created_by
+- posted_at
+- cancelled_at
+- created_at
+- updated_at
+
+Status values:
+- posted
+- cancelled (reserved for future cancellation/reversal)
+
+Fulfillment type values:
+- single_order
+- batch
+
+Rules:
+- `fulfillment_number` format is `FL-YYYYMMDD-NNNN`.
+- Current commit creates posted fulfillments directly.
+- Fulfillment does not write WooCommerce.
+- Fulfillment does not create routes, shipping labels, purchase orders, supplier
+  records, or customer notifications.
+
+## fulfillment_lines
+
+Purpose: Line-level fulfillment audit and stock reduction snapshot.
+Fulfillment Report uses this table as its primary source and enriches rows from
+`fulfillments`, local `orders`, local `order_items`, and `inventory_items`.
+Completed Orders export uses local `orders` and `order_items`. No additional
+reporting tables are required.
+
+Fields:
+- id
+- fulfillment_id
+- order_id
+- order_line_id
+- item_id
+- sku
+- barcode
+- description
+- warehouse
+- inventory_location
+- quantity_ordered
+- quantity_allocated
+- quantity_picked
+- quantity_previously_fulfilled
+- quantity_to_fulfill
+- quantity_fulfilled_after
+- remaining_to_fulfill
+- in_stock_before
+- allocated_before
+- sellable_before
+- in_stock_after
+- allocated_after
+- sellable_after
+- status
+- notes
+- created_at
+- updated_at
+
+Rules:
+- `quantity_to_fulfill` must be greater than zero.
+- `quantity_to_fulfill` cannot exceed `quantity_picked - quantity_fulfilled`.
+- `quantity_to_fulfill` cannot exceed current item In Stock.
+- `quantity_to_fulfill` cannot exceed current item Allocated.
+- Fulfillment reduces item In Stock and Allocated by the same quantity.
+- Sellable is recalculated as In Stock minus Allocated.
+- Fulfillment cannot make In Stock or Allocated negative.
+- Fulfillment cannot leave Allocated greater than In Stock.
+
+Line status values:
+- fulfilled
+- partial
+- skipped
+- conflict
+- error
+
+## inventory_audit_events
+
+Purpose: Audit local inventory state changes that are not physical stock
+movements. Allocation uses this table because it changes Allocated and Sellable
+while leaving In Stock unchanged. Picking also uses this table to record
+operational pick activity while leaving In Stock, Allocated, and Sellable
+unchanged. Fulfillment uses this table alongside stock movements to capture the
+before/after allocated and sellable values that stock movements do not model.
+
+Fields:
+- id
+- item_id
+- sku
+- barcode
+- event_type
+- quantity_delta
+- previous_in_stock
+- new_in_stock
+- previous_allocated
+- new_allocated
+- previous_sellable
+- new_sellable
+- warehouse
+- inventory_location
+- reference_type
+- reference_id
+- reference_number
+- notes
+- created_by
+- created_at
+
+Allocation audit rules:
+- `event_type = allocate`
+- `quantity_delta = quantity_to_allocate`
+- `previous_in_stock = new_in_stock`
+- `new_allocated = previous_allocated + quantity_to_allocate`
+- `new_sellable = previous_in_stock - new_allocated`
+- `reference_type = allocation`
+- `reference_id = allocations.id`
+- `reference_number = allocations.allocation_number`
+
+Picking audit rules:
+- `event_type = pick`
+- `quantity_delta = quantity_to_pick`
+- `previous_in_stock = new_in_stock`
+- `previous_allocated = new_allocated`
+- `previous_sellable = new_sellable`
+- `reference_type = pick`
+- `reference_id = picks.id`
+- `reference_number = picks.pick_number`
+
+Fulfillment audit rules:
+- `event_type = fulfill`
+- `quantity_delta = -quantity_to_fulfill`
+- `new_in_stock = previous_in_stock - quantity_to_fulfill`
+- `new_allocated = previous_allocated - quantity_to_fulfill`
+- `new_sellable = new_in_stock - new_allocated`
+- `reference_type = fulfillment`
+- `reference_id = fulfillments.id`
+- `reference_number = fulfillments.fulfillment_number`
+
+Current limitation:
+- Allocation, pick, and fulfillment cancellation/reversal are documented as
+  future work.
+- WooCommerce write-back, routing, shipping labels, notifications, purchase
+  orders, and supplier workflows are not implemented yet.
+
+## routes
+
+Purpose: Local delivery route header for manually planned completed orders.
+
+Current behavior:
+- Routes are created from local orders with `local_status = fulfilled` or
+  `partially_fulfilled`.
+- Routes are local-only and do not call WooCommerce, maps, geocoding,
+  optimization, shipping label, notification, or inventory stock services.
+- Route cancellation keeps route stops for review/audit and makes the order
+  eligible for future route planning.
+
+Fields:
+- id
+- route_number
+- status: `draft`, `finalized`, or `cancelled`
 - route_name
 - route_date
-- status
+- driver_name
+- vehicle_name
+- notes
 - start_address
 - end_address
 - total_stops
 - total_distance
 - estimated_duration
 - created_by
+- finalized_at
+- cancelled_at
 - created_at
 - updated_at
 
@@ -644,18 +1101,33 @@ Relationships:
 - Has many `route_stops`.
 
 Index suggestions:
-- Index `route_date`, `status`, and `created_by`.
+- Index `route_number`, `route_date`, `status`, `driver_name`,
+  `vehicle_name`, `created_by`, `finalized_at`, and `cancelled_at`.
+
+Notes:
+- `start_address`, `end_address`, `total_distance`, and `estimated_duration`
+  are retained for future provider-backed route optimization but are not
+  populated by the current route creation foundation.
 
 ## route_stops
 
-Purpose: Stops generated from order shipping addresses.
+Purpose: Stop snapshots generated from completed local orders.
 
 Fields:
 - id
 - route_id
 - order_id
+- stop_sequence
+- woo_order_id
+- woo_order_number
 - stop_number
 - customer_name
+- customer_email
+- customer_phone
+- shipping_summary
+- delivery_notes
+- local_status
+- stop_status
 - address_1
 - address_2
 - city
@@ -672,10 +1144,22 @@ Fields:
 
 Relationships:
 - Belongs to `routes`.
-- Optionally belongs to `orders`.
+- Belongs to `orders`.
 
 Index suggestions:
-- Index `route_id`, `order_id`, `stop_number`, and `optimized_sequence`.
+- Index `route_id`, `order_id`, `stop_sequence`, `stop_number`,
+  `woo_order_id`, `woo_order_number`, `customer_email`, `local_status`,
+  `stop_status`, and `optimized_sequence`.
+
+Notes:
+- Route stops snapshot Woo/customer/shipping/local-status fields at route
+  creation time so CSV exports remain stable even if the source order later
+  changes.
+- `latitude`, `longitude`, `geocode_status`, `geocode_provider`,
+  `geocode_error`, `internal_notes`, and `optimized_sequence` support local
+  map payloads plus future provider-backed geocoding/optimization. Providers
+  are disabled by default and no external calls are made by current tests or
+  local UX.
 
 ## import_jobs
 
@@ -786,3 +1270,36 @@ Relationships:
 Safety:
 - Raw payloads must not contain credentials. The sync service stores normalized
   preview row details, not request URLs or secrets.
+
+## woo_item_mappings
+
+Purpose: Track local-only WooCommerce product/variation to Pongo OS item remap
+metadata.
+
+Fields:
+- id
+- item_id
+- woo_product_id
+- woo_variation_id
+- woo_sku
+- woo_name
+- mapping_source
+- confidence
+- active
+- note
+- created_at
+- updated_at
+
+Current usage:
+- Remap preview/commit manages this table through
+  `/api/integrations/woocommerce/remap/*`.
+- Commit deactivates prior active mappings for the same Woo product/variation
+  and creates a new active local mapping.
+- Commit may update local item Woo ID metadata but does not overwrite manual
+  fields or inventory quantities.
+
+Safety:
+- Local-only.
+- No WooCommerce API writes.
+- No local stock, allocation, picked, fulfilled, route, or order status
+  mutations.

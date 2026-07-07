@@ -691,6 +691,7 @@ tbody tr:nth-child(even) .sticky-col {
 }
 
 .api-error,
+.api-success,
 .loading-strip {
   margin: 12px 0;
   padding: 12px 14px;
@@ -701,10 +702,55 @@ tbody tr:nth-child(even) .sticky-col {
   font-weight: 800;
 }
 
+.api-success {
+  border-color: #b9dcca;
+  background: #edf8f2;
+  color: #287251;
+}
+
 .loading-strip {
   border-color: #c9d9dd;
   background: #eef5f7;
   color: var(--teal-800);
+}
+
+.location-operations {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  background: var(--white);
+}
+
+.location-operations .section-heading h3,
+.operation-panel h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.compact-table-wrap {
+  border-left: 0;
+  border-right: 0;
+}
+
+.operation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 16px;
+}
+
+.operation-panel {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: #f8fbfb;
+}
+
+@media (max-width: 900px) {
+  .operation-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .success-strip {
@@ -951,8 +997,30 @@ tbody tr:nth-child(even) .sticky-col {
   gap: 20px;
 }
 
+.routes-page {
+  display: grid;
+  gap: 20px;
+}
+
 .order-summary-strip {
   grid-template-columns: repeat(5, minmax(110px, 1fr));
+}
+
+.route-summary-strip {
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+}
+
+.allocation-summary-strip {
+  grid-template-columns: repeat(7, minmax(100px, 1fr));
+}
+
+.allocation-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.allocation-history-grid {
+  align-items: start;
 }
 
 .orders-grid {
@@ -977,6 +1045,10 @@ tbody tr:nth-child(even) .sticky-col {
   border: 1px solid var(--line);
   background: var(--white);
   padding: 16px;
+}
+
+.route-detail-panel {
+  grid-column: 1 / -1;
 }
 
 .compact-title {
@@ -1005,12 +1077,19 @@ tbody tr:nth-child(even) .sticky-col {
 
 .order-status-available,
 .order-status-matched,
-.order-status-processing {
+.order-status-processing,
+.order-status-allocated,
+.order-status-picked,
+.order-status-fulfilled,
+.order-status-posted {
   background: #e4f4ea;
   color: #1f6d43;
 }
 
 .order-status-partial,
+.order-status-partially-allocated,
+.order-status-partially-picked,
+.order-status-partially-fulfilled,
 .order-status-on-hold {
   background: #fff0d9;
   color: #8a5513;
@@ -1018,9 +1097,16 @@ tbody tr:nth-child(even) .sticky-col {
 
 .order-status-unavailable,
 .order-status-conflict,
+.order-status-error,
 .order-status-unmatched {
   background: #ffe5dc;
   color: #9b3d23;
+}
+
+.order-status-unpicked,
+.order-status-unfulfilled {
+  background: #edf2f4;
+  color: #52646b;
 }
 
 .order-status-unknown {
@@ -1055,6 +1141,23 @@ tbody tr:nth-child(even) .sticky-col {
   gap: 16px;
   padding: 18px;
   background: var(--filter);
+}
+
+.route-filter-grid {
+  grid-template-columns: minmax(240px, 1.2fr) repeat(3, minmax(190px, 1fr));
+}
+
+.route-history-filter-grid {
+  grid-template-columns: repeat(6, minmax(160px, 1fr));
+}
+
+.route-header-fields {
+  grid-template-columns: minmax(170px, 0.8fr) minmax(260px, 1.2fr) minmax(200px, 1fr) minmax(200px, 1fr) minmax(280px, 1.5fr);
+}
+
+.table-button-row {
+  min-width: 420px;
+  justify-content: flex-start;
 }
 
 .receiving-header-fields input,
@@ -1437,6 +1540,9 @@ tbody tr:nth-child(even) .sticky-col {
   .inventory-filter-grid,
   .report-filter-grid,
   .orders-filter-grid,
+  .route-filter-grid,
+  .route-history-filter-grid,
+  .route-header-fields,
   .cycle-count-header-fields,
   .form-grid {
     grid-template-columns: repeat(2, minmax(170px, 1fr));
@@ -1445,7 +1551,9 @@ tbody tr:nth-child(even) .sticky-col {
   .summary-strip,
   .report-summary-strip,
   .woo-summary-strip,
-  .order-summary-strip {
+  .order-summary-strip,
+  .route-summary-strip,
+  .allocation-summary-strip {
     grid-template-columns: repeat(2, minmax(150px, 1fr));
   }
 

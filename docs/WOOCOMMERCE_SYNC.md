@@ -255,6 +255,132 @@ Commit:
 - Does not allocate, pick, reserve, route, fulfill, update item stock, or write
   WooCommerce.
 
+## Allocation After Order Sync
+
+Allocation is a local Pongo OS workflow after WooCommerce order sync. It uses
+local `orders`, `order_items`, and `inventory_items` only.
+
+Allocation:
+- previews recommended reservation quantities without writing data;
+- increases local item Allocated on commit;
+- leaves local item In Stock unchanged;
+- recalculates Sellable as In Stock minus Allocated;
+- updates local order line `quantity_allocated`;
+- creates local `allocations`, `allocation_lines`, and
+  `inventory_audit_events` rows;
+- does not call WooCommerce;
+- does not update WooCommerce order status, products, or stock;
+- does not pick, route, fulfill, create shipping labels, or notify customers.
+
+Order sync should preserve existing local allocation quantities when refreshing
+the local order snapshot.
+
+## Picking After Allocation
+
+Picking is a local Pongo OS workflow after allocation. It uses local `orders`,
+`order_items`, `inventory_items`, `picks`, `pick_lines`, and
+`inventory_audit_events` only.
+
+Picking:
+- previews recommended pick quantities from already allocated order lines;
+- rejects unallocated, unmatched, conflict, unknown item, overpicked, and fully
+  picked lines;
+- updates local order line `quantity_picked` and legacy `picked_qty` on commit;
+- leaves local item In Stock unchanged;
+- leaves local item Allocated unchanged;
+- leaves local item Sellable unchanged;
+- creates local `picks`, `pick_lines`, and `inventory_audit_events` rows;
+- records pick audit events with unchanged previous/new stock, allocated, and
+  sellable values;
+- does not call WooCommerce;
+- does not update WooCommerce order status, products, or stock;
+- does not route, fulfill, create shipping labels, or notify customers.
+
+Order sync should preserve existing local picked quantities when refreshing the
+local order snapshot.
+
+## Fulfillment After Picking
+
+Fulfillment is a local Pongo OS workflow after picking. It uses local `orders`,
+`order_items`, `inventory_items`, `fulfillments`, `fulfillment_lines`,
+`stock_movements`, and `inventory_audit_events` only.
+
+Fulfillment:
+- previews recommended fulfillment quantities from already picked order lines;
+- rejects unpicked, unmatched, conflict, unknown item, overfulfilled, and fully
+  fulfilled lines;
+- updates local order line `quantity_fulfilled` and legacy `fulfilled_qty` on
+  commit;
+- reduces local item In Stock by the fulfilled quantity;
+- reduces local item Allocated by the fulfilled quantity;
+- recalculates local item Sellable and Under Par;
+- creates local `fulfillments`, `fulfillment_lines`, `stock_movements`, and
+  `inventory_audit_events` rows;
+- creates stock movements with `movement_type = fulfill_order`;
+- does not call WooCommerce;
+- does not update WooCommerce order status, products, or stock;
+- does not route, create shipping labels, create purchase orders, manage
+  suppliers, or notify customers.
+
+Order sync should preserve existing local fulfilled quantities when refreshing
+the local order snapshot.
+
+## Fulfillment Reporting
+
+Fulfillment Report and Completed Orders export are local read-only reporting
+surfaces. They read from `fulfillment_lines`, `fulfillments`, local `orders`,
+local `order_items`, and local `inventory_items`.
+
+Reporting:
+- calculates fulfilled value from local fulfilled quantity and local item unit
+  cost;
+- does not call WooCommerce;
+- does not update WooCommerce order status, products, or stock;
+- does not change local item In Stock or Allocated;
+- does not create stock movements or audit events;
+- does not route, create shipping labels, create purchase orders, manage
+  suppliers, or notify customers.
+
+## Route Creation
+
+Route Creation uses completed local orders after fulfillment. It reads local
+orders and writes local `routes` and `route_stops` only.
+
+Routing:
+- includes local orders with `fulfilled` or `partially_fulfilled` status;
+- excludes orders already assigned to a non-cancelled route;
+- previews selected order IDs before writing route records;
+- creates route-stop snapshots for Woo order number/ID, customer contact,
+  shipping summary, and local order status;
+- can finalize or cancel local routes;
+- can export one local route CSV.
+
+Route creation:
+- does not call WooCommerce;
+- does not update WooCommerce order status, products, or stock;
+- does not call maps, geocoding, routing, or optimization providers;
+- does not create shipping labels, delivery tracking events, or customer
+  notifications;
+- does not change local item In Stock, Allocated, Sellable, On Order, stock
+  movements, inventory audit events, order item quantities, or order status.
+
 ## Stock Update Safety
 
 Stock-changing local actions must always create stock movement rows. WooCommerce stock updates should remain disabled or queued until read-only sync and local workflows are stable. When enabled, stock writeback must happen through the backend only and should include retry/error logging.
+
+## Local Remap Metadata
+
+WooCommerce remap endpoints are implemented under
+`/api/integrations/woocommerce/remap/*`.
+
+Remap behavior:
+- Uses local synced item metadata and sync error rows as candidate sources.
+- Previews a proposed Woo product/variation to local item mapping.
+- Commits by deactivating previous active local mappings for that Woo
+  product/variation and creating a new active `woo_item_mappings` row.
+- May update local item Woo ID metadata.
+- Does not call WooCommerce.
+- Does not write WooCommerce products, orders, statuses, or stock.
+- Does not overwrite manual Pongo OS fields.
+- Does not mutate local stock, allocated, sellable, picked, fulfilled, route,
+  or order status quantities.

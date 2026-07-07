@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import cycle_counts, health, import_jobs, inventory, items, locations, orders, receipts, reports, routes, stock_movements, woocommerce
+from app.api.routes import allocations, cycle_counts, dashboard, fulfillments, health, import_jobs, inventory, items, locations, orders, picks, receipts, reports, routes, stock_movements, woocommerce
 from app.core.config import get_settings
 
 
@@ -17,7 +17,11 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health.router)
+    app.include_router(dashboard.router, prefix="/api")
     app.include_router(items.router, prefix="/api")
+    app.include_router(allocations.router, prefix="/api")
+    app.include_router(picks.router, prefix="/api")
+    app.include_router(fulfillments.router, prefix="/api")
     app.include_router(woocommerce.router, prefix="/api")
     app.include_router(inventory.router, prefix="/api")
     app.include_router(import_jobs.router, prefix="/api")
