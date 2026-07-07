@@ -123,6 +123,14 @@ const emptyWooStatus = {
   consumer_secret_present: false,
   message: 'WooCommerce status has not been checked.',
 };
+const emptyOpenOrders = {
+  orders: [],
+  total: 0,
+  available_count: 0,
+  partial_count: 0,
+  unavailable_count: 0,
+  unknown_count: 0,
+};
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -526,9 +534,15 @@ export default function App() {
   const [wooStatus, setWooStatus] = useState(emptyWooStatus);
   const [wooPreview, setWooPreview] = useState(null);
   const [wooCommitSummary, setWooCommitSummary] = useState(null);
+  const [wooOrderPreview, setWooOrderPreview] = useState(null);
+  const [wooOrderCommitSummary, setWooOrderCommitSummary] = useState(null);
   const [wooSyncRuns, setWooSyncRuns] = useState([]);
   const [wooLoading, setWooLoading] = useState(false);
   const [wooError, setWooError] = useState('');
+  const [openOrders, setOpenOrders] = useState(emptyOpenOrders);
+  const [openOrdersLoading, setOpenOrdersLoading] = useState(false);
+  const [openOrdersError, setOpenOrdersError] = useState('');
+  const [openOrderDetail, setOpenOrderDetail] = useState(null);
 
   useEffect(() => {
     const handleHashChange = () => setRoute(parseHashRoute());
@@ -556,6 +570,9 @@ export default function App() {
       loadItems();
       loadLocations({ status: 'active' });
       loadCycleCounts();
+    }
+    if (route.pageId === 'orders') {
+      loadOpenOrders();
     }
     if (route.pageId === 'settings') {
       loadWooStatus();
@@ -775,6 +792,44 @@ export default function App() {
     }
   }
 
+  async function loadOpenOrders(filters = {}) {
+    setOpenOrdersLoading(true);
+    setOpenOrdersError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/orders/open${plainFiltersToQueryString(openOrderFiltersToApi(filters))}`);
+      if (!response.ok) {
+        throw new Error(`Open Orders API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setOpenOrders({ ...emptyOpenOrders, ...body });
+      if (body.orders?.length) {
+        await loadOpenOrderDetail(body.orders[0].id);
+      } else {
+        setOpenOrderDetail(null);
+      }
+    } catch (error) {
+      setOpenOrdersError('Unable to load open orders from the backend.');
+    } finally {
+      setOpenOrdersLoading(false);
+    }
+  }
+
+  async function loadOpenOrderDetail(orderId) {
+    if (!orderId) {
+      setOpenOrderDetail(null);
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}`);
+      if (!response.ok) {
+        throw new Error(`Order detail API returned ${response.status}`);
+      }
+      setOpenOrderDetail(await response.json());
+    } catch (error) {
+      setOpenOrdersError('Unable to load order detail from the backend.');
+    }
+  }
+
   async function previewWooProductSync() {
     setWooLoading(true);
     setWooError('');
@@ -783,6 +838,38 @@ export default function App() {
       setWooPreview(await postJson('/api/integrations/woocommerce/products/preview', { include_statuses: ['publish'], limit: 500, created_by: 'system' }));
     } catch (error) {
       setWooError(error.message || 'Unable to preview WooCommerce product sync.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function previewWooOrderSync() {
+    setWooLoading(true);
+    setWooError('');
+    setWooOrderCommitSummary(null);
+    try {
+      setWooOrderPreview(await postJson('/api/integrations/woocommerce/orders/preview', { include_statuses: ['processing', 'on-hold'], limit: 500, created_by: 'system' }));
+    } catch (error) {
+      setWooError(error.message || 'Unable to preview WooCommerce order sync.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function commitWooOrderSync() {
+    const confirmed = window.confirm('This imports WooCommerce orders into local Pongo OS only. It does not allocate stock, pick orders, update statuses, or write back to WooCommerce.');
+    if (!confirmed) {
+      return;
+    }
+    setWooLoading(true);
+    setWooError('');
+    try {
+      const result = await postJson('/api/integrations/woocommerce/orders/commit', { include_statuses: ['processing', 'on-hold'], limit: 500, created_by: 'system' });
+      setWooOrderCommitSummary(result);
+      await loadWooSyncRuns();
+      await loadOpenOrders();
+    } catch (error) {
+      setWooError(error.message || 'Unable to commit WooCommerce order sync.');
     } finally {
       setWooLoading(false);
     }
@@ -851,12 +938,22 @@ export default function App() {
             wooStatus={wooStatus}
             wooPreview={wooPreview}
             wooCommitSummary={wooCommitSummary}
+            wooOrderPreview={wooOrderPreview}
+            wooOrderCommitSummary={wooOrderCommitSummary}
             wooSyncRuns={wooSyncRuns}
             wooLoading={wooLoading}
             wooError={wooError}
             onLoadWooStatus={loadWooStatus}
             onPreviewWooProductSync={previewWooProductSync}
             onCommitWooProductSync={commitWooProductSync}
+            onPreviewWooOrderSync={previewWooOrderSync}
+            onCommitWooOrderSync={commitWooOrderSync}
+            openOrders={openOrders}
+            openOrdersLoading={openOrdersLoading}
+            openOrdersError={openOrdersError}
+            openOrderDetail={openOrderDetail}
+            onLoadOpenOrders={loadOpenOrders}
+            onLoadOpenOrderDetail={loadOpenOrderDetail}
           />
         </main>
       </div>
@@ -988,12 +1085,22 @@ function PageBody({
   wooStatus,
   wooPreview,
   wooCommitSummary,
+  wooOrderPreview,
+  wooOrderCommitSummary,
   wooSyncRuns,
   wooLoading,
   wooError,
   onLoadWooStatus,
   onPreviewWooProductSync,
   onCommitWooProductSync,
+  onPreviewWooOrderSync,
+  onCommitWooOrderSync,
+  openOrders,
+  openOrdersLoading,
+  openOrdersError,
+  openOrderDetail,
+  onLoadOpenOrders,
+  onLoadOpenOrderDetail,
 }) {
   if (route.pageId === 'items') {
     return <ItemsPage route={route} items={items} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
@@ -1052,18 +1159,35 @@ function PageBody({
     );
   }
 
+  if (route.pageId === 'orders') {
+    return (
+      <OpenOrdersPage
+        ordersData={openOrders}
+        loading={openOrdersLoading}
+        error={openOrdersError}
+        detail={openOrderDetail}
+        onLoadOpenOrders={onLoadOpenOrders}
+        onLoadOpenOrderDetail={onLoadOpenOrderDetail}
+      />
+    );
+  }
+
   if (route.pageId === 'settings') {
     return (
       <WooCommerceSettingsPage
         status={wooStatus}
         preview={wooPreview}
         commitSummary={wooCommitSummary}
+        orderPreview={wooOrderPreview}
+        orderCommitSummary={wooOrderCommitSummary}
         syncRuns={wooSyncRuns}
         loading={wooLoading}
         error={wooError}
         onCheckConnection={() => onLoadWooStatus(true)}
         onPreview={onPreviewWooProductSync}
         onCommit={onCommitWooProductSync}
+        onPreviewOrders={onPreviewWooOrderSync}
+        onCommitOrders={onCommitWooOrderSync}
       />
     );
   }
@@ -3211,9 +3335,167 @@ function ReceivedInventoryLocationSummaryTable({ groups }) {
   );
 }
 
-function WooCommerceSettingsPage({ status, preview, commitSummary, syncRuns, loading, error, onCheckConnection, onPreview, onCommit }) {
-  const latestRun = syncRuns[0];
+function OpenOrdersPage({ ordersData, loading, error, detail, onLoadOpenOrders, onLoadOpenOrderDetail }) {
+  const [filters, setFilters] = useState({ search: '', wooStatus: '', availabilityStatus: '', matchedStatus: '' });
+  const orders = ordersData.orders || [];
+
+  function updateFilter(key, value) {
+    setFilters((current) => ({ ...current, [key]: value }));
+  }
+
+  function clearFilters() {
+    const cleared = { search: '', wooStatus: '', availabilityStatus: '', matchedStatus: '' };
+    setFilters(cleared);
+    onLoadOpenOrders(cleared);
+  }
+
+  return (
+    <section className="content-panel orders-page">
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Open Orders</h2>
+            <p>Read-only local order queue imported from WooCommerce processing and on-hold orders.</p>
+          </div>
+          <div className="button-row compact">
+            <button className="muted-button" onClick={() => onLoadOpenOrders(filters)} disabled={loading} type="button">
+              <RefreshCw size={17} />
+              Refresh
+            </button>
+            <button className="action-button" onClick={() => exportOpenOrdersCsv(filters)} type="button">
+              <Download size={17} />
+              Export
+            </button>
+          </div>
+        </div>
+        <div className="summary-strip order-summary-strip">
+          <Metric label="Open Orders" value={ordersData.total || 0} />
+          <Metric label="Available" value={ordersData.available_count || 0} />
+          <Metric label="Partial" value={ordersData.partial_count || 0} />
+          <Metric label="Unavailable" value={ordersData.unavailable_count || 0} />
+          <Metric label="Unknown" value={ordersData.unknown_count || 0} />
+        </div>
+        <div className="filter-panel">
+          <div className="filter-grid orders-filter-grid">
+            <label className="field">
+              <span>Search</span>
+              <div className="input-with-icon">
+                <Search size={18} />
+                <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} placeholder="Order, customer, SKU, barcode" type="search" />
+              </div>
+            </label>
+            <FilterSelect label="Woo Status" value={filters.wooStatus} options={['processing', 'on-hold']} onChange={(value) => updateFilter('wooStatus', value)} />
+            <FilterSelect label="Availability" value={filters.availabilityStatus} options={['available', 'partial', 'unavailable', 'unknown']} onChange={(value) => updateFilter('availabilityStatus', value)} />
+            <FilterSelect label="Matched" value={filters.matchedStatus} options={['matched', 'unmatched', 'conflict', 'unknown']} onChange={(value) => updateFilter('matchedStatus', value)} />
+          </div>
+          <div className="button-row">
+            <button className="muted-button" onClick={clearFilters} type="button">
+              <SlidersHorizontal size={17} />
+              Clear
+            </button>
+            <button className="primary-button" onClick={() => onLoadOpenOrders(filters)} disabled={loading} type="button">
+              <Filter size={17} />
+              Apply
+            </button>
+          </div>
+        </div>
+        <div className="csv-note">Order sync is read-only: this queue does not allocate, reserve, pick, route, change stock, or update WooCommerce statuses.</div>
+        {loading && <div className="loading-strip">Loading open orders...</div>}
+        {error && <div className="api-error">{error}</div>}
+      </div>
+      <div className="orders-grid">
+        <OpenOrdersTable orders={orders} selectedOrderId={detail?.id} onSelect={onLoadOpenOrderDetail} />
+        <OpenOrderDetailPanel order={detail} />
+      </div>
+    </section>
+  );
+}
+
+function OpenOrdersTable({ orders, selectedOrderId, onSelect }) {
+  return (
+    <TableShell caption={`${orders.length} open order(s)`} columns={['Order', 'Woo Status', 'Customer', 'Email', 'Total', 'Availability', 'Matched', 'Lines', 'Created', 'Last Sync']}>
+      {orders.map((order) => (
+        <tr key={order.id} className={selectedOrderId === order.id ? 'selected-row' : ''} onClick={() => onSelect(order.id)}>
+          <td className="mono">{order.woo_order_number || order.woo_order_id}</td>
+          <td>{StatusText(order.woo_status)}</td>
+          <td>{order.customer_name}</td>
+          <td>{order.customer_email}</td>
+          <td>{formatCurrency(order.total)}</td>
+          <td>{StatusText(order.availability_status)}</td>
+          <td>{StatusText(order.matched_status)}</td>
+          <td>{order.line_count}</td>
+          <td>{formatDateTime(order.date_created)}</td>
+          <td>{formatDateTime(order.last_synced_at)}</td>
+        </tr>
+      ))}
+      {orders.length === 0 && (
+        <tr>
+          <td colSpan={10}>
+            <div className="empty-table-row">No local open orders match the current filters.</div>
+          </td>
+        </tr>
+      )}
+    </TableShell>
+  );
+}
+
+function OpenOrderDetailPanel({ order }) {
+  if (!order) {
+    return (
+      <aside className="order-detail-panel">
+        <div className="empty-state">
+          <h2>No order selected</h2>
+          <p>Preview or commit WooCommerce order sync from Settings, then select an open order here.</p>
+        </div>
+      </aside>
+    );
+  }
+  return (
+    <aside className="order-detail-panel">
+      <div className="panel-title compact-title">
+        <div>
+          <h2>Order {order.woo_order_number || order.woo_order_id}</h2>
+          <p>{order.customer_name || 'Customer'} · {formatCurrency(order.total)}</p>
+        </div>
+      </div>
+      <div className="detail-kv-grid">
+        <Metric label="Woo Status" value={order.woo_status || ''} />
+        <Metric label="Availability" value={order.availability_status || ''} />
+        <Metric label="Matched" value={order.matched_status || ''} />
+        <Metric label="Lines" value={order.line_count || 0} />
+      </div>
+      <div className="detail-address">
+        <strong>{order.customer_email || 'No email'}</strong>
+        <span>{order.customer_phone || 'No phone'}</span>
+        <span>{formatAddressSummary(order.shipping_summary)}</span>
+      </div>
+      <TableShell caption={`${order.lines?.length || 0} line(s)`} columns={['SKU', 'Barcode', 'Name', 'Qty', 'Sellable', 'Short', 'Match', 'Availability']}>
+        {(order.lines || []).map((line) => (
+          <tr key={line.id}>
+            <td className="mono">{line.sku}</td>
+            <td className="mono">{line.barcode}</td>
+            <td className="description-cell">{line.name}</td>
+            <td>{formatNumber(line.quantity_ordered)}</td>
+            <td>{formatNumber(line.sellable_snapshot)}</td>
+            <td>{formatNumber(line.shortage_quantity)}</td>
+            <td>{StatusText(line.matched_status)}</td>
+            <td>{StatusText(line.availability_status)}</td>
+          </tr>
+        ))}
+      </TableShell>
+    </aside>
+  );
+}
+
+function StatusText(value) {
+  return <span className={`status-pill order-status-${String(value || 'unknown').replace(/[^a-z0-9-]/gi, '-').toLowerCase()}`}>{value || 'unknown'}</span>;
+}
+
+function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, loading, error, onCheckConnection, onPreview, onCommit, onPreviewOrders, onCommitOrders }) {
+  const latestRun = syncRuns.find((run) => run.sync_type === 'products') || syncRuns[0];
+  const latestOrderRun = syncRuns.find((run) => run.sync_type === 'orders');
   const commitDisabled = !status.configured || !preview || preview.conflict_count > 0 || preview.error_count > 0;
+  const orderCommitDisabled = !status.configured || !orderPreview;
   return (
     <section className="content-panel settings-page">
       <div className="wide-panel">
@@ -3259,8 +3541,40 @@ function WooCommerceSettingsPage({ status, preview, commitSummary, syncRuns, loa
       <div className="wide-panel">
         <div className="panel-title">
           <div>
+            <h2>WooCommerce Order Sync</h2>
+            <p>Imports processing and on-hold orders into local open orders. It is read-only against WooCommerce and does not allocate or change stock.</p>
+          </div>
+          <div className="button-row compact">
+            <button className="primary-button" disabled={loading || !status.configured} onClick={onPreviewOrders} type="button">
+              <Search size={17} />
+              Preview Order Sync
+            </button>
+            <button className="action-button" disabled={loading || orderCommitDisabled} onClick={onCommitOrders} type="button">
+              <RefreshCw size={17} />
+              Commit Order Sync
+            </button>
+          </div>
+        </div>
+        <div className="summary-strip report-summary-strip">
+          <Metric label="Default Statuses" value="processing, on-hold" />
+          <Metric label="Last Order Sync" value={latestOrderRun ? latestOrderRun.status : 'None'} />
+          <Metric label="Last Orders" value={latestOrderRun ? latestOrderRun.total_remote_records : 0} />
+          <Metric label="Safety" value="Read-only Woo" />
+        </div>
+        <div className="csv-note">Order sync stores local order/order line snapshots only. It does not write WooCommerce, update product stock, create stock movements, allocate, pick, or route orders.</div>
+        {orderPreview && <WooOrderPreviewSummary preview={orderPreview} />}
+        {orderCommitSummary && (
+          <div className="success-strip">
+            Order sync run {orderCommitSummary.sync_run_id || 'not created'} finished with status {orderCommitSummary.status}. Created {orderCommitSummary.created_count}, updated {orderCommitSummary.updated_count}, skipped {orderCommitSummary.skipped_count}.
+          </div>
+        )}
+      </div>
+      {orderPreview && <WooOrderPreviewTable orders={orderPreview.preview_orders || []} />}
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
             <h2>Sync Run History</h2>
-            <p>Local product sync attempts and outcomes.</p>
+            <p>Local WooCommerce sync attempts and outcomes.</p>
           </div>
         </div>
         <WooSyncRunsTable runs={syncRuns} />
@@ -3309,6 +3623,54 @@ function WooPreviewTable({ rows }) {
         <tr>
           <td colSpan={15}>
             <div className="empty-table-row">No WooCommerce preview rows loaded.</div>
+          </td>
+        </tr>
+      )}
+    </TableShell>
+  );
+}
+
+function WooOrderPreviewSummary({ preview }) {
+  return (
+    <div className="summary-strip woo-summary-strip">
+      <Metric label="Remote Orders" value={preview.total_remote_records} />
+      <Metric label="Create" value={preview.create_count} />
+      <Metric label="Update" value={preview.update_count} />
+      <Metric label="Matched Lines" value={preview.matched_count} />
+      <Metric label="Conflicts" value={preview.conflict_count} />
+      <Metric label="Unavailable" value={preview.unavailable_count} />
+      <Metric label="Unknown" value={preview.unknown_count} />
+    </div>
+  );
+}
+
+function WooOrderPreviewTable({ orders }) {
+  const rows = orders.flatMap((order) => (order.lines || []).map((line) => ({ order, line })));
+  return (
+    <TableShell caption={`${orders.length} order(s), ${rows.length} line(s)`} columns={['Action', 'Order', 'Woo Status', 'Customer', 'Total', 'SKU', 'Barcode', 'Name', 'Qty', 'Match', 'Availability', 'Sellable', 'Shortage', 'Warnings', 'Errors']}>
+      {rows.map(({ order, line }) => (
+        <tr key={`${order.woo_order_id}-${line.woo_line_item_id || line.sku}`}>
+          <td>{order.action}</td>
+          <td className="mono">{order.woo_order_number || order.woo_order_id}</td>
+          <td>{StatusText(order.woo_status)}</td>
+          <td>{order.customer_name}</td>
+          <td>{formatCurrency(order.total)}</td>
+          <td className="mono">{line.sku}</td>
+          <td className="mono">{line.barcode}</td>
+          <td className="description-cell">{line.name}</td>
+          <td>{formatNumber(line.quantity_ordered)}</td>
+          <td>{StatusText(line.matched_status)}</td>
+          <td>{StatusText(line.availability_status)}</td>
+          <td>{formatNumber(line.sellable_snapshot)}</td>
+          <td>{formatNumber(line.shortage_quantity)}</td>
+          <td className="description-cell">{[...(order.warnings || []), ...(line.warnings || [])].join(' ')}</td>
+          <td className="description-cell">{[...(order.errors || []), ...(line.errors || [])].join(' ')}</td>
+        </tr>
+      ))}
+      {rows.length === 0 && (
+        <tr>
+          <td colSpan={15}>
+            <div className="empty-table-row">No WooCommerce order preview rows loaded.</div>
           </td>
         </tr>
       )}
@@ -3719,6 +4081,23 @@ async function exportReceivedInventoryCsv(filters) {
   URL.revokeObjectURL(url);
 }
 
+async function exportOpenOrdersCsv(filters) {
+  const response = await fetch(`${API_BASE_URL}/api/orders/open/export${plainFiltersToQueryString(openOrderFiltersToApi(filters))}`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export open orders from the backend. Start the FastAPI server and try again.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'pongo-open-orders-export.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 async function exportCycleCountCsv(cycleCountId, countNumber) {
   const response = await fetch(`${API_BASE_URL}/api/cycle-counts/${cycleCountId}/export`);
   if (!response.ok) {
@@ -3925,6 +4304,22 @@ function receivedInventoryFiltersToApi(filters = {}) {
     reference_number: filters.referenceNumber,
     created_by: filters.createdBy,
   };
+}
+
+function openOrderFiltersToApi(filters = {}) {
+  return {
+    search: filters.search,
+    woo_status: filters.wooStatus,
+    availability_status: filters.availabilityStatus,
+    matched_status: filters.matchedStatus,
+  };
+}
+
+function formatAddressSummary(summary) {
+  if (!summary) {
+    return 'No shipping address';
+  }
+  return [summary.address_1, summary.address_2, summary.city, summary.state, summary.postcode, summary.country].filter(Boolean).join(', ') || 'No shipping address';
 }
 
 function itemToApiPayload(item) {

@@ -32,6 +32,8 @@ class WooCommerceSyncError(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     sync_run_id: Mapped[int] = mapped_column(ForeignKey("woocommerce_sync_runs.id"), index=True, nullable=False)
+    remote_order_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    remote_line_item_id: Mapped[int | None] = mapped_column(Integer, index=True)
     remote_product_id: Mapped[int | None] = mapped_column(Integer, index=True)
     remote_variation_id: Mapped[int | None] = mapped_column(Integer, index=True)
     sku: Mapped[str | None] = mapped_column(String(120), index=True)

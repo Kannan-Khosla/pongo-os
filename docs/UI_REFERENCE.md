@@ -404,8 +404,29 @@ Reference table columns:
 
 Pongo Open Orders:
 - Order source is WooCommerce.
-- Pull eligible WooCommerce orders later through backend sync.
-- Show order number, customer, placed on, WooCommerce status, total items, total quantity, allocation status, ship from, city/state/zip, order total, SKU summary, and action to allocate.
+- Pull eligible WooCommerce orders through backend read-only order sync.
+- Show order number, customer, placed on, WooCommerce status, line count,
+  match status, availability status, order total, and line-level SKU/barcode
+  detail.
+- Do not show allocate/pick/route actions in the current read-only foundation.
+
+Current Pongo Open Orders page:
+- Summary cards: Open Orders, Available, Partial, Unavailable, Unknown.
+- Filters: search, Woo status, availability, matched status.
+- Actions: Refresh local open orders, Export filtered CSV, Clear, Apply.
+- Dense operational table with order number, Woo status, customer, email,
+  total, availability, matched status, lines, created date, and last sync.
+- Detail panel shows selected order customer/contact/address summary and order
+  lines with SKU, barcode, name, quantity, sellable snapshot, shortage, match
+  status, and availability.
+- Safety copy states that this queue does not allocate, reserve, pick, route,
+  change stock, or update WooCommerce statuses.
+
+Current Settings WooCommerce Order Sync section:
+- Shows default statuses `processing, on-hold`.
+- Provides Preview Order Sync and Commit Order Sync controls.
+- Preview displays order and line-level match/availability rows.
+- Commit creates/updates local order snapshots only.
 
 ## Allocate Orders
 

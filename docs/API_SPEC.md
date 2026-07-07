@@ -34,7 +34,6 @@ Current response:
 These routes are wired for frontend/API structure only. They do not perform
 business workflows, external calls, or database mutations yet.
 
-- `GET /api/orders`
 - `GET /api/reports`
 - `GET /api/routes`
 
@@ -206,6 +205,8 @@ Required backend environment variables:
 - `WOOCOMMERCE_CONSUMER_SECRET`
 - `WOOCOMMERCE_TIMEOUT_SECONDS`
 - `WOOCOMMERCE_PAGE_SIZE`
+- `WOOCOMMERCE_ORDER_SYNC_PAGE_SIZE`
+- `WOOCOMMERCE_ORDER_SYNC_DEFAULT_STATUSES`
 
 ### GET /api/integrations/woocommerce/status
 
@@ -310,6 +311,70 @@ Filters:
 ### GET /api/integrations/woocommerce/sync-runs/{id}
 
 Return sync run detail and row-level sync errors.
+
+### POST /api/integrations/woocommerce/orders/preview
+
+Fetch eligible WooCommerce orders through the backend WooCommerce REST API
+client and return what would happen locally without database writes.
+
+Request:
+- `include_statuses`: defaults to `["processing", "on-hold"]`
+- `limit`: defaults to `500`
+- `after`, `before`, `modified_after`, `modified_before`: optional WooCommerce date filters
+- `created_by`: defaults to `system`
+
+Preview does not:
+- create or update local orders
+- allocate, reserve, pick, or route order lines
+- change item In Stock or Allocated quantities
+- create stock movements
+- write to WooCommerce
+
+Matching rules for order lines:
+- Woo Product ID + Woo Variation ID
+- exact SKU
+- exact Barcode from order line metadata
+- conflict when those identifiers match different local items
+
+Availability is a read-only snapshot:
+- `sellable_snapshot = item.In Stock - item.Allocated`
+- `available` when sellable covers ordered quantity
+- `partial` when some sellable quantity exists but not enough
+- `unavailable` when a matched item has no sellable quantity
+- `unknown` for unmatched or conflict lines
+
+### POST /api/integrations/woocommerce/orders/commit
+
+Fetch eligible WooCommerce orders again, validate again, and create/update only
+local `orders` and `order_items` rows. This endpoint never writes to
+WooCommerce and never changes local stock or allocation quantities.
+
+Commit behavior:
+- Stores a local order snapshot for eligible open WooCommerce orders.
+- Upserts order lines by Woo line item ID.
+- Stores unmatched and conflict lines for staff review instead of creating
+  inventory items.
+- Reuses `woocommerce_sync_runs` with `sync_type = orders`.
+- Stores order/line context in `woocommerce_sync_errors` for unmatched and
+  conflict rows.
+
+### GET /api/orders/open
+
+List local open orders imported from WooCommerce order sync.
+
+Filters:
+- `search`
+- `woo_status`
+- `availability_status`
+- `matched_status`
+
+### GET /api/orders/{id}
+
+Return one local order with line-level match and availability detail.
+
+### GET /api/orders/open/export
+
+Export filtered local open orders as CSV.
 
 ## Locations
 

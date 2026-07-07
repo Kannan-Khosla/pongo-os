@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     woocommerce_consumer_secret: str = Field(default="", validation_alias=AliasChoices("WOOCOMMERCE_CONSUMER_SECRET", "woocommerce_consumer_secret"))
     woocommerce_timeout_seconds: int = Field(default=30, validation_alias=AliasChoices("WOOCOMMERCE_TIMEOUT_SECONDS", "woocommerce_timeout_seconds"))
     woocommerce_page_size: int = Field(default=100, validation_alias=AliasChoices("WOOCOMMERCE_PAGE_SIZE", "woocommerce_page_size"))
+    woocommerce_order_sync_page_size: int = Field(default=100, validation_alias=AliasChoices("WOOCOMMERCE_ORDER_SYNC_PAGE_SIZE", "woocommerce_order_sync_page_size"))
+    woocommerce_order_sync_default_statuses: str = Field(default="processing,on-hold", validation_alias=AliasChoices("WOOCOMMERCE_ORDER_SYNC_DEFAULT_STATUSES", "woocommerce_order_sync_default_statuses"))
     map_provider: str = Field(default="", validation_alias=AliasChoices("MAP_PROVIDER", "map_provider"))
     map_api_key: str = Field(default="", validation_alias=AliasChoices("MAP_API_KEY", "map_api_key"))
 
@@ -27,6 +29,10 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.backend_cors_origins.split(",") if origin.strip()]
+
+    @property
+    def default_order_sync_statuses(self) -> list[str]:
+        return [status.strip() for status in self.woocommerce_order_sync_default_statuses.split(",") if status.strip()]
 
 
 @lru_cache

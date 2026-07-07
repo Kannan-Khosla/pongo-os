@@ -290,15 +290,26 @@ What not to build yet:
 
 Goal: Pull eligible WooCommerce orders into local tables.
 
+Status: Completed for read-only order sync foundation. The backend supports
+WooCommerce order preview, local-only commit, sync run history, open order
+list/detail/export endpoints, and line-level matching/availability snapshots.
+The frontend Settings page exposes WooCommerce Order Sync controls and the
+Orders page shows the local Open Orders queue.
+
 Deliverables:
 - Order sync endpoint
 - Open orders screen
 
 Acceptance criteria:
-- Eligible statuses are configurable after confirmation.
+- Eligible statuses default to `processing,on-hold` and can be configured.
+- Preview writes nothing.
+- Commit creates/updates local orders and order lines only.
+- Order sync does not allocate, pick, route, fulfill, change local item stock,
+  create stock movements, or write WooCommerce.
 
 Safety notes:
-- No fulfillment/status writes until picking is stable.
+- Read-only WooCommerce calls only.
+- No fulfillment/status writes until picking is stable and explicitly approved.
 
 What not to build yet:
 - Allocation/picking completion writes

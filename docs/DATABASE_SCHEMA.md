@@ -2,8 +2,9 @@
 
 This document describes the PostgreSQL tables for Pongo Inventory OS.
 The initial SQLAlchemy models and Alembic migration were scaffolded in
-`backend/` on July 7, 2026. Direct receiving is now the first stock-changing
-workflow; WooCommerce sync and other stock workflows are not implemented yet.
+`backend/` on July 7, 2026. Direct receiving and cycle count are the current
+stock-changing workflows; WooCommerce product and order sync are read-only
+against WooCommerce.
 
 Implementation notes:
 - Models live under `backend/app/models/`.
@@ -25,6 +26,8 @@ Implementation notes:
 - Revision `20260707_0005` adds cycle count header and line tables.
 - Revision `20260707_0006` adds WooCommerce item sync metadata and sync run
   history tables.
+- Revision `20260707_0007` adds WooCommerce order sync snapshot fields to
+  `orders`, `order_items`, and order/line context fields on sync errors.
 
 ## Canonical CSV Mapping
 
@@ -489,14 +492,41 @@ Current limitation:
 
 ## orders
 
-Purpose: Local copy of eligible WooCommerce orders.
+Purpose: Local read-only snapshot of eligible WooCommerce open orders. Order
+sync imports WooCommerce `processing` and `on-hold` orders by default into local
+rows for review. It does not allocate, pick, route, fulfill, change local stock,
+or write back to WooCommerce.
 
 Fields:
 - id
 - woo_order_id
+- woo_order_number
+- woo_status
+- local_status
+- currency
+- customer_id
+- customer_email
+- customer_first_name
+- customer_last_name
+- customer_phone
+- billing_summary
+- shipping_summary
+- payment_method
+- payment_method_title
+- subtotal
+- discount_total
+- shipping_total
+- tax_total
+- total
+- date_created
+- date_modified
+- date_paid
+- date_completed
+- sync_status
+- sync_error
+- last_synced_at
 - order_number
 - customer_name
-- customer_email
 - placed_on
 - completed_on
 - status
@@ -529,27 +559,45 @@ Relationships:
 
 Index/uniqueness suggestions:
 - Unique `woo_order_id`.
-- Index `order_number`, `status`, `allocation_status`, and `placed_on`.
+- Index `woo_order_number`, `woo_status`, `local_status`, `customer_id`,
+  `date_created`, `date_modified`, `sync_status`, `last_synced_at`, legacy
+  `order_number`, `status`, `allocation_status`, and `placed_on`.
 
 ## order_items
 
-Purpose: Local order line items matched to inventory items.
+Purpose: Local order line snapshots matched to inventory items where possible.
+Unmatched and conflict lines are intentionally stored for staff review.
 
 Fields:
 - id
 - order_id
 - woo_order_item_id
+- woo_product_id
+- woo_variation_id
 - inventory_item_id
 - line_number
 - sku
 - barcode
 - description
+- name
+- quantity_ordered
+- quantity_allocated
+- quantity_picked
 - ordered_qty
 - ordered_uom
 - allocated_qty
 - picked_qty
 - unit_cost
 - unit_price
+- line_subtotal
+- line_total
+- line_tax
+- matched_status
+- availability_status
+- sellable_snapshot
+- shortage_quantity
+- sync_status
+- sync_error
 - unit_cost_total
 - total_price
 - brand
@@ -561,9 +609,18 @@ Relationships:
 - Belongs to `orders`.
 - Optionally belongs to `inventory_items`.
 
-Calculated fields:
-- unit_cost_total = ordered_qty * unit_cost.
-- total_price = ordered_qty * unit_price.
+Read-only order sync rules:
+- Matching uses Woo product/variation IDs, exact SKU, and exact Barcode.
+- Conflicts are stored as `matched_status = conflict`.
+- Missing local matches are stored as `matched_status = unmatched`; order sync
+  does not create inventory items.
+- `quantity_allocated`, `quantity_picked`, legacy `allocated_qty`, and legacy
+  `picked_qty` remain zero during order sync.
+- `sellable_snapshot = inventory_items.in_stock - inventory_items.allocated`
+  at sync time.
+- `shortage_quantity = max(quantity_ordered - sellable_snapshot, 0)`.
+- Order sync does not update `inventory_items.in_stock`,
+  `inventory_items.allocated`, or `stock_movements`.
 
 ## routes
 
@@ -677,8 +734,8 @@ Index suggestions:
 
 ## woocommerce_sync_runs
 
-Purpose: Track read-only WooCommerce product/variation sync preview commits to
-local Pongo OS items.
+Purpose: Track read-only WooCommerce product/variation and order sync commits
+to the local Pongo OS database.
 
 Fields:
 - id
@@ -698,6 +755,7 @@ Fields:
 
 Current usage:
 - Product/variation commit creates one run with `sync_type = products`.
+- Order commit creates one run with `sync_type = orders`.
 - Sync runs represent local database sync only; they do not represent writes to
   WooCommerce.
 
@@ -706,12 +764,14 @@ Relationships:
 
 ## woocommerce_sync_errors
 
-Purpose: Row-level sync errors, conflicts, and skipped records from
-WooCommerce product sync commits.
+Purpose: Row-level sync errors, conflicts, unmatched rows, and skipped records
+from WooCommerce product and order sync commits.
 
 Fields:
 - id
 - sync_run_id
+- remote_order_id
+- remote_line_item_id
 - remote_product_id
 - remote_variation_id
 - sku

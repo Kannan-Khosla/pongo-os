@@ -319,6 +319,10 @@ select:focus-visible {
   grid-template-columns: repeat(4, minmax(190px, 1fr));
 }
 
+.orders-filter-grid {
+  grid-template-columns: minmax(220px, 1.4fr) repeat(3, minmax(160px, 0.8fr));
+}
+
 .field {
   display: grid;
   gap: 6px;
@@ -942,6 +946,88 @@ tbody tr:nth-child(even) .sticky-col {
   gap: 22px;
 }
 
+.orders-page {
+  display: grid;
+  gap: 20px;
+}
+
+.order-summary-strip {
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
+}
+
+.orders-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.65fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.selected-row {
+  background: #fff5ef;
+}
+
+.orders-grid tbody tr {
+  cursor: pointer;
+}
+
+.order-detail-panel {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--line);
+  background: var(--white);
+  padding: 16px;
+}
+
+.compact-title {
+  margin-bottom: 0;
+}
+
+.detail-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.detail-address {
+  display: grid;
+  gap: 5px;
+  background: var(--filter);
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.detail-address strong {
+  color: var(--ink);
+}
+
+.order-status-available,
+.order-status-matched,
+.order-status-processing {
+  background: #e4f4ea;
+  color: #1f6d43;
+}
+
+.order-status-partial,
+.order-status-on-hold {
+  background: #fff0d9;
+  color: #8a5513;
+}
+
+.order-status-unavailable,
+.order-status-conflict,
+.order-status-unmatched {
+  background: #ffe5dc;
+  color: #9b3d23;
+}
+
+.order-status-unknown {
+  background: #edf2f4;
+  color: #52646b;
+}
+
 .woo-summary-strip {
   grid-template-columns: repeat(7, minmax(110px, 1fr));
 }
@@ -1350,6 +1436,7 @@ tbody tr:nth-child(even) .sticky-col {
   .locations-filter-grid,
   .inventory-filter-grid,
   .report-filter-grid,
+  .orders-filter-grid,
   .cycle-count-header-fields,
   .form-grid {
     grid-template-columns: repeat(2, minmax(170px, 1fr));
@@ -1357,8 +1444,13 @@ tbody tr:nth-child(even) .sticky-col {
 
   .summary-strip,
   .report-summary-strip,
-  .woo-summary-strip {
+  .woo-summary-strip,
+  .order-summary-strip {
     grid-template-columns: repeat(2, minmax(150px, 1fr));
+  }
+
+  .orders-grid {
+    grid-template-columns: 1fr;
   }
 
   .detail-layout {

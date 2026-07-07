@@ -132,3 +132,20 @@ are never exposed in API responses or frontend code. The sync client only
 implements read methods. Commit creates or updates local Pongo OS items only,
 preserves manual operational fields, stores Woo stock as a snapshot, creates no
 stock movements, and never writes WooCommerce products, orders, or stock.
+
+## ADR-016: WooCommerce Order Sync Is Read-Only and Local-Only
+
+Decision: Implement WooCommerce order sync as a backend-only, read-only
+integration with preview and local-only commit.
+
+Reason: Pongo needs a local Open Orders queue before allocation, picking,
+fulfillment exports, route creation, or WooCommerce status/stock writeback can
+be safely designed. Preview lets staff inspect unmatched lines, conflicts, and
+shortages before local order snapshots are stored.
+
+Safety: Order sync reads WooCommerce orders only. Preview writes nothing.
+Commit creates or updates local `orders` and `order_items` rows only, stores
+sync run/error history, and preserves unmatched/conflict lines for review. It
+does not create inventory items, allocate, pick, route, fulfill, change local
+item stock or Allocated quantities, create stock movements, or write
+WooCommerce orders/products/stock.

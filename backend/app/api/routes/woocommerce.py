@@ -8,6 +8,9 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.woocommerce import WooCommerceSyncRun
 from app.schemas.woocommerce import (
+    WooCommerceOrderCommitResponse,
+    WooCommerceOrderPreviewResponse,
+    WooCommerceOrderSyncRequest,
     WooCommerceProductCommitResponse,
     WooCommerceProductPreviewResponse,
     WooCommerceStatusResponse,
@@ -18,6 +21,7 @@ from app.schemas.woocommerce import (
     WooCommerceSyncRunRead,
 )
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
+from app.services.woocommerce_orders import commit_order_sync, preview_order_sync
 from app.services.woocommerce_sync import commit_product_sync, preview_product_sync
 
 router = APIRouter(prefix="/integrations/woocommerce", tags=["woocommerce"])
@@ -81,6 +85,33 @@ def commit_woocommerce_products(payload: WooCommerceSyncRequest | None = None, d
     )
 
 
+@router.post("/orders/preview", response_model=WooCommerceOrderPreviewResponse)
+def preview_woocommerce_orders(payload: WooCommerceOrderSyncRequest | None = None, db: Session = Depends(get_db)) -> WooCommerceOrderPreviewResponse:
+    return preview_order_sync(db, create_woocommerce_client(), payload or WooCommerceOrderSyncRequest())
+
+
+@router.post("/orders/commit", response_model=WooCommerceOrderCommitResponse)
+def commit_woocommerce_orders(payload: WooCommerceOrderSyncRequest | None = None, db: Session = Depends(get_db)) -> WooCommerceOrderCommitResponse:
+    sync_run, summary = commit_order_sync(db, create_woocommerce_client(), payload or WooCommerceOrderSyncRequest())
+    return WooCommerceOrderCommitResponse(
+        sync_run_id=sync_run.id if sync_run else None,
+        status=sync_run.status if sync_run else "not_configured",
+        total_remote_records=summary.total_remote_records,
+        created_count=summary.create_count,
+        updated_count=summary.update_count,
+        matched_count=summary.matched_count,
+        skipped_count=summary.skipped_count,
+        conflict_count=summary.conflict_count,
+        error_count=summary.error_count,
+        available_count=summary.available_count,
+        partial_count=summary.partial_count,
+        unavailable_count=summary.unavailable_count,
+        unknown_count=summary.unknown_count,
+        warnings=summary.warnings,
+        errors=summary.errors,
+    )
+
+
 @router.get("/sync-runs", response_model=WooCommerceSyncRunListResponse)
 def list_sync_runs(
     sync_type: str | None = None,
@@ -113,6 +144,8 @@ def get_sync_run(sync_run_id: int, db: Session = Depends(get_db)) -> WooCommerce
     base["errors"] = [
         WooCommerceSyncErrorRead(
             id=error.id,
+            remote_order_id=error.remote_order_id,
+            remote_line_item_id=error.remote_line_item_id,
             remote_product_id=error.remote_product_id,
             remote_variation_id=error.remote_variation_id,
             sku=error.sku,

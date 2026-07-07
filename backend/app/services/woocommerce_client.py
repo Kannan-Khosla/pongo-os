@@ -19,6 +19,7 @@ class WooCommerceClient:
         self.consumer_secret = settings.woocommerce_consumer_secret
         self.timeout_seconds = settings.woocommerce_timeout_seconds
         self.page_size = settings.woocommerce_page_size
+        self.order_page_size = settings.woocommerce_order_sync_page_size
 
     @property
     def configured(self) -> bool:
@@ -63,6 +64,54 @@ class WooCommerceClient:
                 break
             page += 1
         return records
+
+    def list_orders(
+        self,
+        page: int = 1,
+        per_page: int | None = None,
+        status: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"page": page, "per_page": per_page or self.order_page_size}
+        if status:
+            params["status"] = status
+        if after:
+            params["after"] = after
+        if before:
+            params["before"] = before
+        if modified_after:
+            params["modified_after"] = modified_after
+        if modified_before:
+            params["modified_before"] = modified_before
+        return self._get("/wp-json/wc/v3/orders", params)
+
+    def fetch_all_orders(
+        self,
+        statuses: list[str] | None = None,
+        limit: int | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
+    ) -> list[dict[str, Any]]:
+        orders: list[dict[str, Any]] = []
+        per_page = self.order_page_size
+        for status in statuses or ["processing", "on-hold"]:
+            page = 1
+            while True:
+                page_orders = self.list_orders(page=page, per_page=per_page, status=status, after=after, before=before, modified_after=modified_after, modified_before=modified_before)
+                if not page_orders:
+                    break
+                orders.extend(page_orders)
+                if limit and len(orders) >= limit:
+                    return orders[:limit]
+                if len(page_orders) < per_page:
+                    break
+                page += 1
+        return orders
 
     def check_connection(self) -> None:
         self.list_products(page=1, per_page=1)

@@ -1,8 +1,8 @@
 # WooCommerce Sync Plan
 
 This document describes WooCommerce integration behavior. The current
-implementation supports a read-only product and variation sync foundation
-through the backend only.
+implementation supports read-only product/variation sync and read-only open
+order sync through the backend only.
 
 ## System Roles
 
@@ -20,12 +20,16 @@ Required backend environment variables:
 - `WOOCOMMERCE_CONSUMER_SECRET`
 - `WOOCOMMERCE_TIMEOUT_SECONDS`
 - `WOOCOMMERCE_PAGE_SIZE`
+- `WOOCOMMERCE_ORDER_SYNC_PAGE_SIZE`
+- `WOOCOMMERCE_ORDER_SYNC_DEFAULT_STATUSES`
 
 Never commit real credentials. Example docs and tests must use placeholders only.
 
 ## Read-Only Sync First
 
-The first WooCommerce integration phase is read-only product and variation sync. Do not update live WooCommerce stock until:
+The first WooCommerce integration phases are read-only product/variation sync
+and read-only order sync. Do not update live WooCommerce stock or order statuses
+until:
 - product/variation mapping is stable;
 - local item workflows are stable;
 - stock movement auditing is verified;
@@ -201,7 +205,55 @@ Use cases:
 
 ## Order Sync Behavior
 
-Order sync pulls eligible WooCommerce orders into local `orders` and `order_items` tables. Eligibility depends on confirmed WooCommerce statuses. Order items are matched to inventory items by Woo product ID, Woo variation ID, SKU, or barcode.
+Implemented endpoints:
+- `POST /api/integrations/woocommerce/orders/preview`
+- `POST /api/integrations/woocommerce/orders/commit`
+- `GET /api/orders/open`
+- `GET /api/orders/{id}`
+- `GET /api/orders/open/export`
+
+Order sync pulls eligible WooCommerce orders into local `orders` and
+`order_items` tables. The default open statuses are `processing` and `on-hold`,
+configured through `WOOCOMMERCE_ORDER_SYNC_DEFAULT_STATUSES`.
+
+Order sync is read-only against WooCommerce:
+- no WooCommerce order status writes;
+- no WooCommerce product or stock writes;
+- no local item stock changes;
+- no local allocation quantity changes;
+- no stock movements;
+- no receiving, cycle count, fulfillment, or route workflow side effects.
+
+Line matching rules:
+1. Woo Product ID + Woo Variation ID.
+2. Exact SKU.
+3. Exact Barcode from Woo order line metadata.
+
+If these identifiers match different local items, the line is marked
+`conflict`. If no local item matches, the line is marked `unmatched`. Order sync
+does not create missing items.
+
+Availability snapshot:
+- `sellable_snapshot = item.In Stock - item.Allocated`
+- `available` when sellable covers ordered quantity
+- `partial` when some sellable exists but not enough
+- `unavailable` when a matched item has zero sellable quantity
+- `unknown` when the line is unmatched or conflict
+- `shortage_quantity = max(quantity_ordered - sellable_snapshot, 0)`
+
+Preview:
+- Fetches eligible orders.
+- Returns order and line actions, match statuses, availability snapshots, and
+  warnings/errors.
+- Does not write local orders or order lines.
+
+Commit:
+- Fetches eligible orders again.
+- Creates or updates local order/order line snapshots only.
+- Stores sync run history with `sync_type = orders`.
+- Stores sync errors for unmatched, conflict, and skipped rows.
+- Does not allocate, pick, reserve, route, fulfill, update item stock, or write
+  WooCommerce.
 
 ## Stock Update Safety
 
