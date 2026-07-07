@@ -1,6 +1,9 @@
 # UI Reference
 
-This document describes planned UI style, screens, and workflows for Pongo Inventory OS. It is documentation only: do not scaffold the frontend, implement React components, or add business logic from this document.
+This document describes UI style, screens, and workflows for Pongo Inventory OS.
+It is the visual reference for frontend work, not a source of business logic.
+The current React admin shell implements the global layout and placeholder
+pages only; real inventory data and workflow behavior are added in later phases.
 
 Screenshots inspected from `docs/ui-reference/pongo-os/`:
 - `items-page.png`
@@ -77,7 +80,7 @@ Use only Pongo's needed modules:
 - Cycle Count
 - Reports
 - Routes
-- Admin / Settings
+- Settings
 
 Do not build supplier management, purchasing, purchase orders, supplier portals, ready-to-ship/ship/dispatched/returns stages, or complex order stages unless requested later.
 
@@ -94,6 +97,8 @@ Planned elements:
 Pongo MVP:
 - Dashboard may be placeholder until inventory and order data exists.
 - Placeholder should still use the global shell, sidebar, coral header, and white content area.
+- Current shell shows summary cards for Orders, Items, Low Stock, and Received
+  Today, plus a placeholder activity chart and operations widgets panel.
 
 ## Admin Items
 

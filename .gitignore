@@ -3,3 +3,8 @@
 # Frontend
 frontend/node_modules/
 frontend/dist/
+
+# Python backend
+backend/.venv/
+backend/.pytest_cache/
+backend/**/__pycache__/

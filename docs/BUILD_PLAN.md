@@ -28,6 +28,8 @@ What not to build yet:
 
 Goal: Create minimal FastAPI and React app structure.
 
+Status: Initial frontend shell and backend foundation scaffolded.
+
 Deliverables:
 - Backend app entrypoint
 - Frontend app shell
@@ -48,6 +50,8 @@ What not to build yet:
 ## Phase 3: Database Models and Migrations
 
 Goal: Add SQLAlchemy models and Alembic migrations.
+
+Status: Initial model set and Alembic revision scaffolded.
 
 Deliverables:
 - Models for inventory, locations, movements, receipts, orders, routes, and imports

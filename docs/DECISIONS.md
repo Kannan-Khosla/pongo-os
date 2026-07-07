@@ -59,3 +59,17 @@ Reason: Pongo does not need complex warehouse/delivery stages in MVP.
 Decision: Route creation and optimization will be a separate module.
 
 Reason: Routing should not complicate inventory receiving or picking workflows.
+
+## ADR-011: Backend Foundation Before Workflow Logic
+
+Decision: Scaffold FastAPI, SQLAlchemy models, Alembic migrations, environment
+configuration, CORS, placeholder routers, and tests before implementing
+WooCommerce sync or stock-changing workflows.
+
+Reason: The system needs a stable local backend and database foundation before
+adding operations that mutate inventory, allocate orders, receive stock, or call
+external services.
+
+Safety: Environment examples contain placeholders only. WooCommerce and map
+provider credentials are not committed, and no external WooCommerce or map API
+calls are attempted in the scaffold.

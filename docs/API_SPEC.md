@@ -1,6 +1,8 @@
 # Planned API Specification
 
-This document describes planned backend endpoints. It is documentation only; no API routes are implemented yet.
+This document describes planned backend endpoints. The backend scaffold now
+implements `/health` plus structural placeholder routers for the main API
+modules. Full workflow endpoints remain planned until their modules are built.
 
 ## API Rules
 
@@ -15,6 +17,27 @@ This document describes planned backend endpoints. It is documentation only; no 
 ### GET /health
 
 Returns service health and basic build metadata.
+
+Current response:
+
+```json
+{
+  "status": "ok",
+  "service": "pongo-inventory-os"
+}
+```
+
+## Current Placeholder Routers
+
+These routes are wired for frontend/API structure only. They do not perform
+business workflows, external calls, or database mutations yet.
+
+- `GET /api/items`
+- `GET /api/locations`
+- `GET /api/receipts`
+- `GET /api/orders`
+- `GET /api/reports`
+- `GET /api/routes`
 
 ## Items
 

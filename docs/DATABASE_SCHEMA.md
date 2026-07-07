@@ -1,6 +1,15 @@
 # Database Schema Plan
 
-This document describes planned PostgreSQL tables. It is documentation only; no SQLAlchemy models or Alembic migrations are implemented yet.
+This document describes the PostgreSQL tables for Pongo Inventory OS.
+The initial SQLAlchemy models and Alembic migration were scaffolded in
+`backend/` on July 7, 2026. The schema is ready for local development, but
+stock-changing workflows and WooCommerce sync are not implemented yet.
+
+Implementation notes:
+- Models live under `backend/app/models/`.
+- The initial Alembic revision is `backend/alembic/versions/20260707_0001_initial_schema.py`.
+- `barcode` is indexed but not globally unique.
+- `DATABASE_URL=postgresql://...` remains valid in environment files; the backend normalizes it to the modern `psycopg` SQLAlchemy driver internally.
 
 ## inventory_items
 

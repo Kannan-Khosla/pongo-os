@@ -6,6 +6,8 @@ import {
   CalendarDays,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ClipboardCheck,
   ClipboardList,
   Download,
@@ -17,6 +19,7 @@ import {
   Menu,
   MoreVertical,
   PackageSearch,
+  PackagePlus,
   Plus,
   RefreshCw,
   Route,
@@ -24,6 +27,7 @@ import {
   Settings,
   ShoppingCart,
   SlidersHorizontal,
+  TriangleAlert,
   Truck,
   Upload,
   UserCircle,
@@ -40,7 +44,7 @@ const navItems = [
   { id: 'cycle-count', label: 'Cycle Count', icon: ClipboardCheck },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'routes', label: 'Routes', icon: Route },
-  { id: 'settings', label: 'Admin / Settings', icon: Settings },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
 const pageMeta = {
@@ -108,6 +112,19 @@ const genericRows = [
   ['Work queue', 'Awaiting setup', 'Planning', 'Main Warehouse'],
   ['Exceptions', 'Needs review', 'Operations', 'Main Warehouse'],
   ['Exports', 'Ready later', 'Reporting', 'Main Warehouse'],
+];
+
+const dashboardCards = [
+  ['Orders', '0', 'Open order queue', ShoppingCart],
+  ['Items', '0', 'Item master records', PackageSearch],
+  ['Low Stock', '0', 'Needs review', TriangleAlert],
+  ['Received Today', '0', 'Receipt sessions', PackagePlus],
+];
+
+const widgetRows = [
+  ['Receiving', 'No sessions pending', 'Main Warehouse'],
+  ['Cycle Count', 'No counts assigned', 'Operations'],
+  ['Routes', 'No routes scheduled', 'Dispatch'],
 ];
 
 function getInitialPage() {
@@ -232,7 +249,7 @@ function PageBody({ pageId }) {
     return (
       <StandardPage
         icon={Boxes}
-        title="Inventory list placeholder"
+        title="Inventory list"
         description="Stock-by-location table layout for Main Warehouse."
         columns={['SKU', 'Category', 'Description', 'UOM', 'In Stock', 'Allocated', 'Sellable', 'Location']}
       />
@@ -250,8 +267,8 @@ function PageBody({ pageId }) {
   return (
     <StandardPage
       icon={pageIcon(pageId)}
-      title={`${pageMeta[pageId].title} placeholder`}
-      description="Admin layout with filters, actions, and table structure."
+      title={pageMeta[pageId].title}
+      description="Main Warehouse workspace."
       columns={['Area', 'Status', 'Type', 'Notes']}
     />
   );
@@ -326,7 +343,7 @@ function ItemsPage() {
         </div>
       </div>
       <TableShell
-        caption="Showing placeholder records 1-5"
+        caption="Showing records 1-5"
         columns={[
           'Image',
           'SKU',
@@ -372,16 +389,9 @@ function ItemsPage() {
 }
 
 function DashboardPlaceholder() {
-  const cards = [
-    ['Items', 'Placeholder', PackageSearch],
-    ['Inventory', 'Placeholder', Boxes],
-    ['Open Orders', 'Placeholder', ShoppingCart],
-    ['Cycle Counts', 'Placeholder', ClipboardCheck],
-  ];
-
   return (
     <section className="dashboard-grid">
-      {cards.map(([label, value, Icon]) => (
+      {dashboardCards.map(([label, value, caption, Icon]) => (
         <article className="summary-card" key={label}>
           <div className="summary-icon">
             <Icon size={24} />
@@ -389,10 +399,58 @@ function DashboardPlaceholder() {
           <div>
             <span>{label}</span>
             <strong>{value}</strong>
+            <small>{caption}</small>
           </div>
         </article>
       ))}
-      <div className="content-panel wide-panel">
+      <div className="dashboard-chart">
+        <div className="section-heading">
+          <div>
+            <h2>Warehouse Activity</h2>
+            <p>Activity by week</p>
+          </div>
+          <button className="muted-button" type="button">
+            <SlidersHorizontal size={17} />
+            View
+          </button>
+        </div>
+        <div className="chart-placeholder" aria-label="Placeholder warehouse activity chart">
+          <div className="chart-axis">
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <div className="chart-bars">
+            <i style={{ '--bar-height': '42%' }}></i>
+            <i style={{ '--bar-height': '68%' }}></i>
+            <i style={{ '--bar-height': '54%' }}></i>
+            <i style={{ '--bar-height': '78%' }}></i>
+            <i style={{ '--bar-height': '47%' }}></i>
+            <i style={{ '--bar-height': '62%' }}></i>
+          </div>
+        </div>
+      </div>
+      <aside className="dashboard-widgets">
+        <div className="section-heading compact-heading">
+          <div>
+            <h2>Widgets</h2>
+            <p>Operations</p>
+          </div>
+        </div>
+        <div className="widget-list">
+          {widgetRows.map(([title, status, owner]) => (
+            <article className="widget-row" key={title}>
+              <div>
+                <strong>{title}</strong>
+                <span>{status}</span>
+              </div>
+              <em>{owner}</em>
+            </article>
+          ))}
+        </div>
+      </aside>
+      <div className="wide-panel">
         <div className="panel-title">
           <div>
             <h2>Work queues</h2>
@@ -428,7 +486,7 @@ function ReceivingPlaceholder() {
             <Search size={18} />
           </div>
         </label>
-        <button className="add-button" aria-label="Add placeholder receiving row" type="button">
+        <button className="add-button" aria-label="Add receiving row" type="button">
           <Plus size={22} />
         </button>
         <label className="toggle-label">
@@ -437,7 +495,7 @@ function ReceivingPlaceholder() {
         </label>
       </div>
       <TableShell
-        caption="Direct receiving placeholder"
+        caption="Receiving rows"
         columns={['Image', 'SKU', 'PKG #', 'Item #', 'Unit Cost', 'UOM', 'Expires', 'Lot No', 'Delivered', 'Destination', 'Total']}
       >
         <tr>
@@ -493,7 +551,7 @@ function StandardPage({ icon: Icon, title, description, columns }) {
           </button>
         </div>
       </div>
-      <TableShell caption="Placeholder records" columns={columns}>
+      <TableShell caption="Records" columns={columns}>
         {rows.map((row) => (
           <tr key={row.join('-')}>
             {row.map((cell) => (
@@ -513,7 +571,13 @@ function TableShell({ caption, columns, children }) {
         <span>{caption}</span>
         <div className="table-pager">
           <span>20 Results</span>
+          <button className="pager-button" aria-label="Previous page" type="button">
+            <ChevronLeft size={18} />
+          </button>
           <span>1 / 1</span>
+          <button className="pager-button active" aria-label="Next page" type="button">
+            <ChevronRight size={18} />
+          </button>
         </div>
       </div>
       <div className="table-action-band">

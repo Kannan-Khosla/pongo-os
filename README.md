@@ -68,5 +68,41 @@ npm install
 npm run dev
 ```
 
-The backend, database, migrations, API endpoints, and business logic have not
-been scaffolded yet. Those will be added in later tasks.
+The backend foundation is scaffolded in `backend/` as a FastAPI app with
+SQLAlchemy models, Alembic migration setup, PostgreSQL configuration, placeholder
+API routers, and tests. It does not connect to WooCommerce and does not implement
+stock-changing workflows yet.
+
+```bash
+cd backend
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn app.main:app --reload
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Run backend tests:
+
+```bash
+cd backend
+.venv/bin/python -m pytest
+```
+
+Run the initial Alembic migration against a local PostgreSQL database after
+creating `pongo_inventory_os` and configuring `backend/.env`:
+
+```bash
+cd backend
+.venv/bin/alembic upgrade head
+```
+
+The current backend route implementations are intentionally structural only.
+WooCommerce sync, receiving, allocation, picking, route optimization, and real
+stock-changing business logic will be added in later tasks.
