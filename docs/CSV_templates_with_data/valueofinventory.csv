@@ -1,0 +1,42 @@
+"Warehouse Name",Country,Client,Category,"In Stock","Average Cost","Total Cost","Average Freight","Total Freight","Average Duties","Total Duties","Average Freight + Duties","Total Freight + Duties","Average Landed Cost","Total Landed Cost"
+"Main Warehouse",Canada,,,2221,3.414475,7583.55,0.00,0.00,0.00,0.00,0.00,0.00,3.414475,7583.55
+"Main Warehouse",Canada,,`,3,77.82,233.46,0.00,0.00,0.00,0.00,0.00,0.00,77.82,233.46
+"Main Warehouse",Canada,,Accessories,32,16.240625,519.70,0.00,0.00,0.00,0.00,0.00,0.00,16.240625,519.70
+"Main Warehouse",Canada,,Adult,196,1.304898,255.76,0.00,0.00,0.00,0.00,0.00,0.00,1.304898,255.76
+"Main Warehouse",Canada,,"Cat Accessories",30,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,"Cat Beds",2,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,"CAT FOOD DRY",10,19.441,194.41,0.00,0.00,0.00,0.00,0.00,0.00,19.441,194.41
+"Main Warehouse",Canada,,"Cat Food Toppers",511,1.836986,938.70,0.00,0.00,0.00,0.00,0.00,0.00,1.836986,938.70
+"Main Warehouse",Canada,,"Cat Freeze Dried",8,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,"Cat Freeze Dried Food",31,3.306452,102.50,0.00,0.00,0.00,0.00,0.00,0.00,3.306452,102.50
+"Main Warehouse",Canada,,"Cat Grain Free",2,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,"Cat Health &amp; Wellness &amp; hygiene",29,1.965517,57.00,0.00,0.00,0.00,0.00,0.00,0.00,1.965517,57.00
+"Main Warehouse",Canada,,"Cat Health Foods",2,48.80,97.60,0.00,0.00,0.00,0.00,0.00,0.00,48.80,97.60
+"Main Warehouse",Canada,,"Cat Litter &amp; Litter Supplies",31,31.726129,983.51,0.00,0.00,0.00,0.00,0.00,0.00,31.726129,983.51
+"Main Warehouse",Canada,,"Cat Nip",6,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,"cat soft treats",17,2.83,48.11,0.00,0.00,0.00,0.00,0.00,0.00,2.83,48.11
+"Main Warehouse",Canada,,"Cat Treats",196,2.34648,459.91,0.00,0.00,0.00,0.00,0.00,0.00,2.34648,459.91
+"Main Warehouse",Canada,,"Cat Urinary Care",6,47.706667,286.24,0.00,0.00,0.00,0.00,0.00,0.00,47.706667,286.24
+"Main Warehouse",Canada,,Cats,556,2.811637,1563.27,0.00,0.00,0.00,0.00,0.00,0.00,2.811637,1563.27
+"Main Warehouse",Canada,,"Chews + Bones",798,2.219549,1771.20,0.00,0.00,0.00,0.00,0.00,0.00,2.219549,1771.20
+"Main Warehouse",Canada,,"Crunchy Treats",37,6.058108,224.15,0.00,0.00,0.00,0.00,0.00,0.00,6.058108,224.15
+"Main Warehouse",Canada,,"Dog Dental Care",4,49.35,197.40,0.00,0.00,0.00,0.00,0.00,0.00,49.35,197.40
+"Main Warehouse",Canada,,"Dog Food Toppers",35,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,"Dog Freeze Dried",11,16.039091,176.43,0.00,0.00,0.00,0.00,0.00,0.00,16.039091,176.43
+"Main Warehouse",Canada,,"Dog Freeze Dried Food",52,26.815385,1394.40,0.00,0.00,0.00,0.00,0.00,0.00,26.815385,1394.40
+"Main Warehouse",Canada,,"Dog Grooming",3,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,"Dog Harness, Lead &amp; Collar",6,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,"Dog Harness, Lead &amp; Collars",7,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,"Dog Health &amp; Wellness",6,2.866667,17.20,0.00,0.00,0.00,0.00,0.00,0.00,2.866667,17.20
+"Main Warehouse",Canada,,"Dog Skin &amp; Coat Care",9,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,"Dog Toys",19,6.825789,129.69,0.00,0.00,0.00,0.00,0.00,0.00,6.825789,129.69
+"Main Warehouse",Canada,,"Dog Treats",365,3.516849,1283.65,0.00,0.00,0.00,0.00,0.00,0.00,3.516849,1283.65
+"Main Warehouse",Canada,,"Dog Weight Management",2,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,Dogs,431,11.543007,4975.036,0.00,0.00,0.00,0.00,0.00,0.00,11.543007,4975.036
+"Main Warehouse",Canada,,"Dry Cat Food",268,26.150485,7008.33,0.00,0.00,0.00,0.00,0.00,0.00,26.150485,7008.33
+"Main Warehouse",Canada,,"Dry Dog Food",657,40.417686,26554.42,0.00,0.00,0.00,0.00,0.00,0.00,40.417686,26554.42
+"Main Warehouse",Canada,,"Free Toys",1464,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00
+"Main Warehouse",Canada,,Kitten,6,17.60,105.60,0.00,0.00,0.00,0.00,0.00,0.00,17.60,105.60
+"Main Warehouse",Canada,,Uncategorized,25,2.0448,51.12,0.00,0.00,0.00,0.00,0.00,0.00,2.0448,51.12
+"Main Warehouse",Canada,,"Wet Cat Food",2502,1.573477,3936.84,0.00,0.00,0.00,0.00,0.00,0.00,1.573477,3936.84
+"Main Warehouse",Canada,,"Wet Dog Food",665,2.171353,1443.95,0.00,0.00,0.00,0.00,0.00,0.00,2.171353,1443.95

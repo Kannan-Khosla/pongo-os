@@ -1,0 +1,99 @@
+"Warehouse Name","Warehouse ID",Name,Description,Code,"Parent Name","Parent Description","Parent Code","Stock in Location","Stock in Child Locations","Total Stock","Default Location","Allow Auto Allocation","Override Default Storage Fee","Storage Fee","Last Cycle Count"
+"Main Warehouse",400,Store,"Retail area",Store,"Store Rack 1","Store - 1","Store - 1",5,8439,8444,0,1,0,0.00,
+"Main Warehouse",400,"Store Center Rack 6","Store - C6","Store - C6",Store,"Retail area",Store,3114,0,3114,0,1,0,0.00,"2026-06-22 13:05:19"
+"Main Warehouse",400,Damaged,,Damage,,,,3,0,3,0,0,0,0.00,"2025-08-19 10:31:54"
+"Main Warehouse",400,"Store Center Rack 5","Store - C5","Store - C5",Store,"Retail area",Store,63,0,63,0,1,0,0.00,"2026-06-02 09:40:34"
+"Main Warehouse",400,Overflow,,Overflow,,,,2,0,2,0,1,0,0.00,"2026-02-19 13:40:01"
+"Main Warehouse",400,"Rack 20",,,,,,0,1383,0,0,1,0,0.00,
+"Main Warehouse",400,"Store Center Rack 4","Store - C4","Store - C4",Store,"Retail area",Store,223,0,223,0,1,0,0.00,"2026-03-09 14:19:29"
+"Main Warehouse",400,"Rack 20 Level 3","Second Warehouse",20-3,"Rack 20",,,24,0,24,0,1,0,0.00,"2026-01-15 12:15:06"
+"Main Warehouse",400,"Store Center Rack 3","Store - C3","Store - C3",Store,"Retail area",Store,300,0,300,0,1,0,0.00,"2026-05-08 14:16:31"
+"Main Warehouse",400,"Rack 20 Level 2","Second Warehouse",20-2,"Rack 20",,,230,0,230,0,1,0,0.00,"2026-05-19 14:36:34"
+"Main Warehouse",400,"Store Center Rack 2","Store - C2","Store - C2",Store,"Retail area",Store,1,0,1,0,1,0,0.00,"2025-08-22 14:01:54"
+"Main Warehouse",400,"Rack 20 Level 1","Second Warehouse",20-1,"Rack 20",,,828,0,828,0,1,0,0.00,"2026-06-22 13:05:18"
+"Main Warehouse",400,"Store Center Rack 1","Store - C1","Store - C1",Store,"Retail area",Store,16,0,16,0,1,0,0.00,"2026-03-05 14:23:03"
+"Main Warehouse",400,"Rack 19",,,,,,0,387,0,0,1,0,0.00,
+"Main Warehouse",400,"Store Rack 14","Store - 14","Store - 14",Store,"Retail area",Store,12,0,12,0,1,0,0.00,"2025-08-19 10:31:39"
+"Main Warehouse",400,"Rack 19 Level 3","Second Warehouse","19 - 3","Rack 19",,,16,0,16,0,1,0,0.00,"2025-08-19 10:31:57"
+"Main Warehouse",400,"Store Rack 13","Store - 13","Store - 13",Store,"Retail area",Store,9,0,9,0,1,0,0.00,"2026-06-04 13:35:53"
+"Main Warehouse",400,"Rack 19 Level 2","Second Warehouse","19 - 2","Rack 19",,,11,0,11,0,1,0,0.00,"2026-04-21 14:07:40"
+"Main Warehouse",400,"Store Rack 12","Store - 12","Store - 12",Store,"Retail area",Store,8,0,8,0,1,0,0.00,"2026-01-22 14:14:59"
+"Main Warehouse",400,"Rack 19 Level 1","Second Warehouse","19 - 1","Rack 19",,,343,0,343,0,1,0,0.00,"2026-04-27 14:02:12"
+"Main Warehouse",400,"Store Rack 11","Store - 11","Store - 11",Store,"Retail area",Store,3,0,3,0,1,0,0.00,"2026-01-21 14:05:19"
+"Main Warehouse",400,"Rack 16",,,,,,0,348,0,0,1,0,0.00,
+"Main Warehouse",400,"Store Rack 10","Store - 10","Store - 10",Store,"Retail area",Store,26,0,26,0,1,0,0.00,"2026-05-14 13:32:17"
+"Main Warehouse",400,"Rack 16 Level 2","Main Warehouse","16 - 2","Rack 16",,,34,0,34,0,1,0,0.00,"2026-05-07 13:43:17"
+"Main Warehouse",400,"Store Rack 9","Store - 9","Store - 9",Store,"Retail area",Store,6,0,6,0,1,0,0.00,"2025-08-19 10:31:42"
+"Main Warehouse",400,"Rack 16 Level 1","Main Warehouse","16 - 1","Rack 16",,,308,0,308,0,1,0,0.00,"2026-04-28 13:51:27"
+"Main Warehouse",400,"Store Rack 8","Store - 8","Store - 8",Store,"Retail area",Store,1,0,1,0,1,0,0.00,"2026-02-19 13:40:01"
+"Main Warehouse",400,"Store Rack 7","Store - 7","Store - 7",Store,"Retail area",Store,11,0,11,0,1,0,0.00,"2026-04-29 14:48:11"
+"Main Warehouse",400,"Rack 17",,,,,,0,2307,0,0,1,0,0.00,
+"Main Warehouse",400,"Rack 17 Level 2","Second Warehouse","17 - 2","Rack 17",,,31,0,31,0,1,0,0.00,"2026-01-21 14:03:13"
+"Main Warehouse",400,"Store Toy Rack","Store - Toys","Store - Toys",Store,"Retail area",Store,167,0,167,0,1,0,0.00,"2026-04-13 09:34:50"
+"Main Warehouse",400,"Rack 17 Level 1","Main Warehouse","17 - 1","Rack 17",,,2109,0,2109,0,1,0,0.00,"2025-08-19 10:32:03"
+"Main Warehouse",400,"Store Treats","Store - Treats","Store - Treats",Store,"Retail area",Store,108,0,108,0,1,0,0.00,"2026-06-15 15:09:38"
+"Main Warehouse",400,"Store Health & Wellness","Store - H&W","Store - H&W",Store,"Retail area",Store,34,0,34,0,1,0,0.00,"2026-03-18 11:14:06"
+"Main Warehouse",400,"Rack 18",,,,,,0,320,0,0,1,0,0.00,
+"Main Warehouse",400,"Rack 18 Level 3","Second Warehouse","18 - 3","Rack 18",,,11,0,11,0,1,0,0.00,"2026-01-21 14:05:19"
+"Main Warehouse",400,"Store Rack 6","Store - 6","Store - 6",Store,"Retail area",Store,2,0,2,0,1,0,0.00,"2026-03-25 14:21:05"
+"Main Warehouse",400,"Rack 18 Level 2","Second Warehouse","18 - 2","Rack 18",,,24,0,24,0,1,0,0.00,"2026-06-22 13:11:25"
+"Main Warehouse",400,"Store Rack 5","Store - 5","Store - 5",Store,"Retail area",Store,74,0,74,0,1,0,0.00,"2026-01-21 14:10:10"
+"Main Warehouse",400,"Rack 18 Level 1","Second Warehouse","18 - 1","Rack 18",,,209,0,209,0,1,0,0.00,"2026-06-02 14:38:30"
+"Main Warehouse",400,"Store Rack 4","Store - 4","Store - 4",Store,"Retail area",Store,17,0,17,0,1,0,0.00,"2026-06-15 14:13:50"
+"Main Warehouse",400,"Rack 1",,"Rack 1",,,,10,25,35,0,0,0,0.00,"2026-06-15 14:20:56"
+"Main Warehouse",400,"Store Rack 3","Store - 3","Store - 3",Store,"Retail area",Store,5,0,5,0,1,0,0.00,"2026-04-12 13:18:54"
+"Main Warehouse",400,"Rack 1 Level 1","Main Warehouse","1 - 1","Rack 1",,"Rack 1",23,0,23,0,1,0,0.00,"2026-06-03 14:27:46"
+"Main Warehouse",400,"Store Rack 2","Store - 2","Store - 2",Store,"Retail area",Store,1,0,1,0,1,0,0.00,"2025-12-06 14:53:44"
+"Main Warehouse",400,"Rack 1 Level 2","Main Warehouse","1 - 2","Rack 1",,"Rack 1",1,0,1,0,1,0,0.00,"2026-05-29 12:30:58"
+"Main Warehouse",400,"Store Rack 1","Store - 1","Store - 1",Store,"Retail area",Store,21,0,21,0,1,0,0.00,"2026-04-23 13:30:05"
+"Main Warehouse",400,"Rack 10",,"Rack 10",,,,0,67,0,0,0,0,0.00,
+"Main Warehouse",400,"Rack 10 Level 1","Second Warehouse","10 - 1","Rack 10",,"Rack 10",40,0,40,0,1,0,0.00,"2026-05-14 12:51:21"
+"Main Warehouse",400,"Rack 10 Level 2","Second Warehouse","10 - 2","Rack 10",,"Rack 10",27,0,27,0,1,0,0.00,"2026-01-15 12:14:41"
+"Main Warehouse",400,"Rack 11",,"Rack 11",,,,0,127,0,0,0,0,0.00,
+"Main Warehouse",400,"Rack 11 Level 1","Second Warehouse","11 - 1","Rack 11",,"Rack 11",121,0,121,0,1,0,0.00,"2026-06-29 12:07:30"
+"Main Warehouse",400,"Rack 11 Level 2","Second Warehouse","11 - 2","Rack 11",,"Rack 11",6,0,6,0,1,0,0.00,"2026-01-21 14:04:25"
+"Main Warehouse",400,"Rack 12",,"Rack 12",,,,0,92,0,0,0,0,0.00,
+"Main Warehouse",400,"Rack 12 Level 1","Second Warehouse","12 - 1","Rack 12",,"Rack 12",31,0,31,0,1,0,0.00,
+"Main Warehouse",400,"Rack 12 Level 2","Second Warehouse","11 - 2","Rack 12",,"Rack 12",61,0,61,0,1,0,0.00,"2026-05-26 13:31:56"
+"Main Warehouse",400,"Rack 13",,"Rack 13",,,,0,153,0,0,0,0,0.00,
+"Main Warehouse",400,"Rack 13 Level 3","Second Warehouse","13 - 3","Rack 13",,"Rack 13",0,0,0,0,1,0,0.00,
+"Main Warehouse",400,"Rack 13 Level 2","Second Warehouse","13 - 2","Rack 13",,"Rack 13",49,0,49,0,1,0,0.00,"2026-03-29 11:38:47"
+"Main Warehouse",400,"Rack 13 Level 1","Second Warehouse","13 - 1","Rack 13",,"Rack 13",104,0,104,0,1,0,0.00,"2026-06-25 13:53:20"
+"Main Warehouse",400,"Rack 14",,"Rack 15",,,,0,111,0,0,1,0,0.00,
+"Main Warehouse",400,"Rack 14 Level 3","Second Warehouse","14 - 3","Rack 14",,"Rack 15",0,0,0,0,1,0,0.00,
+"Main Warehouse",400,"Rack 14 Level 2","Second Warehouse","14 - 2","Rack 14",,"Rack 15",29,0,29,0,1,0,0.00,"2026-03-16 13:40:19"
+"Main Warehouse",400,"Rack 14 Level 1","Second Warehouse","14 - 1","Rack 14",,"Rack 15",82,0,82,0,1,0,0.00,"2026-04-27 13:53:34"
+"Main Warehouse",400,"Rack 15",,"Rack 15",,,,0,177,0,0,0,0,0.00,
+"Main Warehouse",400,"Rack 15 Level 3",,"Rack 15 Level 3","Rack 15",,"Rack 15",0,0,0,0,1,0,0.00,
+"Main Warehouse",400,"Rack 15 Level 2",,"Rack 15 Level 2","Rack 15",,"Rack 15",30,0,30,0,1,0,0.00,"2026-05-15 13:09:38"
+"Main Warehouse",400,"Rack 15 Level 1",,"Rack 15 Level 1","Rack 15",,"Rack 15",147,0,147,0,1,0,0.00,"2026-06-01 13:39:32"
+"Main Warehouse",400,"Rack 2",,"Rack 2",,,,0,85,0,0,0,0,0.00,
+"Main Warehouse",400,"Rack 2 Level 1","Main Warehouse","2 - 1","Rack 2",,"Rack 2",52,0,52,0,1,0,0.00,"2026-06-03 14:25:53"
+"Main Warehouse",400,"Rack 2 Level 2","Main Warehouse","2 - 2","Rack 2",,"Rack 2",33,0,33,0,1,0,0.00,"2026-06-15 14:20:56"
+"Main Warehouse",400,"Rack 3",,"Rack 3",,,,0,85,0,0,0,0,0.00,
+"Main Warehouse",400,"Rack 3 Level 2","Main Warehouse","3 - 2","Rack 3",,"Rack 3",18,0,18,0,1,0,0.00,"2026-06-30 11:33:23"
+"Main Warehouse",400,"Rack 3 Level 1","Main Warehouse","3 - 1","Rack 3",,"Rack 3",67,0,67,0,1,0,0.00,"2026-06-22 13:13:43"
+"Main Warehouse",400,"Rack 4",,"Rack 4",,,,0,46,0,0,0,0,0.00,
+"Main Warehouse",400,"Rack 4 Level 2","Main Warehouse","4 - 2","Rack 4",,"Rack 4",9,0,9,0,1,0,0.00,"2025-12-12 12:05:47"
+"Main Warehouse",400,"Rack 4 Level 1","Main Warehouse","4 -1","Rack 4",,"Rack 4",37,0,37,0,1,0,0.00,"2026-05-28 10:27:59"
+"Main Warehouse",400,"Rack 5",,"Rack 5",,,,0,43,0,0,1,0,0.00,
+"Main Warehouse",400,"Rack 5 Level 2","Main Warehouse","5 - 2","Rack 5",,"Rack 5",17,0,17,0,1,0,0.00,"2026-01-21 14:07:15"
+"Main Warehouse",400,"Rack 5 Level 1","Main Warehouse","5 - 1","Rack 5",,"Rack 5",26,0,26,0,1,0,0.00,"2026-06-16 14:24:56"
+"Main Warehouse",400,"Rack 6",,"Rack 6",,,,0,31,0,0,0,0,0.00,
+"Main Warehouse",400,"Rack 6 Level 2","Main Warehouse","6 - 2","Rack 6",,"Rack 6",1,0,1,0,1,0,0.00,"2026-04-27 13:55:38"
+"Main Warehouse",400,"Rack 6 Level 1","Main Warehouse","6 - 1","Rack 6",,"Rack 6",30,0,30,0,1,0,0.00,"2026-06-29 13:06:27"
+"Main Warehouse",400,"Rack 7",,"Rack 7",,,,0,31,0,0,1,0,0.00,
+"Main Warehouse",400,"Rack 7 Level 2","Main Warehouse","7 - 2","Rack 7",,"Rack 7",6,0,6,0,1,0,0.00,"2025-12-22 14:09:00"
+"Main Warehouse",400,"Rack 7 Level 1","Main Warehouse","7 - 1","Rack 7",,"Rack 7",25,0,25,0,1,0,0.00,"2025-08-19 10:32:18"
+"Main Warehouse",400,"Rack 8",,"Rack 8",,,,0,19,0,0,0,0,0.00,
+"Main Warehouse",400,"Rack 8 Level 1","Second Warehouse","8 - 1","Rack 8",,"Rack 8",19,0,19,0,1,0,0.00,"2026-05-11 14:20:07"
+"Main Warehouse",400,"Rack 8 Level 2","Second Warehouse","8 - 2","Rack 8",,"Rack 8",0,0,0,0,1,0,0.00,
+"Main Warehouse",400,"Rack 9",,"Rack 9",,,,0,16,0,0,0,0,0.00,
+"Main Warehouse",400,"Rack 9 Level 1","Second Warehouse","9 - 1","Rack 9",,"Rack 9",12,0,12,0,1,0,0.00,"2026-01-21 14:07:33"
+"Main Warehouse",400,"Rack 9 Level 2","Second Warehouse","9 - 2","Rack 9",,"Rack 9",4,0,4,0,1,0,0.00,"2025-05-14 14:35:14"
+"Main Warehouse",400,Receiving,"Receiving Bay",,,,,1455,0,1455,1,1,0,0.00,"2026-07-06 14:53:45"
+"Main Warehouse",400,"Store Table",,,,,,1,0,1,0,1,0,0.00,
+"Main Warehouse",400,"Store Rack Level 1",,,,,,0,0,0,0,1,0,0.00,
+"Main Warehouse",400,"Warhouuse Box",,,,,,0,0,0,0,1,0,0.00,
+"Main Warehouse",400,"Warehouse Box",,,,,,11,0,11,0,1,0,0.00,
+"Main Warehouse",400,Warehouse,,,,,,0,0,0,0,1,0,0.00,"2025-09-29 15:20:35"

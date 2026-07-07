@@ -58,6 +58,15 @@ This repository starts with documentation and structure only. The detailed phase
 
 ## Local Development Status
 
-Not scaffolded yet.
+The frontend admin shell is scaffolded in `frontend/` as a Vite React app.
+It currently contains placeholder screens only and does not connect to the backend,
+WooCommerce, or live inventory logic.
 
-The repository intentionally does not yet include FastAPI, React, SQLAlchemy, Alembic, package manifests, migrations, API endpoints, or business logic. Those will be added in later tasks.
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The backend, database, migrations, API endpoints, and business logic have not
+been scaffolded yet. Those will be added in later tasks.
