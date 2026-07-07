@@ -49,6 +49,8 @@ class InventoryItem(TimestampMixin, Base):
     category: Mapped[str | None] = mapped_column(String(200), index=True)
     unit_of_measurement: Mapped[str | None] = mapped_column(String(50))
     warehouse: Mapped[str | None] = mapped_column(String(120), index=True)
+    inventory_location: Mapped[str | None] = mapped_column(String(200), index=True)
+    default_location: Mapped[str | None] = mapped_column(String(200))
     in_stock: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
     allocated: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
     sellable: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
@@ -75,6 +77,7 @@ class InventoryItem(TimestampMixin, Base):
     brand: Mapped[str | None] = mapped_column(String(200), index=True)
     image_url: Mapped[str | None] = mapped_column(String(1000))
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    non_inventory: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     source: Mapped[str | None] = mapped_column(String(60))
 
     locations: Mapped[list["InventoryItemLocation"]] = relationship(back_populates="inventory_item", cascade="all, delete-orphan")

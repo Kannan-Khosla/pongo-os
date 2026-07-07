@@ -1,10 +1,13 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 
 def _decimal(value) -> Decimal:
-    if value is None:
+    if value is None or value == "":
         return Decimal("0")
-    return Decimal(str(value))
+    try:
+        return Decimal(str(value).replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
 
 
 def calculate_sellable(in_stock, allocated) -> Decimal:

@@ -121,27 +121,29 @@ Reference structure:
 
 Pongo Items screen:
 - Page title: Items.
-- Tabs: Main, Nutrition, Categories, Customizations.
-- Main tab is real for MVP; other tabs may be placeholders.
-- Search should support SKU, barcode, and description.
-- Filters: category, active/inactive, include non-inventory.
-- Actions: Refresh, Remap, Import, Export, Reset, Clear.
+- Tabs: New Item, All Items, Categories, Commodities.
+- All Items is real for MVP; New Item opens the item form. Categories and
+  Commodities may remain placeholders.
+- Items must be driven by the canonical Zenventory-compatible CSV columns in
+  `docs/CSV_COLUMNS.md`.
+- Search should support SKU, barcode, description, category, brand,
+  manufacturer, warehouse, and inventory location.
+- Filters: search, category, warehouse, inventory location, brand,
+  active/inactive, include non-inventory.
+- Actions: Refresh, Remap, Import, Export, Clear.
 - Refresh triggers backend WooCommerce sync later.
 - Remap links local items to WooCommerce products or variations later.
+- Import opens a CSV modal that previews and commits the canonical
+  Zenventory-compatible item CSV through the Pongo backend only.
 
 Pongo Items table columns:
+- Edit action
 - Image
+- Client
 - SKU
 - Description
 - Category
-- UOM
-- Unit Cost
-- Sales Price
-- Recommended Retail Price
-- Barcode
-- Brand
-- Manufacturer
-- Manufacturer Website
+- Unit of Measurement
 - Warehouse
 - Inventory Location
 - Default Location
@@ -150,9 +152,27 @@ Pongo Items table columns:
 - Sellable
 - Under Par
 - On Order
+- Barcode
+- Manufacturer
+- Manufacturer Website
+- Recommended Retail Price
+- Sales Price
+- Unit Cost
 - Weight
+- Default Econ Order
+- Default Lead Time Days
+- Par Level
+- Assembly
+- Serializable
+- Track Lot
+- Perishable
+- Re-Order
+- Storage Length
+- Storage Width
+- Storage Height
+- Storage Volume
+- Brand
 - Active status
-- Actions
 
 ## Item Details
 
@@ -168,8 +188,9 @@ Reference structure:
 - Footer actions: Save Changes, Clone, Return to Items.
 
 Pongo Item Details:
-- Build Basic tab first.
-- Keep Units, Warehouse, Variants, Integration Mappings, and Timeline as later placeholders if needed.
+- Build Basic tab first using all canonical CSV fields.
+- Tabs: Basic, Units, Warehouse, Variants, Integration Mappings, and Timeline.
+  Non-Basic tabs may remain placeholders.
 - Do not build Supplier tab unless supplier management is explicitly requested later.
 - Include Woo Product ID and Woo Variation ID in Integration Mappings when that placeholder becomes real.
 - Pongo-owned fields must remain editable even after WooCommerce refresh.

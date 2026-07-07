@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     )
     app_env: str = Field(default="development", validation_alias=AliasChoices("APP_ENV", "app_env"))
     backend_cors_origins: str = Field(
-        default="http://localhost:5173,http://localhost:3000",
+        default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000",
         validation_alias=AliasChoices("BACKEND_CORS_ORIGINS", "backend_cors_origins"),
     )
     woocommerce_base_url: str = Field(default="", validation_alias=AliasChoices("WOOCOMMERCE_BASE_URL", "woocommerce_base_url"))

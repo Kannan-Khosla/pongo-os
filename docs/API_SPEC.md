@@ -1,8 +1,8 @@
 # Planned API Specification
 
-This document describes planned backend endpoints. The backend scaffold now
-implements `/health` plus structural placeholder routers for the main API
-modules. Full workflow endpoints remain planned until their modules are built.
+This document describes planned backend endpoints. The backend now implements
+`/health` plus backend-persistent Items CRUD/export/import. Other workflow
+routers remain structural placeholders until their modules are built.
 
 ## API Rules
 
@@ -32,7 +32,6 @@ Current response:
 These routes are wired for frontend/API structure only. They do not perform
 business workflows, external calls, or database mutations yet.
 
-- `GET /api/items`
 - `GET /api/locations`
 - `GET /api/receipts`
 - `GET /api/orders`
@@ -45,6 +44,19 @@ business workflows, external calls, or database mutations yet.
 
 List items with search, category, active/inactive, and include non-inventory filters.
 
+Implemented query params:
+- `search`
+- `category`
+- `warehouse`
+- `inventory_location`
+- `brand`
+- `active`
+- `include_non_inventory`
+
+Returns canonical CSV-style field names plus internal display fields such as
+`id`, `active`, `nonInventory`, `imageUrl`, `wooProductId`, and
+`wooVariationId`.
+
 ### GET /api/items/{id}
 
 Return one item, including location stock summary.
@@ -53,17 +65,88 @@ Return one item, including location stock summary.
 
 Create a manual local item. Future behavior may optionally push to WooCommerce, but not in MVP.
 
+Implemented for local Pongo Inventory OS persistence only. SKU is required.
+Calculated fields are recomputed before save:
+- `Sellable = In Stock - Allocated`
+- `Under Par = In Stock <= Par Level`
+- `Storage Volume = Storage Length * Storage Width * Storage Height`
+
 ### PATCH /api/items/{id}
 
 Update Pongo OS-owned item fields.
+
+Implemented for local Pongo Inventory OS persistence only. Calculated fields are
+recomputed before save.
 
 ### GET /api/items/export
 
 Export inventory item CSV.
 
+Implemented. Exports filtered rows using the exact canonical inventory CSV
+header order from `docs/CSV_COLUMNS.md`. Internal fields are not included.
+
+### POST /api/items/import/preview
+
+Preview a Zenventory-compatible item CSV import.
+
+Implemented. Accepts `multipart/form-data` with a `file` upload. This endpoint
+parses and validates the CSV but does not write to the database.
+
+Header rules:
+- Canonical column names from `docs/CSV_COLUMNS.md` are required.
+- Header whitespace is trimmed.
+- Column names are case-sensitive.
+- Missing canonical columns reject the file.
+- Extra columns are ignored and returned as warnings.
+
+Matching rules:
+- SKU exact match is checked first.
+- Barcode exact match is checked second when Barcode is present.
+- If SKU and Barcode match two different existing items, the row is invalid.
+
+Calculated fields are recomputed during preview:
+- `Sellable = In Stock - Allocated`
+- `Under Par = In Stock <= Par Level`
+- `Storage Volume = Storage Length * Storage Width * Storage Height`
+
+Returns:
+- `total_rows`
+- `valid_rows`
+- `invalid_rows`
+- `create_count`
+- `update_count`
+- `skipped_count`
+- `warnings`
+- `errors`
+- `preview_rows`
+
+### POST /api/items/import/commit
+
+Commit a Zenventory-compatible item CSV import.
+
+Implemented. Accepts the same `multipart/form-data` `file` upload as preview.
+The backend revalidates and reparses the file before writing. Valid rows create
+or update local Pongo Inventory OS items only. The endpoint does not call
+WooCommerce and does not run receiving, cycle count, allocation, picking, or
+other stock-changing workflows.
+
+The commit writes an `import_jobs` record plus `import_errors` rows for failed
+CSV rows.
+
+Returns:
+- `import_job_id`
+- `total_rows`
+- `created_count`
+- `updated_count`
+- `skipped_count`
+- `failed_count`
+- `errors`
+
 ### POST /api/items/sync/woocommerce
 
 Trigger backend WooCommerce product and variation sync.
+
+Not implemented yet.
 
 Returns:
 - created_count
@@ -76,12 +159,36 @@ Returns:
 
 Link or relink a local item to a WooCommerce product or variation.
 
+Not implemented yet.
+
 Accepted identifiers:
 - Woo Product ID
 - Woo Variation ID
 - SKU
 - Barcode
 - Product name
+
+## Import Jobs
+
+### GET /api/import-jobs
+
+List CSV import jobs, newest first.
+
+Implemented for item CSV imports.
+
+### GET /api/import-jobs/{id}
+
+Return one import job with row-level errors.
+
+Implemented for item CSV imports.
+
+### GET /api/import-jobs/{id}/failed-rows
+
+Download failed rows as CSV.
+
+Implemented. The CSV uses the canonical inventory item columns plus an
+`Error Message` column. This is intended for correcting failed Zenventory-style
+item import rows and retrying the import.
 
 ## Locations
 

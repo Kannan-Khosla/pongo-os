@@ -8,8 +8,65 @@ stock-changing workflows and WooCommerce sync are not implemented yet.
 Implementation notes:
 - Models live under `backend/app/models/`.
 - The initial Alembic revision is `backend/alembic/versions/20260707_0001_initial_schema.py`.
+- The item CSV persistence revision is `backend/alembic/versions/20260707_0002_item_csv_fields.py`.
 - `barcode` is indexed but not globally unique.
 - `DATABASE_URL=postgresql://...` remains valid in environment files; the backend normalizes it to the modern `psycopg` SQLAlchemy driver internally.
+- The Items module uses the canonical Zenventory-compatible inventory CSV column order documented in `docs/CSV_COLUMNS.md`.
+- Items are backend-persistent through `GET/POST/PATCH /api/items` and
+  `GET /api/items/export`.
+- Revision `20260707_0002` adds flat item fields needed for the current
+  CSV-canonical Items API: `inventory_location`, `default_location`, and
+  `non_inventory`.
+
+## Canonical CSV Mapping
+
+The current Items module is driven by the inventory CSV columns in
+`docs/CSV_COLUMNS.md`. Future import/export and WooCommerce sync work must
+preserve that external column order unless the user provides a new real
+Zenventory CSV header.
+
+Item-master fields map primarily to `inventory_items`:
+- Client
+- SKU
+- Description
+- Category
+- Unit of Measurement
+- Barcode
+- Manufacturer
+- Manufacturer Website
+- Recommended Retail Price
+- Sales Price
+- Unit Cost
+- Weight
+- Default Econ Order
+- Default Lead Time Days
+- Par Level
+- Assembly
+- Serializable
+- Track Lot
+- Perishable
+- Re-Order
+- Storage Length
+- Storage Width
+- Storage Height
+- Storage Volume
+- Brand
+
+Location/stock fields map through `inventory_item_locations`, with location
+metadata in `inventory_locations`:
+- Warehouse
+- Inventory Location
+- Default Location
+- In Stock
+- Allocated
+- Sellable
+- Under Par
+- On Order
+
+The frontend and backend Items API keep these fields flat to match CSV import
+and export. Backend services can later normalize richer location workflows into
+`inventory_locations` and `inventory_item_locations` without changing the
+external CSV contract.
 
 ## inventory_items
 
@@ -26,6 +83,8 @@ Fields:
 - category
 - unit_of_measurement
 - warehouse
+- inventory_location
+- default_location
 - in_stock
 - allocated
 - sellable
@@ -52,6 +111,7 @@ Fields:
 - brand
 - image_url
 - active
+- non_inventory
 - source
 - created_at
 - updated_at
@@ -369,6 +429,9 @@ Index suggestions:
 
 Purpose: Track CSV imports.
 
+Current usage: item CSV commit creates one `import_jobs` row with
+`import_type = items`. Preview does not write import job rows.
+
 Fields:
 - id
 - file_name
@@ -384,12 +447,21 @@ Fields:
 Relationships:
 - Has many `import_errors`.
 
+API usage:
+- `GET /api/import-jobs` lists jobs.
+- `GET /api/import-jobs/{id}` returns a job and row-level errors.
+- `GET /api/import-jobs/{id}/failed-rows` downloads failed rows as CSV.
+
 Index suggestions:
 - Index `import_type`, `status`, `created_by`, and `created_at`.
 
 ## import_errors
 
 Purpose: Row-level errors for CSV imports.
+
+Current usage: item CSV commit stores invalid rows here. The raw row keeps the
+canonical inventory CSV column values so failed rows can be downloaded, fixed,
+and retried.
 
 Fields:
 - id

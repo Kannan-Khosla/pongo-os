@@ -28,7 +28,7 @@ What not to build yet:
 
 Goal: Create minimal FastAPI and React app structure.
 
-Status: Initial frontend shell and backend foundation scaffolded.
+Status: Completed. Initial frontend shell and backend foundation scaffolded.
 
 Deliverables:
 - Backend app entrypoint
@@ -51,7 +51,7 @@ What not to build yet:
 
 Goal: Add SQLAlchemy models and Alembic migrations.
 
-Status: Initial model set and Alembic revision scaffolded.
+Status: Completed. Initial model set and Alembic revision scaffolded.
 
 Deliverables:
 - Models for inventory, locations, movements, receipts, orders, routes, and imports
@@ -71,16 +71,30 @@ What not to build yet:
 
 Goal: Build CRUD and UI for local items.
 
+Status: Completed for backend-persistent local item CRUD/export/import. The Items
+module now uses the canonical Zenventory-compatible inventory CSV columns for
+frontend display, backend schemas, database persistence, filters, table display,
+local edit form, calculated fields, clone behavior, filtered CSV export, and
+Zenventory-compatible CSV import preview/commit. WooCommerce sync remains later
+work.
+
 Deliverables:
 - Items API
 - Items page
 - Local item create/edit
+- Canonical CSV-driven product import/export structure
+- Import job tracking and failed row download for item CSV imports
 
 Acceptance criteria:
 - Staff can manage Pongo OS-owned fields.
+- Items import/export preserves the canonical CSV column order documented in
+  `docs/CSV_COLUMNS.md`.
+- Item CSV import previews rows before commit and records import errors.
 
 Safety notes:
 - No WooCommerce connection yet.
+- Current item import is a migration/local item upsert path only; it does not
+  run receiving, cycle count, allocation, picking, or WooCommerce stock writes.
 
 What not to build yet:
 - Product refresh/remap
@@ -125,6 +139,9 @@ What not to build yet:
 
 Goal: Add CSV import/export for product data.
 
+Status: Completed for canonical item CSV import/export. Future enhancements may
+add richer import review workflows after real Zenventory files are tested.
+
 Deliverables:
 - Product import job tracking
 - Import errors
@@ -134,7 +151,8 @@ Acceptance criteria:
 - Import errors are visible and traceable.
 
 Safety notes:
-- Imports that change stock must create audit rows.
+- Future operational imports that change stock must create audit rows. The
+  current item CSV import is for local item migration/upsert only.
 
 What not to build yet:
 - Receiving workflows
