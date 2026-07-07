@@ -161,16 +161,25 @@ What not to build yet:
 
 Goal: Support preset locations and stock by location.
 
+Status: Completed for backend-persistent location master data, filtered
+location list, create/edit/deactivate, CSV export, CSV import preview/commit,
+import job tracking, failed-row download, and frontend Locations page. Item
+stock splits by location remain later work.
+
 Deliverables:
 - Location CRUD
 - Location CSV import/export
-- Item-location stock model
+- Item-location stock model foundation
 
 Acceptance criteria:
-- A SKU can exist in multiple locations.
+- Staff can manage warehouse/location master data.
+- Location imports match by Warehouse + Location Code and record import errors.
+- A SKU can exist in multiple locations once stock workflows are connected.
 
 Safety notes:
 - Location stock totals must reconcile with item totals.
+- Current location import does not change stock and does not create stock
+  movements.
 
 What not to build yet:
 - Direct receiving

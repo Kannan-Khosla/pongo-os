@@ -1,8 +1,9 @@
 # Planned API Specification
 
 This document describes planned backend endpoints. The backend now implements
-`/health` plus backend-persistent Items CRUD/export/import. Other workflow
-routers remain structural placeholders until their modules are built.
+`/health`, backend-persistent Items CRUD/export/import, and backend-persistent
+Locations CRUD/export/import. Other workflow routers remain structural
+placeholders until their modules are built.
 
 ## API Rules
 
@@ -32,7 +33,6 @@ Current response:
 These routes are wired for frontend/API structure only. They do not perform
 business workflows, external calls, or database mutations yet.
 
-- `GET /api/locations`
 - `GET /api/receipts`
 - `GET /api/orders`
 - `GET /api/reports`
@@ -174,21 +174,21 @@ Accepted identifiers:
 
 List CSV import jobs, newest first.
 
-Implemented for item CSV imports.
+Implemented for item and location CSV imports.
 
 ### GET /api/import-jobs/{id}
 
 Return one import job with row-level errors.
 
-Implemented for item CSV imports.
+Implemented for item and location CSV imports.
 
 ### GET /api/import-jobs/{id}/failed-rows
 
 Download failed rows as CSV.
 
-Implemented. The CSV uses the canonical inventory item columns plus an
-`Error Message` column. This is intended for correcting failed Zenventory-style
-item import rows and retrying the import.
+Implemented. The CSV uses the canonical columns for the import type plus an
+`Error Message` column. This is intended for correcting failed import rows and
+retrying the import.
 
 ## Locations
 
@@ -196,21 +196,99 @@ item import rows and retrying the import.
 
 List warehouse/inventory locations.
 
+Implemented query params:
+- `search`
+- `warehouse`
+- `code`
+- `name`
+- `zone`
+- `aisle`
+- `active`
+
+Search covers warehouse, code, name, description, zone, and aisle.
+
+### GET /api/locations/{id}
+
+Return one location.
+
 ### POST /api/locations
 
 Create a location.
+
+Implemented for local Pongo Inventory OS persistence only. Required fields:
+- `warehouse`
+- `code`
+- `name`
+
+If a location is marked default, the backend clears other defaults in the same
+warehouse.
 
 ### PATCH /api/locations/{id}
 
 Update a location.
 
-### POST /api/locations/import
+Implemented for local Pongo Inventory OS persistence only.
 
-Import preset locations from CSV.
+### DELETE /api/locations/{id}
+
+Soft delete/deactivate a location by setting `isActive` to false.
 
 ### GET /api/locations/export
 
 Export locations CSV.
+
+Implemented. Exports filtered rows using the canonical location CSV header from
+`docs/CSV_COLUMNS.md`.
+
+### POST /api/locations/import/preview
+
+Preview a location CSV import.
+
+Implemented. Accepts `multipart/form-data` with a `file` upload. This endpoint
+parses and validates the CSV but does not write to the database.
+
+Header rules:
+- Canonical location columns from `docs/CSV_COLUMNS.md` are required.
+- Header whitespace is trimmed.
+- Column names are case-sensitive.
+- Missing canonical columns reject the file.
+- Extra columns are ignored and returned as warnings.
+
+Matching rules:
+- Existing locations match by exact Warehouse + Location Code.
+- Missing matches create new locations.
+
+Returns:
+- `total_rows`
+- `valid_rows`
+- `invalid_rows`
+- `create_count`
+- `update_count`
+- `skipped_count`
+- `warnings`
+- `errors`
+- `preview_rows`
+
+### POST /api/locations/import/commit
+
+Commit a location CSV import.
+
+Implemented. Valid rows create or update local location records only. The
+endpoint does not change item stock, create stock movements, or run receiving,
+cycle count, allocation, picking, route, or WooCommerce workflows.
+
+The commit writes an `import_jobs` record with `import_type = locations` plus
+`import_errors` rows for failed CSV rows.
+
+Returns:
+- `import_job_id`
+- `total_rows`
+- `created_count`
+- `updated_count`
+- `skipped_count`
+- `failed_count`
+- `warnings`
+- `errors`
 
 ## Receiving
 

@@ -14,6 +14,9 @@ Implementation notes:
 - The Items module uses the canonical Zenventory-compatible inventory CSV column order documented in `docs/CSV_COLUMNS.md`.
 - Items are backend-persistent through `GET/POST/PATCH /api/items` and
   `GET /api/items/export`.
+- Locations are backend-persistent through `GET/POST/PATCH/DELETE
+  /api/locations`, `GET /api/locations/export`, and location CSV
+  preview/commit endpoints.
 - Revision `20260707_0002` adds flat item fields needed for the current
   CSV-canonical Items API: `inventory_location`, `default_location`, and
   `non_inventory`.
@@ -142,6 +145,7 @@ Fields:
 - warehouse
 - location_code
 - location_name
+- description
 - zone
 - aisle
 - rack
@@ -151,6 +155,26 @@ Fields:
 - active
 - created_at
 - updated_at
+
+API field names:
+- `warehouse`
+- `code` maps to `location_code`
+- `name` maps to `location_name`
+- `isDefault` maps to `is_default`
+- `isActive` maps to `active`
+
+Location CSV fields:
+- Warehouse
+- Location Code
+- Location Name
+- Description
+- Zone
+- Aisle
+- Rack
+- Shelf
+- Bin
+- Default
+- Active
 
 Relationships:
 - Has many `inventory_item_locations`.
@@ -429,8 +453,9 @@ Index suggestions:
 
 Purpose: Track CSV imports.
 
-Current usage: item CSV commit creates one `import_jobs` row with
-`import_type = items`. Preview does not write import job rows.
+Current usage: item and location CSV commits create one `import_jobs` row with
+`import_type = items` or `import_type = locations`. Preview does not write
+import job rows.
 
 Fields:
 - id
@@ -459,9 +484,9 @@ Index suggestions:
 
 Purpose: Row-level errors for CSV imports.
 
-Current usage: item CSV commit stores invalid rows here. The raw row keeps the
-canonical inventory CSV column values so failed rows can be downloaded, fixed,
-and retried.
+Current usage: item and location CSV commits store invalid rows here. The raw
+row keeps the canonical CSV column values so failed rows can be downloaded,
+fixed, and retried. For location imports, `sku` and `barcode` are left null.
 
 Fields:
 - id

@@ -98,6 +98,7 @@ class InventoryLocation(TimestampMixin, Base):
     warehouse: Mapped[str | None] = mapped_column(String(120), index=True)
     location_code: Mapped[str | None] = mapped_column(String(120))
     location_name: Mapped[str | None] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(String(500))
     zone: Mapped[str | None] = mapped_column(String(120), index=True)
     aisle: Mapped[str | None] = mapped_column(String(80))
     rack: Mapped[str | None] = mapped_column(String(80))

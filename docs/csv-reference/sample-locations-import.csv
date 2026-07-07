@@ -1,0 +1,5 @@
+Warehouse,Location Code,Location Name,Description,Zone,Aisle,Rack,Shelf,Bin,Default,Active
+Main Warehouse,REC-01,Receiving Bay,Sample inbound staging area,Receiving,A,01,01,01,Yes,Yes
+Main Warehouse,RACK-A-01,Rack A 01,Sample storage rack,Dry Storage,A,01,02,01,No,Yes
+Main Warehouse,RACK-B-02,Rack B 02,Sample secondary rack,Dry Storage,B,02,03,02,No,Yes
+Main Warehouse,INACTIVE-01,Inactive Sample,Sample inactive location,Archive,Z,09,09,09,No,No

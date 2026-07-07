@@ -234,6 +234,39 @@ Pongo Inventory columns:
 - Inventory Location when in location view
 - Actions
 
+## Locations
+
+Pongo Locations screen:
+- Page title: Locations.
+- Tabs: Add Location, All Locations, Location Stock.
+- All Locations is real for MVP; Add Location opens the location form. Location
+  Stock remains a placeholder until stock-by-location workflows are built.
+- Filters: search, warehouse, zone, aisle, active/inactive.
+- Actions: Add Location, Import, Export, Clear.
+- Import opens a CSV modal that previews and commits the canonical location CSV
+  through the Pongo backend only.
+
+Pongo Locations table columns:
+- Edit action
+- Warehouse
+- Location Code
+- Location Name
+- Description
+- Zone
+- Aisle
+- Rack
+- Shelf
+- Bin
+- Default
+- Active
+
+Pongo Location Details:
+- Required fields: Warehouse, Location Code, Location Name.
+- Optional fields: Description, Zone, Aisle, Rack, Shelf, Bin.
+- Status toggles: Default and Active.
+- If a location is marked Default, the backend keeps only one default in the
+  same warehouse.
+
 ## Receiving Without PO
 
 Reference: `receicving-without-po-screen1.png`.

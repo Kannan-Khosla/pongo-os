@@ -92,6 +92,7 @@ const NUMERIC_FIELDS = new Set([
 ]);
 const CALCULATED_FIELDS = new Set(['Sellable', 'Under Par', 'Storage Volume']);
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
+const CANONICAL_LOCATION_COLUMNS = ['Warehouse', 'Location Code', 'Location Name', 'Description', 'Zone', 'Aisle', 'Rack', 'Shelf', 'Bin', 'Default', 'Active'];
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -130,7 +131,11 @@ const pageMeta = {
   locations: {
     title: 'Locations',
     kicker: 'Warehouse and bin setup',
-    tabs: ['Warehouses', 'Inventory Locations', 'Location Stock'],
+    tabs: [
+      { label: 'Add Location', href: '#/locations/new' },
+      { label: 'All Locations', href: '#locations' },
+      { label: 'Location Stock', href: '#/locations/stock' },
+    ],
   },
   receiving: {
     title: 'Receiving',
@@ -417,6 +422,21 @@ const emptyItem = normalizeItem({
   Brand: '',
 });
 
+const emptyLocation = normalizeLocation({
+  id: null,
+  warehouse: 'Main Warehouse',
+  code: '',
+  name: '',
+  description: '',
+  zone: '',
+  aisle: '',
+  rack: '',
+  shelf: '',
+  bin: '',
+  isDefault: false,
+  isActive: true,
+});
+
 function parseHashRoute() {
   let hash = window.location.hash.replace(/^#/, '');
   if (!hash) {
@@ -437,6 +457,15 @@ function parseHashRoute() {
   if (hash.startsWith('items/')) {
     return { pageId: 'items', itemView: 'detail', itemId: hash.split('/')[1] };
   }
+  if (hash === 'locations/new') {
+    return { pageId: 'locations', locationView: 'new' };
+  }
+  if (hash === 'locations/stock') {
+    return { pageId: 'locations', locationView: 'stock' };
+  }
+  if (hash.startsWith('locations/')) {
+    return { pageId: 'locations', locationView: 'detail', locationId: hash.split('/')[1] };
+  }
   return navItems.some((item) => item.id === hash) ? { pageId: hash } : { pageId: 'dashboard' };
 }
 
@@ -445,6 +474,9 @@ export default function App() {
   const [items, setItems] = useState([]);
   const [itemsLoading, setItemsLoading] = useState(false);
   const [itemsError, setItemsError] = useState('');
+  const [locations, setLocations] = useState([]);
+  const [locationsLoading, setLocationsLoading] = useState(false);
+  const [locationsError, setLocationsError] = useState('');
 
   useEffect(() => {
     const handleHashChange = () => setRoute(parseHashRoute());
@@ -455,6 +487,9 @@ export default function App() {
   useEffect(() => {
     if (route.pageId === 'items') {
       loadItems();
+    }
+    if (route.pageId === 'locations') {
+      loadLocations();
     }
   }, [route.pageId]);
 
@@ -514,6 +549,44 @@ export default function App() {
     await saveItem(cloned);
   }
 
+  async function loadLocations(filters = {}) {
+    setLocationsLoading(true);
+    setLocationsError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/locations${locationsFiltersToQueryString(filters)}`);
+      if (!response.ok) {
+        throw new Error(`Locations API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setLocations((body.locations || []).map(normalizeLocation));
+    } catch (error) {
+      setLocationsError('Unable to load locations from the backend. Start the FastAPI server and try again.');
+    } finally {
+      setLocationsLoading(false);
+    }
+  }
+
+  async function saveLocation(nextLocation) {
+    const normalized = normalizeLocation(nextLocation);
+    const isNew = normalized.id == null;
+    const url = isNew ? `${API_BASE_URL}/api/locations` : `${API_BASE_URL}/api/locations/${normalized.id}`;
+    const response = await fetch(url, {
+      method: isNew ? 'POST' : 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(locationToApiPayload(normalized)),
+    });
+    if (!response.ok) {
+      const detail = await safeResponseText(response);
+      throw new Error(detail || `Locations API returned ${response.status}`);
+    }
+    const saved = normalizeLocation(await response.json());
+    setLocations((current) => {
+      const existing = current.some((location) => location.id === saved.id);
+      return existing ? current.map((location) => (location.id === saved.id ? saved : location)) : [...current, saved];
+    });
+    navigate(`/locations/${saved.id}`);
+  }
+
   return (
     <div className="app-shell">
       <Sidebar activePage={route.pageId} onNavigate={(pageId) => setRoute({ pageId })} />
@@ -521,7 +594,20 @@ export default function App() {
         <TopHeader />
         <main className="main-content">
           <PageHeader meta={activeMeta} route={route} />
-          <PageBody route={route} items={items} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={loadItems} onSaveItem={saveItem} onCloneItem={cloneItem} />
+          <PageBody
+            route={route}
+            items={items}
+            itemsLoading={itemsLoading}
+            itemsError={itemsError}
+            onLoadItems={loadItems}
+            onSaveItem={saveItem}
+            onCloneItem={cloneItem}
+            locations={locations}
+            locationsLoading={locationsLoading}
+            locationsError={locationsError}
+            onLoadLocations={loadLocations}
+            onSaveLocation={saveLocation}
+          />
         </main>
       </div>
     </div>
@@ -615,9 +701,13 @@ function PageHeader({ meta, route }) {
   );
 }
 
-function PageBody({ route, items, itemsLoading, itemsError, onLoadItems, onSaveItem, onCloneItem }) {
+function PageBody({ route, items, itemsLoading, itemsError, onLoadItems, onSaveItem, onCloneItem, locations, locationsLoading, locationsError, onLoadLocations, onSaveLocation }) {
   if (route.pageId === 'items') {
     return <ItemsPage route={route} items={items} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
+  }
+
+  if (route.pageId === 'locations') {
+    return <LocationsPage route={route} locations={locations} loading={locationsLoading} error={locationsError} onLoadLocations={onLoadLocations} onSaveLocation={onSaveLocation} />;
   }
 
   if (route.pageId === 'inventory') {
@@ -677,6 +767,271 @@ function ItemsPage({ route, items, itemsLoading, itemsError, onLoadItems, onSave
   }
 
   return <ItemsList items={items} loading={itemsLoading} error={itemsError} onLoadItems={onLoadItems} />;
+}
+
+function LocationsPage({ route, locations, loading, error, onLoadLocations, onSaveLocation }) {
+  if (route.locationView === 'new') {
+    return <LocationDetail location={emptyLocation} onSave={onSaveLocation} isNew />;
+  }
+
+  if (route.locationView === 'detail') {
+    const location = locations.find((candidate) => String(candidate.id) === String(route.locationId));
+    if (!location) {
+      return (
+        <section className="content-panel">
+          <div className="empty-state">
+            <h2>Location not found</h2>
+            <p>{loading ? 'Loading location from the backend.' : 'The selected location is not available from the backend.'}</p>
+            <a className="primary-button" href="#locations">
+              Return to Locations
+            </a>
+          </div>
+        </section>
+      );
+    }
+    return <LocationDetail location={location} onSave={onSaveLocation} />;
+  }
+
+  if (route.locationView === 'stock') {
+    return (
+      <StandardPage
+        icon={MapPin}
+        title="Location Stock"
+        description="Placeholder for future item-location stock splits. Item stock logic is not connected yet."
+        columns={['Area', 'Status', 'Type', 'Notes']}
+      />
+    );
+  }
+
+  return <LocationsList locations={locations} loading={loading} error={error} onLoadLocations={onLoadLocations} />;
+}
+
+function LocationsList({ locations, loading, error, onLoadLocations }) {
+  const [importOpen, setImportOpen] = useState(false);
+  const [filters, setFilters] = useState({
+    search: '',
+    warehouse: '',
+    zone: '',
+    aisle: '',
+    status: 'active',
+  });
+
+  const options = useMemo(
+    () => ({
+      warehouses: uniqueOptions(locations, 'warehouse'),
+      zones: uniqueOptions(locations, 'zone'),
+      aisles: uniqueOptions(locations, 'aisle'),
+    }),
+    [locations],
+  );
+
+  useEffect(() => {
+    onLoadLocations(filters);
+  }, [filters]);
+
+  function updateFilter(name, value) {
+    setFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function clearFilters() {
+    setFilters({
+      search: '',
+      warehouse: '',
+      zone: '',
+      aisle: '',
+      status: 'active',
+    });
+  }
+
+  return (
+    <section className="content-panel">
+      <div className="toolbar items-toolbar">
+        <div className="filter-grid locations-filter-grid">
+          <label className="field">
+            <span>Search</span>
+            <div className="input-with-icon">
+              <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} placeholder="Warehouse, code, name, zone, aisle" type="search" />
+              <Search size={18} />
+            </div>
+          </label>
+          <FilterSelect label="Warehouse" value={filters.warehouse} options={options.warehouses} onChange={(value) => updateFilter('warehouse', value)} />
+          <FilterSelect label="Zone" value={filters.zone} options={options.zones} onChange={(value) => updateFilter('zone', value)} />
+          <FilterSelect label="Aisle" value={filters.aisle} options={options.aisles} onChange={(value) => updateFilter('aisle', value)} />
+          <div className="field status-field">
+            <span>Show</span>
+            <div className="radio-row">
+              <label>
+                <input checked={filters.status === 'active'} name="location-status" onChange={() => updateFilter('status', 'active')} type="radio" />
+                Active
+              </label>
+              <label>
+                <input checked={filters.status === 'inactive'} name="location-status" onChange={() => updateFilter('status', 'inactive')} type="radio" />
+                Inactive
+              </label>
+            </div>
+          </div>
+        </div>
+        <div className="button-row items-actions">
+          <a className="primary-button" href="#/locations/new">
+            <Plus size={17} />
+            Add Location
+          </a>
+          <button className="muted-button" onClick={clearFilters} type="button">
+            Clear
+          </button>
+          <button className="action-button" onClick={() => setImportOpen(true)} type="button">
+            <Upload size={17} />
+            Import
+          </button>
+          <button className="action-button" onClick={() => exportLocationsCsv(filters)} type="button">
+            <Download size={17} />
+            Export
+          </button>
+        </div>
+      </div>
+      <div className="csv-note">Location import/export uses the canonical Warehouse, Location Code, and Location Name CSV foundation.</div>
+      {error && <div className="api-error">{error}</div>}
+      {loading && <div className="loading-strip">Loading backend locations...</div>}
+      <LocationsTable locations={locations} />
+      {importOpen && <LocationImportModal onClose={() => setImportOpen(false)} onImported={() => onLoadLocations(filters)} />}
+    </section>
+  );
+}
+
+function LocationsTable({ locations }) {
+  return (
+    <div className="table-wrap">
+      <div className="table-meta">
+        <span>
+          Showing records 1-{locations.length} out of {locations.length}
+        </span>
+        <div className="table-pager">
+          <span>{locations.length} Results</span>
+          <button className="pager-button" aria-label="Previous page" type="button">
+            <ChevronLeft size={18} />
+          </button>
+          <span>1 / 1</span>
+          <button className="pager-button active" aria-label="Next page" type="button">
+            <ChevronRight size={18} />
+          </button>
+        </div>
+      </div>
+      <div className="table-action-band">
+        <span>Actions</span>
+        <ChevronDown size={18} />
+      </div>
+      <div className="table-scroll">
+        <table className="locations-data-table">
+          <thead>
+            <tr>
+              <th>Edit</th>
+              {CANONICAL_LOCATION_COLUMNS.map((column) => (
+                <th key={column}>{column}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {locations.map((location) => (
+              <tr key={location.id}>
+                <td>
+                  <a className="round-action" href={`#/locations/${location.id}`} aria-label={`Edit ${location.code}`}>
+                    <Edit3 size={17} />
+                  </a>
+                </td>
+                <td>{location.warehouse}</td>
+                <td className="mono">{location.code}</td>
+                <td>{location.name}</td>
+                <td className="description-cell">{location.description}</td>
+                <td>{location.zone}</td>
+                <td>{location.aisle}</td>
+                <td>{location.rack}</td>
+                <td>{location.shelf}</td>
+                <td>{location.bin}</td>
+                <td>
+                  <BooleanBadge value={location.isDefault} />
+                </td>
+                <td>
+                  <StatusBadge active={location.isActive} />
+                </td>
+              </tr>
+            ))}
+            {locations.length === 0 && (
+              <tr>
+                <td colSpan={CANONICAL_LOCATION_COLUMNS.length + 1}>
+                  <div className="empty-table-row">No locations match the current filters.</div>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function LocationDetail({ location, onSave, isNew = false }) {
+  const [formLocation, setFormLocation] = useState(() => normalizeLocation(location));
+  const [saveError, setSaveError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  function updateField(field, value) {
+    setFormLocation((current) => normalizeLocation({ ...current, [field]: value }));
+  }
+
+  async function saveChanges() {
+    setSaveError('');
+    setSaving(true);
+    try {
+      await onSave(formLocation);
+    } catch (error) {
+      setSaveError('Unable to save location to the backend. Check that FastAPI is running and warehouse/code/name are valid.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="content-panel">
+      <div className="detail-layout single-detail-layout">
+        <div className="detail-main">
+          <FormSection title="Location Identity">
+            {renderLocationTextField('warehouse', 'Warehouse', formLocation, updateField, { required: true })}
+            {renderLocationTextField('code', 'Location Code', formLocation, updateField, { required: true })}
+            {renderLocationTextField('name', 'Location Name', formLocation, updateField, { required: true })}
+            {renderLocationTextField('description', 'Description', formLocation, updateField, { wide: true })}
+          </FormSection>
+          <FormSection title="Physical Position">
+            {renderLocationTextField('zone', 'Zone', formLocation, updateField)}
+            {renderLocationTextField('aisle', 'Aisle', formLocation, updateField)}
+            {renderLocationTextField('rack', 'Rack', formLocation, updateField)}
+            {renderLocationTextField('shelf', 'Shelf', formLocation, updateField)}
+            {renderLocationTextField('bin', 'Bin', formLocation, updateField)}
+          </FormSection>
+          <FormSection title="Status">
+            <label className="toggle-card">
+              <input checked={Boolean(formLocation.isDefault)} onChange={(event) => updateField('isDefault', event.target.checked)} type="checkbox" />
+              <span>Default</span>
+            </label>
+            <label className="toggle-card">
+              <input checked={Boolean(formLocation.isActive)} onChange={(event) => updateField('isActive', event.target.checked)} type="checkbox" />
+              <span>Active</span>
+            </label>
+          </FormSection>
+        </div>
+      </div>
+      <div className="detail-actions">
+        {saveError && <div className="api-error detail-error">{saveError}</div>}
+        <button className="primary-button" disabled={saving} onClick={saveChanges} type="button">
+          <Save size={17} />
+          {saving ? 'Saving' : 'Save Changes'}
+        </button>
+        <a className="action-button" href="#locations">
+          <ArrowLeft size={17} />
+          Return to Locations
+        </a>
+      </div>
+    </section>
+  );
 }
 
 function ItemsList({ items, loading, error, onLoadItems }) {
@@ -933,6 +1288,13 @@ function ImportSummary({ summary }) {
         <Metric label="Skipped" value={summary.skipped_count} />
         <Metric label="Failed" value={summary.failed_count} />
       </div>
+      {summary.warnings?.length > 0 && (
+        <div className="warning-list">
+          {summary.warnings.slice(0, 8).map((warning) => (
+            <div key={warning}>{warning}</div>
+          ))}
+        </div>
+      )}
       <ImportErrors errors={summary.errors} />
       {summary.import_job_id && (
         <a className="action-button failed-download" href={`${API_BASE_URL}/api/import-jobs/${summary.import_job_id}/failed-rows`}>
@@ -952,13 +1314,148 @@ function ImportErrors({ errors = [] }) {
     <div className="import-errors">
       <h4>Errors</h4>
       {errors.slice(0, 12).map((error) => (
-        <div className="import-error-row" key={`${error.row_number}-${error.sku}-${error.error_message}`}>
+        <div className="import-error-row" key={`${error.row_number}-${error.sku || error.code}-${error.error_message}`}>
           <span>Row {error.row_number}</span>
-          <span>{error.sku || 'No SKU'}</span>
-          <span>{error.barcode || 'No Barcode'}</span>
+          <span>{error.sku || error.code || 'No Code'}</span>
+          <span>{error.barcode || error.warehouse || 'No Warehouse'}</span>
           <strong>{error.error_message}</strong>
         </div>
       ))}
+    </div>
+  );
+}
+
+function LocationImportModal({ onClose, onImported }) {
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  async function previewImport() {
+    if (!file) {
+      setError('Choose a CSV file first.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    setSummary(null);
+    try {
+      const result = await uploadImportFile('/api/locations/import/preview', file);
+      setPreview(result);
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to preview locations CSV import.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function commitImport() {
+    if (!file) {
+      setError('Choose a CSV file first.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const result = await uploadImportFile('/api/locations/import/commit', file);
+      setSummary(result);
+      await onImported();
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to import locations CSV.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="import-modal" role="dialog" aria-modal="true" aria-label="Import locations CSV">
+        <div className="modal-header">
+          <div>
+            <h2>Import Locations CSV</h2>
+            <p>Warehouse, Location Code, and Location Name are required.</p>
+          </div>
+          <button className="icon-button modal-close" onClick={onClose} aria-label="Close import modal" type="button">
+            <MoreVertical size={20} />
+          </button>
+        </div>
+        <div className="import-steps">
+          <section className="import-step">
+            <h3>1. Upload CSV</h3>
+            <p>Expected columns: {CANONICAL_LOCATION_COLUMNS.join(', ')}. Extra columns are ignored and reported as warnings.</p>
+            <input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+            <button className="muted-button" onClick={downloadSampleLocationsCsv} type="button">
+              <Download size={17} />
+              Download Sample CSV
+            </button>
+          </section>
+          <section className="import-step">
+            <h3>2. Preview</h3>
+            <button className="primary-button" disabled={loading || !file} onClick={previewImport} type="button">
+              Preview CSV
+            </button>
+            {preview && <LocationImportPreview preview={preview} />}
+          </section>
+          <section className="import-step">
+            <h3>3. Commit Import</h3>
+            <button className="primary-button" disabled={loading || !file || !preview} onClick={commitImport} type="button">
+              Import Valid Rows
+            </button>
+            {summary && <ImportSummary summary={summary} />}
+          </section>
+        </div>
+        {loading && <div className="loading-strip">Working on locations CSV import...</div>}
+        {error && <div className="api-error">{error}</div>}
+      </section>
+    </div>
+  );
+}
+
+function LocationImportPreview({ preview }) {
+  return (
+    <div className="import-results">
+      <div className="import-metrics">
+        <Metric label="Total" value={preview.total_rows} />
+        <Metric label="Valid" value={preview.valid_rows} />
+        <Metric label="Invalid" value={preview.invalid_rows} />
+        <Metric label="Create" value={preview.create_count} />
+        <Metric label="Update" value={preview.update_count} />
+      </div>
+      {preview.warnings?.length > 0 && (
+        <div className="warning-list">
+          {preview.warnings.slice(0, 8).map((warning) => (
+            <div key={warning}>{warning}</div>
+          ))}
+        </div>
+      )}
+      <ImportErrors errors={preview.errors} />
+      <div className="preview-table-wrap">
+        <table className="preview-table">
+          <thead>
+            <tr>
+              <th>Row</th>
+              <th>Action</th>
+              <th>Warehouse</th>
+              <th>Code</th>
+              <th>Name</th>
+              <th>Active</th>
+            </tr>
+          </thead>
+          <tbody>
+            {preview.preview_rows.map((row) => (
+              <tr key={row.row_number}>
+                <td>{row.row_number}</td>
+                <td>{row.action}</td>
+                <td>{row.warehouse}</td>
+                <td>{row.code}</td>
+                <td>{row.name}</td>
+                <td>{row.row.Active ? 'Yes' : 'No'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -1207,6 +1704,15 @@ function renderTextField(field, item, updateField, options = {}) {
   );
 }
 
+function renderLocationTextField(field, label, location, updateField, options = {}) {
+  return (
+    <label className={options.wide ? 'field form-field wide-field' : 'field form-field'} key={field}>
+      <span>{label}</span>
+      <input required={options.required} value={location[field] ?? ''} onChange={(event) => updateField(field, event.target.value)} />
+    </label>
+  );
+}
+
 function renderNumberField(field, item, updateField, options = {}) {
   return (
     <label className="field form-field" key={field}>
@@ -1438,17 +1944,23 @@ function TableShell({ caption, columns, children }) {
 }
 
 function getHeaderMeta(route, items) {
-  if (route.pageId !== 'items') {
-    return pageMeta[route.pageId];
+  if (route.pageId === 'items') {
+    if (route.itemView === 'new') {
+      return { title: 'New Item', kicker: 'CSV field entry', tabs: detailTabs };
+    }
+    if (route.itemView === 'detail') {
+      const item = items.find((candidate) => String(candidate.id) === String(route.itemId));
+      return { title: item ? `Edit ${item.SKU}` : 'Edit Item', kicker: 'CSV field entry', tabs: detailTabs };
+    }
+    return pageMeta.items;
   }
-  if (route.itemView === 'new') {
-    return { title: 'New Item', kicker: 'CSV field entry', tabs: detailTabs };
+  if (route.pageId === 'locations' && route.locationView === 'new') {
+    return { title: 'Add Location', kicker: 'Warehouse and bin setup', tabs: pageMeta.locations.tabs };
   }
-  if (route.itemView === 'detail') {
-    const item = items.find((candidate) => String(candidate.id) === String(route.itemId));
-    return { title: item ? `Edit ${item.SKU}` : 'Edit Item', kicker: 'CSV field entry', tabs: detailTabs };
+  if (route.pageId === 'locations' && route.locationView === 'detail') {
+    return { title: 'Edit Location', kicker: 'Warehouse and bin setup', tabs: pageMeta.locations.tabs };
   }
-  return pageMeta.items;
+  return pageMeta[route.pageId];
 }
 
 function isTabActive(tab, index, route) {
@@ -1464,6 +1976,17 @@ function isTabActive(tab, index, route) {
     }
     if (tab.href === '#/items/commodities') {
       return route.itemView === 'commodities';
+    }
+  }
+  if (route.pageId === 'locations' && tab.href) {
+    if (tab.href === '#locations') {
+      return !route.locationView;
+    }
+    if (tab.href === '#/locations/new') {
+      return route.locationView === 'new';
+    }
+    if (tab.href === '#/locations/stock') {
+      return route.locationView === 'stock';
     }
   }
   return index === 0;
@@ -1515,6 +2038,24 @@ function normalizeItem(item) {
     normalized[field] = toBoolean(normalized[field]);
   });
   return normalized;
+}
+
+function normalizeLocation(location) {
+  return {
+    id: null,
+    warehouse: '',
+    code: '',
+    name: '',
+    description: '',
+    zone: '',
+    aisle: '',
+    rack: '',
+    shelf: '',
+    bin: '',
+    isDefault: false,
+    isActive: true,
+    ...location,
+  };
 }
 
 function toNumber(value) {
@@ -1602,6 +2143,23 @@ async function exportItemsCsv(filters) {
   URL.revokeObjectURL(url);
 }
 
+async function exportLocationsCsv(filters) {
+  const response = await fetch(`${API_BASE_URL}/api/locations/export${locationsFiltersToQueryString(filters)}`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export locations CSV from the backend. Start the FastAPI server and try again.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'pongo-locations-export.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 async function uploadImportFile(path, file) {
   const formData = new FormData();
   formData.append('file', file);
@@ -1667,6 +2225,48 @@ function downloadSampleCsv() {
   URL.revokeObjectURL(url);
 }
 
+function downloadSampleLocationsCsv() {
+  const sampleRows = [
+    {
+      Warehouse: 'Main Warehouse',
+      'Location Code': 'REC-01',
+      'Location Name': 'Receiving Bay',
+      Description: 'Sample inbound staging area',
+      Zone: 'Receiving',
+      Aisle: 'A',
+      Rack: '01',
+      Shelf: '01',
+      Bin: '01',
+      Default: 'Yes',
+      Active: 'Yes',
+    },
+    {
+      Warehouse: 'Main Warehouse',
+      'Location Code': 'RACK-A-01',
+      'Location Name': 'Rack A 01',
+      Description: 'Sample storage rack',
+      Zone: 'Dry Storage',
+      Aisle: 'A',
+      Rack: '01',
+      Shelf: '02',
+      Bin: '01',
+      Default: 'No',
+      Active: 'Yes',
+    },
+  ];
+  const header = CANONICAL_LOCATION_COLUMNS.join(',');
+  const rows = sampleRows.map((row) => CANONICAL_LOCATION_COLUMNS.map((column) => escapeCsvValue(row[column], column)).join(','));
+  const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'sample-locations-import.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 function filtersToQueryString(filters = {}) {
   const params = new URLSearchParams();
   if (filters.search) params.set('search', filters.search);
@@ -1677,6 +2277,18 @@ function filtersToQueryString(filters = {}) {
   if (filters.status === 'active') params.set('active', 'true');
   if (filters.status === 'inactive') params.set('active', 'false');
   params.set('include_non_inventory', String(Boolean(filters.includeNonInventory)));
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+function locationsFiltersToQueryString(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.search) params.set('search', filters.search);
+  if (filters.warehouse) params.set('warehouse', filters.warehouse);
+  if (filters.zone) params.set('zone', filters.zone);
+  if (filters.aisle) params.set('aisle', filters.aisle);
+  if (filters.status === 'active') params.set('active', 'true');
+  if (filters.status === 'inactive') params.set('active', 'false');
   const query = params.toString();
   return query ? `?${query}` : '';
 }
@@ -1692,6 +2304,22 @@ function itemToApiPayload(item) {
   payload.wooProductId = item.wooProductId || null;
   payload.wooVariationId = item.wooVariationId || null;
   return payload;
+}
+
+function locationToApiPayload(location) {
+  return {
+    warehouse: location.warehouse,
+    code: location.code,
+    name: location.name,
+    description: location.description || '',
+    zone: location.zone || '',
+    aisle: location.aisle || '',
+    rack: location.rack || '',
+    shelf: location.shelf || '',
+    bin: location.bin || '',
+    isDefault: Boolean(location.isDefault),
+    isActive: Boolean(location.isActive),
+  };
 }
 
 async function safeResponseText(response) {

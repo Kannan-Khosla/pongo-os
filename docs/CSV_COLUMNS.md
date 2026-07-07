@@ -241,16 +241,57 @@ Do not include frontend-only/internal fields such as:
 
 ## Location Import
 
+The location CSV column order is canonical for the Locations module import and
+export foundation.
+
+Canonical header order:
+
+```csv
+Warehouse,Location Code,Location Name,Description,Zone,Aisle,Rack,Shelf,Bin,Default,Active
+```
+
 | Column | Source | Required | Notes |
 | --- | --- | --- | --- |
-| Client | manual | Optional | Tenant/client label. |
 | Warehouse | manual | Required | Warehouse name/code. |
 | Location Code | manual | Required | Unique within warehouse. |
-| Location Name | manual | Optional | Display name. |
+| Location Name | manual | Required | Display name. |
+| Description | manual | Optional | Human-readable location notes. |
 | Zone | manual | Optional | Physical zone. |
 | Aisle | manual | Optional | Physical aisle. |
 | Rack | manual | Optional | Physical rack. |
 | Shelf | manual | Optional | Physical shelf. |
 | Bin | manual | Optional | Physical bin. |
-| Is Default | manual | Optional | Boolean. |
+| Default | manual | Optional | Boolean. Defaults to false when blank. |
 | Active | manual | Optional | Boolean. |
+
+Current implementation:
+- `GET /api/locations/export` exports filtered backend rows with this exact header.
+- `POST /api/locations/import/preview` validates and previews imports without database writes.
+- `POST /api/locations/import/commit` creates or updates local location records and stores an import job.
+- `docs/csv-reference/sample-locations-import.csv` provides fake sample rows for testing the current format.
+
+Location import matching rules:
+- Trim header whitespace, but keep column names case-sensitive.
+- Reject files that are missing canonical columns.
+- Ignore extra columns and report warnings.
+- Match existing locations by exact Warehouse + Location Code.
+- Create a new location when no match is found.
+- Update the existing location when a match is found.
+
+Location boolean fields:
+- Default
+- Active
+
+Accepted boolean values:
+- true / false
+- yes / no
+- 1 / 0
+- Y / N
+
+Relationship to item fields:
+- Item CSV fields `Warehouse`, `Inventory Location`, and `Default Location`
+  remain flat strings for now.
+- The Locations module provides clean warehouse/location master data for future
+  receiving, cycle count, stock-by-location, and export-by-location workflows.
+- Foreign keys from item CSV fields to `inventory_locations` are intentionally
+  not enforced yet.
