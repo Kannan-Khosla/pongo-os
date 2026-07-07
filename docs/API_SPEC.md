@@ -2,8 +2,8 @@
 
 This document describes planned backend endpoints. The backend now implements
 `/health`, backend-persistent Items CRUD/export/import, backend-persistent
-Locations CRUD/export/import, inventory by-location reporting/export, and
-direct receiving without PO. Other workflow routers remain structural
+Locations CRUD/export/import, inventory by-location reporting/export, direct
+receiving without PO, and the read-only Received Inventory Report. Other workflow routers remain structural
 placeholders until their modules are built.
 
 ## API Rules
@@ -402,10 +402,6 @@ Implemented filters:
 - `date_from`
 - `date_to`
 
-### GET /api/reports/received-inventory
-
-Export/report received inventory data.
-
 ## Cycle Count
 
 ### POST /api/cycle-counts
@@ -447,6 +443,115 @@ Record a SKU/barcode scan for an allocated order item. Prevents overpicking.
 Complete a picked order locally and update WooCommerce order status to completed through the backend WooCommerce REST client.
 
 ## Reports
+
+### GET /api/reports/received-inventory
+
+Return read-only received inventory report rows derived from receipt lines and
+receipt headers.
+
+Implemented filters:
+- `date_from`
+- `date_to`
+- `warehouse`
+- `inventory_location`
+- `sku`
+- `barcode`
+- `category`
+- `brand`
+- `receipt_number`
+- `reference_number`
+- `created_by`
+
+Date filters use receipt `received_at` and fall back to receipt `created_at`
+when `received_at` is missing. `date_from` is inclusive on or after that date;
+`date_to` is inclusive on or before that date.
+
+Each row includes:
+- `receipt_id`
+- `receipt_number`
+- `receipt_type`
+- `status`
+- `received_at`
+- `created_at`
+- `warehouse`
+- `inventory_location`
+- `default_location`
+- `sku`
+- `barcode`
+- `description`
+- `category`
+- `brand`
+- `quantity_received`
+- `unit_cost`
+- `total_received_value`
+- `reference_number`
+- `created_by`
+- `line_notes`
+- `receipt_notes`
+
+Calculation:
+- `total_received_value = quantity_received * unit_cost`
+- Blank or null unit cost is treated as zero.
+
+Data source rules:
+- Receipt lines are the operational source of truth for received rows.
+- Receipt headers supply receipt number, type, status, received date, reference
+  number, created by, and notes.
+- Item rows enrich category, brand, barcode, and description when a receipt
+  line does not already store the value.
+- Stock movements remain audit trail data and are not the primary report source.
+
+Current limitation: this report is based on direct receiving records only
+because purchase order receiving is not built.
+
+### GET /api/reports/received-inventory/summary
+
+Return totals and grouped summaries for the same filters as
+`GET /api/reports/received-inventory`.
+
+Response fields:
+- `total_receipts`
+- `total_lines`
+- `total_quantity_received`
+- `total_received_value`
+- `unique_skus`
+- `unique_locations`
+- `date_from`
+- `date_to`
+- `by_warehouse`
+- `by_location`
+- `by_sku`
+
+Grouped summary fields:
+- `by_warehouse`: warehouse, total lines, total quantity received, total received value.
+- `by_location`: warehouse, inventory location, total lines, total quantity received, total received value.
+- `by_sku`: SKU, barcode, description, brand, category, total quantity received, total received value, receipt count.
+
+### GET /api/reports/received-inventory/export
+
+Export the received inventory report as CSV using the same filters as the JSON
+report.
+
+CSV header order:
+- Receipt Number
+- Receipt Type
+- Status
+- Received At
+- Warehouse
+- Inventory Location
+- Default Location
+- SKU
+- Barcode
+- Description
+- Category
+- Brand
+- Quantity Received
+- Unit Cost
+- Total Received Value
+- Reference Number
+- Created By
+- Line Notes
+- Receipt Notes
 
 ### GET /api/reports/inventory
 

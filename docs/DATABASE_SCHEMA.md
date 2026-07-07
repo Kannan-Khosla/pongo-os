@@ -342,6 +342,37 @@ Direct receiving behavior:
 - Unit Cost on the receipt line and stock movement does not overwrite item Unit
   Cost in this phase.
 
+## Received Inventory Report
+
+Purpose: Read-only audit/report view for inventory received through direct
+receiving.
+
+Implementation:
+- No report table is created.
+- `GET /api/reports/received-inventory`,
+  `GET /api/reports/received-inventory/summary`, and
+  `GET /api/reports/received-inventory/export` generate report rows from
+  transactional receipt data.
+- `receipt_items` are the primary source for received lines, SKU, description,
+  category, brand, quantity received, unit cost, line notes, warehouse, and
+  default location.
+- `receipts` provide receipt number, receipt type, status, received date,
+  reference number, created by, and receipt notes.
+- `inventory_items` enrich barcode, category, brand, and description when a
+  receipt line does not already store those values.
+- `inventory_locations` enrich the inventory location code when the receipt
+  line stores a location foreign key.
+- `stock_movements` remain the immutable audit trail and are not the primary
+  report source.
+
+Calculation:
+- total_received_value = quantity_received * unit_cost.
+- Null or blank unit cost is treated as zero.
+
+Current limitation:
+- The report currently reflects direct receiving records only because purchase
+  order receiving is not built.
+
 ## orders
 
 Purpose: Local copy of eligible WooCommerce orders.

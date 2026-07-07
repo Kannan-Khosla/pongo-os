@@ -512,6 +512,21 @@ Required Pongo reports:
 - Order Fulfillment Export
 - SKU/Barcode Order Report
 
+Current Pongo Reports page:
+- The first report tab is Received Inventory.
+- Summary cards show Total Receipts, Total Lines, Total Quantity Received,
+  Total Received Value, Unique SKUs, and Unique Locations.
+- Filters: Date From, Date To, Warehouse, Inventory Location, SKU, Barcode,
+  Category, Brand, Receipt Number, Reference Number, and Created By.
+- Actions: Apply Filters, Clear Filters, Refresh, Export CSV.
+- Main table columns: Receipt Number, Received At, Warehouse, Inventory
+  Location, SKU, Barcode, Description, Category, Brand, Quantity Received, Unit
+  Cost, Total Received Value, Reference Number, and Created By.
+- Grouped summary shows Warehouse, Inventory Location, Total Lines, Total
+  Quantity Received, and Total Received Value.
+- The report is read-only and currently reflects direct receiving records only
+  because purchase order receiving is not built.
+
 ## Routes
 
 No route screenshot was present. Routes should still use the global shell.

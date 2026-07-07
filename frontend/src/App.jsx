@@ -103,6 +103,19 @@ const emptyInventorySummary = {
   total_inventory_value: 0,
   under_par_count: 0,
 };
+const emptyReceivedInventorySummary = {
+  total_receipts: 0,
+  total_lines: 0,
+  total_quantity_received: 0,
+  total_received_value: 0,
+  unique_skus: 0,
+  unique_locations: 0,
+  date_from: null,
+  date_to: null,
+  by_warehouse: [],
+  by_location: [],
+  by_sku: [],
+};
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -165,7 +178,7 @@ const pageMeta = {
   reports: {
     title: 'Reports',
     kicker: 'Export-ready operational views',
-    tabs: ['Inventory', 'Receiving', 'Orders', 'SKU / Barcode'],
+    tabs: ['Received Inventory', 'Inventory', 'Orders', 'SKU / Barcode'],
   },
   routes: {
     title: 'Routes',
@@ -496,6 +509,10 @@ export default function App() {
   const [stockMovements, setStockMovements] = useState([]);
   const [stockMovementsLoading, setStockMovementsLoading] = useState(false);
   const [stockMovementsError, setStockMovementsError] = useState('');
+  const [receivedInventoryRows, setReceivedInventoryRows] = useState([]);
+  const [receivedInventorySummary, setReceivedInventorySummary] = useState(emptyReceivedInventorySummary);
+  const [receivedInventoryLoading, setReceivedInventoryLoading] = useState(false);
+  const [receivedInventoryError, setReceivedInventoryError] = useState('');
 
   useEffect(() => {
     const handleHashChange = () => setRoute(parseHashRoute());
@@ -515,6 +532,9 @@ export default function App() {
     }
     if (route.pageId === 'locations') {
       loadLocations();
+    }
+    if (route.pageId === 'reports') {
+      loadReceivedInventoryReport();
     }
   }, [route.pageId]);
 
@@ -662,6 +682,27 @@ export default function App() {
     }
   }
 
+  async function loadReceivedInventoryReport(filters = {}) {
+    setReceivedInventoryLoading(true);
+    setReceivedInventoryError('');
+    try {
+      const queryString = plainFiltersToQueryString(receivedInventoryFiltersToApi(filters));
+      const [rowsResponse, summaryResponse] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/reports/received-inventory${queryString}`),
+        fetch(`${API_BASE_URL}/api/reports/received-inventory/summary${queryString}`),
+      ]);
+      if (!rowsResponse.ok || !summaryResponse.ok) {
+        throw new Error('Reports API returned an error.');
+      }
+      setReceivedInventoryRows(await rowsResponse.json());
+      setReceivedInventorySummary(await summaryResponse.json());
+    } catch (error) {
+      setReceivedInventoryError('Unable to load received inventory report from the backend.');
+    } finally {
+      setReceivedInventoryLoading(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <Sidebar activePage={route.pageId} onNavigate={(pageId) => setRoute({ pageId })} />
@@ -694,6 +735,11 @@ export default function App() {
             stockMovementsLoading={stockMovementsLoading}
             stockMovementsError={stockMovementsError}
             onLoadStockMovements={loadStockMovements}
+            receivedInventoryRows={receivedInventoryRows}
+            receivedInventorySummary={receivedInventorySummary}
+            receivedInventoryLoading={receivedInventoryLoading}
+            receivedInventoryError={receivedInventoryError}
+            onLoadReceivedInventoryReport={loadReceivedInventoryReport}
           />
         </main>
       </div>
@@ -813,6 +859,11 @@ function PageBody({
   stockMovementsLoading,
   stockMovementsError,
   onLoadStockMovements,
+  receivedInventoryRows,
+  receivedInventorySummary,
+  receivedInventoryLoading,
+  receivedInventoryError,
+  onLoadReceivedInventoryReport,
 }) {
   if (route.pageId === 'items') {
     return <ItemsPage route={route} items={items} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
@@ -840,6 +891,18 @@ function PageBody({
         stockMovementsError={stockMovementsError}
         onLoadStockMovements={onLoadStockMovements}
         onLoadInventorySummary={onLoadInventorySummary}
+      />
+    );
+  }
+
+  if (route.pageId === 'reports') {
+    return (
+      <ReceivedInventoryReportPage
+        rows={receivedInventoryRows}
+        summary={receivedInventorySummary}
+        loading={receivedInventoryLoading}
+        error={receivedInventoryError}
+        onLoadReport={onLoadReceivedInventoryReport}
       />
     );
   }
@@ -2406,6 +2469,234 @@ function StockMovementsTable({ movements }) {
   );
 }
 
+function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadReport }) {
+  const [filters, setFilters] = useState(emptyReceivedInventoryFilters);
+  const [activeFilters, setActiveFilters] = useState(emptyReceivedInventoryFilters);
+  const options = useMemo(
+    () => ({
+      warehouses: uniqueOptions(rows, 'warehouse'),
+      locations: uniqueOptions(rows, 'inventory_location'),
+      categories: uniqueOptions(rows, 'category'),
+      brands: uniqueOptions(rows, 'brand'),
+    }),
+    [rows],
+  );
+
+  function updateFilter(name, value) {
+    setFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function applyFilters() {
+    setActiveFilters(filters);
+    onLoadReport(filters);
+  }
+
+  function clearFilters() {
+    const cleared = emptyReceivedInventoryFilters();
+    setFilters(cleared);
+    setActiveFilters(cleared);
+    onLoadReport(cleared);
+  }
+
+  return (
+    <section className="content-panel report-page">
+      <div className="summary-strip report-summary-strip">
+        <Metric label="Total Receipts" value={summary.total_receipts || 0} />
+        <Metric label="Total Lines" value={summary.total_lines || 0} />
+        <Metric label="Quantity Received" value={formatNumber(summary.total_quantity_received || 0)} />
+        <Metric label="Received Value" value={formatCurrency(summary.total_received_value || 0)} />
+        <Metric label="Unique SKUs" value={summary.unique_skus || 0} />
+        <Metric label="Unique Locations" value={summary.unique_locations || 0} />
+      </div>
+      <div className="toolbar report-toolbar">
+        <div className="filter-grid report-filter-grid">
+          <label className="field">
+            <span>Date From</span>
+            <div className="input-with-icon">
+              <input value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} type="date" />
+              <CalendarDays size={18} />
+            </div>
+          </label>
+          <label className="field">
+            <span>Date To</span>
+            <div className="input-with-icon">
+              <input value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} type="date" />
+              <CalendarDays size={18} />
+            </div>
+          </label>
+          <FilterSelect label="Warehouse" value={filters.warehouse} options={options.warehouses} onChange={(value) => updateFilter('warehouse', value)} />
+          <FilterSelect label="Inventory Location" value={filters.inventoryLocation} options={options.locations} onChange={(value) => updateFilter('inventoryLocation', value)} />
+          <label className="field">
+            <span>SKU</span>
+            <div className="input-with-icon">
+              <input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} />
+              <Search size={18} />
+            </div>
+          </label>
+          <label className="field">
+            <span>Barcode</span>
+            <div className="input-with-icon">
+              <input value={filters.barcode} onChange={(event) => updateFilter('barcode', event.target.value)} />
+              <Search size={18} />
+            </div>
+          </label>
+          <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
+          <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
+          <label className="field">
+            <span>Receipt Number</span>
+            <div className="input-with-icon">
+              <input value={filters.receiptNumber} onChange={(event) => updateFilter('receiptNumber', event.target.value)} />
+              <Search size={18} />
+            </div>
+          </label>
+          <label className="field">
+            <span>Reference Number</span>
+            <div className="input-with-icon">
+              <input value={filters.referenceNumber} onChange={(event) => updateFilter('referenceNumber', event.target.value)} />
+              <Search size={18} />
+            </div>
+          </label>
+          <label className="field">
+            <span>Created By</span>
+            <div className="input-with-icon">
+              <input value={filters.createdBy} onChange={(event) => updateFilter('createdBy', event.target.value)} />
+              <UserCircle size={18} />
+            </div>
+          </label>
+        </div>
+        <div className="button-row items-actions">
+          <button className="primary-button" onClick={applyFilters} type="button">
+            <Filter size={17} />
+            Apply Filters
+          </button>
+          <button className="muted-button" onClick={clearFilters} type="button">
+            Clear Filters
+          </button>
+          <button className="action-button" onClick={() => onLoadReport(activeFilters)} type="button">
+            <RefreshCw size={17} />
+            Refresh
+          </button>
+          <button className="action-button" onClick={() => exportReceivedInventoryCsv(activeFilters)} type="button">
+            <Download size={17} />
+            Export CSV
+          </button>
+        </div>
+      </div>
+      <div className="csv-note">Received Inventory is read-only and based on direct receiving receipt lines. Purchase order receiving is not built yet.</div>
+      {error && <div className="api-error">{error}</div>}
+      {loading && <div className="loading-strip">Loading received inventory report...</div>}
+      <ReceivedInventoryTable rows={rows} />
+      <div className="wide-panel grouped-report-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Grouped by Location</h2>
+            <p>Quantity and value received by warehouse location.</p>
+          </div>
+        </div>
+        <ReceivedInventoryLocationSummaryTable groups={summary.by_location || []} />
+      </div>
+    </section>
+  );
+}
+
+function ReceivedInventoryTable({ rows }) {
+  return (
+    <div className="table-wrap">
+      <div className="table-meta">
+        <span>
+          Showing records 1-{rows.length} out of {rows.length}
+        </span>
+        <div className="table-pager">
+          <span>{rows.length} Results</span>
+          <button className="pager-button" aria-label="Previous page" type="button">
+            <ChevronLeft size={18} />
+          </button>
+          <span>1 / 1</span>
+          <button className="pager-button active" aria-label="Next page" type="button">
+            <ChevronRight size={18} />
+          </button>
+        </div>
+      </div>
+      <div className="table-action-band">
+        <span>Actions</span>
+        <ChevronDown size={18} />
+      </div>
+      <div className="table-scroll">
+        <table className="received-inventory-table">
+          <thead>
+            <tr>
+              <th>Receipt Number</th>
+              <th>Received At</th>
+              <th>Warehouse</th>
+              <th>Inventory Location</th>
+              <th>SKU</th>
+              <th>Barcode</th>
+              <th>Description</th>
+              <th>Category</th>
+              <th>Brand</th>
+              <th>Quantity Received</th>
+              <th>Unit Cost</th>
+              <th>Total Received Value</th>
+              <th>Reference Number</th>
+              <th>Created By</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={`${row.receipt_id}-${row.sku}-${row.inventory_location}`}>
+                <td className="mono">{row.receipt_number}</td>
+                <td>{formatDateTime(row.received_at || row.created_at)}</td>
+                <td>{row.warehouse}</td>
+                <td>{row.inventory_location}</td>
+                <td className="mono">{row.sku}</td>
+                <td className="mono">{row.barcode}</td>
+                <td className="description-cell">{row.description}</td>
+                <td>{row.category}</td>
+                <td>{row.brand}</td>
+                <td>{formatNumber(row.quantity_received)}</td>
+                <td>{formatCurrency(row.unit_cost)}</td>
+                <td>{formatCurrency(row.total_received_value)}</td>
+                <td className="mono">{row.reference_number}</td>
+                <td>{row.created_by}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={14}>
+                  <div className="empty-table-row">No received inventory rows match the current filters.</div>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ReceivedInventoryLocationSummaryTable({ groups }) {
+  return (
+    <TableShell caption={`${groups.length} location group(s)`} columns={['Warehouse', 'Inventory Location', 'Total Lines', 'Total Quantity Received', 'Total Received Value']}>
+      {groups.map((group) => (
+        <tr key={`${group.warehouse}-${group.inventory_location}`}>
+          <td>{group.warehouse || 'Unassigned'}</td>
+          <td>{group.inventory_location || 'Unassigned'}</td>
+          <td>{group.total_lines}</td>
+          <td>{formatNumber(group.total_quantity_received)}</td>
+          <td>{formatCurrency(group.total_received_value)}</td>
+        </tr>
+      ))}
+      {groups.length === 0 && (
+        <tr>
+          <td colSpan={5}>
+            <div className="empty-table-row">No location groups match the current filters.</div>
+          </td>
+        </tr>
+      )}
+    </TableShell>
+  );
+}
+
 function StandardPage({ icon: Icon, title, description, columns }) {
   const rows = columns.length === 4 ? genericRows : mockItems.map((row) => [row.SKU, row.Category, row.Description, row['Unit of Measurement'], row['In Stock'], row.Allocated, row.Sellable, row['Inventory Location']]);
 
@@ -2607,6 +2898,22 @@ function emptyReceivingLine() {
   };
 }
 
+function emptyReceivedInventoryFilters() {
+  return {
+    dateFrom: '',
+    dateTo: '',
+    warehouse: '',
+    inventoryLocation: '',
+    sku: '',
+    barcode: '',
+    category: '',
+    brand: '',
+    receiptNumber: '',
+    referenceNumber: '',
+    createdBy: '',
+  };
+}
+
 function toNumber(value) {
   if (value === null || value === undefined || value === '') {
     return 0;
@@ -2727,6 +3034,23 @@ async function exportInventoryByLocationCsv(filters) {
   const link = document.createElement('a');
   link.href = url;
   link.download = 'pongo-inventory-by-location-export.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+async function exportReceivedInventoryCsv(filters) {
+  const response = await fetch(`${API_BASE_URL}/api/reports/received-inventory/export${plainFiltersToQueryString(receivedInventoryFiltersToApi(filters))}`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export received inventory report from the backend. Start the FastAPI server and try again.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'pongo-received-inventory-report.csv';
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -2906,6 +3230,22 @@ function inventoryFiltersToQueryString(filters = {}) {
   if (filters.underPar) params.set('under_par', filters.underPar);
   const query = params.toString();
   return query ? `?${query}` : '';
+}
+
+function receivedInventoryFiltersToApi(filters = {}) {
+  return {
+    date_from: filters.dateFrom,
+    date_to: filters.dateTo,
+    warehouse: filters.warehouse,
+    inventory_location: filters.inventoryLocation,
+    sku: filters.sku,
+    barcode: filters.barcode,
+    category: filters.category,
+    brand: filters.brand,
+    receipt_number: filters.receiptNumber,
+    reference_number: filters.referenceNumber,
+    created_by: filters.createdBy,
+  };
 }
 
 function itemToApiPayload(item) {

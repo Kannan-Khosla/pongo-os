@@ -86,3 +86,17 @@ Safety: Direct receiving validates the full receipt before commit. If any line
 is invalid, no item stock is changed. Every successful received line creates a
 stock movement/audit row. Unit cost is stored on receipt lines and movements but
 does not overwrite item Unit Cost in this phase.
+
+## ADR-013: Received Inventory Report Uses Receipt Lines
+
+Decision: Generate the Received Inventory Report from receipt headers and
+receipt item rows, enriching from item and location master data as needed.
+
+Reason: Receipt lines are the operational source of truth for what was received,
+while stock movements are the immutable audit trail for stock changes. Reporting
+from receipt lines keeps received inventory audit views aligned with receiving
+sessions, receipt numbers, reference numbers, line notes, and receipt notes.
+
+Safety: The report endpoints are read-only. They do not modify inventory,
+create stock movements, call WooCommerce, or introduce purchase order, supplier,
+cycle count, allocation, picking, route, or fulfillment workflows.

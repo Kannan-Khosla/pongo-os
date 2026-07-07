@@ -217,15 +217,25 @@ What not to build yet:
 
 Goal: Report received inventory.
 
+Status: Completed for direct receiving records. The backend exposes read-only
+received inventory JSON, summary, and CSV endpoints, and the frontend Reports
+page includes a Received Inventory dashboard with filters, summary cards,
+report table, grouped-by-location summary, refresh, and CSV export.
+
 Deliverables:
 - Received inventory report endpoint and CSV
 - UI filters
 
 Acceptance criteria:
-- Receipt numbers appear as PO or Receipt Number.
+- Receipt numbers appear as the receipt number.
+- Report rows come from receipt lines and receipt headers.
+- Summary totals and grouped location totals are available.
+- CSV export uses the documented received inventory report header order.
 
 Safety notes:
 - Report is read-only.
+- No WooCommerce calls, purchase orders, supplier workflows, cycle count,
+  allocation, picking, route, or fulfillment workflows are added.
 
 What not to build yet:
 - Cycle count

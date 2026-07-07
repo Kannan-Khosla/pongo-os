@@ -315,6 +315,10 @@ select:focus-visible {
   grid-template-columns: repeat(6, minmax(160px, 1fr));
 }
 
+.report-filter-grid {
+  grid-template-columns: repeat(4, minmax(190px, 1fr));
+}
+
 .field {
   display: grid;
   gap: 6px;
@@ -577,11 +581,19 @@ tbody tr:nth-child(even) {
   min-width: 1180px;
 }
 
+.received-inventory-table {
+  min-width: 1900px;
+}
+
 .summary-strip {
   display: grid;
   grid-template-columns: repeat(5, minmax(150px, 1fr));
   gap: 12px;
   margin-bottom: 18px;
+}
+
+.report-summary-strip {
+  grid-template-columns: repeat(6, minmax(140px, 1fr));
 }
 
 .items-data-table th,
@@ -913,6 +925,15 @@ tbody tr:nth-child(even) .sticky-col {
 .receiving-page {
   display: grid;
   gap: 26px;
+}
+
+.report-page {
+  display: grid;
+  gap: 20px;
+}
+
+.grouped-report-panel {
+  padding-top: 6px;
 }
 
 .receiving-form {
@@ -1296,11 +1317,13 @@ tbody tr:nth-child(even) .sticky-col {
   .items-filter-grid,
   .locations-filter-grid,
   .inventory-filter-grid,
+  .report-filter-grid,
   .form-grid {
     grid-template-columns: repeat(2, minmax(170px, 1fr));
   }
 
-  .summary-strip {
+  .summary-strip,
+  .report-summary-strip {
     grid-template-columns: repeat(2, minmax(150px, 1fr));
   }
 
