@@ -52,6 +52,9 @@ Implemented query params:
 - `brand`
 - `active`
 - `include_non_inventory`
+- `woo_sync_status`
+- `woo_product_id`
+- `woo_variation_id`
 
 Returns canonical CSV-style field names plus internal display fields such as
 `id`, `active`, `nonInventory`, `imageUrl`, `wooProductId`, and
@@ -146,7 +149,8 @@ Returns:
 
 Trigger backend WooCommerce product and variation sync.
 
-Not implemented yet.
+Replaced by the read-only WooCommerce integration endpoints under
+`/api/integrations/woocommerce`.
 
 Returns:
 - created_count
@@ -189,6 +193,123 @@ Download failed rows as CSV.
 Implemented. The CSV uses the canonical columns for the import type plus an
 `Error Message` column. This is intended for correcting failed import rows and
 retrying the import.
+
+## WooCommerce Integration
+
+All WooCommerce integration endpoints are backend-only. The React frontend calls
+the Pongo backend and never calls WooCommerce directly. Credentials are read
+only from backend environment variables and are never returned in API responses.
+
+Required backend environment variables:
+- `WOOCOMMERCE_BASE_URL`
+- `WOOCOMMERCE_CONSUMER_KEY`
+- `WOOCOMMERCE_CONSUMER_SECRET`
+- `WOOCOMMERCE_TIMEOUT_SECONDS`
+- `WOOCOMMERCE_PAGE_SIZE`
+
+### GET /api/integrations/woocommerce/status
+
+Return safe configuration status.
+
+Response:
+- `configured`
+- `base_url_present`
+- `consumer_key_present`
+- `consumer_secret_present`
+- `message`
+
+No secret values are returned.
+
+Optional query param:
+- `check=true`: performs a safe read-only product request to verify
+  connectivity when credentials are configured.
+
+### POST /api/integrations/woocommerce/products/preview
+
+Fetch WooCommerce products and variations through the backend WooCommerce REST
+API client and return what would happen locally without database writes.
+
+Request:
+- `include_statuses`: defaults to `["publish"]`
+- `limit`: defaults to `500`
+- `created_by`: defaults to `system`
+
+Preview does not:
+- create or update local items
+- create stock movements
+- write to WooCommerce
+
+Response:
+- `configured`
+- `total_remote_records`
+- `create_count`
+- `update_count`
+- `matched_count`
+- `skipped_count`
+- `conflict_count`
+- `error_count`
+- `warnings`
+- `errors`
+- `preview_rows`
+
+Preview row fields:
+- `remote_type`
+- `woo_product_id`
+- `woo_variation_id`
+- `sku`
+- `barcode`
+- `description`
+- `category`
+- `brand`
+- `price`
+- `regular_price`
+- `stock_status`
+- `stock_quantity_snapshot`
+- `local_item_id`
+- `action`
+- `status`
+- `warnings`
+- `errors`
+
+Action values:
+- `create`
+- `update`
+- `match_only`
+- `skip`
+- `conflict`
+- `error`
+
+### POST /api/integrations/woocommerce/products/commit
+
+Fetch products/variations again, validate again, and create/update only local
+Pongo OS items. This endpoint never writes to WooCommerce.
+
+Commit behavior:
+- Creates one local item for each sellable simple product with a SKU.
+- Creates one local item for each sellable variation with a SKU.
+- Updates existing items by Woo product/variation IDs, SKU, or Barcode.
+- Skips blank-SKU records.
+- Skips conflicts.
+- Stores sync run history and sync errors.
+- Does not create stock movements.
+- Does not overwrite local In Stock, Allocated, Warehouse, Inventory Location,
+  Default Location, Unit Cost, Par Level, reorder fields, or other manual
+  operational fields.
+- Stores Woo stock only in `woo_stock_quantity_snapshot`.
+
+### GET /api/integrations/woocommerce/sync-runs
+
+List WooCommerce sync runs.
+
+Filters:
+- `sync_type`
+- `status`
+- `date_from`
+- `date_to`
+
+### GET /api/integrations/woocommerce/sync-runs/{id}
+
+Return sync run detail and row-level sync errors.
 
 ## Locations
 

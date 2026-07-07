@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -46,6 +48,14 @@ class InventoryItemCreate(InventoryItemBase):
     non_inventory: bool = Field(default=False, alias="nonInventory")
     woo_product_id: int | None = Field(default=None, alias="wooProductId")
     woo_variation_id: int | None = Field(default=None, alias="wooVariationId")
+    woo_product_type: str | None = Field(default=None, alias="wooProductType")
+    woo_permalink: str | None = Field(default=None, alias="wooPermalink")
+    woo_status: str | None = Field(default=None, alias="wooStatus")
+    woo_manage_stock: bool | None = Field(default=None, alias="wooManageStock")
+    woo_stock_status: str | None = Field(default=None, alias="wooStockStatus")
+    woo_stock_quantity_snapshot: float | None = Field(default=None, alias="wooStockQuantitySnapshot")
+    woo_sync_status: str | None = Field(default=None, alias="wooSyncStatus")
+    woo_sync_error: str | None = Field(default=None, alias="wooSyncError")
 
 
 class InventoryItemUpdate(InventoryItemBase):
@@ -54,6 +64,14 @@ class InventoryItemUpdate(InventoryItemBase):
     non_inventory: bool | None = Field(default=None, alias="nonInventory")
     woo_product_id: int | None = Field(default=None, alias="wooProductId")
     woo_variation_id: int | None = Field(default=None, alias="wooVariationId")
+    woo_product_type: str | None = Field(default=None, alias="wooProductType")
+    woo_permalink: str | None = Field(default=None, alias="wooPermalink")
+    woo_status: str | None = Field(default=None, alias="wooStatus")
+    woo_manage_stock: bool | None = Field(default=None, alias="wooManageStock")
+    woo_stock_status: str | None = Field(default=None, alias="wooStockStatus")
+    woo_stock_quantity_snapshot: float | None = Field(default=None, alias="wooStockQuantitySnapshot")
+    woo_sync_status: str | None = Field(default=None, alias="wooSyncStatus")
+    woo_sync_error: str | None = Field(default=None, alias="wooSyncError")
 
 
 class InventoryItemRead(InventoryItemBase):
@@ -63,6 +81,15 @@ class InventoryItemRead(InventoryItemBase):
     non_inventory: bool = Field(alias="nonInventory")
     woo_product_id: int | None = Field(default=None, alias="wooProductId")
     woo_variation_id: int | None = Field(default=None, alias="wooVariationId")
+    woo_product_type: str | None = Field(default=None, alias="wooProductType")
+    woo_permalink: str | None = Field(default=None, alias="wooPermalink")
+    woo_status: str | None = Field(default=None, alias="wooStatus")
+    woo_manage_stock: bool | None = Field(default=None, alias="wooManageStock")
+    woo_stock_status: str | None = Field(default=None, alias="wooStockStatus")
+    woo_stock_quantity_snapshot: float | None = Field(default=None, alias="wooStockQuantitySnapshot")
+    woo_last_synced_at: datetime | None = Field(default=None, alias="wooLastSyncedAt")
+    woo_sync_status: str | None = Field(default=None, alias="wooSyncStatus")
+    woo_sync_error: str | None = Field(default=None, alias="wooSyncError")
 
 
 class InventoryItemListResponse(BaseModel):

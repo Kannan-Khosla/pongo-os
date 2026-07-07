@@ -23,6 +23,8 @@ Implementation notes:
 - Revision `20260707_0004` adds direct receiving fields to receipts, receipt
   items, and stock movements.
 - Revision `20260707_0005` adds cycle count header and line tables.
+- Revision `20260707_0006` adds WooCommerce item sync metadata and sync run
+  history tables.
 
 ## Canonical CSV Mapping
 
@@ -83,6 +85,15 @@ Fields:
 - client
 - woo_product_id
 - woo_variation_id
+- woo_product_type
+- woo_permalink
+- woo_status
+- woo_manage_stock
+- woo_stock_status
+- woo_stock_quantity_snapshot
+- woo_last_synced_at
+- woo_sync_status
+- woo_sync_error
 - sku
 - barcode
 - description
@@ -132,6 +143,18 @@ Calculated fields:
 - under_par = in_stock <= par_level
 - storage_volume = storage_length * storage_width * storage_height
 - inventory_value = in_stock * unit_cost
+
+WooCommerce sync rules:
+- `woo_product_id` stores the WooCommerce product ID.
+- `woo_variation_id` stores the WooCommerce variation ID for variations and is
+  null for simple products.
+- `woo_stock_quantity_snapshot` stores WooCommerce stock as read-only sync
+  metadata only.
+- Pongo OS `in_stock` remains the operational source of truth and is not
+  overwritten by WooCommerce product sync.
+- Manual fields such as Warehouse, Inventory Location, Default Location,
+  Allocated, On Order, Unit Cost, Par Level, reorder flags, and location stock
+  are not overwritten by WooCommerce product sync.
 
 Index/uniqueness suggestions:
 - Unique `(client, sku)` when SKU is present and confirmed unique.
@@ -651,3 +674,55 @@ Relationships:
 
 Index suggestions:
 - Index `import_job_id`, `row_number`, `sku`, and `barcode`.
+
+## woocommerce_sync_runs
+
+Purpose: Track read-only WooCommerce product/variation sync preview commits to
+local Pongo OS items.
+
+Fields:
+- id
+- sync_type
+- status
+- started_at
+- completed_at
+- created_by
+- total_remote_records
+- created_count
+- updated_count
+- matched_count
+- skipped_count
+- conflict_count
+- error_count
+- notes
+
+Current usage:
+- Product/variation commit creates one run with `sync_type = products`.
+- Sync runs represent local database sync only; they do not represent writes to
+  WooCommerce.
+
+Relationships:
+- Has many `woocommerce_sync_errors`.
+
+## woocommerce_sync_errors
+
+Purpose: Row-level sync errors, conflicts, and skipped records from
+WooCommerce product sync commits.
+
+Fields:
+- id
+- sync_run_id
+- remote_product_id
+- remote_variation_id
+- sku
+- barcode
+- error_message
+- raw_payload
+- created_at
+
+Relationships:
+- Belongs to `woocommerce_sync_runs`.
+
+Safety:
+- Raw payloads must not contain credentials. The sync service stores normalized
+  preview row details, not request URLs or secrets.

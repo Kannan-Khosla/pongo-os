@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,6 +45,15 @@ class InventoryItem(TimestampMixin, Base):
     client: Mapped[str | None] = mapped_column(String(120), index=True)
     woo_product_id: Mapped[int | None] = mapped_column(Integer, index=True)
     woo_variation_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    woo_product_type: Mapped[str | None] = mapped_column(String(40), index=True)
+    woo_permalink: Mapped[str | None] = mapped_column(String(1000))
+    woo_status: Mapped[str | None] = mapped_column(String(80), index=True)
+    woo_manage_stock: Mapped[bool | None] = mapped_column(Boolean)
+    woo_stock_status: Mapped[str | None] = mapped_column(String(80), index=True)
+    woo_stock_quantity_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
+    woo_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    woo_sync_status: Mapped[str | None] = mapped_column(String(80), index=True)
+    woo_sync_error: Mapped[str | None] = mapped_column(Text)
     sku: Mapped[str | None] = mapped_column(String(120), index=True)
     barcode: Mapped[str | None] = mapped_column(String(120), index=True)
     description: Mapped[str | None] = mapped_column(String(500))

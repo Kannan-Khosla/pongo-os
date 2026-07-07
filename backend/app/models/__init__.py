@@ -5,6 +5,7 @@ from app.models.inventory import InventoryItem, InventoryItemLocation, Inventory
 from app.models.orders import Order, OrderItem
 from app.models.receipts import Receipt, ReceiptItem
 from app.models.routes import Route, RouteStop
+from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun
 
 __all__ = [
     "Base",
@@ -23,4 +24,6 @@ __all__ = [
     "Route",
     "RouteStop",
     "StockMovement",
+    "WooCommerceSyncError",
+    "WooCommerceSyncRun",
 ]

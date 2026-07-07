@@ -29,6 +29,9 @@ def build_items_statement(
     brand: str | None = None,
     active: bool | None = None,
     include_non_inventory: bool = True,
+    woo_sync_status: str | None = None,
+    woo_product_id: int | None = None,
+    woo_variation_id: int | None = None,
 ):
     statement = select(InventoryItem)
     if search:
@@ -61,6 +64,12 @@ def build_items_statement(
         statement = statement.where(InventoryItem.active.is_(active))
     if not include_non_inventory:
         statement = statement.where(InventoryItem.non_inventory.is_(False))
+    if woo_sync_status:
+        statement = statement.where(InventoryItem.woo_sync_status == woo_sync_status)
+    if woo_product_id is not None:
+        statement = statement.where(InventoryItem.woo_product_id == woo_product_id)
+    if woo_variation_id is not None:
+        statement = statement.where(InventoryItem.woo_variation_id == woo_variation_id)
     return statement.order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())
 
 
@@ -75,9 +84,12 @@ def list_items(
     brand: str | None = None,
     active: bool | None = None,
     include_non_inventory: bool = True,
+    woo_sync_status: str | None = None,
+    woo_product_id: int | None = None,
+    woo_variation_id: int | None = None,
     db: Session = Depends(get_db),
 ) -> InventoryItemListResponse:
-    statement = build_items_statement(search, sku, barcode, category, warehouse, inventory_location, brand, active, include_non_inventory)
+    statement = build_items_statement(search, sku, barcode, category, warehouse, inventory_location, brand, active, include_non_inventory, woo_sync_status, woo_product_id, woo_variation_id)
     items = list(db.scalars(statement).all())
     for item in items:
         apply_calculated_fields(item)
@@ -95,9 +107,12 @@ def export_items(
     brand: str | None = None,
     active: bool | None = None,
     include_non_inventory: bool = True,
+    woo_sync_status: str | None = None,
+    woo_product_id: int | None = None,
+    woo_variation_id: int | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
-    statement = build_items_statement(search, sku, barcode, category, warehouse, inventory_location, brand, active, include_non_inventory)
+    statement = build_items_statement(search, sku, barcode, category, warehouse, inventory_location, brand, active, include_non_inventory, woo_sync_status, woo_product_id, woo_variation_id)
     items = list(db.scalars(statement).all())
     buffer = StringIO()
     writer = csv.DictWriter(buffer, fieldnames=CANONICAL_ITEM_COLUMNS)

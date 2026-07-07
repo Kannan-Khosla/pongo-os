@@ -103,17 +103,30 @@ What not to build yet:
 
 Goal: Pull products and variations into local items.
 
+Status: Completed for read-only product/variation sync foundation. The backend
+has a safe WooCommerce client, configuration status endpoint, product sync
+preview, local-only commit, sync run history, row-level sync errors, and item
+sync metadata. The Settings page exposes WooCommerce Product Sync controls.
+
 Deliverables:
 - Backend WooCommerce client
 - Read-only sync service
 - Sync summary
+- Preview endpoint
+- Local-only commit endpoint
+- Sync run history
+- Settings UI
 
 Acceptance criteria:
 - Every simple product and variation becomes one item.
 - Pongo OS-owned fields are preserved.
+- WooCommerce stock is stored only as a snapshot and does not overwrite local
+  In Stock.
 
 Safety notes:
 - Read-only only.
+- Frontend never calls WooCommerce directly.
+- No WooCommerce product, order, or stock writes.
 
 What not to build yet:
 - WooCommerce stock updates

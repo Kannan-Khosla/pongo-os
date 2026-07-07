@@ -520,6 +520,25 @@ Pongo:
 - Do not expose credentials in the frontend.
 - Credential editing, if ever needed, should be handled with backend environment variables or secure deployment settings, not plain frontend forms.
 
+Current Pongo Settings > WooCommerce Product Sync:
+- Shows configuration status without exposing secret values.
+- Shows Base URL, Consumer Key, and Consumer Secret as present/missing only.
+- Buttons: Check Connection, Preview Product Sync, Commit Product Sync.
+- Safety copy states that sync is read-only against WooCommerce and only
+  creates/updates local Pongo OS items.
+- Preview summary cards: Total Remote Records, Create, Update, Matched,
+  Skipped, Conflicts, Errors.
+- Preview table columns: Action, Remote Type, Woo Product ID, Woo Variation ID,
+  SKU, Barcode, Description, Category, Brand, Price, Stock Status, Woo Stock
+  Snapshot, Local Item ID, Warnings, Errors.
+- Sync Run History table shows Started At, Completed At, Sync Type, Status,
+  Total Records, Created, Updated, Matched, Skipped, Conflicts, Errors, and
+  Created By.
+- Commit is disabled when WooCommerce is not configured, preview has not run,
+  or preview has conflicts/errors.
+- The frontend calls only Pongo backend endpoints and never calls WooCommerce
+  directly.
+
 ## Reports
 
 Reports should follow the table-heavy pattern:

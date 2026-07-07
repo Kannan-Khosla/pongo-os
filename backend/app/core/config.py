@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     woocommerce_base_url: str = Field(default="", validation_alias=AliasChoices("WOOCOMMERCE_BASE_URL", "woocommerce_base_url"))
     woocommerce_consumer_key: str = Field(default="", validation_alias=AliasChoices("WOOCOMMERCE_CONSUMER_KEY", "woocommerce_consumer_key"))
     woocommerce_consumer_secret: str = Field(default="", validation_alias=AliasChoices("WOOCOMMERCE_CONSUMER_SECRET", "woocommerce_consumer_secret"))
+    woocommerce_timeout_seconds: int = Field(default=30, validation_alias=AliasChoices("WOOCOMMERCE_TIMEOUT_SECONDS", "woocommerce_timeout_seconds"))
+    woocommerce_page_size: int = Field(default=100, validation_alias=AliasChoices("WOOCOMMERCE_PAGE_SIZE", "woocommerce_page_size"))
     map_provider: str = Field(default="", validation_alias=AliasChoices("MAP_PROVIDER", "map_provider"))
     map_api_key: str = Field(default="", validation_alias=AliasChoices("MAP_API_KEY", "map_api_key"))
 

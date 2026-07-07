@@ -116,3 +116,19 @@ Allocated unchanged, recalculates derived item fields, creates cycle count
 header/line records, and creates stock movement rows only for adjusted lines.
 No WooCommerce calls, credentials, external APIs, purchase orders, supplier
 workflows, allocation, picking, route, or fulfillment workflows are added.
+
+## ADR-015: WooCommerce Product Sync Is Read-Only Against WooCommerce
+
+Decision: Implement WooCommerce product and variation sync as a backend-only,
+read-only integration with preview and local-only commit.
+
+Reason: Pongo needs stable mappings between WooCommerce sellable records and
+local inventory items before order sync, allocation, picking, or stock writeback
+can be safely introduced. Preview lets staff inspect creates, updates, skips,
+and conflicts before any local database changes.
+
+Safety: WooCommerce credentials live only in backend environment variables and
+are never exposed in API responses or frontend code. The sync client only
+implements read methods. Commit creates or updates local Pongo OS items only,
+preserves manual operational fields, stores Woo stock as a snapshot, creates no
+stock movements, and never writes WooCommerce products, orders, or stock.

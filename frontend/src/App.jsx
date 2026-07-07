@@ -116,6 +116,13 @@ const emptyReceivedInventorySummary = {
   by_location: [],
   by_sku: [],
 };
+const emptyWooStatus = {
+  configured: false,
+  base_url_present: false,
+  consumer_key_present: false,
+  consumer_secret_present: false,
+  message: 'WooCommerce status has not been checked.',
+};
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -516,6 +523,12 @@ export default function App() {
   const [cycleCounts, setCycleCounts] = useState([]);
   const [cycleCountsLoading, setCycleCountsLoading] = useState(false);
   const [cycleCountsError, setCycleCountsError] = useState('');
+  const [wooStatus, setWooStatus] = useState(emptyWooStatus);
+  const [wooPreview, setWooPreview] = useState(null);
+  const [wooCommitSummary, setWooCommitSummary] = useState(null);
+  const [wooSyncRuns, setWooSyncRuns] = useState([]);
+  const [wooLoading, setWooLoading] = useState(false);
+  const [wooError, setWooError] = useState('');
 
   useEffect(() => {
     const handleHashChange = () => setRoute(parseHashRoute());
@@ -543,6 +556,10 @@ export default function App() {
       loadItems();
       loadLocations({ status: 'active' });
       loadCycleCounts();
+    }
+    if (route.pageId === 'settings') {
+      loadWooStatus();
+      loadWooSyncRuns();
     }
   }, [route.pageId]);
 
@@ -728,6 +745,68 @@ export default function App() {
     }
   }
 
+  async function loadWooStatus(check = false) {
+    setWooLoading(true);
+    setWooError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/integrations/woocommerce/status${check ? '?check=true' : ''}`);
+      if (!response.ok) {
+        throw new Error(`WooCommerce status returned ${response.status}`);
+      }
+      setWooStatus(await response.json());
+    } catch (error) {
+      setWooError('Unable to load WooCommerce integration status from the backend.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function loadWooSyncRuns() {
+    setWooError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/integrations/woocommerce/sync-runs`);
+      if (!response.ok) {
+        throw new Error(`WooCommerce sync runs returned ${response.status}`);
+      }
+      const body = await response.json();
+      setWooSyncRuns(body.sync_runs || []);
+    } catch (error) {
+      setWooError('Unable to load WooCommerce sync run history.');
+    }
+  }
+
+  async function previewWooProductSync() {
+    setWooLoading(true);
+    setWooError('');
+    setWooCommitSummary(null);
+    try {
+      setWooPreview(await postJson('/api/integrations/woocommerce/products/preview', { include_statuses: ['publish'], limit: 500, created_by: 'system' }));
+    } catch (error) {
+      setWooError(error.message || 'Unable to preview WooCommerce product sync.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function commitWooProductSync() {
+    const confirmed = window.confirm('This only creates or updates local Pongo OS items. It never writes WooCommerce products, orders, or stock.');
+    if (!confirmed) {
+      return;
+    }
+    setWooLoading(true);
+    setWooError('');
+    try {
+      const result = await postJson('/api/integrations/woocommerce/products/commit', { include_statuses: ['publish'], limit: 500, created_by: 'system' });
+      setWooCommitSummary(result);
+      await loadWooSyncRuns();
+      await loadItems();
+    } catch (error) {
+      setWooError(error.message || 'Unable to commit WooCommerce product sync.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <Sidebar activePage={route.pageId} onNavigate={(pageId) => setRoute({ pageId })} />
@@ -769,6 +848,15 @@ export default function App() {
             cycleCountsLoading={cycleCountsLoading}
             cycleCountsError={cycleCountsError}
             onLoadCycleCounts={loadCycleCounts}
+            wooStatus={wooStatus}
+            wooPreview={wooPreview}
+            wooCommitSummary={wooCommitSummary}
+            wooSyncRuns={wooSyncRuns}
+            wooLoading={wooLoading}
+            wooError={wooError}
+            onLoadWooStatus={loadWooStatus}
+            onPreviewWooProductSync={previewWooProductSync}
+            onCommitWooProductSync={commitWooProductSync}
           />
         </main>
       </div>
@@ -897,6 +985,15 @@ function PageBody({
   cycleCountsLoading,
   cycleCountsError,
   onLoadCycleCounts,
+  wooStatus,
+  wooPreview,
+  wooCommitSummary,
+  wooSyncRuns,
+  wooLoading,
+  wooError,
+  onLoadWooStatus,
+  onPreviewWooProductSync,
+  onCommitWooProductSync,
 }) {
   if (route.pageId === 'items') {
     return <ItemsPage route={route} items={items} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
@@ -951,6 +1048,22 @@ function PageBody({
         onLoadCycleCounts={onLoadCycleCounts}
         onLoadItems={onLoadItems}
         onLoadInventorySummary={onLoadInventorySummary}
+      />
+    );
+  }
+
+  if (route.pageId === 'settings') {
+    return (
+      <WooCommerceSettingsPage
+        status={wooStatus}
+        preview={wooPreview}
+        commitSummary={wooCommitSummary}
+        syncRuns={wooSyncRuns}
+        loading={wooLoading}
+        error={wooError}
+        onCheckConnection={() => onLoadWooStatus(true)}
+        onPreview={onPreviewWooProductSync}
+        onCommit={onCommitWooProductSync}
       />
     );
   }
@@ -3091,6 +3204,141 @@ function ReceivedInventoryLocationSummaryTable({ groups }) {
         <tr>
           <td colSpan={5}>
             <div className="empty-table-row">No location groups match the current filters.</div>
+          </td>
+        </tr>
+      )}
+    </TableShell>
+  );
+}
+
+function WooCommerceSettingsPage({ status, preview, commitSummary, syncRuns, loading, error, onCheckConnection, onPreview, onCommit }) {
+  const latestRun = syncRuns[0];
+  const commitDisabled = !status.configured || !preview || preview.conflict_count > 0 || preview.error_count > 0;
+  return (
+    <section className="content-panel settings-page">
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>WooCommerce Product Sync</h2>
+            <p>This sync is read-only against WooCommerce. It only creates or updates local Pongo OS items. It does not change WooCommerce products, orders, or stock.</p>
+          </div>
+          <div className="button-row compact">
+            <button className="muted-button" onClick={onCheckConnection} type="button">
+              <CheckCircle2 size={17} />
+              Check Connection
+            </button>
+            <button className="primary-button" disabled={loading || !status.configured} onClick={onPreview} type="button">
+              <Search size={17} />
+              Preview Product Sync
+            </button>
+            <button className="action-button" disabled={loading || commitDisabled} onClick={onCommit} type="button">
+              <RefreshCw size={17} />
+              Commit Product Sync
+            </button>
+          </div>
+        </div>
+        <div className="summary-strip report-summary-strip">
+          <Metric label="Configured" value={status.configured ? 'Yes' : 'No'} />
+          <Metric label="Base URL" value={status.base_url_present ? 'Present' : 'Missing'} />
+          <Metric label="Consumer Key" value={status.consumer_key_present ? 'Present' : 'Missing'} />
+          <Metric label="Consumer Secret" value={status.consumer_secret_present ? 'Present' : 'Missing'} />
+          <Metric label="Last Sync" value={latestRun ? latestRun.status : 'None'} />
+          <Metric label="Last Records" value={latestRun ? latestRun.total_remote_records : 0} />
+        </div>
+        <div className="csv-note">{status.message}</div>
+        {loading && <div className="loading-strip">Working with the Pongo backend...</div>}
+        {error && <div className="api-error">{error}</div>}
+        {preview && <WooPreviewSummary preview={preview} />}
+        {commitSummary && (
+          <div className="success-strip">
+            Sync run {commitSummary.sync_run_id || 'not created'} finished with status {commitSummary.status}. Created {commitSummary.created_count}, updated {commitSummary.updated_count}, skipped {commitSummary.skipped_count}.
+          </div>
+        )}
+      </div>
+      {preview && <WooPreviewTable rows={preview.preview_rows || []} />}
+      <div className="wide-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Sync Run History</h2>
+            <p>Local product sync attempts and outcomes.</p>
+          </div>
+        </div>
+        <WooSyncRunsTable runs={syncRuns} />
+      </div>
+    </section>
+  );
+}
+
+function WooPreviewSummary({ preview }) {
+  return (
+    <div className="summary-strip woo-summary-strip">
+      <Metric label="Remote Records" value={preview.total_remote_records} />
+      <Metric label="Create" value={preview.create_count} />
+      <Metric label="Update" value={preview.update_count} />
+      <Metric label="Matched" value={preview.matched_count} />
+      <Metric label="Skipped" value={preview.skipped_count} />
+      <Metric label="Conflicts" value={preview.conflict_count} />
+      <Metric label="Errors" value={preview.error_count} />
+    </div>
+  );
+}
+
+function WooPreviewTable({ rows }) {
+  return (
+    <TableShell caption={`${rows.length} preview row(s)`} columns={['Action', 'Remote Type', 'Woo Product ID', 'Woo Variation ID', 'SKU', 'Barcode', 'Description', 'Category', 'Brand', 'Price', 'Stock Status', 'Woo Stock Snapshot', 'Local Item ID', 'Warnings', 'Errors']}>
+      {rows.map((row) => (
+        <tr key={`${row.woo_product_id}-${row.woo_variation_id || 'simple'}-${row.sku}`}>
+          <td>{row.action}</td>
+          <td>{row.remote_type}</td>
+          <td>{row.woo_product_id}</td>
+          <td>{row.woo_variation_id}</td>
+          <td className="mono">{row.sku}</td>
+          <td className="mono">{row.barcode}</td>
+          <td className="description-cell">{row.description}</td>
+          <td>{row.category}</td>
+          <td>{row.brand}</td>
+          <td>{formatCurrency(row.price)}</td>
+          <td>{row.stock_status}</td>
+          <td>{formatNumber(row.stock_quantity_snapshot)}</td>
+          <td>{row.local_item_id}</td>
+          <td className="description-cell">{(row.warnings || []).join(' ')}</td>
+          <td className="description-cell">{(row.errors || []).join(' ')}</td>
+        </tr>
+      ))}
+      {rows.length === 0 && (
+        <tr>
+          <td colSpan={15}>
+            <div className="empty-table-row">No WooCommerce preview rows loaded.</div>
+          </td>
+        </tr>
+      )}
+    </TableShell>
+  );
+}
+
+function WooSyncRunsTable({ runs }) {
+  return (
+    <TableShell caption={`${runs.length} sync run(s)`} columns={['Started At', 'Completed At', 'Sync Type', 'Status', 'Total Records', 'Created', 'Updated', 'Matched', 'Skipped', 'Conflicts', 'Errors', 'Created By']}>
+      {runs.map((run) => (
+        <tr key={run.id}>
+          <td>{formatDateTime(run.started_at)}</td>
+          <td>{formatDateTime(run.completed_at)}</td>
+          <td>{run.sync_type}</td>
+          <td>{run.status}</td>
+          <td>{run.total_remote_records}</td>
+          <td>{run.created_count}</td>
+          <td>{run.updated_count}</td>
+          <td>{run.matched_count}</td>
+          <td>{run.skipped_count}</td>
+          <td>{run.conflict_count}</td>
+          <td>{run.error_count}</td>
+          <td>{run.created_by}</td>
+        </tr>
+      ))}
+      {runs.length === 0 && (
+        <tr>
+          <td colSpan={12}>
+            <div className="empty-table-row">No WooCommerce sync runs yet.</div>
           </td>
         </tr>
       )}

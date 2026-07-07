@@ -937,6 +937,15 @@ tbody tr:nth-child(even) .sticky-col {
   gap: 20px;
 }
 
+.settings-page {
+  display: grid;
+  gap: 22px;
+}
+
+.woo-summary-strip {
+  grid-template-columns: repeat(7, minmax(110px, 1fr));
+}
+
 .cycle-count-header-fields {
   grid-template-columns: minmax(220px, 0.8fr) minmax(240px, 1fr) minmax(220px, 0.8fr) minmax(320px, 1.2fr);
 }
@@ -1347,7 +1356,8 @@ tbody tr:nth-child(even) .sticky-col {
   }
 
   .summary-strip,
-  .report-summary-strip {
+  .report-summary-strip,
+  .woo-summary-strip {
     grid-template-columns: repeat(2, minmax(150px, 1fr));
   }
 
