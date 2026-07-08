@@ -101,6 +101,15 @@ cd frontend
 npm run build
 ```
 
+Frontend tests:
+
+```bash
+cd frontend
+npm test -- --run
+```
+
+Frontend QA checklist: `docs/FRONTEND_QA.md`.
+
 ## Environment
 
 Use placeholders only in `.env.example`. Real values belong in local or deployment environment variables.
@@ -112,3 +121,21 @@ ROUTE_GEO_PROVIDER=disabled
 ROUTE_MAP_PROVIDER=disabled
 ROUTE_OPTIMIZATION_PROVIDER=disabled
 ```
+
+## Current Production Operations Chunk
+
+Current local build now includes:
+- Pongo-branded frontend design tokens using primary blue `#0f149a`, soft peach surfaces, consistent button states, contained table scrolling, and no-horizontal-body-overflow safeguards.
+- Frontend Vitest/Testing Library coverage for design-system primitives, app shell navigation, Items, Scanner mode switching, and Reports single-panel switching.
+- Production-grade Items page controls: rich filters, image-aware table rows, column visibility, saved item views, safe metadata-only bulk edit, local item search, and an Item Detail Control Center.
+- Item Detail Control Center tabs for overview, stock by location, activity, history, and metadata edit. Stock quantity edits remain routed through receiving, cycle count, transfer, or adjustment workflows.
+- Bulk Receiving Session under Receiving. It previews multi-row receiving carts, commits valid rows into one local receipt, updates `inventory_item_locations`, recalculates item aggregate stock fields, and creates stock movements.
+- Scanner page for inventory lookup, location lookup, receiving, cycle count, transfer, adjustment, and a link into existing pick-order scanner support.
+- Expanded read-only reports: inventory valuation, low stock/reorder, stock movement ledger, item activity, location utilization, margin by SKU, receiving cost, and adjustment/damage/loss.
+
+Still intentionally delayed:
+- Auth/RBAC.
+- WooCommerce stock or order-status writeback.
+- Purchase orders and supplier management.
+- Shipping labels, customer notifications, delivery issue logs, return-to-inventory workflows, and real map/geocode/route optimization provider calls.
+# pathwright
