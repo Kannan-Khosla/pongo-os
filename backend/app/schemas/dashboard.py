@@ -8,6 +8,7 @@ class InventoryHealthCards(BaseModel):
     active_items: int = 0
     total_inventory_value: float = 0
     low_stock_count: int = 0
+    reorder_count: int = 0
     under_par_count: int = 0
     negative_sellable_count: int = 0
     allocated_greater_than_stock_count: int = 0
@@ -17,6 +18,10 @@ class InventoryHealthCards(BaseModel):
     missing_sales_price_count: int = 0
     woo_synced_items_count: int = 0
     woo_unmatched_items_count: int = 0
+    damage_loss_value_this_month: float = 0
+    transfers_this_week: int = 0
+    receiving_this_week: int = 0
+    adjustment_count_this_week: int = 0
 
 
 class OrderOperationsCards(BaseModel):

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import allocations, cycle_counts, dashboard, fulfillments, health, import_jobs, inventory, items, locations, orders, picks, receipts, reports, routes, stock_movements, woocommerce
+from app.api.routes import allocations, cycle_counts, dashboard, fulfillments, health, import_jobs, inventory, items, locations, orders, picks, receipts, reports, routes, scanner, stock_movements, ui, woocommerce
 from app.core.config import get_settings
 
 
@@ -32,6 +32,8 @@ def create_app() -> FastAPI:
     app.include_router(orders.router, prefix="/api")
     app.include_router(reports.router, prefix="/api")
     app.include_router(routes.router, prefix="/api")
+    app.include_router(scanner.router, prefix="/api")
+    app.include_router(ui.router, prefix="/api")
     return app
 
 

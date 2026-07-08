@@ -155,6 +155,7 @@ def commit_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple[R
 
     lines, _, warnings = validate_direct_receipt(payload, db)
     now = datetime.now(timezone.utc)
+    received_date = date.today()
     receipt_number = generate_direct_receipt_number(db, now)
     receipt = Receipt(
         receipt_number=receipt_number,
@@ -165,7 +166,7 @@ def commit_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple[R
         notes=payload.notes,
         created_by=payload.created_by or "system",
         received_by=payload.created_by or "system",
-        received_date=now.date(),
+        received_date=received_date,
         received_at=now,
     )
     db.add(receipt)
@@ -215,7 +216,7 @@ def commit_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple[R
             warehouse=line.warehouse,
             inventory_location_name=line.inventory_location,
             default_location=line.default_location,
-            received_date=now.date(),
+            received_date=received_date,
             po_or_receipt_number=receipt.receipt_number,
             name=item.description,
             notes=line.notes,

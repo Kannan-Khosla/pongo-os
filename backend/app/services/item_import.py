@@ -42,6 +42,12 @@ BOOLEAN_COLUMNS = {
 
 BOOL_TRUE = {"true", "yes", "1", "y"}
 BOOL_FALSE = {"false", "no", "0", "n", ""}
+HEADER_ALIASES = {
+    "Default Lead Time (Days)": "Default Lead Time Days",
+}
+OPTIONAL_DEFAULT_COLUMNS = {
+    "Manufacturer": "",
+}
 
 
 @dataclass
@@ -72,15 +78,14 @@ async def read_upload_text(file: UploadFile) -> str:
 
 
 def parse_items_csv(csv_text: str, db: Session) -> ParsedImport:
-    reader = csv.reader(StringIO(csv_text))
+    reader = csv_reader(csv_text)
     try:
         raw_header = next(reader)
     except StopIteration as exc:
         raise HTTPException(status_code=400, detail="CSV file is empty.") from exc
 
-    header = [column.strip() for column in raw_header]
-    missing_columns = [column for column in CANONICAL_ITEM_COLUMNS if column not in header]
-    extra_columns = [column for column in header if column not in CANONICAL_ITEM_COLUMNS]
+    header, extra_columns = normalize_header(raw_header)
+    missing_columns = [column for column in CANONICAL_ITEM_COLUMNS if column not in header and column not in OPTIONAL_DEFAULT_COLUMNS]
     if missing_columns:
         raise HTTPException(status_code=400, detail={"message": "CSV header is missing required canonical columns.", "missing_columns": missing_columns})
 
@@ -94,7 +99,7 @@ def parse_items_csv(csv_text: str, db: Session) -> ParsedImport:
         row = {column: "" for column in header}
         for index, column in enumerate(header):
             row[column] = raw_values[index].strip() if index < len(raw_values) else ""
-        canonical_row = {column: row.get(column, "") for column in CANONICAL_ITEM_COLUMNS}
+        canonical_row = {column: row.get(column, OPTIONAL_DEFAULT_COLUMNS.get(column, "")) for column in CANONICAL_ITEM_COLUMNS}
 
         if not any(str(value).strip() for value in canonical_row.values()):
             skipped_count += 1
@@ -122,6 +127,30 @@ def parse_items_csv(csv_text: str, db: Session) -> ParsedImport:
         rows.append(ParsedImportRow(row_number=physical_row_number, action=action, values=parsed, existing_item=existing_item, warnings=row_warnings))
 
     return ParsedImport(total_rows=len(rows) + skipped_count + len(errors), valid_rows=rows, skipped_count=skipped_count, errors=errors, warnings=warnings, extra_columns=extra_columns)
+
+
+def csv_reader(csv_text: str) -> csv.reader:
+    try:
+        dialect = csv.Sniffer().sniff(csv_text[:4096], delimiters=",\t")
+    except csv.Error:
+        dialect = csv.excel
+    return csv.reader(StringIO(csv_text), dialect)
+
+
+def normalize_header(raw_header: list[str]) -> tuple[list[str], list[str]]:
+    header: list[str] = []
+    extra_columns: list[str] = []
+    seen: set[str] = set()
+    for raw_column in raw_header:
+        source_column = raw_column.strip()
+        column = HEADER_ALIASES.get(source_column, source_column)
+        if column in seen:
+            raise HTTPException(status_code=400, detail={"message": "CSV header contains duplicate columns after normalization.", "column": column})
+        seen.add(column)
+        header.append(column)
+        if column not in CANONICAL_ITEM_COLUMNS:
+            extra_columns.append(source_column)
+    return header, extra_columns
 
 
 def preview_from_parsed(parsed: ParsedImport) -> ImportPreviewResponse:

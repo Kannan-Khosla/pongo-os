@@ -220,6 +220,10 @@ parses and validates the CSV but does not write to the database.
 
 Header rules:
 - Canonical column names from `docs/CSV_COLUMNS.md` are required.
+- The legacy product export header that omits `Manufacturer` and uses
+  `Default Lead Time (Days)` is accepted; `Manufacturer` is defaulted blank and
+  lead time is normalized to `Default Lead Time Days`.
+- Comma-delimited and tab-delimited item import files are accepted.
 - Header whitespace is trimmed.
 - Column names are case-sensitive.
 - Missing canonical columns reject the file.
@@ -1503,3 +1507,80 @@ Not implemented yet:
 - maps
 - delivery tracking
 - customer notifications
+
+## Items Control Center And Bulk Operations
+
+Implemented endpoints:
+- `GET /api/items/search`
+- `GET /api/items/{id}/detail`
+- `GET /api/items/{id}/activity`
+- `GET /api/items/{id}/history?section=...`
+- `GET /api/items/{id}/receipts`
+- `GET /api/items/{id}/cycle-counts`
+- `GET /api/items/{id}/adjustments`
+- `GET /api/items/{id}/transfers`
+- `GET /api/items/{id}/allocations`
+- `GET /api/items/{id}/picks`
+- `GET /api/items/{id}/fulfillments`
+- `GET /api/items/{id}/orders`
+- `GET /api/items/{id}/stock-movements`
+- `GET/POST/PATCH/DELETE /api/items/{id}/notes`
+- `POST /api/items/bulk/preview`
+- `POST /api/items/bulk/commit`
+
+Bulk edit allows metadata fields only. It blocks direct updates to stock fields,
+Woo IDs, and Woo stock snapshots.
+
+## UI Saved Views
+
+Implemented endpoints:
+- `GET /api/ui/saved-views?page=items`
+- `POST /api/ui/saved-views`
+- `PATCH /api/ui/saved-views/{id}`
+- `DELETE /api/ui/saved-views/{id}`
+
+Saved views are global/system-scoped until auth/RBAC is added.
+
+## Bulk Receiving
+
+Implemented endpoints:
+- `POST /api/receipts/bulk/preview`
+- `POST /api/receipts/bulk/commit`
+- `GET /api/receipts/{id}/detail`
+- `GET /api/receipts/{id}/export`
+
+Bulk commit creates one `receipts` row, one `receipt_items` row per valid
+line, updates `inventory_item_locations`, recalculates item aggregate stock
+fields, and creates one stock movement per committed line. Preview is read-only.
+
+## Scanner Workflows
+
+Implemented endpoints:
+- `GET /api/scanner/inventory/lookup`
+- `GET /api/scanner/location/lookup`
+- `POST /api/scanner/receiving/scan/preview`
+- `POST /api/scanner/receiving/scan/commit`
+- `POST /api/scanner/cycle-count/preview`
+- `POST /api/scanner/cycle-count/commit`
+- `POST /api/scanner/transfers/preview`
+- `POST /api/scanner/transfers/commit`
+- `POST /api/scanner/adjustments/preview`
+- `POST /api/scanner/adjustments/commit`
+
+Scanner endpoints treat hardware scanners as keyboard input. Stock-changing
+scanner commits are local only and create stock movement/audit records through
+the existing stock services.
+
+## Expanded Reports
+
+Implemented read-only row, summary, and CSV export endpoints:
+- `/api/reports/inventory-valuation`
+- `/api/reports/low-stock`
+- `/api/reports/stock-movement-ledger`
+- `/api/reports/item-activity`
+- `/api/reports/location-utilization`
+- `/api/reports/margin-by-sku`
+- `/api/reports/receiving-cost`
+- `/api/reports/adjustments`
+
+Each report also supports `/summary` and `/export`.

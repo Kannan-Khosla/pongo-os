@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.allocations import Allocation
 from app.models.cycle_counts import CycleCount
 from app.models.fulfillments import Fulfillment
 from app.models.imports import ImportJob
-from app.models.inventory import InventoryAuditEvent, InventoryItem, StockMovement
+from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryTransfer, StockAdjustment, StockMovement
 from app.models.orders import Order, OrderItem
 from app.models.picks import Pick
 from app.models.receipts import Receipt
@@ -36,7 +36,7 @@ def build_dashboard(db: Session, activity_limit: int = 25) -> DashboardResponse:
     warnings = build_warnings(db, items, orders)
     return DashboardResponse(
         generated_at=datetime.now(timezone.utc),
-        inventory_health=build_inventory_health(items),
+        inventory_health=build_inventory_health(db, items),
         order_operations=build_order_operations(orders),
         routes=build_route_cards(orders, routes),
         warnings=warnings,
@@ -44,12 +44,21 @@ def build_dashboard(db: Session, activity_limit: int = 25) -> DashboardResponse:
     )
 
 
-def build_inventory_health(items: list[InventoryItem]) -> InventoryHealthCards:
+def build_inventory_health(db: Session, items: list[InventoryItem]) -> InventoryHealthCards:
+    now = datetime.now(timezone.utc)
+    week_start = now - timedelta(days=7)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    damage_loss_movements = [
+        row
+        for row in db.scalars(select(StockMovement).where(StockMovement.created_at >= month_start)).all()
+        if (row.movement_type.value if hasattr(row.movement_type, "value") else str(row.movement_type)) in {"damage", "loss"}
+    ]
     return InventoryHealthCards(
         total_items=len(items),
         active_items=sum(1 for item in items if item.active),
         total_inventory_value=decimal_to_float(sum(((item.in_stock or Decimal("0")) * (item.unit_cost or Decimal("0")) for item in items), Decimal("0"))),
         low_stock_count=sum(1 for item in items if (item.in_stock or Decimal("0")) <= 0),
+        reorder_count=sum(1 for item in items if item.reorder and item.under_par),
         under_par_count=sum(1 for item in items if item.under_par),
         negative_sellable_count=sum(1 for item in items if (item.sellable or Decimal("0")) < 0),
         allocated_greater_than_stock_count=sum(1 for item in items if (item.allocated or Decimal("0")) > (item.in_stock or Decimal("0"))),
@@ -59,6 +68,10 @@ def build_inventory_health(items: list[InventoryItem]) -> InventoryHealthCards:
         missing_sales_price_count=sum(1 for item in items if item.sales_price is None),
         woo_synced_items_count=sum(1 for item in items if item.woo_product_id is not None),
         woo_unmatched_items_count=sum(1 for item in items if item.woo_sync_status in {"unmatched", "conflict", "error"}),
+        damage_loss_value_this_month=decimal_to_float(sum(((row.quantity_change or Decimal("0")) * (row.unit_cost or Decimal("0")) for row in damage_loss_movements), Decimal("0"))),
+        transfers_this_week=db.scalar(select(func.count(InventoryTransfer.id)).where(InventoryTransfer.created_at >= week_start)) or 0,
+        receiving_this_week=db.scalar(select(func.count(Receipt.id)).where(Receipt.created_at >= week_start)) or 0,
+        adjustment_count_this_week=db.scalar(select(func.count(StockAdjustment.id)).where(StockAdjustment.created_at >= week_start)) or 0,
     )
 
 

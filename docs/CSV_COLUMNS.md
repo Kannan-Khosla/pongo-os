@@ -115,6 +115,10 @@ Current implementation:
 
 Import rules:
 - Validate the header row against the canonical column list or a newly supplied real Zenventory header.
+- Accept the legacy product header that omits `Manufacturer` and uses
+  `Default Lead Time (Days)`; the importer maps it to
+  `Default Lead Time Days` and defaults `Manufacturer` to blank.
+- Accept comma-delimited or tab-delimited item import files.
 - Trim header whitespace, but keep column names case-sensitive.
 - Reject files that are missing canonical columns.
 - Ignore extra columns and report warnings.

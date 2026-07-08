@@ -1303,3 +1303,84 @@ Safety:
 - No WooCommerce API writes.
 - No local stock, allocation, picked, fulfilled, route, or order status
   mutations.
+
+## ui_saved_views
+
+Purpose: Store global saved filters, visible columns, and sort preferences for
+operator pages while auth/RBAC is delayed.
+
+Fields:
+- id
+- view_key
+- name
+- page
+- filters_json
+- columns_json
+- sort_json
+- is_default
+- created_by
+- created_at
+- updated_at
+
+Current usage:
+- Items page saved views.
+
+## item_notes
+
+Purpose: Lightweight item notes for the Item Detail Control Center.
+
+Fields:
+- id
+- inventory_item_id
+- note
+- note_type
+- created_by
+- created_at
+- updated_at
+
+Relationships:
+- Belongs to `inventory_items`.
+
+## scanner_sessions and scanner_events
+
+Purpose: Track scanner workflow sessions/events for local debugging and
+warehouse audit context.
+
+`scanner_sessions` fields:
+- id
+- session_type
+- status
+- reference_type
+- reference_id
+- created_by
+- completed_at
+- created_at
+- updated_at
+
+`scanner_events` fields:
+- id
+- scanner_session_id
+- session_type
+- scan_input
+- matched_entity_type
+- matched_entity_id
+- result_status
+- message
+- quantity
+- warehouse
+- inventory_location
+- created_at
+
+## Receipt Extensions
+
+Receipts now include optional session fields:
+- source
+- committed_at
+- cancelled_at
+
+Receipt items now include:
+- line_status
+- scan_input
+
+Bulk receiving uses `receipt_type = bulk` and `status = committed`.
+Direct receiving remains compatible with existing direct receipt behavior.

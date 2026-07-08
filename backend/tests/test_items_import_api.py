@@ -70,6 +70,66 @@ def test_preview_accepts_valid_canonical_csv(client):
     assert body["preview_rows"][0]["row"]["Sellable"] == 8
 
 
+def test_preview_accepts_legacy_product_header_without_manufacturer(client):
+    header = [
+        "Client",
+        "SKU",
+        "Description",
+        "Category",
+        "Unit of Measurement",
+        "Warehouse",
+        "Inventory Location",
+        "Default Location",
+        "In Stock",
+        "Allocated",
+        "Sellable",
+        "Under Par",
+        "On Order",
+        "Barcode",
+        "Manufacturer Website",
+        "Recommended Retail Price",
+        "Sales Price",
+        "Unit Cost",
+        "Weight",
+        "Default Econ Order",
+        "Default Lead Time (Days)",
+        "Par Level",
+        "Assembly",
+        "Serializable",
+        "Track Lot",
+        "Perishable",
+        "Re-Order",
+        "Storage Length",
+        "Storage Width",
+        "Storage Height",
+        "Storage Volume",
+        "Brand",
+    ]
+    row = base_row()
+    row["Default Lead Time (Days)"] = row.pop("Default Lead Time Days")
+
+    response = upload_csv(client, "/api/items/import/preview", csv_text([row], header=header))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid_rows"] == 1
+    assert body["preview_rows"][0]["row"]["Manufacturer"] == ""
+    assert body["preview_rows"][0]["row"]["Default Lead Time Days"] == 5
+
+
+def test_preview_accepts_tab_delimited_product_export(client):
+    header = [column for column in CANONICAL_ITEM_COLUMNS if column != "Manufacturer"]
+    header[header.index("Default Lead Time Days")] = "Default Lead Time (Days)"
+    row = base_row()
+    row["Default Lead Time (Days)"] = row.pop("Default Lead Time Days")
+    text = "\t".join(header) + "\n" + "\t".join(str(row.get(column, "")) for column in header) + "\n"
+
+    response = upload_csv(client, "/api/items/import/preview", text, filename="items.tsv")
+
+    assert response.status_code == 200
+    assert response.json()["valid_rows"] == 1
+
+
 def test_preview_rejects_missing_required_header(client):
     header = [column for column in CANONICAL_ITEM_COLUMNS if column != "SKU"]
 

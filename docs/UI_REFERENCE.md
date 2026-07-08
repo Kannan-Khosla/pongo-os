@@ -2,12 +2,38 @@
 
 ## Current Admin Upgrade
 
+- Phase 1 is a surgical UI polish pass on the existing React/Vite frontend. It
+  should preserve current routing, page linking, frontend logic, and backend API
+  behavior rather than becoming a full rewrite.
+- Frontend design tokens now use Pongo blue `#0f149a` as the primary color and
+  soft peach surfaces/accent backgrounds. The old teal/coral look should not be
+  extended.
+- Shared polish classes cover buttons, tables, forms, filters, and state
+  surfaces, including `.btn-*`, `.table-card`, `.table-scroll`, `.data-table`,
+  `.form-card`, `.field`, `.input`, `.select`, `.filter-card`, `.action-bar`,
+  `.table-empty`, and `.status-pill`.
+- Tables must be contained by `.table-scroll`; body-level horizontal overflow
+  is a regression.
+- Buttons follow primary, muted, action, icon, and disabled states. No fake
+  visible buttons: an action must work, navigate to a real page/workflow, or be
+  disabled/removed.
+- Reports render one selected report panel at a time, with the report selector
+  separate from the active report table.
+- Scanner uses a warehouse console layout: segmented modes, prominent scan
+  input, recent scan panel, and result panel.
 - Dashboard is now the Command Center with live local backend data, inventory
   health cards, order operation cards, route cards, data quality warnings,
   recent activity, and quick actions.
 - Settings includes WooCommerce remap controls for local-only mapping preview
   and commit.
 - Orders includes scanner-style Pick Orders controls for SKU/barcode entry.
+- Orders now follows a Zenventory-style sidebar sub-navigation pattern instead
+  of showing all workflows on one page. The Orders children are Open Orders,
+  Allocate Orders, Pick Orders, Fulfillment, Completed Orders, and Order
+  History.
+- Open Orders owns the queue, filters, table, order detail, and allocation row
+  actions only. Pick Scanner is only shown in Pick Orders. Allocation, pick, and
+  fulfillment history sections are shown in Order History.
 - Reports includes SKU Orders Report with summary, filters, table, and CSV
   export.
 - Routes includes metadata editing, stop reordering, stop notes/coordinates,
@@ -54,8 +80,10 @@ Pongo Inventory OS should keep this operational density but apply Pongo branding
 Use:
 - Pongo branding.
 - Clean internal admin dashboard style.
-- Dark teal sidebar.
-- Coral/orange primary action color.
+- Pongo blue `#0f149a` for primary actions, active navigation, focus states,
+  and important headers.
+- Soft peach (`#FCE9D9`, `#FFF3EC`, or similar) only as a restrained secondary
+  accent or quiet background surface.
 - White table-heavy content area.
 - Dense operational tables.
 - Laptop/desktop-first responsive behavior.
@@ -63,6 +91,7 @@ Use:
 
 Avoid:
 - Zenventory logos, mascots, protected assets, or exact visual identity.
+- Reintroducing dominant teal/coral styling.
 - Marketing-page composition.
 - Supplier, purchasing, purchase order, or complex warehouse modules unless requested later.
 
@@ -746,3 +775,75 @@ When frontend implementation begins, build in this order:
 - Use screenshots as workflow/layout references only.
 - Keep Pongo Inventory OS standalone and Pongo-branded.
 - Keep scanner-facing workflows fast, focused, and keyboard-friendly.
+
+## Current Items Page
+
+Items now has:
+- Rich filters for search, SKU, barcode, category, brand, warehouse, location,
+  active status, stock status, Woo mapping status, and non-inventory inclusion.
+- Image-aware table rows.
+- Clickable SKU/description cells that open the Item Detail Control Center.
+- Column visibility controls.
+- Saved item views.
+- Bulk selection and safe metadata-only bulk edit.
+- Local remap candidate search that does not write WooCommerce.
+
+Item Detail Control Center tabs:
+- Overview
+- Stock by Location
+- Activity
+- History
+- Edit
+
+Stock quantities are visible in item detail but not directly editable there.
+Quantity changes must use receiving, cycle count, transfer, or adjustment.
+
+## Current Receiving Page
+
+Receiving now has tabs:
+- Direct Receiving
+- Bulk Receiving Session
+- Receipt History
+
+Bulk Receiving Session includes:
+- Large scan/search input.
+- Quantity default.
+- Warehouse and location selectors.
+- Unit cost.
+- Optional lot, expiration, pallet, package, item number, sales price, weight,
+  and notes fields.
+- Multi-row receiving cart.
+- Preview and commit actions.
+- Receipt number and CSV export after commit.
+
+## Current Scanner Page
+
+Scanner modes:
+- Inventory Lookup
+- Location Lookup
+- Receiving
+- Cycle Count
+- Picking link/support
+- Transfer
+- Adjustment
+
+Scanner inputs keep a keyboard-first workflow. No hardware-specific
+integration is required. The Scanner Console is optional utility space; the
+primary scanner behavior is global search ergonomics. Anywhere staff are in a
+SKU/barcode/search filter field, scanning and pressing Enter should run that
+page's normal search/apply action.
+
+## Current Expanded Reports
+
+Reports page now includes an Expanded Reports section with:
+- Inventory Valuation
+- Low Stock / Reorder
+- Stock Movement Ledger
+- Item Activity
+- Location Utilization
+- Margin by SKU
+- Receiving Cost
+- Adjustment / Damage / Loss
+
+Each report provides filters, summary cards, table rows, refresh, CSV export,
+empty states, and error states.

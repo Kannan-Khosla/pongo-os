@@ -196,10 +196,10 @@ def recalculate_item_totals(db: Session, item_id: int) -> InventoryItem:
     return item
 
 
-def ensure_default_item_location_from_item(db: Session, item: InventoryItem) -> InventoryItemLocation:
+def ensure_default_item_location_from_item(db: Session, item: InventoryItem, *, create_physical_location: bool = False) -> InventoryItemLocation:
     row = find_item_location(db, item.id, item.warehouse, item.inventory_location or item.default_location)
     if row is None:
-        row = get_or_create_item_location(db, item, item.warehouse, item.inventory_location or item.default_location, is_default_location=True, create_physical_location=False)
+        row = get_or_create_item_location(db, item, item.warehouse, item.inventory_location or item.default_location, is_default_location=True, create_physical_location=create_physical_location)
     else:
         row.in_stock = item.in_stock or Decimal("0")
         row.allocated = item.allocated or Decimal("0")

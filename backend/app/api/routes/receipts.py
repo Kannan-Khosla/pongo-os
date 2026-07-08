@@ -1,12 +1,14 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.models.receipts import Receipt, ReceiptItem
 from app.schemas.receipts import DirectReceiptCommitResponse, DirectReceiptPreviewResponse, DirectReceiptRequest, ReceiptDetail, ReceiptListResponse
+from app.services.bulk_receiving import commit_bulk_receipt, export_receipt_csv, preview_bulk_receipt
 from app.services.receiving import build_direct_receipt_preview, commit_direct_receipt, receipt_to_detail, receipt_to_read
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
@@ -30,6 +32,16 @@ def commit_direct_receipt_endpoint(payload: DirectReceiptRequest, db: Session = 
         created_movements=movement_count,
         warnings=warnings,
     )
+
+
+@router.post("/bulk/preview")
+def preview_bulk_receipt_endpoint(payload: dict, db: Session = Depends(get_db)) -> dict:
+    return preview_bulk_receipt(payload, db)
+
+
+@router.post("/bulk/commit")
+def commit_bulk_receipt_endpoint(payload: dict, db: Session = Depends(get_db)) -> dict:
+    return commit_bulk_receipt(payload, db)
 
 
 @router.get("", response_model=ReceiptListResponse)
@@ -69,3 +81,24 @@ def get_receipt(receipt_id: int, db: Session = Depends(get_db)) -> ReceiptDetail
     if receipt is None:
         raise HTTPException(status_code=404, detail="Receipt not found")
     return receipt_to_detail(receipt)
+
+
+@router.get("/{receipt_id}/detail", response_model=ReceiptDetail)
+def get_receipt_detail(receipt_id: int, db: Session = Depends(get_db)) -> ReceiptDetail:
+    return get_receipt(receipt_id, db)
+
+
+@router.get("/{receipt_id}/export")
+def export_receipt(receipt_id: int, db: Session = Depends(get_db)) -> Response:
+    receipt = db.scalars(
+        select(Receipt)
+        .where(Receipt.id == receipt_id)
+        .options(selectinload(Receipt.items).selectinload(ReceiptItem.inventory_item), selectinload(Receipt.items).selectinload(ReceiptItem.inventory_location))
+    ).one_or_none()
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    return Response(
+        content=export_receipt_csv(receipt),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="pongo-{receipt.receipt_number}-receipt.csv"'},
+    )

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -210,6 +210,8 @@ def row_matches_filters(row: ReceivedInventoryReportRow, filters: ReceivedInvent
 
 
 def effective_received_at(receipt: Receipt) -> datetime:
+    if receipt.received_date:
+        return datetime.combine(receipt.received_date, time.min, tzinfo=timezone.utc)
     return receipt.received_at or receipt.created_at
 
 

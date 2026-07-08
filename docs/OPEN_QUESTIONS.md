@@ -16,3 +16,7 @@
 - Should received unit cost update item master unit cost automatically or remain receipt-specific?
 - What is the default warehouse name/code?
 - What location should be assigned when synced WooCommerce items have no mapped stock location?
+- Should saved item views become per-user once auth/RBAC is implemented?
+- Should bulk receiving support persisted drafts, or is an in-browser session enough?
+- Should scanner events be exposed in an admin/debug report?
+- Should item notes have role-based visibility or warning banners after auth/RBAC?

@@ -384,3 +384,22 @@ Remap behavior:
 - Does not overwrite manual Pongo OS fields.
 - Does not mutate local stock, allocated, sellable, picked, fulfilled, route,
   or order status quantities.
+
+## Current Chunk Safety Boundary
+
+The Items Control Center, bulk receiving, scanner workflows, and expanded
+reports do not add WooCommerce writeback.
+
+Current behavior:
+- Frontend still never calls WooCommerce directly.
+- WooCommerce credentials remain backend environment variables only.
+- Bulk receiving and scanner receiving update local `inventory_item_locations`
+  and create local stock movements only.
+- Cycle count, transfer, and adjustment scanner commits are local stock
+  workflows only.
+- Expanded reports read local tables only.
+- Local remap search in Items is candidate search only; actual remap remains
+  local metadata and does not call WooCommerce.
+
+Future writeback remains intentionally delayed until read-only sync, local
+workflows, audit trails, and operator review rules are stable.

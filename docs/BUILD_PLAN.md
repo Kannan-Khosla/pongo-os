@@ -6,12 +6,17 @@ Status: Completed for Command Center v1, local WooCommerce remap metadata,
 scanner-style Pick Orders UX, SKU Orders report, route metadata editing, stop
 reordering, local map payload, and disabled provider architecture for geocoding
 and optimization. Stock by Location v2, inventory transfers, and stock
-adjustments are also completed locally.
+adjustments are also completed locally. Frontend polish is in progress with
+Pongo blue/peach design tokens, contained table overflow, report single-panel
+rendering, scanner console polish, contextual order actions, and
+Vitest/Testing Library coverage.
 
 Safety notes:
 - No WooCommerce writes.
 - No frontend WooCommerce calls.
 - No external map/geocoding/routing calls.
+- No visible frontend action should be fake: actions must work, navigate to a
+  real workflow, or be disabled/removed.
 - Dashboard, reports, remap, route metadata, route map, and route provider
   preview/disabled endpoints do not mutate stock, allocation, picked,
   fulfilled, or order status quantities.
@@ -502,3 +507,27 @@ Acceptance criteria:
 
 Safety notes:
 - Verify production credentials and permissions before enabling writebacks.
+
+## Phase 18: Items Control Center, Bulk Receiving, Scanners, Reports
+
+Status: Completed locally.
+
+Deliverables:
+- Migration `20260707_0014_items_bulk_receiving_scanners_reports.py`
+- Saved item views and item notes
+- Item detail, activity, history, notes, search, and safe bulk edit endpoints
+- Bulk receiving preview/commit workflow
+- Scanner endpoints for lookup, receiving, cycle count, transfer, and adjustment
+- Expanded read-only reports with summaries and CSV exports
+- React Items page control center, bulk receiving session, Scanner page, and
+  expanded Reports section
+- Dashboard metrics for reorder, damage/loss value, transfers, receiving, and
+  adjustments
+
+Safety notes:
+- No WooCommerce writes.
+- No frontend WooCommerce calls.
+- No auth/RBAC.
+- No purchase orders or supplier workflows.
+- Stock-changing workflows use `inventory_item_locations` as the operational
+  quantity source and create stock movements/audit records.

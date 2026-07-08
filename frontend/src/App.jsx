@@ -72,6 +72,7 @@ const CANONICAL_ITEM_COLUMNS = [
   'Storage Volume',
   'Brand',
 ];
+const ITEM_DEFAULT_VISIBLE_COLUMNS = ['SKU / Barcode', 'Description', 'Brand', 'Category', 'In Stock', 'Sellable', 'Unit Cost'];
 
 const SEARCH_FIELDS = ['SKU', 'Barcode', 'Description', 'Category', 'Brand', 'Manufacturer', 'Warehouse', 'Inventory Location'];
 const BOOLEAN_FIELDS = new Set(['Under Par', 'Assembly', 'Serializable', 'Track Lot', 'Perishable', 'Re-Order']);
@@ -167,12 +168,31 @@ const emptyOpenOrders = {
   unknown_count: 0,
 };
 
+const orderSubpages = [
+  { id: 'open', label: 'Open Orders', href: '#/orders/open' },
+  { id: 'allocate', label: 'Allocate Orders', href: '#/orders/allocate' },
+  { id: 'pick', label: 'Pick Orders', href: '#/orders/pick' },
+  { id: 'fulfillment', label: 'Fulfillment', href: '#/orders/fulfillment' },
+  { id: 'completed', label: 'Completed Orders', href: '#/orders/completed' },
+  { id: 'history', label: 'Order History', href: '#/orders/history' },
+];
+
+const orderSubpageMeta = {
+  open: { title: 'Open Orders', kicker: 'Orders / Open' },
+  allocate: { title: 'Allocate Orders', kicker: 'Orders / Allocation' },
+  pick: { title: 'Pick Orders', kicker: 'Orders / Picking' },
+  fulfillment: { title: 'Fulfillment', kicker: 'Orders / Fulfillment' },
+  completed: { title: 'Completed Orders', kicker: 'Orders / Completed' },
+  history: { title: 'Order History', kicker: 'Orders / History' },
+};
+
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'items', label: 'Items', icon: PackageSearch },
   { id: 'inventory', label: 'Inventory', icon: Boxes },
   { id: 'locations', label: 'Locations', icon: MapPin },
   { id: 'receiving', label: 'Receiving', icon: Truck },
+  { id: 'scanner', label: 'Scanner', icon: PackageSearch },
   { id: 'orders', label: 'Orders', icon: ShoppingCart },
   { id: 'cycle-count', label: 'Cycle Count', icon: ClipboardCheck },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
@@ -188,12 +208,10 @@ const pageMeta = {
   },
   items: {
     title: 'Items',
-    kicker: 'Zenventory-compatible item master',
+    kicker: 'Item master',
     tabs: [
       { label: 'New Item', href: '#/items/new' },
       { label: 'All Items', href: '#items' },
-      { label: 'Categories', href: '#/items/categories' },
-      { label: 'Commodities', href: '#/items/commodities' },
     ],
   },
   inventory: {
@@ -215,10 +233,15 @@ const pageMeta = {
     kicker: 'Direct receiving without PO',
     tabs: ['Create Receipt', 'Select Items', 'Accept Delivery'],
   },
+  scanner: {
+    title: 'Scanner',
+    kicker: 'Warehouse keyboard-scanner workflows',
+    tabs: ['Lookup', 'Receiving', 'Cycle Count', 'Transfer', 'Adjustment', 'Picking'],
+  },
   orders: {
     title: 'Orders',
     kicker: 'Order workflow',
-    tabs: ['Open Orders', 'Allocate Orders', 'Pick Orders'],
+    tabs: [],
   },
   'cycle-count': {
     title: 'Cycle Count',
@@ -242,7 +265,15 @@ const pageMeta = {
   },
 };
 
-const detailTabs = ['Basic', 'Units', 'Warehouse', 'Variants', 'Integration Mappings', 'Timeline'];
+const detailTabs = [];
+
+function submitSearchOnEnter(event, submit) {
+  if (event.key !== 'Enter') {
+    return;
+  }
+  event.preventDefault();
+  submit();
+}
 
 const genericRows = [
   ['Work queue', 'Awaiting setup', 'Planning', 'Main Warehouse'],
@@ -539,6 +570,14 @@ function parseHashRoute() {
   if (hash.startsWith('locations/')) {
     return { pageId: 'locations', locationView: 'detail', locationId: hash.split('/')[1] };
   }
+  if (hash === 'orders') {
+    return { pageId: 'orders', ordersView: 'open' };
+  }
+  if (hash.startsWith('orders/')) {
+    const ordersView = hash.split('/')[1] || 'open';
+    const knownView = orderSubpages.some((page) => page.id === ordersView);
+    return { pageId: 'orders', ordersView: knownView ? ordersView : 'open' };
+  }
   return navItems.some((item) => item.id === hash) ? { pageId: hash } : { pageId: 'dashboard' };
 }
 
@@ -646,6 +685,10 @@ export default function App() {
       loadLocations({ status: 'active' });
       loadReceipts();
       loadStockMovements({ movement_type: 'receive_direct' });
+    }
+    if (route.pageId === 'scanner') {
+      loadItems();
+      loadLocations({ status: 'active' });
     }
     if (route.pageId === 'locations') {
       loadLocations();
@@ -1579,7 +1622,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar activePage={route.pageId} onNavigate={(pageId) => setRoute({ pageId })} />
+      <Sidebar activePage={route.pageId} route={route} onNavigate={(pageId) => setRoute({ pageId })} />
       <div className="workspace">
         <TopHeader />
         <main className="main-content">
@@ -1722,7 +1765,15 @@ export default function App() {
   );
 }
 
-function Sidebar({ activePage, onNavigate }) {
+function Sidebar({ activePage, route, onNavigate }) {
+  const [ordersExpanded, setOrdersExpanded] = useState(activePage === 'orders');
+
+  useEffect(() => {
+    if (activePage === 'orders') {
+      setOrdersExpanded(true);
+    }
+  }, [activePage]);
+
   return (
     <aside className="sidebar" aria-label="Main navigation">
       <div className="brand">
@@ -1734,10 +1785,33 @@ function Sidebar({ activePage, onNavigate }) {
           <div className="brand-subtitle">Inventory OS</div>
         </div>
       </div>
-      <nav className="nav-list">
+      <nav className="nav-list" aria-label="Main navigation">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = item.id === activePage;
+          if (item.id === 'orders') {
+            return (
+              <div className="nav-group" key={item.id}>
+                <button className={`nav-link nav-parent ${isActive ? 'active' : ''}`} aria-expanded={ordersExpanded} onClick={() => setOrdersExpanded((current) => !current)} type="button">
+                  <Icon size={24} strokeWidth={1.8} />
+                  <span>{item.label}</span>
+                  <ChevronDown className="nav-caret" size={17} aria-hidden="true" />
+                </button>
+                {ordersExpanded && (
+                  <div className="subnav-list" aria-label="Orders sub-navigation">
+                    {orderSubpages.map((subpage) => {
+                      const childActive = activePage === 'orders' && (route.ordersView || 'open') === subpage.id;
+                      return (
+                        <a className={`subnav-link ${childActive ? 'active' : ''}`} href={subpage.href} key={subpage.id} onClick={() => onNavigate('orders')}>
+                          {subpage.label}
+                        </a>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
           return (
             <a className={`nav-link ${isActive ? 'active' : ''}`} href={`#${item.id}`} key={item.id} onClick={() => onNavigate(item.id)}>
               <Icon size={24} strokeWidth={1.8} />
@@ -1758,25 +1832,17 @@ function TopHeader() {
   return (
     <header className="top-header">
       <div className="warehouse-control">
-        <button className="icon-button header-icon" aria-label="Open navigation">
-          <Menu size={23} />
-        </button>
+        <Menu size={23} aria-hidden="true" />
         <span>Main Warehouse</span>
         <ChevronDown size={18} />
       </div>
       <div className="header-actions">
-        <button className="icon-button header-icon" aria-label="Notifications">
-          <Bell size={20} />
-        </button>
         <div className="user-chip" aria-label="Signed in user">
           <div className="avatar">
             <UserCircle size={26} />
           </div>
           <span>Kannan</span>
         </div>
-        <button className="icon-button header-icon" aria-label="More options">
-          <MoreVertical size={22} />
-        </button>
       </div>
     </header>
   );
@@ -1799,9 +1865,9 @@ function PageHeader({ meta, route }) {
               {tabObject.label}
             </a>
           ) : (
-            <button className={className} key={tabObject.label} type="button" role="tab" aria-selected={isActive}>
+            <span className={`${className} is-static`} key={tabObject.label} role="tab" aria-selected={isActive}>
               {tabObject.label}
-            </button>
+            </span>
           );
         })}
       </div>
@@ -1971,6 +2037,10 @@ function PageBody({
     );
   }
 
+  if (route.pageId === 'scanner') {
+    return <ScannerWorkflowsPage locations={locations} onLoadItems={onLoadItems} onLoadInventorySummary={onLoadInventorySummary} />;
+  }
+
   if (route.pageId === 'reports') {
     return (
       <ReportsPage
@@ -2010,7 +2080,8 @@ function PageBody({
 
   if (route.pageId === 'orders') {
     return (
-      <OpenOrdersPage
+      <OrdersPage
+        route={route}
         ordersData={openOrders}
         loading={openOrdersLoading}
         error={openOrdersError}
@@ -2499,11 +2570,11 @@ function InventorySummaryTable({ groups }) {
         </span>
         <div className="table-pager">
           <span>{groups.length} Results</span>
-          <button className="pager-button" aria-label="Previous page" type="button">
+          <button className="pager-button" aria-label="Previous page" title="Pagination is not available yet" disabled type="button">
             <ChevronLeft size={18} />
           </button>
           <span>1 / 1</span>
-          <button className="pager-button active" aria-label="Next page" type="button">
+          <button className="pager-button active" aria-label="Next page" title="Pagination is not available yet" disabled type="button">
             <ChevronRight size={18} />
           </button>
         </div>
@@ -2636,7 +2707,7 @@ function LocationsList({ locations, loading, error, onLoadLocations }) {
           <label className="field">
             <span>Search</span>
             <div className="input-with-icon">
-              <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} placeholder="Warehouse, code, name, zone, aisle" type="search" />
+              <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadLocations(filters))} placeholder="Warehouse, code, name, zone, aisle" type="search" />
               <Search size={18} />
             </div>
           </label>
@@ -2693,11 +2764,11 @@ function LocationsTable({ locations }) {
         </span>
         <div className="table-pager">
           <span>{locations.length} Results</span>
-          <button className="pager-button" aria-label="Previous page" type="button">
+          <button className="pager-button" aria-label="Previous page" title="Pagination is not available yet" disabled type="button">
             <ChevronLeft size={18} />
           </button>
           <span>1 / 1</span>
-          <button className="pager-button active" aria-label="Next page" type="button">
+          <button className="pager-button active" aria-label="Next page" title="Pagination is not available yet" disabled type="button">
             <ChevronRight size={18} />
           </button>
         </div>
@@ -2822,21 +2893,31 @@ function LocationDetail({ location, onSave, isNew = false }) {
 
 function ItemsList({ items, loading, error, onLoadItems }) {
   const [importOpen, setImportOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [visibleColumns, setVisibleColumns] = useState(ITEM_DEFAULT_VISIBLE_COLUMNS);
+  const [detailId, setDetailId] = useState(null);
+  const [detailData, setDetailData] = useState(null);
+  const [detailTab, setDetailTab] = useState('overview');
+  const [savedViews, setSavedViews] = useState([]);
+  const [selectedViewId, setSelectedViewId] = useState('');
+  const [viewName, setViewName] = useState('');
+  const [message, setMessage] = useState('');
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkUpdates, setBulkUpdates] = useState({ category: '', brand: '', manufacturer: '', unit_cost: '', sales_price: '', par_level: '', active: '' });
+  const [bulkPreview, setBulkPreview] = useState(null);
+  const [remapOpen, setRemapOpen] = useState(false);
   const [filters, setFilters] = useState({
     search: '',
     category: '',
-    warehouse: '',
-    inventoryLocation: '',
     brand: '',
     status: 'active',
+    stockStatus: '',
     includeNonInventory: true,
   });
 
   const options = useMemo(
     () => ({
       categories: uniqueOptions(items, 'Category'),
-      warehouses: uniqueOptions(items, 'Warehouse'),
-      locations: uniqueOptions(items, 'Inventory Location'),
       brands: uniqueOptions(items, 'Brand'),
     }),
     [items],
@@ -2846,6 +2927,12 @@ function ItemsList({ items, loading, error, onLoadItems }) {
     onLoadItems(filters);
   }, [filters]);
 
+  useEffect(() => {
+    loadSavedViews();
+  }, []);
+
+  const displayedItems = useMemo(() => filterItems(items, filters), [items, filters]);
+
   function updateFilter(name, value) {
     setFilters((current) => ({ ...current, [name]: value }));
   }
@@ -2854,29 +2941,148 @@ function ItemsList({ items, loading, error, onLoadItems }) {
     setFilters({
       search: '',
       category: '',
-      warehouse: '',
-      inventoryLocation: '',
       brand: '',
       status: 'active',
+      stockStatus: '',
       includeNonInventory: true,
     });
   }
 
+  async function loadSavedViews() {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/ui/saved-views?page=items`);
+      if (response.ok) {
+        const body = await response.json();
+        setSavedViews(body.views || []);
+      }
+    } catch {
+      setSavedViews([]);
+    }
+  }
+
+  async function saveCurrentView() {
+    if (!viewName.trim()) {
+      setMessage('Name the view before saving it.');
+      return;
+    }
+    await postJson('/api/ui/saved-views', { page: 'items', view_key: `items:${viewName.trim()}`, name: viewName.trim(), filters, columns: visibleColumns, created_by: 'frontend' });
+    setViewName('');
+    setMessage('Saved item view.');
+    await loadSavedViews();
+  }
+
+  function loadView(view) {
+    if (!view) {
+      return;
+    }
+    setSelectedViewId(String(view.id));
+    setFilters({ ...filters, ...(view.filters || {}) });
+    setVisibleColumns(view.columns?.length ? view.columns : visibleColumns);
+    setMessage(`Loaded ${view.name}.`);
+  }
+
+  async function deleteView(viewId) {
+    const response = await fetch(`${API_BASE_URL}/api/ui/saved-views/${viewId}`, { method: 'DELETE' });
+    if (response.ok) {
+      setMessage('Deleted saved view.');
+      setSelectedViewId('');
+      await loadSavedViews();
+    }
+  }
+
+  async function openDetail(itemId) {
+    setDetailId(itemId);
+    setDetailData(null);
+    setDetailTab('overview');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/items/${itemId}/detail`);
+      if (!response.ok) throw new Error(`Detail API returned ${response.status}`);
+      setDetailData(await response.json());
+    } catch {
+      setMessage('Unable to load item detail.');
+    }
+  }
+
+  function toggleSelected(itemId) {
+    setSelectedIds((current) => (current.includes(itemId) ? current.filter((id) => id !== itemId) : [...current, itemId]));
+  }
+
+  function toggleAllDisplayed(checked) {
+    setSelectedIds(checked ? displayedItems.map((item) => item.id) : []);
+  }
+
+  function toggleColumn(column) {
+    setVisibleColumns((current) => (current.includes(column) ? current.filter((item) => item !== column) : [...current, column]));
+  }
+
+  function bulkPayload() {
+    return Object.fromEntries(Object.entries(bulkUpdates).filter(([, value]) => value !== '' && value !== null));
+  }
+
+  async function previewBulkEdit() {
+    const result = await postJson('/api/items/bulk/preview', { item_ids: selectedIds, updates: bulkPayload() });
+    setBulkPreview(result);
+    setMessage(result.warnings?.join(' ') || `Previewed ${result.affected_count} item(s).`);
+  }
+
+  async function commitBulkEdit() {
+    const result = await postJson('/api/items/bulk/commit', { item_ids: selectedIds, updates: bulkPayload() });
+    setMessage(`Updated ${result.updated_count} item(s).`);
+    setBulkPreview(null);
+    setBulkOpen(false);
+    setSelectedIds([]);
+    await onLoadItems(filters);
+  }
+
   return (
-    <section className="content-panel">
-      <div className="toolbar items-toolbar">
-        <div className="filter-grid items-filter-grid">
+    <section className="content-panel items-page-pro">
+      <div className="items-command-bar">
+        <div className="items-command-header">
+          <div>
+            <h2>Item Master</h2>
+            <p>{displayedItems.length} visible item(s)</p>
+          </div>
+          <div className="button-row items-actions">
+            <button className="primary-button" onClick={() => onLoadItems(filters)} type="button">
+              <Search size={17} />
+              Search
+            </button>
+            <button className="muted-button" onClick={clearFilters} type="button">
+              Clear
+            </button>
+            <button className="action-button" onClick={() => onLoadItems(filters)} type="button">
+              <RefreshCw size={17} />
+              Refresh
+            </button>
+            <button className="action-button" onClick={() => setRemapOpen(true)} type="button">
+              <Link2 size={17} />
+              Remap
+            </button>
+            <button className="action-button" disabled={!selectedIds.length} onClick={() => setBulkOpen(true)} type="button">
+              <Edit3 size={17} />
+              Bulk Edit
+            </button>
+            <button className="action-button" onClick={() => setImportOpen(true)} type="button">
+              <Upload size={17} />
+              Import
+            </button>
+            <button className="action-button" onClick={() => exportItemsCsv(filters)} type="button">
+              <Download size={17} />
+              Export
+            </button>
+          </div>
+        </div>
+        <div className="items-filter-grid-pro">
           <label className="field">
-            <span>Search</span>
+            <span>SKU / Barcode / Description</span>
             <div className="input-with-icon">
-              <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} placeholder="SKU, barcode, description, brand, location" type="search" />
+              <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadItems(filters))} placeholder="Search SKU, barcode, description, brand" type="search" />
               <Search size={18} />
             </div>
           </label>
           <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
-          <FilterSelect label="Warehouse" value={filters.warehouse} options={options.warehouses} onChange={(value) => updateFilter('warehouse', value)} />
-          <FilterSelect label="Inventory Location" value={filters.inventoryLocation} options={options.locations} onChange={(value) => updateFilter('inventoryLocation', value)} />
           <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
+          <FilterSelect label="Stock Status" value={filters.stockStatus} options={['in_stock', 'out_of_stock', 'under_par', 'negative_sellable']} onChange={(value) => updateFilter('stockStatus', value)} />
           <div className="field status-field">
             <span>Show</span>
             <div className="radio-row">
@@ -2895,37 +3101,43 @@ function ItemsList({ items, loading, error, onLoadItems }) {
             Include Non-Inventory
           </label>
         </div>
-        <div className="button-row items-actions">
-          <button className="primary-button" onClick={() => onLoadItems(filters)} type="button">
-            <Search size={17} />
-            Search
-          </button>
-          <button className="muted-button" onClick={clearFilters} type="button">
-            Clear
-          </button>
-          <button className="action-button" onClick={() => showPlaceholder('Refresh will sync WooCommerce products and variations in a later phase.')} type="button">
-            <RefreshCw size={17} />
-            Refresh
-          </button>
-          <button className="action-button" onClick={() => showPlaceholder('Remap will link local items to WooCommerce products/variations in a later phase.')} type="button">
-            <Link2 size={17} />
-            Remap
-          </button>
-          <button className="action-button" onClick={() => setImportOpen(true)} type="button">
-            <Upload size={17} />
-            Import
-          </button>
-          <button className="action-button" onClick={() => exportItemsCsv(filters)} type="button">
-            <Download size={17} />
-            Export
-          </button>
-        </div>
       </div>
-      <div className="csv-note">CSV import/export uses the canonical Zenventory-compatible inventory column order.</div>
+      <div className="items-view-card">
+        <div className="items-view-controls">
+          <label className="field compact-field">
+            <span>Saved View</span>
+            <select onChange={(event) => loadView(savedViews.find((view) => String(view.id) === event.target.value))} value={selectedViewId}>
+              <option value="">Default view</option>
+              {savedViews.map((view) => <option key={view.id} value={view.id}>{view.name}</option>)}
+            </select>
+          </label>
+          <label className="field compact-field">
+            <span>View Name</span>
+            <input value={viewName} onChange={(event) => setViewName(event.target.value)} placeholder="Save current layout" />
+          </label>
+          <button className="muted-button" onClick={saveCurrentView} type="button"><Save size={16} />Save View</button>
+          <button className="muted-button" disabled={!selectedViewId} onClick={() => deleteView(selectedViewId)} type="button">Delete View</button>
+        </div>
+        <details className="items-columns-panel">
+          <summary>Columns</summary>
+          <div className="column-toggle-row">
+            {['SKU / Barcode', ...CANONICAL_ITEM_COLUMNS.filter((column) => !['SKU', 'Barcode', 'Warehouse', 'Inventory Location', 'Default Location', 'On Order', 'Assembly', 'Serializable', 'Track Lot', 'Perishable', 'Storage Length', 'Storage Width', 'Storage Height', 'Storage Volume'].includes(column))].map((column) => (
+              <label className="check-field compact-check" key={column}>
+                <input checked={visibleColumns.includes(column)} onChange={() => toggleColumn(column)} type="checkbox" />
+                {column}
+              </label>
+            ))}
+          </div>
+        </details>
+      </div>
       {error && <div className="api-error">{error}</div>}
+      {message && <div className="api-success">{message}</div>}
       {loading && <div className="loading-strip">Loading backend items...</div>}
-      <ItemsTable items={items} />
+      <ItemsTable items={displayedItems} visibleColumns={visibleColumns} selectedIds={selectedIds} onToggleSelected={toggleSelected} onToggleAll={toggleAllDisplayed} onOpenDetail={openDetail} />
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImported={() => onLoadItems(filters)} />}
+      {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onRefresh={() => openDetail(detailId)} />}
+      {bulkOpen && <BulkEditModal selectedCount={selectedIds.length} updates={bulkUpdates} setUpdates={setBulkUpdates} preview={bulkPreview} onPreview={previewBulkEdit} onCommit={commitBulkEdit} onClose={() => setBulkOpen(false)} />}
+      {remapOpen && <LocalRemapSearchModal onClose={() => setRemapOpen(false)} />}
     </section>
   );
 }
@@ -3274,7 +3486,7 @@ function FilterSelect({ label, value, options, onChange }) {
   );
 }
 
-function ItemsTable({ items }) {
+function ItemsTable({ items, visibleColumns, selectedIds, onToggleSelected, onToggleAll, onOpenDetail }) {
   return (
     <div className="table-wrap">
       <div className="table-meta">
@@ -3283,11 +3495,11 @@ function ItemsTable({ items }) {
         </span>
         <div className="table-pager">
           <span>{items.length} Results</span>
-          <button className="pager-button" aria-label="Previous page" type="button">
+          <button className="pager-button" aria-label="Previous page" title="Pagination is not available yet" disabled type="button">
             <ChevronLeft size={18} />
           </button>
           <span>1 / 1</span>
-          <button className="pager-button active" aria-label="Next page" type="button">
+          <button className="pager-button active" aria-label="Next page" title="Pagination is not available yet" disabled type="button">
             <ChevronRight size={18} />
           </button>
         </div>
@@ -3300,9 +3512,9 @@ function ItemsTable({ items }) {
         <table className="items-data-table">
           <thead>
             <tr>
-              <th className="sticky-col sticky-action-col">Edit</th>
+              <th className="sticky-col sticky-action-col"><input checked={items.length > 0 && selectedIds.length === items.length} onChange={(event) => onToggleAll(event.target.checked)} type="checkbox" /></th>
               <th className="sticky-col sticky-image-col">Image</th>
-              {CANONICAL_ITEM_COLUMNS.map((column) => (
+              {visibleColumns.map((column) => (
                 <th key={column}>{column}</th>
               ))}
               <th>Active</th>
@@ -3312,16 +3524,25 @@ function ItemsTable({ items }) {
             {items.map((item) => (
               <tr key={item.id}>
                 <td className="sticky-col sticky-action-col">
-                  <a className="round-action" href={`#/items/${item.id}`} aria-label={`Edit ${item.SKU}`}>
-                    <Edit3 size={17} />
-                  </a>
+                  <input checked={selectedIds.includes(item.id)} onChange={() => onToggleSelected(item.id)} type="checkbox" />
                 </td>
                 <td className="sticky-col sticky-image-col">
-                  <div className="image-cell">{item.imageUrl ? 'Image' : 'Add Image'}</div>
+                  <button className="image-cell image-button" onClick={() => onOpenDetail(item.id)} type="button">
+                    {item.imageUrl ? <img alt="" src={item.imageUrl} /> : 'No Image'}
+                  </button>
                 </td>
-                {CANONICAL_ITEM_COLUMNS.map((column) => (
+                {visibleColumns.map((column) => (
                   <td key={`${item.id}-${column}`} className={column === 'Description' ? 'description-cell' : ''}>
-                    {formatCell(item[column], column)}
+                    {column === 'SKU / Barcode' ? (
+                      <button className="table-link-button sku-barcode-cell" onClick={() => onOpenDetail(item.id)} type="button">
+                        <strong>{item.SKU || 'No SKU'}</strong>
+                        <span>{item.Barcode || 'No barcode'}</span>
+                      </button>
+                    ) : column === 'SKU' || column === 'Description' ? (
+                      <button className="table-link-button" onClick={() => onOpenDetail(item.id)} type="button">{formatCell(item[column], column) || 'Open'}</button>
+                    ) : (
+                      formatCell(item[column], column)
+                    )}
                   </td>
                 ))}
                 <td>
@@ -3331,7 +3552,7 @@ function ItemsTable({ items }) {
             ))}
             {items.length === 0 && (
               <tr>
-                <td colSpan={CANONICAL_ITEM_COLUMNS.length + 3}>
+                <td colSpan={visibleColumns.length + 3}>
                   <div className="empty-table-row">No items match the current filters.</div>
                 </td>
               </tr>
@@ -3339,6 +3560,158 @@ function ItemsTable({ items }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh }) {
+  const item = detail?.item;
+  const tabs = ['overview', 'stock', 'activity', 'history', 'edit'];
+  return (
+    <div className="drawer-backdrop" role="presentation">
+      <aside className="detail-drawer" role="dialog" aria-modal="true" aria-label="Item detail">
+        <div className="modal-header">
+          <div>
+            <h2>{item?.sku || 'Item Detail'}</h2>
+            <p>{item?.description || 'Loading item control center...'}</p>
+          </div>
+          <button className="icon-button modal-close" onClick={onClose} aria-label="Close item detail" type="button"><MoreVertical size={20} /></button>
+        </div>
+        {!detail && <div className="loading-strip">Loading item detail...</div>}
+        {detail && (
+          <>
+            <div className="tab-row">
+              {tabs.map((name) => <button className={tab === name ? 'tab-button active' : 'tab-button'} key={name} onClick={() => setTab(name)} type="button">{name}</button>)}
+            </div>
+            {tab === 'overview' && <ItemOverview detail={detail} onRefresh={onRefresh} />}
+            {tab === 'stock' && <ItemStockByLocation rows={detail.stock_by_location || []} item={item} />}
+            {tab === 'activity' && <ItemActivityTimeline rows={detail.recent_activity || []} />}
+            {tab === 'history' && <ItemHistoryPanel itemId={item.id} />}
+            {tab === 'edit' && <ItemMetadataPanel item={item} onSaved={onRefresh} />}
+          </>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function ItemOverview({ detail, onRefresh }) {
+  const item = detail.item || {};
+  const stats = detail.quick_stats || {};
+  return (
+    <div className="drawer-section">
+      <div className="item-overview-grid">
+        <div className="item-photo">{item.image_url ? <img alt="" src={item.image_url} /> : <PackageSearch size={42} />}</div>
+        <div className="summary-strip">
+          <Metric label="In Stock" value={formatNumber(item.in_stock)} />
+          <Metric label="Allocated" value={formatNumber(item.allocated)} />
+          <Metric label="Sellable" value={formatNumber(item.sellable)} />
+          <Metric label="Value" value={formatCurrency(stats.inventory_value)} />
+        </div>
+      </div>
+      <TableShell caption="Item" columns={['Field', 'Value']}>
+        {[
+          ['SKU', item.sku], ['Barcode', item.barcode], ['Brand', item.brand], ['Category', item.category], ['Unit Cost', formatCurrency(item.unit_cost)], ['Sales Price', formatCurrency(item.sales_price)], ['Woo Mapping', item.woo_product_id || item.woo_variation_id ? `${item.woo_product_id || ''}/${item.woo_variation_id || ''}` : 'Unmapped'], ['Last Received', formatDateTime(stats.last_received_at)], ['Last Counted', formatDateTime(stats.last_counted_at)],
+        ].map(([label, value]) => <tr key={label}><td>{label}</td><td>{value || ''}</td></tr>)}
+      </TableShell>
+      <div className="button-row"><button className="muted-button" onClick={onRefresh} type="button"><RefreshCw size={16} />Refresh Detail</button><a className="action-button" href="#receiving">Receive</a><a className="action-button" href="#inventory">Transfer</a><a className="action-button" href="#cycle-count">Cycle Count</a></div>
+    </div>
+  );
+}
+
+function ItemStockByLocation({ rows }) {
+  return (
+    <TableShell caption={`${rows.length} stock location(s)`} columns={['Warehouse', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Under Par', 'Par', 'Default', 'Updated']}>
+      {rows.map((row) => <tr key={row.id}><td>{row.warehouse}</td><td>{row.inventory_location}</td><td>{formatNumber(row.in_stock)}</td><td>{formatNumber(row.allocated)}</td><td>{formatNumber(row.sellable)}</td><td>{row.under_par ? 'Yes' : 'No'}</td><td>{formatNumber(row.par_level)}</td><td>{row.is_default_location ? 'Yes' : 'No'}</td><td>{formatDateTime(row.updated_at)}</td></tr>)}
+      {!rows.length && <tr><td colSpan={9}><div className="empty-table-row">No stock locations yet.</div></td></tr>}
+    </TableShell>
+  );
+}
+
+function ItemActivityTimeline({ rows }) {
+  return (
+    <div className="activity-timeline">
+      {rows.map((row) => <div className={`activity-row ${row.severity}`} key={row.id}><strong>{row.title}</strong><span>{formatDateTime(row.created_at)} · {row.warehouse || ''} {row.inventory_location || ''}</span><p>{row.description || row.reference_number || ''}</p><b>{row.quantity_change == null ? '' : formatNumber(row.quantity_change)}</b></div>)}
+      {!rows.length && <div className="empty-table-row">No item activity yet.</div>}
+    </div>
+  );
+}
+
+function ItemHistoryPanel({ itemId }) {
+  const [section, setSection] = useState('receipts');
+  const [history, setHistory] = useState({ rows: [], total: 0 });
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/items/${itemId}/history?section=${section}`).then((response) => response.json()).then(setHistory).catch(() => setHistory({ rows: [], total: 0 }));
+  }, [itemId, section]);
+  return (
+    <div className="drawer-section">
+      <FilterSelect label="History" value={section} options={['receipts', 'cycle-counts', 'adjustments', 'transfers', 'allocations', 'picks', 'fulfillments', 'orders', 'stock-movements']} onChange={setSection} />
+      <ItemActivityTimeline rows={history.rows || []} />
+    </div>
+  );
+}
+
+function ItemMetadataPanel({ item, onSaved }) {
+  const [form, setForm] = useState({ category: item.category || '', brand: item.brand || '', manufacturer: item.manufacturer || '', unit_cost: item.unit_cost || '', sales_price: item.sales_price || '', par_level: '', active: item.active });
+  const [message, setMessage] = useState('');
+  async function saveMetadata() {
+    const payload = {
+      Category: form.category,
+      Brand: form.brand,
+      Manufacturer: form.manufacturer,
+      'Unit Cost': form.unit_cost,
+      'Sales Price': form.sales_price,
+      active: Boolean(form.active),
+    };
+    await patchJson(`/api/items/${item.id}`, payload);
+    setMessage('Metadata saved. Stock quantities remain controlled by receiving, count, transfer, and adjustment workflows.');
+    onSaved();
+  }
+  return (
+    <div className="drawer-section operation-grid">
+      {['category', 'brand', 'manufacturer', 'unit_cost', 'sales_price'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={form[field]} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
+      <label className="check-field"><input checked={form.active} onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))} type="checkbox" />Active</label>
+      <button className="primary-button" onClick={saveMetadata} type="button"><Save size={16} />Save Metadata</button>
+      {message && <div className="api-success">{message}</div>}
+    </div>
+  );
+}
+
+function BulkEditModal({ selectedCount, updates, setUpdates, preview, onPreview, onCommit, onClose }) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="import-modal" role="dialog" aria-modal="true" aria-label="Bulk edit items">
+        <div className="modal-header"><div><h2>Bulk Edit Metadata</h2><p>{selectedCount} selected item(s). Stock and Woo fields are blocked.</p></div><button className="icon-button modal-close" onClick={onClose} type="button"><MoreVertical size={20} /></button></div>
+        <div className="operation-grid">
+          {Object.keys(updates).map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={updates[field]} onChange={(event) => setUpdates((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
+        </div>
+        <div className="button-row"><button className="muted-button" onClick={onPreview} type="button">Preview</button><button className="primary-button" disabled={!preview?.can_commit} onClick={onCommit} type="button">Commit Metadata</button></div>
+        {preview && <div className="import-results"><div className="import-metrics"><Metric label="Affected" value={preview.affected_count} /><Metric label="Fields" value={(preview.fields_to_update || []).length} /></div>{preview.warnings?.map((warning) => <div className="api-error" key={warning}>{warning}</div>)}</div>}
+      </section>
+    </div>
+  );
+}
+
+function LocalRemapSearchModal({ onClose }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  async function search() {
+    const response = await fetch(`${API_BASE_URL}/api/items/search?q=${encodeURIComponent(query)}&limit=10`);
+    if (response.ok) {
+      const body = await response.json();
+      setResults(body.items || []);
+    }
+  }
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="import-modal" role="dialog" aria-modal="true" aria-label="Local remap search">
+        <div className="modal-header"><div><h2>Local Remap Search</h2><p>This only searches local item candidates. Remap commit remains in Settings and never writes to WooCommerce.</p></div><button className="icon-button modal-close" onClick={onClose} type="button"><MoreVertical size={20} /></button></div>
+        <div className="scanner-input-row"><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && search()} placeholder="Search SKU, barcode, or name" /><button className="primary-button" onClick={search} type="button"><Search size={16} />Search</button></div>
+        <TableShell caption={`${results.length} candidate(s)`} columns={['SKU', 'Barcode', 'Description', 'Brand', 'Woo Mapping']}>
+          {results.map((item) => <tr key={item.id}><td>{item.sku}</td><td>{item.barcode}</td><td>{item.description}</td><td>{item.brand}</td><td>{item.woo_mapping_summary?.mapped ? 'Mapped' : 'Unmapped'}</td></tr>)}
+          {!results.length && <tr><td colSpan={5}><div className="empty-table-row">No candidates loaded.</div></td></tr>}
+        </TableShell>
+      </section>
     </div>
   );
 }
@@ -3382,11 +3755,20 @@ function ItemDetail({ item, onSave, onClone, isNew = false }) {
   }
 
   return (
-    <section className="content-panel">
+    <section className="content-panel item-editor-page">
+      <div className="item-editor-toolbar">
+        <a className="muted-button" href="#items">
+          <ArrowLeft size={17} />
+          All Items
+        </a>
+        <div>
+          <h2>{isNew ? 'New Item' : calculatedItem.SKU || 'Edit Item'}</h2>
+          <p>Clean item metadata entry. Stock quantities are controlled by receiving, counts, transfers, and adjustments.</p>
+        </div>
+      </div>
       <div className="detail-layout">
         <div className="detail-main">
           <FormSection title="Core Identity">
-            {renderTextField('Client', calculatedItem, updateField)}
             {renderTextField('SKU', calculatedItem, updateField, { required: true })}
             {renderTextField('Barcode', calculatedItem, updateField)}
             {renderTextField('Description', calculatedItem, updateField, { wide: true })}
@@ -3395,15 +3777,9 @@ function ItemDetail({ item, onSave, onClone, isNew = false }) {
             {renderTextField('Manufacturer', calculatedItem, updateField)}
             {renderTextField('Manufacturer Website', calculatedItem, updateField, { wide: true })}
           </FormSection>
-          <FormSection title="Stock and Location">
+          <FormSection title="Placement">
             {renderTextField('Warehouse', calculatedItem, updateField)}
-            {renderTextField('Inventory Location', calculatedItem, updateField)}
             {renderTextField('Default Location', calculatedItem, updateField)}
-            {renderNumberField('In Stock', calculatedItem, updateField)}
-            {renderNumberField('Allocated', calculatedItem, updateField)}
-            {renderNumberField('Sellable', calculatedItem, updateField, { readOnly: true })}
-            {renderBooleanField('Under Par', calculatedItem, updateField, { readOnly: true })}
-            {renderNumberField('On Order', calculatedItem, updateField)}
             {renderNumberField('Par Level', calculatedItem, updateField)}
             {renderBooleanField('Re-Order', calculatedItem, updateField)}
           </FormSection>
@@ -3414,17 +3790,11 @@ function ItemDetail({ item, onSave, onClone, isNew = false }) {
             {renderNumberField('Default Econ Order', calculatedItem, updateField)}
             {renderNumberField('Default Lead Time Days', calculatedItem, updateField)}
           </FormSection>
-          <FormSection title="Units and Physical Attributes">
+          <FormSection title="Physical Attributes">
             {renderTextField('Unit of Measurement', calculatedItem, updateField)}
             {renderNumberField('Weight', calculatedItem, updateField)}
-            {renderNumberField('Storage Length', calculatedItem, updateField)}
-            {renderNumberField('Storage Width', calculatedItem, updateField)}
-            {renderNumberField('Storage Height', calculatedItem, updateField)}
-            {renderNumberField('Storage Volume', calculatedItem, updateField, { readOnly: true })}
           </FormSection>
           <FormSection title="Flags">
-            {renderBooleanField('Assembly', calculatedItem, updateField)}
-            {renderBooleanField('Serializable', calculatedItem, updateField)}
             {renderBooleanField('Track Lot', calculatedItem, updateField)}
             {renderBooleanField('Perishable', calculatedItem, updateField)}
             <label className="toggle-card">
@@ -3439,17 +3809,9 @@ function ItemDetail({ item, onSave, onClone, isNew = false }) {
         </div>
         <aside className="detail-side">
           <div className="image-dropzone">Add Image</div>
-          <div className="mapping-card">
-            <h2>Integration Mappings</h2>
-            <p>WooCommerce fields are local placeholders only in this phase.</p>
-            <label className="field">
-              <span>Woo Product ID</span>
-              <input value={formItem.wooProductId || ''} onChange={(event) => updateInternalField('wooProductId', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Woo Variation ID</span>
-              <input value={formItem.wooVariationId || ''} onChange={(event) => updateInternalField('wooVariationId', event.target.value)} />
-            </label>
+          <div className="mapping-card item-editor-note">
+            <h2>Stock Control</h2>
+            <p>Do not enter stock here. Receive, count, transfer, or adjust stock from the operational workflows so every change has an audit trail.</p>
           </div>
         </aside>
       </div>
@@ -3540,7 +3902,12 @@ function CommandCenterPage({ dashboard, loading, error, onRefresh }) {
         ['Items', inventory.total_items, 'Total records', PackageSearch],
         ['Active', inventory.active_items, 'Active items', CheckCircle2],
         ['Inventory Value', formatCurrency(inventory.total_inventory_value), 'Local value', Boxes],
+        ['Reorder', inventory.reorder_count, 'Under par + reorder', TriangleAlert],
         ['Under Par', inventory.under_par_count, 'Needs review', TriangleAlert],
+        ['Damage/Loss', formatCurrency(inventory.damage_loss_value_this_month), 'This month', TriangleAlert],
+        ['Transfers', inventory.transfers_this_week, 'Last 7 days', Warehouse],
+        ['Receiving', inventory.receiving_this_week, 'Last 7 days', PackagePlus],
+        ['Adjustments', inventory.adjustment_count_this_week, 'Last 7 days', SlidersHorizontal],
         ['Negative Sellable', inventory.negative_sellable_count, 'Data warning', TriangleAlert],
         ['Missing SKU', inventory.missing_sku_count, 'Match risk', Search],
       ]} />
@@ -3596,12 +3963,12 @@ function CommandCenterPage({ dashboard, loading, error, onRefresh }) {
             ['Sync Woo Orders', '#settings'],
             ['Receive Inventory', '#receiving'],
             ['Cycle Count', '#cycle-count'],
-            ['Allocate Orders', '#orders'],
-            ['Pick Orders', '#orders'],
-            ['Fulfill Orders', '#orders'],
+            ['Allocate Orders', '#/orders/allocate'],
+            ['Pick Orders', '#/orders/pick'],
+            ['Fulfill Orders', '#/orders/fulfillment'],
             ['Create Route', '#routes'],
             ['Reports', '#reports'],
-          ].map(([title, href]) => <a className="widget-row" href={href} key={title}><strong>{title}</strong><span>Open</span></a>)}
+          ].map(([title, href]) => <a className="widget-row" href={href} key={title}><div><strong>{title}</strong><em>Open workflow</em></div><span>Open</span></a>)}
         </div>
       </aside>
     </section>
@@ -3978,6 +4345,7 @@ function CycleCountDetailPanel({ detail, onClose }) {
 }
 
 function DirectReceivingPage({ items, locations, receipts, receiptsLoading, receiptsError, onLoadReceipts, stockMovements, stockMovementsLoading, stockMovementsError, onLoadStockMovements, onLoadInventorySummary }) {
+  const [mode, setMode] = useState('direct');
   const [form, setForm] = useState({
     warehouse: 'Main Warehouse',
     reference_number: '',
@@ -4055,7 +4423,12 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
 
   return (
     <section className="content-panel receiving-page">
-      <div className="receiving-form">
+      <div className="tab-row">
+        <button className={mode === 'direct' ? 'tab-button active' : 'tab-button'} onClick={() => setMode('direct')} type="button">Direct Receiving</button>
+        <button className={mode === 'bulk' ? 'tab-button active' : 'tab-button'} onClick={() => setMode('bulk')} type="button">Bulk Receiving Session</button>
+        <button className={mode === 'history' ? 'tab-button active' : 'tab-button'} onClick={() => setMode('history')} type="button">Receipt History</button>
+      </div>
+      {mode === 'direct' && <div className="receiving-form">
         <div className="section-heading">
           <div>
             <h2>Direct Receiving</h2>
@@ -4148,8 +4521,9 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
           </div>
         )}
         {preview && <ReceivingPreview preview={preview} />}
-      </div>
-      <div className="wide-panel">
+      </div>}
+      {mode === 'bulk' && <BulkReceivingSession items={items} locations={locations} onCommitted={async () => { await onLoadReceipts(); await onLoadStockMovements({ movement_type: 'receive_direct' }); await onLoadInventorySummary(); }} />}
+      {(mode === 'history' || mode === 'direct') && <div className="wide-panel">
         <div className="panel-title">
           <div>
             <h2>Receipt History</h2>
@@ -4163,8 +4537,8 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
         {receiptsError && <div className="api-error">{receiptsError}</div>}
         {receiptsLoading && <div className="loading-strip">Loading receipt history...</div>}
         <ReceiptHistoryTable receipts={receipts} />
-      </div>
-      <div className="wide-panel">
+      </div>}
+      {mode !== 'bulk' && <div className="wide-panel">
         <div className="panel-title">
           <div>
             <h2>Recent Stock Movements</h2>
@@ -4178,8 +4552,219 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
         {stockMovementsError && <div className="api-error">{stockMovementsError}</div>}
         {stockMovementsLoading && <div className="loading-strip">Loading stock movements...</div>}
         <StockMovementsTable movements={stockMovements} />
+      </div>}
+    </section>
+  );
+}
+
+function BulkReceivingSession({ items, locations, onCommitted }) {
+  const [header, setHeader] = useState({ warehouse: 'Main Warehouse', notes: '' });
+  const [scanInput, setScanInput] = useState('');
+  const [quantity, setQuantity] = useState(1);
+  const [inventoryLocation, setInventoryLocation] = useState('');
+  const [unitCost, setUnitCost] = useState('');
+  const [optional, setOptional] = useState({ lot_number: '', expiration_date: '', pallet_number: '', pkg_number: '', item_number: '', sales_price: '', weight: '', notes: '' });
+  const [lines, setLines] = useState([]);
+  const [preview, setPreview] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [error, setError] = useState('');
+  const activeLocations = locations.filter((location) => location.isActive && (!header.warehouse || location.warehouse === header.warehouse));
+
+  function addLine() {
+    const item = findReceivingItem(items, scanInput);
+    setLines((current) => [...current, { localId: crypto.randomUUID?.() || String(Date.now()), scan_input: scanInput, sku: item?.SKU || '', barcode: item?.Barcode || '', quantity: toNumber(quantity) || 1, warehouse: header.warehouse, inventory_location: inventoryLocation, unit_cost: unitCost, ...optional }]);
+    setScanInput('');
+    setQuantity(1);
+    setPreview(null);
+  }
+
+  async function previewSession() {
+    setError('');
+    setSummary(null);
+    try {
+      setPreview(await postJson('/api/receipts/bulk/preview', { ...header, lines }));
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to preview bulk receipt.');
+    }
+  }
+
+  async function commitSession() {
+    setError('');
+    try {
+      const result = await postJson('/api/receipts/bulk/commit', { ...header, source: 'manual', lines });
+      setSummary(result);
+      setLines([]);
+      setPreview(null);
+      await onCommitted();
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to commit bulk receipt.');
+    }
+  }
+
+  return (
+    <div className="receiving-form bulk-session">
+      <div className="section-heading"><div><h2>Bulk Receiving Session</h2><p>Multi-row receiving cart committed as one receipt.</p></div><button className="muted-button" onClick={() => { setLines([]); setPreview(null); setSummary(null); }} type="button">Clear Session</button></div>
+      <div className="receiving-header-fields">
+        <FilterSelect label="Warehouse" value={header.warehouse} options={uniqueOptions(locations, 'warehouse')} onChange={(value) => setHeader((current) => ({ ...current, warehouse: value || 'Main Warehouse' }))} />
+        <label className="field wide-field"><span>Notes</span><input value={header.notes} onChange={(event) => setHeader((current) => ({ ...current, notes: event.target.value }))} /></label>
+      </div>
+      <div className="scanner-input-row">
+        <input autoFocus value={scanInput} onChange={(event) => setScanInput(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && addLine()} placeholder="Scan or type SKU/barcode" />
+        <input value={quantity} onChange={(event) => setQuantity(event.target.value)} inputMode="decimal" />
+        <select value={inventoryLocation} onChange={(event) => setInventoryLocation(event.target.value)}><option value="">Location</option>{activeLocations.map((location) => <option key={location.id} value={location.code}>{location.warehouse} / {location.code}</option>)}</select>
+        <input value={unitCost} onChange={(event) => setUnitCost(event.target.value)} placeholder="Unit cost" inputMode="decimal" />
+        <button className="primary-button" onClick={addLine} type="button"><Plus size={16} />Add Line</button>
+      </div>
+      <details className="optional-fields"><summary>Optional receiving fields</summary><div className="operation-grid">{Object.keys(optional).map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={optional[field]} onChange={(event) => setOptional((current) => ({ ...current, [field]: event.target.value }))} type={field === 'expiration_date' ? 'date' : 'text'} /></label>)}</div></details>
+      <TableShell caption={`${lines.length} cart line(s)`} columns={['Scan', 'SKU', 'Location', 'Qty', 'Unit Cost', 'Notes']}>
+        {lines.map((line) => <tr key={line.localId}><td>{line.scan_input}</td><td>{line.sku}</td><td>{line.inventory_location}</td><td>{formatNumber(line.quantity)}</td><td>{formatCurrency(line.unit_cost)}</td><td>{line.notes}</td></tr>)}
+        {!lines.length && <tr><td colSpan={6}><div className="empty-table-row">Scan or add lines to begin.</div></td></tr>}
+      </TableShell>
+      <div className="detail-actions"><button className="muted-button" onClick={previewSession} type="button">Preview Session</button><button className="primary-button" disabled={!preview?.can_commit} onClick={commitSession} type="button">Commit Session</button></div>
+      {error && <div className="api-error">{error}</div>}
+      {summary && <div className="success-strip">Receipt {summary.receipt_number} committed. <a href={`${API_BASE_URL}/api/receipts/${summary.id}/export`}>Export CSV</a></div>}
+      {preview && <BulkReceivingPreview preview={preview} />}
+    </div>
+  );
+}
+
+function BulkReceivingPreview({ preview }) {
+  return (
+    <div className="import-results">
+      <div className="import-metrics"><Metric label="Lines" value={preview.line_count} /><Metric label="Valid" value={preview.valid_line_count} /><Metric label="Errors" value={preview.error_line_count} /><Metric label="Qty" value={formatNumber(preview.total_quantity)} /><Metric label="Cost" value={formatCurrency(preview.total_cost)} /></div>
+      <TableShell caption="Bulk preview" columns={['Line', 'Status', 'SKU', 'Location', 'Qty', 'Old Loc', 'New Loc', 'Errors']}>
+        {preview.lines.map((line) => <tr key={line.line_number}><td>{line.line_number}</td><td>{line.status}</td><td>{line.item?.sku}</td><td>{line.inventory_location}</td><td>{formatNumber(line.quantity)}</td><td>{formatNumber(line.old_location_stock)}</td><td>{formatNumber(line.new_location_stock)}</td><td>{line.errors?.join(' ')}</td></tr>)}
+      </TableShell>
+    </div>
+  );
+}
+
+function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }) {
+  const [mode, setMode] = useState('inventory');
+  const [form, setForm] = useState({ scan_input: '', quantity: 1, warehouse: 'Main Warehouse', inventory_location: '', counted_quantity: '', from_warehouse: 'Main Warehouse', from_inventory_location: '', to_warehouse: 'Main Warehouse', to_inventory_location: '', adjustment_type: 'correction', quantity_change: '', new_quantity: '', reason: '', notes: '', order_id: '' });
+  const [result, setResult] = useState(null);
+  const [recent, setRecent] = useState([]);
+  const [error, setError] = useState('');
+  const activeLocations = locations.filter((location) => location.isActive);
+  const modes = [
+    { key: 'inventory', label: 'Inventory Lookup' },
+    { key: 'location', label: 'Location Lookup' },
+    { key: 'receiving', label: 'Receiving' },
+    { key: 'cycle-count', label: 'Cycle Count' },
+    { key: 'transfer', label: 'Transfer' },
+    { key: 'adjustment', label: 'Adjustment' },
+    { key: 'picking', label: 'Picking' },
+  ];
+  const activeMode = modes.find((candidate) => candidate.key === mode) || modes[0];
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function runScan(commit = false) {
+    setError('');
+    try {
+      let nextResult;
+      if (mode === 'inventory') {
+        const response = await fetch(`${API_BASE_URL}/api/scanner/inventory/lookup?scan_input=${encodeURIComponent(form.scan_input)}`);
+        nextResult = await response.json();
+      } else if (mode === 'location') {
+        const response = await fetch(`${API_BASE_URL}/api/scanner/location/lookup?scan_input=${encodeURIComponent(form.scan_input)}`);
+        nextResult = await response.json();
+      } else if (mode === 'picking') {
+        window.location.hash = '#orders';
+        return;
+      } else {
+        const endpoint = {
+          receiving: `/api/scanner/receiving/scan/${commit ? 'commit' : 'preview'}`,
+          'cycle-count': `/api/scanner/cycle-count/${commit ? 'commit' : 'preview'}`,
+          transfer: `/api/scanner/transfers/${commit ? 'commit' : 'preview'}`,
+          adjustment: `/api/scanner/adjustments/${commit ? 'commit' : 'preview'}`,
+        }[mode];
+        nextResult = await postJson(endpoint, { ...form, quantity: toNumber(form.quantity), counted_quantity: toNumber(form.counted_quantity), quantity_change: form.quantity_change === '' ? '' : toNumber(form.quantity_change), new_quantity: form.new_quantity === '' ? '' : toNumber(form.new_quantity) });
+      }
+      setResult(nextResult);
+      setRecent((current) => [{ mode, scan: form.scan_input, status: nextResult.matched === false || nextResult.can_commit === false ? 'warning' : 'success', at: new Date().toISOString() }, ...current].slice(0, 12));
+      if (commit) {
+        await onLoadItems();
+        await onLoadInventorySummary();
+      }
+    } catch (apiError) {
+      setError(apiError.message || 'Scanner request failed.');
+    }
+  }
+
+  return (
+    <section className="content-panel scanner-page">
+      <div className="scanner-mode-card">
+        <div>
+          <h2>Scanner Console</h2>
+          <p>Use keyboard scanners as fast SKU, barcode, or location input.</p>
+        </div>
+        <div className="segmented-control" role="tablist" aria-label="Scanner modes">
+          {modes.map((item) => <button className={mode === item.key ? 'segment active' : 'segment'} key={item.key} onClick={() => setMode(item.key)} type="button">{item.label}</button>)}
+        </div>
+      </div>
+      <div className="scanner-layout">
+        <div className="scanner-console-card">
+          <div className="scanner-card-header">
+            <div>
+              <span>{activeMode.label}</span>
+              <h2>{mode === 'picking' ? 'Open the order pick scanner' : 'Ready to scan'}</h2>
+            </div>
+            <Badge tone={result?.matched === false || result?.can_commit === false ? 'warning' : result ? 'success' : 'neutral'}>{result ? 'Result loaded' : 'Waiting'}</Badge>
+          </div>
+          <div className="scanner-input-row">
+            <input autoFocus value={form.scan_input} onChange={(event) => update('scan_input', event.target.value)} onKeyDown={(event) => event.key === 'Enter' && runScan(false)} placeholder={mode === 'location' ? 'Scan location code or name' : 'Scan SKU, barcode, or item ID'} />
+            <button className="primary-button" onClick={() => runScan(false)} type="button"><Search size={16} />Scan</button>
+          </div>
+          {['receiving', 'cycle-count', 'transfer', 'adjustment'].includes(mode) && (
+            <div className="operation-grid">
+              {mode === 'receiving' && <><ScannerLocationFields form={form} locations={activeLocations} update={update} /><label className="field"><span>Quantity</span><input value={form.quantity} onChange={(event) => update('quantity', event.target.value)} /></label><label className="field"><span>Unit Cost</span><input value={form.unit_cost || ''} onChange={(event) => update('unit_cost', event.target.value)} /></label></>}
+              {mode === 'cycle-count' && <><ScannerLocationFields form={form} locations={activeLocations} update={update} /><label className="field"><span>Counted Quantity</span><input value={form.counted_quantity} onChange={(event) => update('counted_quantity', event.target.value)} /></label><label className="field"><span>Reason</span><input value={form.reason} onChange={(event) => update('reason', event.target.value)} /></label></>}
+              {mode === 'transfer' && <><label className="field"><span>From Location</span><input value={form.from_inventory_location} onChange={(event) => update('from_inventory_location', event.target.value)} /></label><label className="field"><span>To Location</span><input value={form.to_inventory_location} onChange={(event) => update('to_inventory_location', event.target.value)} /></label><label className="field"><span>Quantity</span><input value={form.quantity} onChange={(event) => update('quantity', event.target.value)} /></label></>}
+              {mode === 'adjustment' && <><ScannerLocationFields form={form} locations={activeLocations} update={update} /><FilterSelect label="Adjustment Type" value={form.adjustment_type} options={['correction', 'damage', 'loss', 'found', 'manual_increase', 'manual_decrease']} onChange={(value) => update('adjustment_type', value)} /><label className="field"><span>Qty Change</span><input value={form.quantity_change} onChange={(event) => update('quantity_change', event.target.value)} /></label><label className="field"><span>New Qty</span><input value={form.new_quantity} onChange={(event) => update('new_quantity', event.target.value)} /></label><label className="field"><span>Reason</span><input value={form.reason} onChange={(event) => update('reason', event.target.value)} /></label></>}
+            </div>
+          )}
+          {['receiving', 'cycle-count', 'transfer', 'adjustment'].includes(mode) && <div className="button-row"><button className="muted-button" onClick={() => runScan(false)} type="button">Preview</button><button className="primary-button" onClick={() => runScan(true)} type="button">Commit</button></div>}
+          {mode === 'picking' && <div className="empty-state"><h2>Picking Scanner</h2><p>Picking scanner is tied to open orders so it can prevent over-pick.</p><a className="primary-button" href="#/orders/pick">Open Pick Orders</a></div>}
+          {error && <div className="api-error">{error}</div>}
+          <ScannerResult result={result} />
+        </div>
+        <div className="scanner-recent-card">
+          <div className="panel-title"><div><h2>Recent Scans</h2><p>Keyboard scanner history for this screen.</p></div></div>
+          {recent.map((row) => <div className={`activity-row ${row.status}`} key={`${row.at}-${row.scan}`}><strong>{row.mode}</strong><span>{row.scan}</span><p>{formatDateTime(row.at)}</p></div>)}
+          {!recent.length && <div className="scanner-empty-state">No scans yet. The next scan will appear here with status and timestamp.</div>}
+        </div>
       </div>
     </section>
+  );
+}
+
+function ScannerLocationFields({ form, locations, update }) {
+  return (
+    <>
+      <FilterSelect label="Warehouse" value={form.warehouse} options={uniqueOptions(locations, 'warehouse')} onChange={(value) => update('warehouse', value || 'Main Warehouse')} />
+      <label className="field"><span>Location</span><select value={form.inventory_location} onChange={(event) => update('inventory_location', event.target.value)}><option value="">Select location</option>{locations.filter((location) => !form.warehouse || location.warehouse === form.warehouse).map((location) => <option key={location.id} value={location.code}>{location.warehouse} / {location.code}</option>)}</select></label>
+    </>
+  );
+}
+
+function ScannerResult({ result }) {
+  if (!result) return null;
+  const item = result.item;
+  return (
+    <div className="scanner-result-panel">
+      <div className="panel-title compact-title"><div><h2>Scan Result</h2><p>{result.matched === false ? 'No matching item or location was found.' : 'Validated scanner response.'}</p></div></div>
+      {item && <div className="scanner-match"><strong>{item.sku}</strong><span>{item.barcode}</span><p>{item.description}</p></div>}
+      {result.stock_by_location && <ItemStockByLocation rows={result.stock_by_location} />}
+      {result.items && <TableShell caption={`${result.items.length} location item(s)`} columns={['SKU', 'Description', 'Location', 'In Stock', 'Sellable']} >{result.items.map((row) => <tr key={row.id}><td>{row.sku}</td><td>{row.description}</td><td>{row.inventory_location}</td><td>{formatNumber(row.in_stock)}</td><td>{formatNumber(row.sellable)}</td></tr>)}</TableShell>}
+      {!item && !result.stock_by_location && !result.items && <div className={result.matched === false ? 'api-error' : 'success-strip'}>{result.message || result.safe_message || 'Scan response received.'}</div>}
+      <details className="raw-response-details">
+        <summary>Raw response</summary>
+        <pre className="json-preview">{JSON.stringify(result, null, 2)}</pre>
+      </details>
+    </div>
   );
 }
 
@@ -4292,12 +4877,116 @@ function StockMovementsTable({ movements }) {
 }
 
 function ReportsPage({ receivedRows, receivedSummary, receivedLoading, receivedError, onLoadReceivedReport, fulfillmentRows, fulfillmentSummary, fulfillmentLoading, fulfillmentError, onLoadFulfillmentReport, skuOrdersRows, skuOrdersSummary, skuOrdersLoading, skuOrdersError, onLoadSkuOrdersReport }) {
+  const [activeReport, setActiveReport] = useState(expandedReportDefinitions[0].key);
+  const allReports = [
+    ...expandedReportDefinitions,
+    { key: 'received-inventory', label: 'Received Inventory' },
+    { key: 'fulfillment', label: 'Fulfillment' },
+    { key: 'sku-orders', label: 'SKU Orders' },
+  ];
+  const isExpandedReport = expandedReportDefinitions.some((report) => report.key === activeReport);
+
   return (
     <section className="content-panel report-page">
-      <ReceivedInventoryReportPage rows={receivedRows} summary={receivedSummary} loading={receivedLoading} error={receivedError} onLoadReport={onLoadReceivedReport} />
-      <FulfillmentReportPage rows={fulfillmentRows} summary={fulfillmentSummary} loading={fulfillmentLoading} error={fulfillmentError} onLoadReport={onLoadFulfillmentReport} />
-      <SkuOrdersReportPage rows={skuOrdersRows} summary={skuOrdersSummary} loading={skuOrdersLoading} error={skuOrdersError} onLoadReport={onLoadSkuOrdersReport} />
+      <div className="reports-workspace">
+        <aside className="report-nav-card" aria-label="Report list">
+          <div>
+            <h2>Reports</h2>
+            <p>Choose one export-ready view.</p>
+          </div>
+          <div className="report-nav-list">
+            {allReports.map((report) => (
+              <button className={activeReport === report.key ? 'report-nav-button active' : 'report-nav-button'} key={report.key} onClick={() => setActiveReport(report.key)} type="button">
+                {report.label}
+              </button>
+            ))}
+          </div>
+        </aside>
+        <div className="report-main-panel">
+          {isExpandedReport && <ExpandedReportsPanel activeReport={activeReport} />}
+          {activeReport === 'received-inventory' && <ReceivedInventoryReportPage rows={receivedRows} summary={receivedSummary} loading={receivedLoading} error={receivedError} onLoadReport={onLoadReceivedReport} />}
+          {activeReport === 'fulfillment' && <FulfillmentReportPage rows={fulfillmentRows} summary={fulfillmentSummary} loading={fulfillmentLoading} error={fulfillmentError} onLoadReport={onLoadFulfillmentReport} />}
+          {activeReport === 'sku-orders' && <SkuOrdersReportPage rows={skuOrdersRows} summary={skuOrdersSummary} loading={skuOrdersLoading} error={skuOrdersError} onLoadReport={onLoadSkuOrdersReport} />}
+        </div>
+      </div>
     </section>
+  );
+}
+
+const expandedReportDefinitions = [
+  { key: 'inventory-valuation', label: 'Inventory Valuation' },
+  { key: 'low-stock', label: 'Low Stock / Reorder' },
+  { key: 'stock-movement-ledger', label: 'Stock Movement Ledger' },
+  { key: 'item-activity', label: 'Item Activity' },
+  { key: 'location-utilization', label: 'Location Utilization' },
+  { key: 'margin-by-sku', label: 'Margin by SKU' },
+  { key: 'receiving-cost', label: 'Receiving Cost' },
+  { key: 'adjustments', label: 'Adjustment / Damage / Loss' },
+];
+
+function ExpandedReportsPanel({ activeReport }) {
+  const active = activeReport || expandedReportDefinitions[0].key;
+  const [filters, setFilters] = useState({ sku: '', barcode: '', brand: '', category: '', warehouse: '', inventory_location: '', start_date: '', end_date: '', movement_type: '', adjustment_type: '' });
+  const [rows, setRows] = useState([]);
+  const [summary, setSummary] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const definition = expandedReportDefinitions.find((report) => report.key === active) || expandedReportDefinitions[0];
+
+  useEffect(() => {
+    loadReport();
+  }, [active]);
+
+  function update(field, value) {
+    setFilters((current) => ({ ...current, [field]: value }));
+  }
+
+  async function loadReport() {
+    setLoading(true);
+    setError('');
+    try {
+      const query = plainFiltersToQueryString(filters);
+      const [rowsResponse, summaryResponse] = await Promise.all([fetch(`${API_BASE_URL}/api/reports/${active}${query}`), fetch(`${API_BASE_URL}/api/reports/${active}/summary${query}`)]);
+      if (!rowsResponse.ok || !summaryResponse.ok) throw new Error('Report API returned an error.');
+      setRows(await rowsResponse.json());
+      setSummary(await summaryResponse.json());
+    } catch (apiError) {
+      setRows([]);
+      setSummary({});
+      setError(apiError.message || 'Unable to load report.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="wide-panel report-section">
+      <div className="panel-title"><div><h2>{definition.label}</h2><p>Read-only local inventory and operations report.</p></div></div>
+      <div className="summary-strip report-summary-strip">
+        {Object.entries(summary).slice(0, 6).map(([key, value]) => <Metric key={key} label={key.replace(/_/g, ' ')} value={typeof value === 'number' ? formatNumber(value) : String(value ?? '')} />)}
+        {Object.keys(summary).length === 0 && <Metric label="Rows" value={rows.length} />}
+      </div>
+      <div className="toolbar report-toolbar">
+        <div className="filter-grid report-filter-grid">
+          {['start_date', 'end_date'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={filters[field]} onChange={(event) => update(field, event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, loadReport)} type="date" /></label>)}
+          {['sku', 'barcode', 'brand', 'category', 'warehouse', 'inventory_location', 'movement_type', 'adjustment_type'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={filters[field]} onChange={(event) => update(field, event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, loadReport)} /></label>)}
+        </div>
+        <div className="button-row items-actions"><button className="primary-button" onClick={loadReport} type="button"><RefreshCw size={17} />Refresh</button><button className="action-button" onClick={() => exportGenericReportCsv(active, filters, definition.label)} type="button"><Download size={17} />Export CSV</button></div>
+      </div>
+      {loading && <div className="loading-strip">Loading {definition.label}...</div>}
+      {error && <div className="api-error">{error}</div>}
+      <GenericReportTable rows={rows} />
+    </section>
+  );
+}
+
+function GenericReportTable({ rows }) {
+  const columns = rows[0] ? Object.keys(rows[0]) : [];
+  return (
+    <TableShell caption={`${rows.length} row(s)`} columns={columns.length ? columns.map((column) => column.replace(/_/g, ' ')) : ['Report']}>
+      {rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}>{formatReportValue(row[column])}</td>)}</tr>)}
+      {!rows.length && <tr><td colSpan={Math.max(columns.length, 1)}><div className="empty-table-row">No report rows match the current filters.</div></td></tr>}
+    </TableShell>
   );
 }
 
@@ -4351,14 +5040,14 @@ function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadRepo
           <label className="field">
             <span>Date From</span>
             <div className="input-with-icon">
-              <input value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} type="date" />
+              <input value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" />
               <CalendarDays size={18} />
             </div>
           </label>
           <label className="field">
             <span>Date To</span>
             <div className="input-with-icon">
-              <input value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} type="date" />
+              <input value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" />
               <CalendarDays size={18} />
             </div>
           </label>
@@ -4367,14 +5056,14 @@ function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadRepo
           <label className="field">
             <span>SKU</span>
             <div className="input-with-icon">
-              <input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} />
+              <input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} />
               <Search size={18} />
             </div>
           </label>
           <label className="field">
             <span>Barcode</span>
             <div className="input-with-icon">
-              <input value={filters.barcode} onChange={(event) => updateFilter('barcode', event.target.value)} />
+              <input value={filters.barcode} onChange={(event) => updateFilter('barcode', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} />
               <Search size={18} />
             </div>
           </label>
@@ -4383,21 +5072,21 @@ function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadRepo
           <label className="field">
             <span>Receipt Number</span>
             <div className="input-with-icon">
-              <input value={filters.receiptNumber} onChange={(event) => updateFilter('receiptNumber', event.target.value)} />
+              <input value={filters.receiptNumber} onChange={(event) => updateFilter('receiptNumber', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} />
               <Search size={18} />
             </div>
           </label>
           <label className="field">
             <span>Reference Number</span>
             <div className="input-with-icon">
-              <input value={filters.referenceNumber} onChange={(event) => updateFilter('referenceNumber', event.target.value)} />
+              <input value={filters.referenceNumber} onChange={(event) => updateFilter('referenceNumber', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} />
               <Search size={18} />
             </div>
           </label>
           <label className="field">
             <span>Created By</span>
             <div className="input-with-icon">
-              <input value={filters.createdBy} onChange={(event) => updateFilter('createdBy', event.target.value)} />
+              <input value={filters.createdBy} onChange={(event) => updateFilter('createdBy', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} />
               <UserCircle size={18} />
             </div>
           </label>
@@ -4446,11 +5135,11 @@ function ReceivedInventoryTable({ rows }) {
         </span>
         <div className="table-pager">
           <span>{rows.length} Results</span>
-          <button className="pager-button" aria-label="Previous page" type="button">
+          <button className="pager-button" aria-label="Previous page" title="Pagination is not available yet" disabled type="button">
             <ChevronLeft size={18} />
           </button>
           <span>1 / 1</span>
-          <button className="pager-button active" aria-label="Next page" type="button">
+          <button className="pager-button active" aria-label="Next page" title="Pagination is not available yet" disabled type="button">
             <ChevronRight size={18} />
           </button>
         </div>
@@ -4587,28 +5276,28 @@ function FulfillmentReportPage({ rows, summary, loading, error, onLoadReport }) 
           <label className="field">
             <span>Date From</span>
             <div className="input-with-icon">
-              <input value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} type="date" />
+              <input value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" />
               <CalendarDays size={18} />
             </div>
           </label>
           <label className="field">
             <span>Date To</span>
             <div className="input-with-icon">
-              <input value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} type="date" />
+              <input value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" />
               <CalendarDays size={18} />
             </div>
           </label>
           <FilterSelect label="Warehouse" value={filters.warehouse} options={options.warehouses} onChange={(value) => updateFilter('warehouse', value)} />
           <FilterSelect label="Inventory Location" value={filters.inventoryLocation} options={options.locations} onChange={(value) => updateFilter('inventoryLocation', value)} />
-          <label className="field"><span>SKU</span><div className="input-with-icon"><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} /><Search size={18} /></div></label>
-          <label className="field"><span>Barcode</span><div className="input-with-icon"><input value={filters.barcode} onChange={(event) => updateFilter('barcode', event.target.value)} /><Search size={18} /></div></label>
+          <label className="field"><span>SKU</span><div className="input-with-icon"><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
+          <label className="field"><span>Barcode</span><div className="input-with-icon"><input value={filters.barcode} onChange={(event) => updateFilter('barcode', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
           <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
           <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
-          <label className="field"><span>Fulfillment Number</span><div className="input-with-icon"><input value={filters.fulfillmentNumber} onChange={(event) => updateFilter('fulfillmentNumber', event.target.value)} /><Search size={18} /></div></label>
-          <label className="field"><span>Woo Order Number</span><div className="input-with-icon"><input value={filters.wooOrderNumber} onChange={(event) => updateFilter('wooOrderNumber', event.target.value)} /><Search size={18} /></div></label>
-          <label className="field"><span>Customer Email</span><div className="input-with-icon"><input value={filters.customerEmail} onChange={(event) => updateFilter('customerEmail', event.target.value)} /><Search size={18} /></div></label>
+          <label className="field"><span>Fulfillment Number</span><div className="input-with-icon"><input value={filters.fulfillmentNumber} onChange={(event) => updateFilter('fulfillmentNumber', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
+          <label className="field"><span>Woo Order Number</span><div className="input-with-icon"><input value={filters.wooOrderNumber} onChange={(event) => updateFilter('wooOrderNumber', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
+          <label className="field"><span>Customer Email</span><div className="input-with-icon"><input value={filters.customerEmail} onChange={(event) => updateFilter('customerEmail', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
           <FilterSelect label="Local Status" value={filters.localStatus} options={options.statuses} onChange={(value) => updateFilter('localStatus', value)} />
-          <label className="field"><span>Created By</span><div className="input-with-icon"><input value={filters.createdBy} onChange={(event) => updateFilter('createdBy', event.target.value)} /><UserCircle size={18} /></div></label>
+          <label className="field"><span>Created By</span><div className="input-with-icon"><input value={filters.createdBy} onChange={(event) => updateFilter('createdBy', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><UserCircle size={18} /></div></label>
         </div>
         <div className="button-row items-actions">
           <button className="primary-button" onClick={applyFilters} type="button"><Filter size={17} />Apply Filters</button>
@@ -4729,11 +5418,11 @@ function SkuOrdersReportPage({ rows, summary, loading, error, onLoadReport }) {
       </div>
       <div className="toolbar report-toolbar">
         <div className="filter-grid report-filter-grid">
-          <label className="field"><span>Start Date</span><div className="input-with-icon"><input value={filters.startDate} onChange={(event) => updateFilter('startDate', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
-          <label className="field"><span>End Date</span><div className="input-with-icon"><input value={filters.endDate} onChange={(event) => updateFilter('endDate', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
-          <label className="field"><span>SKU</span><div className="input-with-icon"><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} /><Search size={18} /></div></label>
-          <label className="field"><span>Brand</span><input value={filters.brand} onChange={(event) => updateFilter('brand', event.target.value)} /></label>
-          <label className="field"><span>Category</span><input value={filters.category} onChange={(event) => updateFilter('category', event.target.value)} /></label>
+          <label className="field"><span>Start Date</span><div className="input-with-icon"><input value={filters.startDate} onChange={(event) => updateFilter('startDate', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" /><CalendarDays size={18} /></div></label>
+          <label className="field"><span>End Date</span><div className="input-with-icon"><input value={filters.endDate} onChange={(event) => updateFilter('endDate', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" /><CalendarDays size={18} /></div></label>
+          <label className="field"><span>SKU</span><div className="input-with-icon"><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
+          <label className="field"><span>Brand</span><input value={filters.brand} onChange={(event) => updateFilter('brand', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
+          <label className="field"><span>Category</span><input value={filters.category} onChange={(event) => updateFilter('category', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
           <FilterSelect label="Group By" value={filters.groupBy} options={['sku', 'brand', 'category', 'location']} onChange={(value) => updateFilter('groupBy', value)} />
           <label className="toggle-card"><input checked={filters.includeUnmatched} onChange={(event) => updateFilter('includeUnmatched', event.target.checked)} type="checkbox" /><span>Include Unmatched</span></label>
         </div>
@@ -4776,7 +5465,8 @@ function SkuOrdersReportPage({ rows, summary, loading, error, onLoadReport }) {
   );
 }
 
-function OpenOrdersPage({
+function OrdersPage({
+  route,
   ordersData,
   loading,
   error,
@@ -4822,12 +5512,13 @@ function OpenOrdersPage({
   const [filters, setFilters] = useState({ search: '', wooStatus: '', availabilityStatus: '', matchedStatus: '' });
   const orders = ordersData.orders || [];
   const selectedOrderId = detail?.id;
+  const view = route.ordersView || 'open';
 
   useEffect(() => {
-    if (selectedOrderId) {
+    if (view === 'pick' && selectedOrderId) {
       onLoadPickScanner(selectedOrderId);
     }
-  }, [selectedOrderId]);
+  }, [view, selectedOrderId]);
 
   function updateFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -4839,127 +5530,278 @@ function OpenOrdersPage({
     onLoadOpenOrders(cleared);
   }
 
-  return (
-    <section className="content-panel orders-page">
-      <div className="wide-panel">
-        <div className="panel-title">
-          <div>
-            <h2>Open Orders</h2>
-            <p>Read-only local order queue imported from WooCommerce processing and on-hold orders.</p>
+  const summaryCards = (
+    <div className="summary-strip order-summary-strip">
+      <Metric label="Open Orders" value={ordersData.total || 0} />
+      <Metric label="Available" value={ordersData.available_count || 0} />
+      <Metric label="Partial" value={ordersData.partial_count || 0} />
+      <Metric label="Unavailable" value={ordersData.unavailable_count || 0} />
+      <Metric label="Unknown" value={ordersData.unknown_count || 0} />
+    </div>
+  );
+
+  const filtersPanel = (
+    <div className="filter-panel">
+      <div className="filter-grid orders-filter-grid">
+        <label className="field">
+          <span>Search</span>
+          <div className="input-with-icon">
+            <Search size={18} />
+            <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadOpenOrders(filters))} placeholder="Order, customer, SKU, barcode" type="search" />
           </div>
-          <div className="button-row compact">
-            <button className="muted-button" onClick={() => onLoadOpenOrders(filters)} disabled={loading} type="button">
-              <RefreshCw size={17} />
-              Refresh
-            </button>
-            <button className="action-button" onClick={() => exportOpenOrdersCsv(filters)} type="button">
-              <Download size={17} />
-              Export
-            </button>
-            <button className="primary-button" onClick={() => onPreviewAllocation(selectedOrderId)} disabled={!selectedOrderId || allocationLoading} type="button">
-              <ClipboardList size={17} />
-              Preview Allocation
-            </button>
-            <button className="action-button" onClick={() => onCommitAllocation(selectedOrderId)} disabled={!selectedOrderId || allocationLoading || !allocationPreview} type="button">
-              <CheckCircle2 size={17} />
-              Commit Allocation
-            </button>
-            <button className="primary-button" onClick={() => onPreviewPick(selectedOrderId)} disabled={!selectedOrderId || pickLoading} type="button">
-              <ClipboardCheck size={17} />
-              Preview Pick
-            </button>
-            <button className="action-button" onClick={() => onCommitPick(selectedOrderId)} disabled={!selectedOrderId || pickLoading || !pickPreview} type="button">
-              <CheckCircle2 size={17} />
-              Commit Pick
-            </button>
-            <button className="primary-button" onClick={() => onPreviewFulfillment(selectedOrderId)} disabled={!selectedOrderId || fulfillmentLoading} type="button">
-              <PackagePlus size={17} />
-              Preview Fulfillment
-            </button>
-            <button className="action-button" onClick={() => onCommitFulfillment(selectedOrderId)} disabled={!selectedOrderId || fulfillmentLoading || !fulfillmentPreview} type="button">
-              <CheckCircle2 size={17} />
-              Commit Fulfillment
-            </button>
-          </div>
-        </div>
-        <div className="summary-strip order-summary-strip">
-          <Metric label="Open Orders" value={ordersData.total || 0} />
-          <Metric label="Available" value={ordersData.available_count || 0} />
-          <Metric label="Partial" value={ordersData.partial_count || 0} />
-          <Metric label="Unavailable" value={ordersData.unavailable_count || 0} />
-          <Metric label="Unknown" value={ordersData.unknown_count || 0} />
-        </div>
-        <div className="filter-panel">
-          <div className="filter-grid orders-filter-grid">
-            <label className="field">
-              <span>Search</span>
-              <div className="input-with-icon">
-                <Search size={18} />
-                <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} placeholder="Order, customer, SKU, barcode" type="search" />
-              </div>
-            </label>
-            <FilterSelect label="Woo Status" value={filters.wooStatus} options={['processing', 'on-hold']} onChange={(value) => updateFilter('wooStatus', value)} />
-            <FilterSelect label="Availability" value={filters.availabilityStatus} options={['available', 'partial', 'unavailable', 'unknown']} onChange={(value) => updateFilter('availabilityStatus', value)} />
-            <FilterSelect label="Matched" value={filters.matchedStatus} options={['matched', 'unmatched', 'conflict', 'unknown']} onChange={(value) => updateFilter('matchedStatus', value)} />
-          </div>
-          <div className="button-row">
-            <button className="muted-button" onClick={clearFilters} type="button">
-              <SlidersHorizontal size={17} />
-              Clear
-            </button>
-            <button className="primary-button" onClick={() => onLoadOpenOrders(filters)} disabled={loading} type="button">
-              <Filter size={17} />
-              Apply
-            </button>
+        </label>
+        <FilterSelect label="Woo Status" value={filters.wooStatus} options={['processing', 'on-hold']} onChange={(value) => updateFilter('wooStatus', value)} />
+        <FilterSelect label="Availability" value={filters.availabilityStatus} options={['available', 'partial', 'unavailable', 'unknown']} onChange={(value) => updateFilter('availabilityStatus', value)} />
+        <FilterSelect label="Matched" value={filters.matchedStatus} options={['matched', 'unmatched', 'conflict', 'unknown']} onChange={(value) => updateFilter('matchedStatus', value)} />
+      </div>
+      <div className="button-row">
+        <button className="muted-button" onClick={clearFilters} type="button">
+          <SlidersHorizontal size={17} />
+          Clear
+        </button>
+        <button className="primary-button" onClick={() => onLoadOpenOrders(filters)} disabled={loading} type="button">
+          <Filter size={17} />
+          Apply
+        </button>
+      </div>
+    </div>
+  );
+
+  const openStatus = (
+    <>
+      {loading && <div className="loading-strip">Loading open orders...</div>}
+      {error && <div className="api-error">{error}</div>}
+    </>
+  );
+
+  const selectedLabel = selectedOrderId ? `Order ${detail?.woo_order_number || detail?.woo_order_id || selectedOrderId}` : 'Select an order to continue.';
+
+  if (view === 'completed') {
+    return (
+      <section className="content-panel orders-page">
+        <CompletedOrdersPanel ordersData={completedOrders} loading={completedOrdersLoading} error={completedOrdersError} onLoadCompletedOrders={onLoadCompletedOrders} />
+      </section>
+    );
+  }
+
+  if (view === 'history') {
+    return (
+      <section className="content-panel orders-page">
+        <div className="wide-panel">
+          <div className="panel-title">
+            <div>
+              <h2>Order History</h2>
+              <p>Read-only local allocation, pick, and fulfillment records.</p>
+            </div>
+            <div className="button-row compact">
+              <button className="muted-button" onClick={() => { onLoadAllocationDetail(null); onLoadFulfillmentDetail(null); onLoadPickDetail(null); }} type="button">
+                Clear Details
+              </button>
+            </div>
           </div>
         </div>
-        <div className="csv-note">Fulfillment reduces local Pongo OS In Stock and Allocated quantities. It does not update WooCommerce order status, WooCommerce stock, routes, shipping labels, or notifications.</div>
-        {loading && <div className="loading-strip">Loading open orders...</div>}
-        {allocationLoading && <div className="loading-strip">Working on allocation...</div>}
-        {pickLoading && <div className="loading-strip">Working on picking...</div>}
-        {fulfillmentLoading && <div className="loading-strip">Working on fulfillment...</div>}
-        {error && <div className="api-error">{error}</div>}
         {allocationError && <div className="api-error">{allocationError}</div>}
         {pickError && <div className="api-error">{pickError}</div>}
         {fulfillmentError && <div className="api-error">{fulfillmentError}</div>}
-        {allocationCommitSummary && (
-          <div className={allocationCommitSummary.errors?.length ? 'api-error' : 'success-strip'}>
-            Allocation {allocationCommitSummary.allocation_number || ''} finished with status {allocationCommitSummary.status}. Allocated {formatNumber(allocationCommitSummary.total_quantity_allocated)} unit(s).
-            {(allocationCommitSummary.errors || []).join(' ')}
+        <AllocationHistoryPanel allocations={allocationHistory} detail={allocationDetail} onSelect={onLoadAllocationDetail} />
+        <PickHistoryPanel picks={pickHistory} detail={pickDetail} onSelect={onLoadPickDetail} />
+        <FulfillmentHistoryPanel fulfillments={fulfillmentHistory} detail={fulfillmentDetail} onSelect={onLoadFulfillmentDetail} />
+      </section>
+    );
+  }
+
+  if (view === 'allocate') {
+    return (
+      <section className="content-panel orders-page">
+        <div className="wide-panel">
+          <OrdersWorkflowHeader title="Allocate Orders" description="Reserve local Pongo OS inventory for open WooCommerce order snapshots." loading={loading || allocationLoading} onRefresh={() => onLoadOpenOrders(filters)} onExport={() => exportOpenOrdersCsv(filters)} />
+          {summaryCards}
+          {filtersPanel}
+          <div className="csv-note">Allocation reserves local inventory only. It does not update WooCommerce, reduce In Stock, or pick orders.</div>
+          <div className="context-action-panel">
+            <div>
+              <span>Allocation workflow</span>
+              <strong>{selectedLabel}</strong>
+            </div>
+            <div className="button-row">
+              <button className="primary-button" onClick={() => onPreviewAllocation(selectedOrderId)} disabled={!selectedOrderId || allocationLoading} type="button">
+                <ClipboardList size={17} />
+                Preview Allocation
+              </button>
+              <button className="action-button" onClick={() => onCommitAllocation(selectedOrderId)} disabled={!selectedOrderId || allocationLoading || !allocationPreview} type="button">
+                <CheckCircle2 size={17} />
+                Commit Allocation
+              </button>
+            </div>
           </div>
-        )}
-        {pickCommitSummary && (
-          <div className={pickCommitSummary.errors?.length ? 'api-error' : 'success-strip'}>
-            Pick {pickCommitSummary.pick_number || ''} finished with status {pickCommitSummary.status}. Picked {formatNumber(pickCommitSummary.total_quantity_picked)} unit(s).
-            {(pickCommitSummary.errors || []).join(' ')}
+          {openStatus}
+          {allocationLoading && <div className="loading-strip">Working on allocation...</div>}
+          {allocationError && <div className="api-error">{allocationError}</div>}
+          {allocationCommitSummary && <OrderWorkflowSummary summary={allocationCommitSummary} type="Allocation" quantityField="total_quantity_allocated" />}
+        </div>
+        {allocationPreview && <AllocationPreviewPanel preview={allocationPreview} />}
+        <div className="orders-grid">
+          <OpenOrdersTable orders={orders} selectedOrderId={detail?.id} onSelect={onLoadOpenOrderDetail} renderActions={(order) => (
+            <div className="button-row compact table-button-row">
+              <button className="muted-button" onClick={() => onLoadOpenOrderDetail(order.id)} type="button">View</button>
+              <button className="primary-button" onClick={() => { onLoadOpenOrderDetail(order.id); onPreviewAllocation(order.id); }} disabled={allocationLoading} type="button">Preview</button>
+            </div>
+          )} />
+          <OpenOrderDetailPanel order={detail} />
+        </div>
+      </section>
+    );
+  }
+
+  if (view === 'pick') {
+    return (
+      <section className="content-panel orders-page">
+        <div className="wide-panel">
+          <OrdersWorkflowHeader title="Pick Orders" description="Scan allocated order lines and record local picking progress." loading={loading || pickLoading} onRefresh={() => onLoadOpenOrders(filters)} onExport={() => exportOpenOrdersCsv(filters)} />
+          {summaryCards}
+          {filtersPanel}
+          <div className="csv-note">Picking records operational progress only. It does not update WooCommerce and does not reduce In Stock.</div>
+          <div className="context-action-panel">
+            <div>
+              <span>Picking workflow</span>
+              <strong>{selectedOrderId ? selectedLabel : 'Select an allocated order to start picking.'}</strong>
+            </div>
+            <div className="button-row">
+              <button className="primary-button" onClick={() => onPreviewPick(selectedOrderId)} disabled={!selectedOrderId || pickLoading} type="button">
+                <ClipboardCheck size={17} />
+                Preview Pick
+              </button>
+              <button className="action-button" onClick={() => onCommitPick(selectedOrderId)} disabled={!selectedOrderId || pickLoading || !pickPreview} type="button">
+                <CheckCircle2 size={17} />
+                Commit Pick
+              </button>
+            </div>
           </div>
-        )}
-        {fulfillmentCommitSummary && (
-          <div className={fulfillmentCommitSummary.errors?.length ? 'api-error' : 'success-strip'}>
-            Fulfillment {fulfillmentCommitSummary.fulfillment_number || ''} finished with status {fulfillmentCommitSummary.status}. Fulfilled {formatNumber(fulfillmentCommitSummary.total_quantity_fulfilled)} unit(s).
-            {(fulfillmentCommitSummary.errors || []).join(' ')}
+          {openStatus}
+          {pickLoading && <div className="loading-strip">Working on picking...</div>}
+          {pickError && <div className="api-error">{pickError}</div>}
+          {pickCommitSummary && <OrderWorkflowSummary summary={pickCommitSummary} type="Pick" quantityField="total_quantity_picked" />}
+        </div>
+        <div className="orders-grid">
+          <OpenOrdersTable orders={orders} selectedOrderId={detail?.id} onSelect={onLoadOpenOrderDetail} renderActions={(order) => (
+            <div className="button-row compact table-button-row">
+              <button className="muted-button" onClick={() => onLoadOpenOrderDetail(order.id)} type="button">Select</button>
+              <button className="primary-button" onClick={() => { onLoadOpenOrderDetail(order.id); onPreviewPick(order.id); }} disabled={pickLoading} type="button">Preview</button>
+            </div>
+          )} />
+          <OpenOrderDetailPanel order={detail} />
+        </div>
+        <PickScannerPanel order={pickScannerOrder} message={pickScannerMessage} loading={pickLoading} onScan={(skuOrBarcode, quantity) => onCommitPickScan(selectedOrderId, skuOrBarcode, quantity)} />
+        {pickPreview && <PickPreviewPanel preview={pickPreview} />}
+      </section>
+    );
+  }
+
+  if (view === 'fulfillment') {
+    return (
+      <section className="content-panel orders-page">
+        <div className="wide-panel">
+          <OrdersWorkflowHeader title="Fulfillment" description="Complete picked local orders and reduce local Pongo OS inventory." loading={loading || fulfillmentLoading} onRefresh={() => onLoadOpenOrders(filters)} onExport={() => exportOpenOrdersCsv(filters)} />
+          {summaryCards}
+          {filtersPanel}
+          <div className="csv-note">Fulfillment reduces local Pongo OS inventory only. It does not update WooCommerce order status or WooCommerce stock.</div>
+          <div className="context-action-panel">
+            <div>
+              <span>Fulfillment workflow</span>
+              <strong>{selectedLabel}</strong>
+            </div>
+            <div className="button-row">
+              <button className="primary-button" onClick={() => onPreviewFulfillment(selectedOrderId)} disabled={!selectedOrderId || fulfillmentLoading} type="button">
+                <PackagePlus size={17} />
+                Preview Fulfillment
+              </button>
+              <button className="action-button" onClick={() => onCommitFulfillment(selectedOrderId)} disabled={!selectedOrderId || fulfillmentLoading || !fulfillmentPreview} type="button">
+                <CheckCircle2 size={17} />
+                Commit Fulfillment
+              </button>
+            </div>
           </div>
-        )}
+          {openStatus}
+          {fulfillmentLoading && <div className="loading-strip">Working on fulfillment...</div>}
+          {fulfillmentError && <div className="api-error">{fulfillmentError}</div>}
+          {fulfillmentCommitSummary && <OrderWorkflowSummary summary={fulfillmentCommitSummary} type="Fulfillment" quantityField="total_quantity_fulfilled" />}
+        </div>
+        {fulfillmentPreview && <FulfillmentPreviewPanel preview={fulfillmentPreview} />}
+        <div className="orders-grid">
+          <OpenOrdersTable orders={orders} selectedOrderId={detail?.id} onSelect={onLoadOpenOrderDetail} renderActions={(order) => (
+            <div className="button-row compact table-button-row">
+              <button className="muted-button" onClick={() => onLoadOpenOrderDetail(order.id)} type="button">View</button>
+              <button className="primary-button" onClick={() => { onLoadOpenOrderDetail(order.id); onPreviewFulfillment(order.id); }} disabled={fulfillmentLoading} type="button">Preview</button>
+            </div>
+          )} />
+          <OpenOrderDetailPanel order={detail} />
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="content-panel orders-page">
+      <div className="wide-panel">
+        <OrdersWorkflowHeader title="Open Orders" description="Read-only local order queue imported from WooCommerce processing and on-hold orders." loading={loading} onRefresh={() => onLoadOpenOrders(filters)} onExport={() => exportOpenOrdersCsv(filters)} />
+        {summaryCards}
+        {filtersPanel}
+        <div className="csv-note">Orders are local snapshots imported from WooCommerce. This page does not update WooCommerce.</div>
+        {openStatus}
+        {allocationError && <div className="api-error">{allocationError}</div>}
+        {allocationCommitSummary && <OrderWorkflowSummary summary={allocationCommitSummary} type="Allocation" quantityField="total_quantity_allocated" />}
       </div>
-      {allocationPreview && <AllocationPreviewPanel preview={allocationPreview} />}
-      <PickScannerPanel order={pickScannerOrder} message={pickScannerMessage} loading={pickLoading} onScan={(skuOrBarcode, quantity) => onCommitPickScan(selectedOrderId, skuOrBarcode, quantity)} />
-      {pickPreview && <PickPreviewPanel preview={pickPreview} />}
-      {fulfillmentPreview && <FulfillmentPreviewPanel preview={fulfillmentPreview} />}
       <div className="orders-grid">
-        <OpenOrdersTable orders={orders} selectedOrderId={detail?.id} onSelect={onLoadOpenOrderDetail} />
+        <OpenOrdersTable orders={orders} selectedOrderId={detail?.id} onSelect={onLoadOpenOrderDetail} renderActions={(order) => (
+          <div className="button-row compact table-button-row">
+            <button className="muted-button" onClick={() => onLoadOpenOrderDetail(order.id)} type="button">View Details</button>
+            <button className="primary-button" onClick={() => { onLoadOpenOrderDetail(order.id); onPreviewAllocation(order.id); }} disabled={allocationLoading} type="button">Preview Allocation</button>
+            <button className="action-button" onClick={() => onCommitAllocation(order.id)} disabled={allocationLoading} type="button">Allocate</button>
+          </div>
+        )} />
         <OpenOrderDetailPanel order={detail} />
       </div>
-      <AllocationHistoryPanel allocations={allocationHistory} detail={allocationDetail} onSelect={onLoadAllocationDetail} />
-      <PickHistoryPanel picks={pickHistory} detail={pickDetail} onSelect={onLoadPickDetail} />
-      <FulfillmentHistoryPanel fulfillments={fulfillmentHistory} detail={fulfillmentDetail} onSelect={onLoadFulfillmentDetail} />
-      <CompletedOrdersPanel ordersData={completedOrders} loading={completedOrdersLoading} error={completedOrdersError} onLoadCompletedOrders={onLoadCompletedOrders} />
     </section>
   );
 }
 
-function OpenOrdersTable({ orders, selectedOrderId, onSelect }) {
+function OrdersWorkflowHeader({ title, description, loading, onRefresh, onExport }) {
   return (
-    <TableShell caption={`${orders.length} open order(s)`} columns={['Order', 'Local Status', 'Woo Status', 'Customer', 'Email', 'Total', 'Availability', 'Matched', 'Lines', 'Created', 'Last Sync']}>
+    <div className="panel-title">
+      <div>
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </div>
+      <div className="button-row compact">
+        <button className="muted-button" onClick={onRefresh} disabled={loading} type="button">
+          <RefreshCw size={17} />
+          Refresh
+        </button>
+        <button className="action-button" onClick={onExport} type="button">
+          <Download size={17} />
+          Export
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OrderWorkflowSummary({ summary, type, quantityField }) {
+  return (
+    <div className={summary.errors?.length ? 'api-error' : 'success-strip'}>
+      {type} {summary.allocation_number || summary.pick_number || summary.fulfillment_number || ''} finished with status {summary.status}. {formatNumber(summary[quantityField])} unit(s).
+      {(summary.errors || []).join(' ')}
+    </div>
+  );
+}
+
+function OpenOrdersTable({ orders, selectedOrderId, onSelect, renderActions }) {
+  const columns = ['Order', 'Local Status', 'Woo Status', 'Customer', 'Email', 'Total', 'Availability', 'Matched', 'Lines', 'Created', 'Last Sync'];
+  if (renderActions) {
+    columns.push('Actions');
+  }
+  return (
+    <TableShell caption={`${orders.length} open order(s)`} columns={columns}>
       {orders.map((order) => (
         <tr key={order.id} className={selectedOrderId === order.id ? 'selected-row' : ''} onClick={() => onSelect(order.id)}>
           <td className="mono">{order.woo_order_number || order.woo_order_id}</td>
@@ -4973,11 +5815,16 @@ function OpenOrdersTable({ orders, selectedOrderId, onSelect }) {
           <td>{order.line_count}</td>
           <td>{formatDateTime(order.date_created)}</td>
           <td>{formatDateTime(order.last_synced_at)}</td>
+          {renderActions && (
+            <td onClick={(event) => event.stopPropagation()}>
+              {renderActions(order)}
+            </td>
+          )}
         </tr>
       ))}
       {orders.length === 0 && (
         <tr>
-          <td colSpan={11}>
+          <td colSpan={columns.length}>
             <div className="empty-table-row">No local open orders match the current filters.</div>
           </td>
         </tr>
@@ -5514,13 +6361,13 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
       <div className="filter-panel">
         <div className="filter-grid orders-filter-grid">
           <FilterSelect label="Local Status" value={filters.localStatus} options={['fulfilled', 'partially_fulfilled']} onChange={(value) => updateFilter('localStatus', value)} />
-          <label className="field"><span>Date From</span><div className="input-with-icon"><input value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
-          <label className="field"><span>Date To</span><div className="input-with-icon"><input value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
-          <label className="field"><span>Customer Email</span><div className="input-with-icon"><input value={filters.customerEmail} onChange={(event) => updateFilter('customerEmail', event.target.value)} /><Search size={18} /></div></label>
-          <label className="field"><span>Woo Order Number</span><div className="input-with-icon"><input value={filters.wooOrderNumber} onChange={(event) => updateFilter('wooOrderNumber', event.target.value)} /><Search size={18} /></div></label>
-          <label className="field"><span>SKU</span><div className="input-with-icon"><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} /><Search size={18} /></div></label>
-          <label className="field"><span>Barcode</span><div className="input-with-icon"><input value={filters.barcode} onChange={(event) => updateFilter('barcode', event.target.value)} /><Search size={18} /></div></label>
-          <label className="field"><span>Search</span><div className="input-with-icon"><input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} /><Search size={18} /></div></label>
+          <label className="field"><span>Date From</span><div className="input-with-icon"><input value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" /><CalendarDays size={18} /></div></label>
+          <label className="field"><span>Date To</span><div className="input-with-icon"><input value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" /><CalendarDays size={18} /></div></label>
+          <label className="field"><span>Customer Email</span><div className="input-with-icon"><input value={filters.customerEmail} onChange={(event) => updateFilter('customerEmail', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
+          <label className="field"><span>Woo Order Number</span><div className="input-with-icon"><input value={filters.wooOrderNumber} onChange={(event) => updateFilter('wooOrderNumber', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
+          <label className="field"><span>SKU</span><div className="input-with-icon"><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
+          <label className="field"><span>Barcode</span><div className="input-with-icon"><input value={filters.barcode} onChange={(event) => updateFilter('barcode', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
+          <label className="field"><span>Search</span><div className="input-with-icon"><input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
         </div>
         <div className="button-row">
           <button className="muted-button" onClick={clearFilters} type="button"><SlidersHorizontal size={17} />Clear</button>
@@ -5671,7 +6518,7 @@ function RoutesPage({
             <label className="field">
               <span>Search</span>
               <div className="input-with-icon">
-                <input value={candidateFilters.search} onChange={(event) => updateCandidateFilter('search', event.target.value)} />
+                <input value={candidateFilters.search} onChange={(event) => updateCandidateFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadCandidates(candidateFilters))} />
                 <Search size={18} />
               </div>
             </label>
@@ -5679,14 +6526,14 @@ function RoutesPage({
             <label className="field">
               <span>Customer Email</span>
               <div className="input-with-icon">
-                <input value={candidateFilters.customerEmail} onChange={(event) => updateCandidateFilter('customerEmail', event.target.value)} />
+                <input value={candidateFilters.customerEmail} onChange={(event) => updateCandidateFilter('customerEmail', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadCandidates(candidateFilters))} />
                 <Search size={18} />
               </div>
             </label>
             <label className="field">
               <span>Woo Order Number</span>
               <div className="input-with-icon">
-                <input value={candidateFilters.wooOrderNumber} onChange={(event) => updateCandidateFilter('wooOrderNumber', event.target.value)} />
+                <input value={candidateFilters.wooOrderNumber} onChange={(event) => updateCandidateFilter('wooOrderNumber', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadCandidates(candidateFilters))} />
                 <Search size={18} />
               </div>
             </label>
@@ -5751,11 +6598,11 @@ function RoutesPage({
         <div className="filter-panel">
           <div className="filter-grid route-history-filter-grid">
             <FilterSelect label="Status" value={routeFilters.status} options={['draft', 'finalized', 'cancelled']} onChange={(value) => updateRouteFilter('status', value)} />
-            <label className="field"><span>Date From</span><div className="input-with-icon"><input value={routeFilters.dateFrom} onChange={(event) => updateRouteFilter('dateFrom', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
-            <label className="field"><span>Date To</span><div className="input-with-icon"><input value={routeFilters.dateTo} onChange={(event) => updateRouteFilter('dateTo', event.target.value)} type="date" /><CalendarDays size={18} /></div></label>
-            <label className="field"><span>Search</span><div className="input-with-icon"><input value={routeFilters.search} onChange={(event) => updateRouteFilter('search', event.target.value)} /><Search size={18} /></div></label>
-            <label className="field"><span>Driver</span><div className="input-with-icon"><input value={routeFilters.driverName} onChange={(event) => updateRouteFilter('driverName', event.target.value)} /><UserCircle size={18} /></div></label>
-            <label className="field"><span>Vehicle</span><div className="input-with-icon"><input value={routeFilters.vehicleName} onChange={(event) => updateRouteFilter('vehicleName', event.target.value)} /><Truck size={18} /></div></label>
+            <label className="field"><span>Date From</span><div className="input-with-icon"><input value={routeFilters.dateFrom} onChange={(event) => updateRouteFilter('dateFrom', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadRoutes(routeFilters))} type="date" /><CalendarDays size={18} /></div></label>
+            <label className="field"><span>Date To</span><div className="input-with-icon"><input value={routeFilters.dateTo} onChange={(event) => updateRouteFilter('dateTo', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadRoutes(routeFilters))} type="date" /><CalendarDays size={18} /></div></label>
+            <label className="field"><span>Search</span><div className="input-with-icon"><input value={routeFilters.search} onChange={(event) => updateRouteFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadRoutes(routeFilters))} /><Search size={18} /></div></label>
+            <label className="field"><span>Driver</span><div className="input-with-icon"><input value={routeFilters.driverName} onChange={(event) => updateRouteFilter('driverName', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadRoutes(routeFilters))} /><UserCircle size={18} /></div></label>
+            <label className="field"><span>Vehicle</span><div className="input-with-icon"><input value={routeFilters.vehicleName} onChange={(event) => updateRouteFilter('vehicleName', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadRoutes(routeFilters))} /><Truck size={18} /></div></label>
           </div>
           <div className="button-row">
             <button className="muted-button" onClick={clearRouteFilters} type="button"><SlidersHorizontal size={17} />Clear</button>
@@ -6277,11 +7124,11 @@ function StandardPage({ icon: Icon, title, description, columns }) {
           </div>
         </div>
         <div className="button-row compact">
-          <button className="muted-button" type="button">
+          <button className="muted-button" disabled title="Not available yet" type="button">
             <Filter size={17} />
             Filter
           </button>
-          <button className="action-button" type="button">
+          <button className="action-button" disabled title="Not available yet" type="button">
             <Download size={17} />
             Export
           </button>
@@ -6302,16 +7149,16 @@ function StandardPage({ icon: Icon, title, description, columns }) {
 
 function TableShell({ caption, columns, children }) {
   return (
-    <div className="table-wrap">
+    <div className="table-wrap table-card">
       <div className="table-meta">
         <span>{caption}</span>
         <div className="table-pager">
           <span>20 Results</span>
-          <button className="pager-button" aria-label="Previous page" type="button">
+          <button className="pager-button" aria-label="Previous page" title="Pagination is not available yet" disabled type="button">
             <ChevronLeft size={18} />
           </button>
           <span>1 / 1</span>
-          <button className="pager-button active" aria-label="Next page" type="button">
+          <button className="pager-button active" aria-label="Next page" title="Pagination is not available yet" disabled type="button">
             <ChevronRight size={18} />
           </button>
         </div>
@@ -6321,7 +7168,7 @@ function TableShell({ caption, columns, children }) {
         <ChevronDown size={18} />
       </div>
       <div className="table-scroll">
-        <table>
+        <table className="data-table">
           <thead>
             <tr>
               {columns.map((column) => (
@@ -6339,11 +7186,11 @@ function TableShell({ caption, columns, children }) {
 function getHeaderMeta(route, items) {
   if (route.pageId === 'items') {
     if (route.itemView === 'new') {
-      return { title: 'New Item', kicker: 'CSV field entry', tabs: detailTabs };
+      return { title: 'New Item', kicker: 'Item master entry', tabs: [] };
     }
     if (route.itemView === 'detail') {
       const item = items.find((candidate) => String(candidate.id) === String(route.itemId));
-      return { title: item ? `Edit ${item.SKU}` : 'Edit Item', kicker: 'CSV field entry', tabs: detailTabs };
+      return { title: item ? `Edit ${item.SKU}` : 'Edit Item', kicker: 'Item master entry', tabs: [] };
     }
     return pageMeta.items;
   }
@@ -6352,6 +7199,10 @@ function getHeaderMeta(route, items) {
   }
   if (route.pageId === 'locations' && route.locationView === 'detail') {
     return { title: 'Edit Location', kicker: 'Warehouse and bin setup', tabs: pageMeta.locations.tabs };
+  }
+  if (route.pageId === 'orders') {
+    const meta = orderSubpageMeta[route.ordersView || 'open'] || orderSubpageMeta.open;
+    return { ...meta, tabs: [] };
   }
   return pageMeta[route.pageId];
 }
@@ -6394,12 +7245,16 @@ function filterItems(items, filters) {
   return items.filter((item) => {
     const matchesSearch = !query || SEARCH_FIELDS.some((field) => String(item[field] ?? '').toLowerCase().includes(query));
     const matchesCategory = !filters.category || item.Category === filters.category;
-    const matchesWarehouse = !filters.warehouse || item.Warehouse === filters.warehouse;
-    const matchesLocation = !filters.inventoryLocation || item['Inventory Location'] === filters.inventoryLocation;
     const matchesBrand = !filters.brand || item.Brand === filters.brand;
     const matchesStatus = filters.status === 'inactive' ? !item.active : item.active;
     const matchesInventoryType = filters.includeNonInventory || !item.nonInventory;
-    return matchesSearch && matchesCategory && matchesWarehouse && matchesLocation && matchesBrand && matchesStatus && matchesInventoryType;
+    const matchesStockStatus =
+      !filters.stockStatus ||
+      (filters.stockStatus === 'in_stock' && toNumber(item['In Stock']) > 0) ||
+      (filters.stockStatus === 'out_of_stock' && toNumber(item['In Stock']) <= 0) ||
+      (filters.stockStatus === 'under_par' && Boolean(item['Under Par'])) ||
+      (filters.stockStatus === 'negative_sellable' && toNumber(item.Sellable) < 0);
+    return matchesSearch && matchesCategory && matchesBrand && matchesStatus && matchesInventoryType && matchesStockStatus;
   });
 }
 
@@ -6619,8 +7474,28 @@ function formatDateTime(value) {
   return new Intl.DateTimeFormat('en-US', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
 }
 
+function formatReportValue(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? String(value) : formatNumber(value);
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'Yes' : 'No';
+  }
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
+    return formatDateTime(value);
+  }
+  return String(value);
+}
+
 function formatCountType(value) {
   return value === 'full_location' ? 'Full Location' : 'Selected Items';
+}
+
+function Badge({ tone = 'neutral', children }) {
+  return <span className={`badge badge-${tone}`}>{children}</span>;
 }
 
 function BooleanBadge({ value }) {
@@ -6727,6 +7602,23 @@ async function exportSkuOrdersCsv(filters) {
   const link = document.createElement('a');
   link.href = url;
   link.download = 'pongo-sku-orders-report.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+async function exportGenericReportCsv(reportKey, filters, label) {
+  const response = await fetch(`${API_BASE_URL}/api/reports/${reportKey}/export${plainFiltersToQueryString(filters)}`);
+  if (!response.ok) {
+    showPlaceholder(`Unable to export ${label} from the backend.`);
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `pongo-${reportKey}-report.csv`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -7001,8 +7893,6 @@ function filtersToQueryString(filters = {}) {
   const params = new URLSearchParams();
   if (filters.search) params.set('search', filters.search);
   if (filters.category) params.set('category', filters.category);
-  if (filters.warehouse) params.set('warehouse', filters.warehouse);
-  if (filters.inventoryLocation) params.set('inventory_location', filters.inventoryLocation);
   if (filters.brand) params.set('brand', filters.brand);
   if (filters.status === 'active') params.set('active', 'true');
   if (filters.status === 'inactive') params.set('active', 'false');

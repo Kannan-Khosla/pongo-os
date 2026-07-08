@@ -3,6 +3,7 @@ from app.models.allocations import Allocation, AllocationLine
 from app.models.cycle_counts import CycleCount, CycleCountLine
 from app.models.fulfillments import Fulfillment, FulfillmentLine
 from app.models.imports import ImportError, ImportJob
+from app.models.item_notes import ItemNote
 from app.models.inventory import (
     InventoryAuditEvent,
     InventoryItem,
@@ -19,6 +20,8 @@ from app.models.orders import Order, OrderItem
 from app.models.picks import Pick, PickLine
 from app.models.receipts import Receipt, ReceiptItem
 from app.models.routes import Route, RouteStop
+from app.models.scanner import ScannerEvent, ScannerSession
+from app.models.ui import UISavedView
 from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun, WooItemMapping
 
 __all__ = [
@@ -31,6 +34,7 @@ __all__ = [
     "FulfillmentLine",
     "ImportError",
     "ImportJob",
+    "ItemNote",
     "InventoryAuditEvent",
     "InventoryItem",
     "InventoryItemLocation",
@@ -46,9 +50,12 @@ __all__ = [
     "ReceiptItem",
     "Route",
     "RouteStop",
+    "ScannerEvent",
+    "ScannerSession",
     "StockMovement",
     "StockAdjustment",
     "StockAdjustmentLine",
+    "UISavedView",
     "WooCommerceSyncError",
     "WooCommerceSyncRun",
     "WooItemMapping",

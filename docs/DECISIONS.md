@@ -290,3 +290,70 @@ paid routing provider.
 Safety: No provider keys are exposed in frontend responses. No external
 geocoding, maps, routing, optimization, WooCommerce, notification, label, or
 delivery tracking calls are made by the current implementation.
+
+## ADR-025: Item Control Center Uses Local Activity Composition
+
+Decision: Build item detail as a local control center assembled from existing
+records: item rows, `inventory_item_locations`, stock movements, receipts,
+cycle counts, transfers, adjustments, allocations, picks, fulfillments, local
+orders, and item notes.
+
+Reason: Operators need one place to inspect item state without duplicating
+activity into a new event stream.
+
+Safety: Item detail and activity endpoints are read-only except item notes and
+metadata-only edit paths. Stock fields must still be changed through receiving,
+cycle count, transfer, or adjustment workflows.
+
+## ADR-026: Bulk Receiving Is One Local Receipt Session
+
+Decision: Bulk receiving preview validates all rows without writes. Commit
+creates one local receipt and one receipt item per valid row, updates
+`inventory_item_locations`, recalculates aggregate item stock fields, and
+creates stock movements.
+
+Reason: Warehouse receiving needs fast multi-row scanner/cart entry while
+preserving stock auditability.
+
+Safety: No WooCommerce calls or writeback. Invalid rows block commit by
+default. Stock is changed only through the location inventory service.
+
+## ADR-027: Scanner Workflows Are Keyboard-Input Local Operations
+
+Decision: Treat barcode scanners as keyboard input and expose local scanner
+endpoints for inventory lookup, location lookup, receiving, cycle count,
+transfer, and adjustment. Picking continues to use the existing order scanner.
+
+Reason: Pongo can support warehouse devices without hardware-specific
+integration or browser plugins.
+
+Safety: Scanner commits are local only. Cycle count requires a reason when the
+count differs from system quantity. Transfer and adjustment checks prevent
+negative location stock.
+
+## ADR-028: Expanded Reports Are Read-Only
+
+Decision: Build inventory valuation, low stock/reorder, stock movement ledger,
+item activity, location utilization, margin by SKU, receiving cost, and
+adjustment/damage/loss reports from local tables only.
+
+Reason: Reporting should explain operational data without changing stock,
+orders, WooCommerce, or route state.
+
+Safety: All expanded report endpoints are read-only and include CSV export
+only.
+
+## ADR-029: Pongo Frontend Design System
+
+Decision: Use centralized CSS variables for Pongo blue `#0f149a`, blue hover
+and active states, soft peach backgrounds, white/off-white surfaces, borders,
+text colors, and status colors. Primary buttons use Pongo blue; secondary and
+action buttons use consistent muted/outline controls.
+
+Reason: The app must feel like a polished standalone Pongo operations system,
+not a Zenventory clone or rough scaffold.
+
+Safety: Tables must scroll inside `.table-scroll`; the page/body must not
+overflow horizontally. Visible action controls must work, navigate to a real
+workflow, or be disabled/removed. Frontend tests run with Vitest and Testing
+Library through `npm test -- --run`.
