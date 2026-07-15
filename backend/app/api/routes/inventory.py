@@ -6,6 +6,7 @@ from fastapi.responses import Response
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.inventory import InventoryItem, InventoryItemLocation, InventoryTransfer, InventoryTransferLine, StockAdjustment, StockAdjustmentLine
 from app.schemas.inventory import (
@@ -25,6 +26,9 @@ from app.schemas.inventory import (
 )
 from app.services.inventory_reports import INVENTORY_BY_LOCATION_COLUMNS, build_inventory_summary, get_inventory_items, item_to_inventory_by_location_row
 from app.services.location_inventory import create_committed_adjustment_batch, create_committed_transfer_batch, recalculate_item_location
+from app.services.order_workflow import auto_allocate_processing_orders_fifo
+from app.services.woocommerce_client import WooCommerceClient
+from app.services.woocommerce_writeback import sync_inventory_stock
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 
@@ -159,8 +163,17 @@ def get_inventory_transfer(transfer_id: int, db: Session = Depends(get_db)) -> I
 def commit_stock_adjustment(payload: StockAdjustmentRequest, db: Session = Depends(get_db)) -> StockAdjustmentDetail:
     try:
         adjustment = create_committed_adjustment_batch(db, [line.model_dump() for line in payload.lines], adjustment_type=payload.adjustment_type, reason=payload.reason, notes=payload.notes, created_by=payload.created_by)
+        auto_allocate_processing_orders_fifo(db, source=f"stock-adjustment:{adjustment.adjustment_number}")
         db.commit()
         adjustment = db.scalars(select(StockAdjustment).where(StockAdjustment.id == adjustment.id).options(selectinload(StockAdjustment.lines))).one()
+        settings = get_settings()
+        sync_inventory_stock(
+            db,
+            settings,
+            WooCommerceClient(settings),
+            item_ids={line.item_id for line in payload.lines},
+            requested_by=payload.created_by or "stock-adjustment",
+        )
         return adjustment_to_detail(adjustment)
     except Exception as exc:
         db.rollback()

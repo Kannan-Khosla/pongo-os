@@ -73,9 +73,9 @@ def test_fulfillment_report_rows_summary_csv_and_read_only(client, monkeypatch):
     assert row["remaining_to_fulfill"] == 0
     assert row["unit_cost"] == 4.25
     assert row["fulfilled_value"] == 8.5
-    assert row["in_stock_before"] == 6
+    assert row["in_stock_before"] == 4
     assert row["in_stock_after"] == 4
-    assert row["allocated_before"] == 3
+    assert row["allocated_before"] == 1
     assert row["allocated_after"] == 1
     assert row["created_by"] == "reporter"
     assert row["fulfillment_notes"] == "Report fulfillment"

@@ -1,8 +1,9 @@
 # WooCommerce Sync Plan
 
 This document describes WooCommerce integration behavior. The current
-implementation supports read-only product/variation sync and read-only open
-order sync through the backend only.
+implementation supports read-only product/variation sync, read-only REST order
+snapshot sync, and a signed phase-1 `order.created` webhook through the backend
+only.
 
 ## System Roles
 
@@ -14,26 +15,110 @@ order sync through the backend only.
 
 ## Credentials
 
-Required backend environment variables:
+Backend WooCommerce environment variables. Webhook and writeback values may
+remain at their disabled safe defaults until those paths are intentionally used:
 - `WOOCOMMERCE_BASE_URL`
 - `WOOCOMMERCE_CONSUMER_KEY`
 - `WOOCOMMERCE_CONSUMER_SECRET`
+- `WOOCOMMERCE_ENVIRONMENT`
+- `WOOCOMMERCE_READ_ONLY`
+- `WOOCOMMERCE_READ_ENABLED`
+- `WOOCOMMERCE_WRITEBACK_ENABLED`
+- `WOOCOMMERCE_WRITEBACK_DRY_RUN`
+- `WOOCOMMERCE_STAGING_LIVE_TEST_MODE`
+- `WOOCOMMERCE_ALLOW_STOCK_WRITE`
+- `WOOCOMMERCE_ALLOW_ORDER_STATUS_WRITE`
+- `WOOCOMMERCE_ALLOW_PRODUCT_METADATA_WRITE`
+- `WOOCOMMERCE_ALLOW_CUSTOMER_WRITE`
+- `WOOCOMMERCE_ALLOW_COUPON_WRITE`
+- `WOOCOMMERCE_ALLOW_REFUND_WRITE`
+- `WOOCOMMERCE_ALLOW_DELETE`
+- `WOOCOMMERCE_ALLOWED_HOST`
 - `WOOCOMMERCE_TIMEOUT_SECONDS`
 - `WOOCOMMERCE_PAGE_SIZE`
 - `WOOCOMMERCE_ORDER_SYNC_PAGE_SIZE`
 - `WOOCOMMERCE_ORDER_SYNC_DEFAULT_STATUSES`
+- `WOOCOMMERCE_WEBHOOK_ENABLED`
+- `WOOCOMMERCE_WEBHOOK_SECRET`
+- `WOOCOMMERCE_WEBHOOK_MAX_BODY_BYTES`
 
 Never commit real credentials. Example docs and tests must use placeholders only.
+The webhook secret is independent from the REST API consumer secret and must be
+at least 32 bytes. The status API may report that it is present/configured but
+must never return its value.
+The frontend never receives the consumer key or secret. Status responses expose
+only the base URL host and boolean/flag metadata.
 
 ## Read-Only Sync First
 
 The first WooCommerce integration phases are read-only product/variation sync
-and read-only order sync. Do not update live WooCommerce stock or order statuses
-until:
+and read-only order sync. Staging writeback testing exists only behind preview,
+queue, approval, allowlisted operations, and dry-run. Do not update production
+WooCommerce stock or order statuses until:
 - product/variation mapping is stable;
 - local item workflows are stable;
 - stock movement auditing is verified;
 - Pongo explicitly approves stock writeback behavior.
+
+## Staging Writeback Safety
+
+Writeback testing is staging-only. Production writeback is not enabled.
+
+The inbound webhook is configured separately from writeback. It can remain
+read-only against WooCommerce while `WOOCOMMERCE_READ_ONLY=true`,
+`WOOCOMMERCE_WRITEBACK_ENABLED=false`, and all live-write flags are false.
+Receiving a webhook does not grant or perform a WooCommerce write.
+
+Required guard rules for a live staging send:
+
+- environment must be `staging`
+- read-only mode must be false
+- writeback must be enabled
+- staging live test mode must be true
+- dry-run must be false
+- WooCommerce base URL host must match `WOOCOMMERCE_ALLOWED_HOST`
+- operation type must be allowlisted
+- endpoint path must be allowlisted
+- method must be `PUT` or `PATCH`
+- payload must contain only fields allowlisted for the operation
+
+Safe default dry-run should remain true until a live staging test is intentional:
+
+```bash
+WOOCOMMERCE_WRITEBACK_DRY_RUN=true
+```
+
+Live staging tests intentionally flip dry-run off and live-test mode on:
+
+```bash
+WOOCOMMERCE_WRITEBACK_DRY_RUN=false
+WOOCOMMERCE_STAGING_LIVE_TEST_MODE=true
+WOOCOMMERCE_ALLOW_STOCK_WRITE=true
+WOOCOMMERCE_ALLOW_ORDER_STATUS_WRITE=true
+```
+
+Allowed operation types:
+
+- `update_product_stock`
+- `update_variation_stock`
+- `update_order_status`
+
+Payload allowlists:
+
+- Stock: `stock_quantity`, `stock_status`, `manage_stock`
+- Order status: `status`
+
+Disallowed:
+
+- DELETE
+- POST writes
+- arbitrary endpoint writes
+- customer writes
+- coupon writes
+- refund writes
+- product metadata writes
+- product edits beyond stock
+- production WooCommerce writeback
 
 ## Product Sync Behavior
 
@@ -44,12 +129,17 @@ Implemented endpoints:
 - `GET /api/integrations/woocommerce/sync-runs`
 - `GET /api/integrations/woocommerce/sync-runs/{id}`
 
-Refresh/preview/commit are backend-only. The backend fetches:
+The settings UI calls preview/commit in pages of Woo parent products. Each
+backend batch fetches:
 - simple products;
 - variable products;
 - all variations for variable products.
 
-Every simple product creates or updates one `inventory_items` row.
+Existing items are matched by an exact unique SKU, then by an exact unique
+barcode only when SKU did not match. Existing item IDs and Pongo-owned fields
+are preserved; only Woo mapping/snapshot metadata is attached. Woo records
+without a local match create a new `inventory_items` row. Duplicate local or
+remote SKUs and mapping conflicts are reported and left unchanged.
 
 ## Variation Sync Behavior
 
@@ -60,9 +150,9 @@ Example:
 - Dog Food Can 200g -> one item
 - Dog Food Can 500g -> one item
 
-## WooCommerce-Owned Fields
+## WooCommerce Fields For Newly Created Items
 
-Expected to sync into the local database:
+New Woo-only items may receive:
 - Woo Product ID
 - Woo Variation ID
 - SKU
@@ -122,11 +212,13 @@ These fields must not be overwritten by refresh:
 
 Barcode rule:
 - Barcode may be filled from a clearly dedicated Woo barcode/meta field only
-  when the local Barcode is currently blank.
+  for a newly created item. Existing Pongo barcodes are preserved.
 
 Woo stock rule:
 - WooCommerce stock quantity is stored only as `woo_stock_quantity_snapshot`.
 - Local Pongo OS `In Stock` is not overwritten by WooCommerce product sync.
+- Existing descriptions, categories, brands, prices, costs, locations, expiry
+  records, and all other Pongo-owned fields are not overwritten.
 
 ## Refresh Summary
 
@@ -208,21 +300,137 @@ Use cases:
 Implemented endpoints:
 - `POST /api/integrations/woocommerce/orders/preview`
 - `POST /api/integrations/woocommerce/orders/commit`
+- `POST /api/integrations/woocommerce/orders/quick-sync`
+- `POST /api/integrations/woocommerce/webhooks/orders`
+- `GET /api/integrations/woocommerce/webhooks/events`
 - `GET /api/orders/open`
+- `GET /api/orders/allocate`
+- `GET /api/orders/pick`
+- `GET /api/orders/completed`
+- `GET /api/orders/history`
 - `GET /api/orders/{id}`
+- `GET /api/orders/{id}/workflow`
+- `POST /api/orders/{id}/auto-allocate/preview`
+- `POST /api/orders/{id}/auto-allocate/commit`
+- `GET /api/allocations/exceptions`
+- `POST /api/allocations/auto/commit`
+- `POST /api/orders/{id}/complete/preview`
+- `POST /api/orders/{id}/complete/commit`
 - `GET /api/orders/open/export`
 
-Order sync pulls eligible WooCommerce orders into local `orders` and
-`order_items` tables. The default open statuses are `processing` and `on-hold`,
-configured through `WOOCOMMERCE_ORDER_SYNC_DEFAULT_STATUSES`.
+Order sync pulls requested WooCommerce orders into local `orders` and
+`order_items` snapshot tables. The default operational statuses are
+`processing`, `on-hold`, and `pending`, configured through
+`WOOCOMMERCE_ORDER_SYNC_DEFAULT_STATUSES`.
+
+Requested statuses such as `processing`, `on-hold`, and `pending` can be stored
+as local snapshots, but only `processing` is operational for allocation and
+picking. Pending, on-hold, completed, cancelled, failed, refunded, and other
+non-processing snapshots do not reserve new stock and do not appear in Open
+Orders, Allocate, or Pick Orders. They can still feed sync history, the Business
+Dashboard, and Pongo Insights.
+
+The frontend retains `orders/quick-sync` every 10 seconds while Dashboard,
+Orders, or Settings is visible, and once when the tab regains focus. The
+background loop fetches the newest `processing` orders. Fetch order does not set
+reservation priority: after snapshots are stored, local FIFO allocation always
+evaluates processing orders oldest `date_created` first. Full manual order sync
+can still include pending, on-hold, completed, failed, cancelled, and refunded
+snapshots. After phase-1 webhook enablement this polling is a recovery and
+reconciliation fallback, not the primary new-order path.
+
+## Signed Order Webhook: Phase 1
+
+Endpoint:
+
+- `POST /api/integrations/woocommerce/webhooks/orders`
+
+The receiver is disabled by default. Enabling it requires:
+
+```bash
+WOOCOMMERCE_WEBHOOK_ENABLED=true
+WOOCOMMERCE_WEBHOOK_SECRET=<distinct random secret of at least 32 bytes>
+WOOCOMMERCE_WEBHOOK_MAX_BODY_BYTES=1048576
+WOOCOMMERCE_ALLOWED_HOST=<expected WooCommerce source host>
+```
+
+`WOOCOMMERCE_ALLOWED_HOST` must be nonblank and must exactly match the source
+hostname. The delivery URL must be a public HTTPS backend URL; `127.0.0.1` and
+`localhost` cannot receive a webhook from a remote WooCommerce site.
+
+The backend verifies a base64 HMAC-SHA256 signature over the exact raw body,
+then validates `X-WC-Webhook-Source`, topic, resource, event, webhook ID,
+delivery ID, content type, body size, and order payload shape. Re-encoding parsed
+JSON before verification is not valid because the signature covers the bytes as
+delivered. WooCommerce’s header contract is described in its
+[webhook documentation](https://developer.woocommerce.com/docs/apis/rest-api/v2/webhooks),
+and the exact signature generation is visible in the current
+[`WC_Webhook` implementation](https://woocommerce.github.io/code-reference/files/woocommerce-includes-class-wc-webhook.html).
+
+When WooCommerce first activates a webhook it sends an unsigned setup ping. The
+receiver accepts only the exact body `webhook_id=<positive integer>` with no
+signature, returns a ready/no-op response, and changes no order or ledger data.
+Unsigned JSON is rejected.
+
+Phase-1 scope:
+
+- Only authenticated `order.created` imports a local order snapshot.
+- If its WooCommerce `date_modified` is older than or equal to the matching local order's
+  snapshot, the signed delivery is audited as ignored so delayed delivery
+  cannot regress newer REST or webhook data.
+- Other authenticated, internally consistent topics such as `order.updated`
+  are recorded as `ignored` and return success without changing an order.
+- Imported active orders go through the existing matching and safe local
+  auto-allocation path.
+- Import may increase local `Allocated` and create allocation/audit rows, but
+  never reduces `In Stock`, creates a stock movement, or writes WooCommerce.
+- The receiver does not send customer email, SMS, browser push, or any other
+  outbound notification.
+
+Every authenticated JSON delivery has a durable
+`woocommerce_webhook_deliveries` row identified by webhook ID, delivery ID, and
+the SHA-256 hash of the raw body. Terminal replays increment `attempt_count` and
+return a duplicate response without repeating order import, allocation, or staff
+notification. The ledger stores the payload hash and safe metadata instead of a
+second copy of the customer payload.
+
+## Internal New-Order Event Feed
+
+Endpoint:
+
+- `GET /api/integrations/woocommerce/webhooks/events?after_id=<cursor>&limit=50`
+- `GET /api/integrations/woocommerce/webhooks/events?initialize=true&limit=50`
+  to establish a new session baseline without returning historical events
+
+The feed reads immutable `woocommerce_order_events` outbox rows created only
+when a webhook transaction successfully creates a local order. Each event
+contains safe order-summary fields needed by the internal staff UI notice.
+`latest_event_id` is the informational order-event high-water mark.
+`next_after_id` is the safe cursor for the next request; the client drains pages
+with `after_id=next_after_id` while `has_more=true`. Replayed, stale, ignored,
+failed, and update-only deliveries do not create a new-order notice. If a failed
+delivery later succeeds, its outbox ID is assigned only at the successful
+commit, so an earlier cursor cannot skip it.
+
+The frontend establishes its baseline with `initialize=true`, polls the feed
+every 2 seconds while visible and on focus/visibility changes, and deduplicates
+events by immutable outbox ID. Later events create a persistent dismissible toast and a
+session-only Bell history/unread badge. The 10-second quick sync also turns a
+nonzero `created_count` into a fallback notice, deduplicated by sync-run
+identity, so a delayed or disabled webhook still reaches staff. These notices
+do not acknowledge events globally, call WooCommerce, or send a customer-facing
+notification.
 
 Order sync is read-only against WooCommerce:
 - no WooCommerce order status writes;
 - no WooCommerce product or stock writes;
-- no local item stock changes;
-- no local allocation quantity changes;
+- no local item In Stock changes;
+- local allocation quantity changes are allowed only through FIFO
+  auto-allocation for active processing orders or audited release when an order
+  leaves processing;
 - no stock movements;
-- no receiving, cycle count, fulfillment, or route workflow side effects.
+- no receiving, cycle count, picking, fulfillment, completion, or route
+  workflow side effects.
 
 Line matching rules:
 1. Woo Product ID + Woo Variation ID.
@@ -242,43 +450,75 @@ Availability snapshot:
 - `shortage_quantity = max(quantity_ordered - sellable_snapshot, 0)`
 
 Preview:
-- Fetches eligible orders.
+- Fetches requested orders.
 - Returns order and line actions, match statuses, availability snapshots, and
   warnings/errors.
 - Does not write local orders or order lines.
 
 Commit:
-- Fetches eligible orders again.
-- Creates or updates local order/order line snapshots only.
+- Fetches requested orders again.
+- Creates or updates local order/order line snapshots.
+- Runs safe oldest-first local auto-allocation for active processing orders
+  after the sync batch is stored.
 - Stores sync run history with `sync_type = orders`.
-- Stores sync errors for unmatched, conflict, and skipped rows.
-- Does not allocate, pick, reserve, route, fulfill, update item stock, or write
-  WooCommerce.
+- Stores sync errors for unmatched, conflict, and skipped rows. Requested
+  non-open WooCommerce statuses are not skipped; they are stored as local
+  read-only snapshots.
+- Does not pick, route, fulfill, complete, reduce In Stock, create stock
+  movements, or write WooCommerce.
 
-## Allocation After Order Sync
+## Auto-Allocation After Order Sync
 
 Allocation is a local Pongo OS workflow after WooCommerce order sync. It uses
-local `orders`, `order_items`, and `inventory_items` only.
+local `orders`, `order_items`, `inventory_items`, and
+`inventory_item_locations` only. Only active `processing` orders participate.
+The queue uses WooCommerce `date_created ASC`, then local order ID ASC as a
+deterministic tie-breaker; missing order dates sort after dated orders.
 
 Allocation:
 - previews recommended reservation quantities without writing data;
-- increases local item Allocated on commit;
+- increases local item-location and aggregate Allocated on commit;
 - leaves local item In Stock unchanged;
 - recalculates Sellable as In Stock minus Allocated;
 - updates local order line `quantity_allocated`;
 - creates local `allocations`, `allocation_lines`, and
   `inventory_audit_events` rows;
+- can split a single order line across multiple active locations when needed;
+- reserves available partial quantities for the oldest competing order before
+  a newer order can use the same stock;
+- marks shortages, unmatched lines, conflicts, partial allocation, and no
+  location stock as allocation exceptions for the Allocate view;
 - does not call WooCommerce;
 - does not update WooCommerce order status, products, or stock;
 - does not pick, route, fulfill, create shipping labels, or notify customers.
 
-Order sync should preserve existing local allocation quantities when refreshing
-the local order snapshot.
+Order sync preserves existing local allocation quantities when refreshing the
+same processing order. After the full sync batch is stored, it runs one FIFO
+reconciliation pass so a newest-first WooCommerce response cannot jump ahead of
+an older local processing order.
+
+FIFO allocation is also retried after direct, bulk, and scanner receiving;
+standard and scanner stock adjustments; standard and scanner cycle counts;
+completion releases; and synchronized WooCommerce status changes that release
+unpicked allocations. Staff can explicitly run the same idempotent queue pass
+through `POST /api/allocations/auto/commit`.
+
+`GET /api/allocations/exceptions` supplies the shortage-only Allocate workspace.
+It returns unresolved processing-order lines by default, with ordered,
+allocated, unallocated, picked, and currently available quantities. Fully
+allocated lines are returned only when explicitly requested.
+
+When a previously allocated order changes from `processing` to a
+non-processing WooCommerce status, Pongo OS releases its remaining unpicked
+allocation, records deallocation audits, removes the order from operational
+queues, and gives the released stock to the next eligible FIFO order. Quantity
+already picked is not released.
 
 ## Picking After Allocation
 
-Picking is a local Pongo OS workflow after allocation. It uses local `orders`,
-`order_items`, `inventory_items`, `picks`, `pick_lines`, and
+Picking is a local Pongo OS workflow after allocation and is the local stock
+reduction point. It uses local `orders`, `order_items`, `inventory_items`,
+`inventory_item_locations`, `picks`, `pick_lines`, `stock_movements`, and
 `inventory_audit_events` only.
 
 Picking:
@@ -286,12 +526,15 @@ Picking:
 - rejects unallocated, unmatched, conflict, unknown item, overpicked, and fully
   picked lines;
 - updates local order line `quantity_picked` and legacy `picked_qty` on commit;
-- leaves local item In Stock unchanged;
-- leaves local item Allocated unchanged;
-- leaves local item Sellable unchanged;
+- updates local order line `quantity_stock_reduced`;
+- reduces local item-location and aggregate In Stock;
+- reduces local item-location and aggregate Allocated;
+- recalculates local Sellable;
 - creates local `picks`, `pick_lines`, and `inventory_audit_events` rows;
-- records pick audit events with unchanged previous/new stock, allocated, and
-  sellable values;
+- creates local `stock_movements` rows with
+  `movement_type = pick_stock_reduction`;
+- supports scanner idempotency keys so retrying a scan does not double-reduce
+  stock;
 - does not call WooCommerce;
 - does not update WooCommerce order status, products, or stock;
 - does not route, fulfill, create shipping labels, or notify customers.
@@ -299,24 +542,23 @@ Picking:
 Order sync should preserve existing local picked quantities when refreshing the
 local order snapshot.
 
-## Fulfillment After Picking
+## Completion And Fulfillment Compatibility
 
-Fulfillment is a local Pongo OS workflow after picking. It uses local `orders`,
-`order_items`, `inventory_items`, `fulfillments`, `fulfillment_lines`,
-`stock_movements`, and `inventory_audit_events` only.
+Completion is a local Pongo OS workflow after picking or as an explicit
+complete-without-picking exception. Fulfillment remains for compatibility and
+history. These paths use local `orders`, `order_items`, `fulfillments`,
+`fulfillment_lines`, and `inventory_audit_events` only in the normal picked
+path because stock was already reduced during picking.
 
-Fulfillment:
-- previews recommended fulfillment quantities from already picked order lines;
-- rejects unpicked, unmatched, conflict, unknown item, overfulfilled, and fully
-  fulfilled lines;
-- updates local order line `quantity_fulfilled` and legacy `fulfilled_qty` on
-  commit;
-- reduces local item In Stock by the fulfilled quantity;
-- reduces local item Allocated by the fulfilled quantity;
-- recalculates local item Sellable and Under Par;
-- creates local `fulfillments`, `fulfillment_lines`, `stock_movements`, and
-  `inventory_audit_events` rows;
-- creates stock movements with `movement_type = fulfill_order`;
+Completion/fulfillment compatibility:
+- completing a picked order marks it completed/closed and does not reduce stock
+  again;
+- completing without picking marks it completed/closed, releases remaining
+  local allocation, and records that stock was not reduced;
+- fulfillment on an already stock-reduced picked order creates compatibility
+  records and returns a warning that stock was already reduced during picking;
+- fulfillment on an unpicked order is blocked instead of silently reducing
+  stock through the old path;
 - does not call WooCommerce;
 - does not update WooCommerce order status, products, or stock;
 - does not route, create shipping labels, create purchase orders, manage
@@ -360,13 +602,16 @@ Route creation:
 - does not update WooCommerce order status, products, or stock;
 - does not call maps, geocoding, routing, or optimization providers;
 - does not create shipping labels, delivery tracking events, or customer
-  notifications;
+  outbound/customer notifications;
 - does not change local item In Stock, Allocated, Sellable, On Order, stock
   movements, inventory audit events, order item quantities, or order status.
 
 ## Stock Update Safety
 
-Stock-changing local actions must always create stock movement rows. WooCommerce stock updates should remain disabled or queued until read-only sync and local workflows are stable. When enabled, stock writeback must happen through the backend only and should include retry/error logging.
+Stock-changing local actions must always create stock movement rows.
+WooCommerce stock updates remain staging-only test operations until read-only
+sync and local workflows are stable. Writeback must happen through the backend
+only, from queued previews, with dry-run true by default and no DELETE support.
 
 ## Local Remap Metadata
 
@@ -385,21 +630,59 @@ Remap behavior:
 - Does not mutate local stock, allocated, sellable, picked, fulfilled, route,
   or order status quantities.
 
-## Current Chunk Safety Boundary
+## Stock Writeback Workflow
 
-The Items Control Center, bulk receiving, scanner workflows, and expanded
-reports do not add WooCommerce writeback.
+Pongo OS sends stock only through the guarded backend writeback queue. The
+frontend never receives credentials and never calls WooCommerce directly.
 
 Current behavior:
 - Frontend still never calls WooCommerce directly.
 - WooCommerce credentials remain backend environment variables only.
-- Bulk receiving and scanner receiving update local `inventory_item_locations`
-  and create local stock movements only.
-- Cycle count, transfer, and adjustment scanner commits are local stock
-  workflows only.
+- A successful pick reduces local stock only; it does not change WooCommerce
+  stock until that picked order is completed.
+- Completing a picked order creates, approves, and sends one stock writeback
+  queue item for each changed mapped inventory item.
+- Completing an unpicked order does not reduce stock and does not create a
+  stock writeback. Completion sends only the order-status writeback.
+- Manual stock adjustments, including scanner adjustment commits, send the
+  changed mapped item after the audited local adjustment commits.
+- `POST /api/integrations/woocommerce/writeback/stock/sync` with `force=false`
+  retries only mapped items whose local `in_stock` differs from the last
+  successful WooCommerce stock snapshot.
+- The same endpoint with `force=true` resends every active mapped inventory
+  item, even when its snapshot already matches.
+- Successful sends update `woo_stock_quantity_snapshot`; failed sends remain in
+  the audited queue and leave the local stock commit intact.
+- Unmapped items are skipped and reported in the synchronization response.
+- Before skipping an unmapped item, stock sync may recover its product and
+  variation IDs from previously matched WooCommerce order lines. Recovery is
+  allowed only when every matched line points to one unambiguous remote item.
+- Stock writes send both `stock_quantity` and the matching `stock_status`
+  (`instock` above zero, `outofstock` at zero).
+- Bulk receiving, cycle counts, and transfers remain local-only unless they use
+  a separately documented writeback path.
 - Expanded reports read local tables only.
 - Local remap search in Items is candidate search only; actual remap remains
   local metadata and does not call WooCommerce.
 
-Future writeback remains intentionally delayed until read-only sync, local
-workflows, audit trails, and operator review rules are stable.
+## Pongo Insights Safety Boundary
+
+Pongo Insights reads local WooCommerce order snapshots, local order lines, and
+local inventory item fields. It does not call WooCommerce from the frontend or
+backend, and it does not write WooCommerce products, orders, statuses, stock, or
+subscription records.
+
+If subscription, refund, coupon, payment, or address fields are not present in
+local snapshots, Insights returns empty states or `data_quality` warnings. It
+does not fake metrics.
+
+## Business Dashboard Safety Boundary
+
+The default Dashboard reads local WooCommerce order snapshots for today's
+business metrics, open orders, revenue comparison, and city-level order
+geography. It does not call WooCommerce live, does not write WooCommerce, and
+does not update local order or inventory state.
+
+Subscription cards remain empty with a data quality warning until subscription
+snapshots are synced locally. Map markers use exact local coordinates only when
+already stored; otherwise supported cities use approximate city-level markers.

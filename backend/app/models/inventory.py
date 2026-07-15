@@ -26,6 +26,8 @@ class MovementType(str, Enum):
     allocation = "allocation"
     deallocation = "deallocation"
     pick = "pick"
+    pick_stock_reduction = "pick_stock_reduction"
+    unpick_stock_restoration = "unpick_stock_restoration"
     fulfillment = "fulfillment"
     transfer_out = "transfer_out"
     transfer_in = "transfer_in"

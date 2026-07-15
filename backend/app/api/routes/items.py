@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -12,6 +12,7 @@ from app.models.imports import ImportError as ImportErrorRow
 from app.models.imports import ImportJob
 from app.models.item_notes import ItemNote
 from app.models.inventory import InventoryItem, InventoryItemLocation
+from app.models.orders import Order, OrderItem
 from app.schemas.imports import ImportCommitResponse, ImportPreviewResponse
 from app.schemas.inventory import InventoryItemLocationCreate, InventoryItemLocationListResponse, InventoryItemLocationRead, InventoryItemLocationUpdate
 from app.schemas.items import InventoryItemCreate, InventoryItemListResponse, InventoryItemRead, InventoryItemUpdate
@@ -77,6 +78,30 @@ def build_items_statement(
     return statement.order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())
 
 
+def get_open_order_totals(db: Session, item_ids: list[int]) -> dict[int, dict[str, float | int]]:
+    if not item_ids:
+        return {}
+    closed_statuses = {"cancelled", "canceled", "completed", "fulfilled", "refunded", "skipped"}
+    remaining_quantity = func.coalesce(OrderItem.quantity_ordered, 0) - func.coalesce(OrderItem.quantity_fulfilled, 0)
+    statement = (
+        select(
+            OrderItem.inventory_item_id,
+            func.count(func.distinct(OrderItem.order_id)),
+            func.coalesce(func.sum(remaining_quantity), 0),
+        )
+        .join(Order, Order.id == OrderItem.order_id)
+        .where(OrderItem.inventory_item_id.in_(item_ids))
+        .where(~func.lower(func.coalesce(Order.local_status, "")).in_(closed_statuses))
+        .where(remaining_quantity > 0)
+        .group_by(OrderItem.inventory_item_id)
+    )
+    return {
+        item_id: {"count": int(order_count or 0), "quantity": float(quantity or 0)}
+        for item_id, order_count, quantity in db.execute(statement).all()
+        if item_id is not None
+    }
+
+
 @router.get("/search")
 def search_items_endpoint(
     q: str | None = None,
@@ -118,8 +143,12 @@ def list_items(
 ) -> InventoryItemListResponse:
     statement = build_items_statement(search, sku, barcode, category, warehouse, inventory_location, brand, active, include_non_inventory, woo_sync_status, woo_product_id, woo_variation_id)
     items = list(db.scalars(statement).all())
+    open_order_totals = get_open_order_totals(db, [item.id for item in items])
     for item in items:
         apply_calculated_fields(item)
+        totals = open_order_totals.get(item.id, {"count": 0, "quantity": 0})
+        item.open_orders_count = totals["count"]
+        item.open_order_quantity = totals["quantity"]
     return InventoryItemListResponse(items=items, total=len(items))
 
 

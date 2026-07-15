@@ -1,11 +1,12 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.allocations import AllocationCommitResponse, AllocationDetail, AllocationListResponse, AllocationPreviewResponse, AllocationRequest
-from app.services.allocations import allocation_to_read, commit_allocation, export_allocation_csv, get_allocation_detail, list_allocations, preview_allocation
+from app.schemas.allocations import AllocationCommitResponse, AllocationDetail, AllocationExceptionListResponse, AllocationListResponse, AllocationPreviewResponse, AllocationRequest, AutoAllocationQueueResponse
+from app.services.allocations import allocation_to_read, commit_allocation, export_allocation_csv, get_allocation_detail, list_allocation_exception_lines, list_allocations, preview_allocation
+from app.services.order_workflow import auto_allocate_processing_orders_fifo
 
 router = APIRouter(prefix="/allocations", tags=["allocations"])
 
@@ -18,6 +19,30 @@ def preview_allocation_request(payload: AllocationRequest, db: Session = Depends
 @router.post("/commit", response_model=AllocationCommitResponse)
 def commit_allocation_request(payload: AllocationRequest, db: Session = Depends(get_db)) -> AllocationCommitResponse:
     return commit_allocation(db, payload)
+
+
+@router.post("/auto/commit", response_model=AutoAllocationQueueResponse)
+def commit_fifo_auto_allocation(db: Session = Depends(get_db)) -> AutoAllocationQueueResponse:
+    return AutoAllocationQueueResponse.model_validate(auto_allocate_processing_orders_fifo(db, source="manual-fifo-reconcile", commit=True))
+
+
+@router.get("/exceptions", response_model=AllocationExceptionListResponse)
+def list_allocation_exceptions(
+    search: str | None = None,
+    warehouse: str | None = None,
+    ordered_from: date | None = None,
+    ordered_to: date | None = None,
+    include_fully_allocated: bool = False,
+    db: Session = Depends(get_db),
+) -> AllocationExceptionListResponse:
+    return list_allocation_exception_lines(
+        db,
+        search=search,
+        warehouse=warehouse,
+        ordered_from=ordered_from,
+        ordered_to=ordered_to,
+        include_fully_allocated=include_fully_allocated,
+    )
 
 
 @router.get("", response_model=AllocationListResponse)

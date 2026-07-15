@@ -1,6 +1,7 @@
 import csv
 from io import StringIO
 
+from app.core.config import get_settings
 from tests.test_allocations_api import synced_order
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
@@ -8,16 +9,21 @@ from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_or
 
 def allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2, sku="PICK-SKU", barcode="PICK-BAR"):
     _, order, _ = synced_order(client, monkeypatch, item_stock=item_stock, item_allocated=item_allocated, quantity=quantity, sku=sku, barcode=barcode)
-    allocation = client.post("/api/allocations/commit", json={"order_ids": [order["id"]], "allow_partial": True, "created_by": "pytest"})
-    assert allocation.status_code == 200, allocation.text
-    assert allocation.json()["status"] == "posted"
     detail = client.get(f"/api/orders/{order['id']}").json()
+    assert detail["allocation_status"] in {"allocated", "auto_allocated"}
     return detail, detail["lines"][0]
 
 
 def test_pick_preview_valid_allocated_order_does_not_write(client, monkeypatch):
     order, line = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2)
     before_item = client.get("/api/items", params={"sku": "PICK-SKU"}).json()["items"][0]
+
+    pick_list_order = client.get("/api/orders/pick").json()["orders"][0]
+    assert pick_list_order["order_source"] == "WooCommerce"
+    assert pick_list_order["skus"] == ["PICK-SKU"]
+    assert pick_list_order["total_quantity_ordered"] == 2
+    assert pick_list_order["total_quantity_allocated"] == 2
+    assert pick_list_order["total_quantity_picked"] == 0
 
     response = client.post("/api/picks/preview", json={"order_ids": [order["id"]], "allow_partial": True})
 
@@ -43,7 +49,7 @@ def test_pick_preview_valid_allocated_order_does_not_write(client, monkeypatch):
 
 
 def test_pick_preview_skips_unallocated_unmatched_conflict_and_fully_picked(client, monkeypatch):
-    _, unallocated_order, _ = synced_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2, sku="UNALLOC-SKU", barcode="UNALLOC-BAR")
+    _, unallocated_order, _ = synced_order(client, monkeypatch, item_stock=1, item_allocated=0, quantity=2, sku="UNALLOC-SKU", barcode="UNALLOC-BAR")
     unallocated = client.post("/api/picks/preview", json={"order_ids": [unallocated_order["id"]], "allow_partial": True}).json()
     assert unallocated["skipped_lines"] == 1
     assert unallocated["errors"]
@@ -62,7 +68,7 @@ def test_pick_preview_skips_unallocated_unmatched_conflict_and_fully_picked(clie
     conflict = client.post("/api/picks/preview", json={"order_ids": [conflict_order["id"]], "allow_partial": True}).json()
     assert conflict["conflict_lines"] == 1
 
-def test_pick_commit_creates_records_updates_picked_and_leaves_item_quantities(client, monkeypatch):
+def test_pick_commit_creates_records_updates_picked_and_reduces_stock(client, monkeypatch):
     order, _ = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2)
     before_item = client.get("/api/items", params={"sku": "PICK-SKU"}).json()["items"][0]
 
@@ -74,18 +80,64 @@ def test_pick_commit_creates_records_updates_picked_and_leaves_item_quantities(c
     assert body["pick_id"]
     assert body["picked_lines"] == 1
     assert body["total_quantity_picked"] == 2
+    assert body["created_stock_movements"] == 1
     assert body["created_audit_events"] == 1
     item = client.get("/api/items", params={"sku": "PICK-SKU"}).json()["items"][0]
-    assert item["In Stock"] == before_item["In Stock"] == 6
-    assert item["Allocated"] == before_item["Allocated"] == 3
+    assert item["In Stock"] == before_item["In Stock"] - 2 == 4
+    assert item["Allocated"] == before_item["Allocated"] - 2 == 1
     assert item["Sellable"] == before_item["Sellable"] == 3
     order_after = client.get(f"/api/orders/{order['id']}").json()
     assert order_after["local_status"] == "picked"
     assert order_after["lines"][0]["quantity_allocated"] == 2
     assert order_after["lines"][0]["quantity_picked"] == 2
+    assert order_after["lines"][0]["quantity_stock_reduced"] == 2
     assert order_after["lines"][0]["remaining_to_pick"] == 0
     assert order_after["lines"][0]["picking_status"] == "picked"
-    assert client.get("/api/stock-movements").json()["total"] == 0
+    assert order_after["shows_in_pick_orders"] is False
+    assert order["id"] not in {row["id"] for row in client.get("/api/orders/pick").json()["orders"]}
+    movements = client.get("/api/stock-movements", params={"movement_type": "pick_stock_reduction"}).json()
+    assert movements["total"] == 1
+    assert movements["movements"][0]["quantity_delta"] == -2
+
+
+def test_pick_waits_until_completion_to_write_reduced_stock_to_woo(client, monkeypatch):
+    settings = get_settings().model_copy(
+        update={
+            "woocommerce_base_url": "https://staging32.pongo.ca/",
+            "woocommerce_consumer_key": "ck_test",
+            "woocommerce_consumer_secret": "cs_test",
+            "woocommerce_environment": "staging",
+            "woocommerce_read_only": False,
+            "woocommerce_writeback_enabled": True,
+            "woocommerce_writeback_dry_run": False,
+            "woocommerce_staging_live_test_mode": True,
+            "woocommerce_allow_stock_write": True,
+            "woocommerce_allowed_host": "staging32.pongo.ca",
+        }
+    )
+    monkeypatch.setattr("app.api.routes.orders.get_settings", lambda: settings)
+    calls = []
+
+    def fake_write(self, operation_type, method, path, payload):
+        calls.append((operation_type, path, payload["stock_quantity"]))
+        return {"stock_quantity": payload["stock_quantity"]}
+
+    monkeypatch.setattr("app.api.routes.orders.WooCommerceClient.guarded_write", fake_write)
+    order, _ = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2, sku="PICK-WRITEBACK", barcode="PICK-WRITEBACK-BAR")
+
+    response = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": True, "created_by": "pytest"})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "posted"
+    assert calls == []
+
+    completed = client.post(
+        f"/api/orders/{order['id']}/complete/commit",
+        json={"completion_mode": "complete", "queue_woo_status_update": False},
+    )
+
+    assert completed.status_code == 200
+    assert calls == [("update_product_stock", "/wp-json/wc/v3/products/101", 4.0)]
 
 
 def test_pick_preview_skips_fully_picked_line(client, monkeypatch):
@@ -109,7 +161,49 @@ def test_pick_commit_partial_updates_order_status(client, monkeypatch):
     assert detail["local_status"] == "partially_picked"
     assert detail["lines"][0]["quantity_allocated"] == 2
     assert detail["lines"][0]["quantity_picked"] == 1
+    assert detail["lines"][0]["quantity_stock_reduced"] == 1
     assert detail["lines"][0]["remaining_to_pick"] == 1
+
+
+def test_bulk_unpick_restores_original_location_stock_and_allocation_with_audit_movement(client, monkeypatch):
+    order, _ = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2, sku="UNPICK-SKU", barcode="UNPICK-BAR")
+    before = client.get("/api/items", params={"sku": "UNPICK-SKU"}).json()["items"][0]
+    pick = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": True}).json()
+    assert pick["status"] == "posted"
+
+    response = client.post("/api/orders/bulk/unpick", json={"order_ids": [order["id"]], "created_by": "pytest", "reason": "Packing correction"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["succeeded_count"] == 1
+    assert body["total_quantity_restored"] == 2
+    assert body["created_stock_movements"] == 1
+    assert body["created_audit_events"] == 1
+    item = client.get("/api/items", params={"sku": "UNPICK-SKU"}).json()["items"][0]
+    assert item["In Stock"] == before["In Stock"]
+    assert item["Allocated"] == before["Allocated"]
+    detail = client.get(f"/api/orders/{order['id']}").json()
+    assert detail["lines"][0]["quantity_picked"] == 0
+    assert detail["lines"][0]["quantity_stock_reduced"] == 0
+    assert detail["pick_status"] == "ready_to_pick"
+    pick_detail = client.get(f"/api/picks/{pick['pick_id']}").json()
+    assert pick_detail["status"] == "reversed"
+    assert pick_detail["lines"][0]["status"] == "reversed"
+    movements = client.get("/api/stock-movements", params={"movement_type": "unpick_stock_restoration"}).json()
+    assert movements["total"] == 1
+    assert movements["movements"][0]["quantity_delta"] == 2
+
+    duplicate = client.post("/api/orders/bulk/unpick", json={"order_ids": [order["id"]]})
+    assert duplicate.json()["status"] == "rejected"
+    assert client.get("/api/items", params={"sku": "UNPICK-SKU"}).json()["items"][0]["In Stock"] == before["In Stock"]
+
+    repick = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": False})
+    assert repick.status_code == 200
+    assert repick.json()["status"] == "posted"
+    repicked_detail = client.get(f"/api/orders/{order['id']}").json()
+    assert repicked_detail["lines"][0]["quantity_picked"] == 2
+    assert repicked_detail["lines"][0]["quantity_stock_reduced"] == 2
 
 
 def test_pick_commit_rejects_overpick_and_is_atomic(client, monkeypatch):
@@ -153,6 +247,7 @@ def test_pick_list_detail_export_and_open_orders_reflect_picked(client, monkeypa
     assert detail.status_code == 200
     assert len(detail.json()["lines"]) == 1
     assert detail.json()["audit_event_ids"]
+    assert detail.json()["lines"][0]["stock_movement_id"]
     assert exported.status_code == 200
     rows = list(csv.DictReader(StringIO(exported.text)))
     assert exported.text.splitlines()[0] == "Pick Number,Status,Created At,Posted At,Woo Order Number,Order ID,SKU,Barcode,Description,Warehouse,Inventory Location,Quantity Ordered,Quantity Allocated,Previously Picked,Quantity Picked,Picked After,Remaining To Pick,Line Status,Notes"
@@ -162,3 +257,17 @@ def test_pick_list_detail_export_and_open_orders_reflect_picked(client, monkeypa
     picked_orders = [row for row in open_orders.json()["orders"] if row["id"] == order["id"]]
     assert picked_orders
     assert picked_orders[0]["local_status"] == "picked"
+
+
+def test_pick_scan_commit_is_idempotent_with_key(client, monkeypatch):
+    order, line = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2, sku="IDEMP-PICK-SKU", barcode="IDEMP-PICK-BAR")
+
+    first = client.post(f"/api/picks/orders/{order['id']}/scan/commit", json={"sku_or_barcode": line["sku"], "quantity": 2, "idempotency_key": "scan-1"})
+    second = client.post(f"/api/picks/orders/{order['id']}/scan/commit", json={"sku_or_barcode": line["sku"], "quantity": 2, "idempotency_key": "scan-1"})
+
+    assert first.json()["status"] == "posted"
+    assert second.json()["status"] == "posted"
+    assert "Duplicate scan ignored" in " ".join(second.json()["warnings"])
+    item = client.get("/api/items", params={"sku": "IDEMP-PICK-SKU"}).json()["items"][0]
+    assert item["In Stock"] == 4
+    assert client.get("/api/stock-movements", params={"movement_type": "pick_stock_reduction"}).json()["total"] == 1

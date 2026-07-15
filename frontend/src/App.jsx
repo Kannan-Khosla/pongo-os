@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowLeft,
   BarChart3,
@@ -14,16 +15,18 @@ import {
   Copy,
   Download,
   Edit3,
+  EllipsisVertical,
   Filter,
   LayoutDashboard,
   Link2,
   MapPin,
   Menu,
-  MoreVertical,
   PackagePlus,
   PackageSearch,
   Plus,
+  Printer,
   RefreshCw,
+  RotateCcw,
   Route,
   Save,
   Search,
@@ -35,6 +38,7 @@ import {
   Upload,
   UserCircle,
   Warehouse,
+  X,
 } from 'lucide-react';
 
 const CANONICAL_ITEM_COLUMNS = [
@@ -148,6 +152,15 @@ const emptyDashboard = {
   warnings: [],
   activity: [],
 };
+const emptyBusinessDashboard = {
+  generated_at: null,
+  today: { summary: {}, data_quality: [] },
+  open_orders: { summary: {}, rows: [], data_quality: [] },
+  subscriptions: { summary: {}, rows: [], data_quality: [], empty_state: null },
+  revenue_comparison: { summary: {}, daily_series: [], data_quality: [] },
+  order_map: { summary: {}, city_breakdown: [], markers: [], data_quality: [] },
+  data_quality: [],
+};
 const emptyCompletedOrders = {
   orders: [],
   total: 0,
@@ -157,8 +170,36 @@ const emptyWooStatus = {
   base_url_present: false,
   consumer_key_present: false,
   consumer_secret_present: false,
+  base_url_host: '',
+  environment: 'development',
+  read_only: true,
+  writeback_enabled: false,
+  dry_run: true,
+  staging_live_test_mode: false,
+  stock_write_allowed: false,
+  order_status_write_allowed: false,
+  product_metadata_write_allowed: false,
+  customer_write_allowed: false,
+  coupon_write_allowed: false,
+  refund_write_allowed: false,
+  delete_allowed: false,
+  allowed_host: '',
+  host_allowed: false,
+  webhook_enabled: false,
+  webhook_configured: false,
+  webhook_secret_present: false,
+  last_webhook_delivery: null,
+  last_product_sync: null,
+  last_order_sync: null,
+  last_error: '',
   message: 'WooCommerce status has not been checked.',
 };
+const wooOrderSyncStatuses = ['processing', 'on-hold', 'pending', 'completed', 'failed', 'cancelled', 'refunded'];
+const wooOpenOrderQuickSyncStatuses = ['processing'];
+const ORDER_QUICK_SYNC_INTERVAL_MS = 10000;
+const WEBHOOK_EVENT_POLL_INTERVAL_MS = 2000;
+const WEBHOOK_EVENT_POLL_LIMIT = 50;
+const ORDER_NOTIFICATION_HISTORY_LIMIT = 50;
 const emptyOpenOrders = {
   orders: [],
   total: 0,
@@ -170,24 +211,41 @@ const emptyOpenOrders = {
 
 const orderSubpages = [
   { id: 'open', label: 'Open Orders', href: '#/orders/open' },
-  { id: 'allocate', label: 'Allocate Orders', href: '#/orders/allocate' },
+  { id: 'allocate', label: 'Allocate', href: '#/orders/allocate' },
   { id: 'pick', label: 'Pick Orders', href: '#/orders/pick' },
-  { id: 'fulfillment', label: 'Fulfillment', href: '#/orders/fulfillment' },
   { id: 'completed', label: 'Completed Orders', href: '#/orders/completed' },
   { id: 'history', label: 'Order History', href: '#/orders/history' },
 ];
 
+const inventorySubpages = [
+  { id: 'all', label: 'All Inventory', href: '#/inventory/all' },
+  { id: 'by-location', label: 'Inventory by Location', href: '#/inventory/by-location' },
+  { id: 'low-stock', label: 'Low Stock', href: '#/inventory/low-stock' },
+  { id: 'expiring', label: 'Expiring Stock', href: '#/inventory/expiring' },
+  { id: 'par-level', label: 'Par Level', href: '#/inventory/par-level' },
+  { id: 'movements', label: 'Stock Movements', href: '#/inventory/movements' },
+];
+
 const orderSubpageMeta = {
   open: { title: 'Open Orders', kicker: 'Orders / Open' },
-  allocate: { title: 'Allocate Orders', kicker: 'Orders / Allocation' },
+  allocate: { title: 'Allocate', kicker: 'Orders / Allocation' },
   pick: { title: 'Pick Orders', kicker: 'Orders / Picking' },
-  fulfillment: { title: 'Fulfillment', kicker: 'Orders / Fulfillment' },
   completed: { title: 'Completed Orders', kicker: 'Orders / Completed' },
   history: { title: 'Order History', kicker: 'Orders / History' },
 };
 
+const inventorySubpageMeta = {
+  all: { title: 'All Inventory', kicker: 'Inventory / Product stock' },
+  'by-location': { title: 'Inventory by Location', kicker: 'Inventory / Warehouse stock' },
+  'low-stock': { title: 'Low Stock', kicker: 'Inventory / Under par' },
+  expiring: { title: 'Expiring Stock', kicker: 'Inventory / Expiration tracking' },
+  'par-level': { title: 'Par Level', kicker: 'Inventory / Reorder planning' },
+  movements: { title: 'Stock Movements', kicker: 'Inventory / Audit ledger' },
+};
+
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'inventory-overview', label: 'Inventory Overview', icon: ClipboardList },
   { id: 'items', label: 'Items', icon: PackageSearch },
   { id: 'inventory', label: 'Inventory', icon: Boxes },
   { id: 'locations', label: 'Locations', icon: MapPin },
@@ -197,14 +255,57 @@ const navItems = [
   { id: 'cycle-count', label: 'Cycle Count', icon: ClipboardCheck },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'routes', label: 'Routes', icon: Route },
+  { id: 'insights', label: 'Insights', icon: BarChart3 },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
+const insightTabs = [
+  { id: 'overview', label: 'Executive Overview', endpoint: '/api/insights/overview', exportable: false, description: 'Revenue, customers, demand, inventory value, and operational risk.' },
+  { id: 'orders-revenue', label: 'Orders & Revenue', endpoint: '/api/insights/orders-revenue', exportable: true, description: 'Order volume, sales, discounts, refunds, payment mix, and daily performance.' },
+  { id: 'customer-metrics', label: 'Customer Metrics', endpoint: '/api/insights/customer-metrics', exportable: true, description: 'Customer counts, repeat behavior, lifetime value, dormancy, and reorder readiness.' },
+  { id: 'customer-segmentation', label: 'Customer Segmentation', endpoint: '/api/insights/customer-segmentation', exportable: false, description: 'RFM-style segments for champions, loyal buyers, one-time buyers, dormant customers, and lost customers.' },
+  { id: 'product-sku', label: 'Product & SKU Metrics', endpoint: '/api/insights/product-sku', exportable: true, description: 'SKU demand, revenue, estimated cost, estimated margin, stock, and movement tiers.' },
+  { id: 'subscriptions', label: 'Subscriptions', endpoint: '/api/insights/subscriptions', exportable: false, description: 'Subscription health when local WooCommerce Subscriptions snapshots are available.' },
+  { id: 'subscription-products', label: 'Subscription Products', endpoint: '/api/insights/subscription-products', exportable: false, description: 'Subscription product demand and stock risk when subscription data is synced.' },
+  { id: 'inventory-forecasting', label: 'Inventory Forecasting', endpoint: '/api/insights/inventory-forecasting', exportable: false, description: 'Velocity, days of stock left, deterministic demand forecast, and reorder suggestions.' },
+  { id: 'coupons', label: 'Coupons & Promotions', endpoint: '/api/insights/coupons', exportable: false, description: 'Coupon usage and discount quality when coupon line snapshots exist locally.' },
+  { id: 'payment-health', label: 'Payment Health', endpoint: '/api/insights/payment-health', exportable: false, description: 'Payment method mix, failure rates, and duplicate failed-to-success patterns.' },
+  { id: 'geography', label: 'Geography & Delivery', endpoint: '/api/insights/geography', exportable: true, description: 'City and postal-code demand, customer density, revenue, and repeat behavior.' },
+  { id: 'product-affinity', label: 'Product Affinity', endpoint: '/api/insights/product-affinity', exportable: false, description: 'Frequently bought together SKUs and cross-sell candidates from multi-line orders.' },
+  { id: 'reorder-forecast', label: 'Reorder Forecast', endpoint: '/api/insights/reorder-forecast', exportable: true, description: 'Customers likely due or overdue for reorder based on local repeat purchase intervals.' },
+];
+
+const insightColumnsByTab = {
+  overview: ['sku', 'description', 'risk_level', 'current_sellable', 'daily_velocity', 'days_of_stock_left'],
+  'orders-revenue': ['date', 'order_count', 'gross_sales', 'net_sales', 'units_sold'],
+  'customer-metrics': ['customer_name', 'email', 'order_count', 'lifetime_spend', 'average_days_between_orders', 'last_order_date'],
+  'customer-segmentation': ['segment', 'customer_count', 'revenue', 'repeat_rate'],
+  'product-sku': ['sku', 'description', 'brand', 'category', 'units_sold', 'revenue', 'estimated_margin', 'current_sellable'],
+  subscriptions: ['subscription_id', 'customer', 'email', 'status', 'next_payment_date', 'subscription_total'],
+  'subscription-products': ['sku', 'description', 'active_subscriptions', 'upcoming_30_day_units', 'current_sellable', 'stockout_risk'],
+  'inventory-forecasting': ['sku', 'description', 'current_sellable', 'units_sold_30d', 'daily_velocity', 'days_of_stock_left', 'suggested_reorder_qty', 'risk_level'],
+  coupons: ['coupon_code', 'usage_count', 'order_count', 'revenue', 'discount_amount', 'average_order_value'],
+  'payment-health': ['payment_method', 'attempt_count', 'success_count', 'failed_count', 'success_rate', 'revenue', 'duplicate_pattern_count'],
+  geography: ['city', 'postal_code', 'order_count', 'customer_count', 'revenue', 'average_order_value', 'repeat_customer_rate'],
+  'product-affinity': ['base_sku', 'paired_sku', 'pair_order_count', 'attach_rate', 'average_order_value_with_pair', 'suggested_cross_sell_text'],
+  'reorder-forecast': ['customer_email', 'customer_name', 'last_order_date', 'most_repeated_sku', 'average_reorder_interval_days', 'days_overdue', 'churn_risk_score', 'recommended_action'],
+};
+
 const pageMeta = {
   dashboard: {
-    title: 'Command Center',
-    kicker: 'Operational snapshot',
-    tabs: ['Today', 'Work Queues', 'Exceptions'],
+    title: 'Dashboard',
+    kicker: 'Business snapshot',
+    tabs: [],
+  },
+  'inventory-overview': {
+    title: 'Inventory Overview',
+    kicker: 'Operational inventory health',
+    tabs: ['Health', 'Work Queues', 'Exceptions'],
+  },
+  insights: {
+    title: 'Pongo Insights',
+    kicker: 'Business intelligence',
+    tabs: [],
   },
   items: {
     title: 'Items',
@@ -217,7 +318,7 @@ const pageMeta = {
   inventory: {
     title: 'Inventory',
     kicker: 'Main Warehouse Inventory',
-    tabs: ['List Inventory', 'All Inventory', 'Location View', 'Low Stock', 'Expiring Stock', 'Par Level'],
+    tabs: [],
   },
   locations: {
     title: 'Locations',
@@ -236,7 +337,7 @@ const pageMeta = {
   scanner: {
     title: 'Scanner',
     kicker: 'Warehouse keyboard-scanner workflows',
-    tabs: ['Lookup', 'Receiving', 'Cycle Count', 'Transfer', 'Adjustment', 'Picking'],
+    tabs: ['Lookup', 'Receiving', 'Cycle Count', 'Adjustment', 'Picking'],
   },
   orders: {
     title: 'Orders',
@@ -578,6 +679,14 @@ function parseHashRoute() {
     const knownView = orderSubpages.some((page) => page.id === ordersView);
     return { pageId: 'orders', ordersView: knownView ? ordersView : 'open' };
   }
+  if (hash === 'inventory') {
+    return { pageId: 'inventory', inventoryView: 'all' };
+  }
+  if (hash.startsWith('inventory/')) {
+    const inventoryView = hash.split('/')[1] || 'all';
+    const knownView = inventorySubpages.some((page) => page.id === inventoryView);
+    return { pageId: 'inventory', inventoryView: knownView ? inventoryView : 'all' };
+  }
   return navItems.some((item) => item.id === hash) ? { pageId: hash } : { pageId: 'dashboard' };
 }
 
@@ -613,6 +722,9 @@ export default function App() {
   const [dashboard, setDashboard] = useState(emptyDashboard);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState('');
+  const [businessDashboard, setBusinessDashboard] = useState(emptyBusinessDashboard);
+  const [businessDashboardLoading, setBusinessDashboardLoading] = useState(false);
+  const [businessDashboardError, setBusinessDashboardError] = useState('');
   const [cycleCounts, setCycleCounts] = useState([]);
   const [cycleCountsLoading, setCycleCountsLoading] = useState(false);
   const [cycleCountsError, setCycleCountsError] = useState('');
@@ -626,6 +738,9 @@ export default function App() {
   const [wooRemapMappings, setWooRemapMappings] = useState({ mappings: [], total: 0 });
   const [wooRemapPreview, setWooRemapPreview] = useState(null);
   const [wooRemapMessage, setWooRemapMessage] = useState('');
+  const [wooWritebackQueue, setWooWritebackQueue] = useState({ queue: [], total: 0 });
+  const [wooWritebackPreview, setWooWritebackPreview] = useState(null);
+  const [wooWritebackMessage, setWooWritebackMessage] = useState('');
   const [wooLoading, setWooLoading] = useState(false);
   const [wooError, setWooError] = useState('');
   const [openOrders, setOpenOrders] = useState(emptyOpenOrders);
@@ -635,6 +750,7 @@ export default function App() {
   const [completedOrders, setCompletedOrders] = useState(emptyCompletedOrders);
   const [completedOrdersLoading, setCompletedOrdersLoading] = useState(false);
   const [completedOrdersError, setCompletedOrdersError] = useState('');
+  const [orderCompletionSummary, setOrderCompletionSummary] = useState(null);
   const [allocationPreview, setAllocationPreview] = useState(null);
   const [allocationCommitSummary, setAllocationCommitSummary] = useState(null);
   const [allocationHistory, setAllocationHistory] = useState([]);
@@ -645,8 +761,6 @@ export default function App() {
   const [pickCommitSummary, setPickCommitSummary] = useState(null);
   const [pickHistory, setPickHistory] = useState([]);
   const [pickDetail, setPickDetail] = useState(null);
-  const [pickScannerOrder, setPickScannerOrder] = useState(null);
-  const [pickScannerMessage, setPickScannerMessage] = useState('');
   const [pickLoading, setPickLoading] = useState(false);
   const [pickError, setPickError] = useState('');
   const [fulfillmentPreview, setFulfillmentPreview] = useState(null);
@@ -666,19 +780,45 @@ export default function App() {
   const [routeProviderMessage, setRouteProviderMessage] = useState('');
   const [routesLoading, setRoutesLoading] = useState(false);
   const [routesError, setRoutesError] = useState('');
+  const [orderNotificationHistory, setOrderNotificationHistory] = useState([]);
+  const [activeOrderNotifications, setActiveOrderNotifications] = useState([]);
+  const [unreadOrderNotificationKeys, setUnreadOrderNotificationKeys] = useState(() => new Set());
+  const [orderNotificationHistoryOpen, setOrderNotificationHistoryOpen] = useState(false);
+  const wooOrderQuickSyncInFlight = useRef(false);
+  const webhookEventPollInFlight = useRef(false);
+  const webhookEventCursor = useRef(null);
+  const seenWebhookEventIds = useRef(new Set());
+  const seenQuickSyncNotificationRuns = useRef(new Set());
+  const activeRouteRef = useRef(route);
+  const openOrderFiltersRef = useRef({});
+  const openOrdersRequestIdRef = useRef(0);
+  activeRouteRef.current = route;
 
   useEffect(() => {
-    const handleHashChange = () => setRoute(parseHashRoute());
+    const handleHashChange = () => {
+      const nextRoute = parseHashRoute();
+      setRoute((current) => (JSON.stringify(current) === JSON.stringify(nextRoute) ? current : nextRoute));
+    };
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
   useEffect(() => {
     if (route.pageId === 'dashboard') {
+      loadBusinessDashboard();
+    }
+    if (route.pageId === 'inventory-overview') {
       loadDashboard();
     }
     if (route.pageId === 'items' || route.pageId === 'inventory') {
       loadItems();
+    }
+    if (route.pageId === 'inventory') {
+      loadInventorySummary();
+      loadLocations({ status: 'active' });
+      if ((route.inventoryView || 'all') === 'movements') {
+        loadStockMovements();
+      }
     }
     if (route.pageId === 'receiving') {
       loadItems();
@@ -704,28 +844,81 @@ export default function App() {
       loadCycleCounts();
     }
     if (route.pageId === 'orders') {
-      loadOpenOrders();
-      loadAllocations();
-      loadPicks();
-      loadFulfillments();
-      loadCompletedOrders();
+      const ordersView = route.ordersView || 'open';
+      if (ordersView === 'open') {
+        loadOpenOrders({}, { ordersView: 'open', reset: true });
+      } else if (ordersView === 'pick') {
+        loadOpenOrders({}, { ordersView: 'pick', reset: true });
+      } else if (ordersView === 'completed') {
+        loadCompletedOrders();
+      } else if (ordersView === 'history') {
+        loadAllocations();
+        loadPicks();
+        loadFulfillments();
+      }
     }
     if (route.pageId === 'settings') {
       loadWooStatus();
       loadWooSyncRuns();
       loadWooRemap();
+      loadWooWritebackQueue();
     }
     if (route.pageId === 'routes') {
       loadRouteCandidates();
       loadRoutes();
     }
-  }, [route.pageId]);
+  }, [route.pageId, route.inventoryView, route.ordersView]);
+
+  useEffect(() => {
+    const orderAwarePage = ['dashboard', 'orders', 'settings'].includes(route.pageId);
+    if (!orderAwarePage) {
+      return undefined;
+    }
+    const runQuickSync = () => {
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+      syncLatestWooOrders();
+    };
+    runQuickSync();
+    const intervalId = window.setInterval(runQuickSync, ORDER_QUICK_SYNC_INTERVAL_MS);
+    window.addEventListener('focus', runQuickSync);
+    document.addEventListener('visibilitychange', runQuickSync);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', runQuickSync);
+      document.removeEventListener('visibilitychange', runQuickSync);
+    };
+  }, [route.pageId, route.ordersView]);
+
+  useEffect(() => {
+    const runWebhookEventPoll = () => {
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+      pollWooWebhookEvents();
+    };
+    runWebhookEventPoll();
+    const intervalId = window.setInterval(runWebhookEventPoll, WEBHOOK_EVENT_POLL_INTERVAL_MS);
+    window.addEventListener('focus', runWebhookEventPoll);
+    document.addEventListener('visibilitychange', runWebhookEventPoll);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', runWebhookEventPoll);
+      document.removeEventListener('visibilitychange', runWebhookEventPoll);
+    };
+  }, []);
 
   const activeMeta = getHeaderMeta(route, items);
 
   function navigate(hash) {
-    window.location.hash = hash;
-    setRoute(parseHashRoute());
+    const nextHash = hash.startsWith('#') ? hash : `#${hash}`;
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+    }
+    const nextRoute = parseHashRoute();
+    activeRouteRef.current = nextRoute;
+    setRoute((current) => (JSON.stringify(current) === JSON.stringify(nextRoute) ? current : nextRoute));
   }
 
   async function loadItems(filters = {}) {
@@ -944,6 +1137,27 @@ export default function App() {
     }
   }
 
+  async function loadBusinessDashboard(options = {}) {
+    const silent = options.silent === true;
+    if (!silent) {
+      setBusinessDashboardLoading(true);
+    }
+    setBusinessDashboardError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/business-dashboard`);
+      if (!response.ok) {
+        throw new Error(`Business Dashboard API returned ${response.status}`);
+      }
+      setBusinessDashboard({ ...emptyBusinessDashboard, ...(await response.json()) });
+    } catch (error) {
+      setBusinessDashboardError('Unable to load business dashboard data from the backend.');
+    } finally {
+      if (!silent) {
+        setBusinessDashboardLoading(false);
+      }
+    }
+  }
+
   async function loadCycleCounts(filters = {}) {
     setCycleCountsLoading(true);
     setCycleCountsError('');
@@ -1008,30 +1222,221 @@ export default function App() {
     }
   }
 
-  async function loadOpenOrders(filters = {}) {
-    setOpenOrdersLoading(true);
+  async function loadWooWritebackQueue() {
+    setWooError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/integrations/woocommerce/writeback/queue`);
+      if (!response.ok) {
+        throw new Error(`WooCommerce writeback queue returned ${response.status}`);
+      }
+      setWooWritebackQueue(await response.json());
+    } catch (error) {
+      setWooError('Unable to load WooCommerce writeback queue.');
+    }
+  }
+
+  function publishOrderNotifications(incomingNotifications) {
+    const incoming = (incomingNotifications || []).filter((notification) => notification?.key);
+    if (!incoming.length) {
+      return;
+    }
+    setOrderNotificationHistory((current) => mergeOrderNotifications(current, incoming, { newestFirst: true, limit: ORDER_NOTIFICATION_HISTORY_LIMIT }));
+    setActiveOrderNotifications((current) => mergeOrderNotifications(current, incoming));
+    setUnreadOrderNotificationKeys((current) => {
+      const next = new Set(current);
+      incoming.forEach((notification) => next.add(notification.key));
+      return next;
+    });
+  }
+
+  function markOrderNotificationsRead(notificationKeys) {
+    const keys = new Set(notificationKeys || []);
+    if (!keys.size) {
+      return;
+    }
+    setUnreadOrderNotificationKeys((current) => new Set([...current].filter((key) => !keys.has(key))));
+  }
+
+  function dismissActiveOrderNotifications() {
+    markOrderNotificationsRead(activeOrderNotifications.map((notification) => notification.key));
+    setActiveOrderNotifications([]);
+  }
+
+  function viewOpenOrdersFromNotification() {
+    dismissActiveOrderNotifications();
+    setOrderNotificationHistoryOpen(false);
+  }
+
+  function toggleOrderNotificationHistory() {
+    const nextOpen = !orderNotificationHistoryOpen;
+    setOrderNotificationHistoryOpen(nextOpen);
+    if (nextOpen) {
+      setUnreadOrderNotificationKeys(new Set());
+    }
+  }
+
+  async function refreshLocalOrderDataAfterNotification() {
+    const activeRoute = activeRouteRef.current;
+    if (activeRoute.pageId === 'orders') {
+      await Promise.all([
+        loadOpenOrders(openOrderFiltersRef.current, { silent: true, preserveFilters: true, preserveDetail: true, ordersView: activeRoute.ordersView }),
+        loadCompletedOrders({}, { silent: true }),
+      ]);
+    }
+    if (activeRoute.pageId === 'dashboard') {
+      await loadBusinessDashboard({ silent: true });
+    }
+    if (activeRoute.pageId === 'settings') {
+      await loadWooStatus();
+    }
+  }
+
+  async function pollWooWebhookEvents() {
+    if (webhookEventPollInFlight.current) {
+      return null;
+    }
+    webhookEventPollInFlight.current = true;
+    try {
+      const currentCursor = webhookEventCursor.current;
+      const query = currentCursor === null
+        ? `initialize=true&limit=${WEBHOOK_EVENT_POLL_LIMIT}`
+        : `after_id=${currentCursor}&limit=${WEBHOOK_EVENT_POLL_LIMIT}`;
+      const response = await fetch(`${API_BASE_URL}/api/integrations/woocommerce/webhooks/events?${query}`);
+      if (!response.ok) {
+        throw new Error(`WooCommerce webhook events returned ${response.status}`);
+      }
+      const body = await response.json();
+      const returnedEvents = Array.isArray(body.events) ? body.events : [];
+      const returnedIds = returnedEvents.map((event) => toNumber(event.id)).filter((eventId) => eventId > 0);
+      const pageHighWater = Math.max(currentCursor || 0, ...returnedIds, 0);
+      const hasExplicitNextCursor = body.next_after_id !== null && body.next_after_id !== undefined;
+      const nextCursor = hasExplicitNextCursor
+        ? Math.max(currentCursor || 0, toNumber(body.next_after_id))
+        : (body.has_more ? pageHighWater : Math.max(pageHighWater, toNumber(body.latest_event_id)));
+
+      if (currentCursor === null) {
+        returnedIds.forEach((eventId) => seenWebhookEventIds.current.add(eventId));
+        webhookEventCursor.current = nextCursor;
+        if (body.has_more && nextCursor > 0) {
+          Promise.resolve().then(() => pollWooWebhookEvents());
+        }
+        return body;
+      }
+
+      const unseenEvents = returnedEvents.filter((event) => {
+        const eventId = toNumber(event.id);
+        return eventId > 0 && !seenWebhookEventIds.current.has(eventId);
+      });
+      returnedIds.forEach((eventId) => seenWebhookEventIds.current.add(eventId));
+      webhookEventCursor.current = nextCursor;
+
+      if (unseenEvents.length) {
+        publishOrderNotifications(unseenEvents.map(webhookEventToNotification));
+        await refreshLocalOrderDataAfterNotification();
+      }
+      if (body.has_more && nextCursor > currentCursor) {
+        Promise.resolve().then(() => pollWooWebhookEvents());
+      }
+      return body;
+    } catch {
+      return null;
+    } finally {
+      webhookEventPollInFlight.current = false;
+    }
+  }
+
+  function publishQuickSyncFallback(result) {
+    const createdCount = Math.max(0, Math.trunc(toNumber(result?.created_count)));
+    if (!createdCount) {
+      return;
+    }
+    const runIdentity = result?.sync_run_id == null
+      ? `${result?.status || 'unknown'}:${toNumber(result?.total_remote_records)}:${createdCount}`
+      : String(result.sync_run_id);
+    if (seenQuickSyncNotificationRuns.current.has(runIdentity)) {
+      return;
+    }
+    seenQuickSyncNotificationRuns.current.add(runIdentity);
+    publishOrderNotifications([quickSyncToNotification(result, runIdentity, createdCount)]);
+  }
+
+  async function syncLatestWooOrders() {
+    if (wooOrderQuickSyncInFlight.current) {
+      return null;
+    }
+    wooOrderQuickSyncInFlight.current = true;
+    try {
+      const result = await postJson('/api/integrations/woocommerce/orders/quick-sync?per_status_limit=10', {
+        include_statuses: wooOpenOrderQuickSyncStatuses,
+        limit: 30,
+        created_by: 'auto-order-poll',
+      });
+      publishQuickSyncFallback(result);
+      const activeRoute = activeRouteRef.current;
+      if (activeRoute.pageId === 'orders') {
+        await loadOpenOrders(openOrderFiltersRef.current, { silent: true, preserveFilters: true, preserveDetail: true, ordersView: activeRoute.ordersView });
+        await loadCompletedOrders({}, { silent: true });
+      }
+      if (activeRoute.pageId === 'dashboard') {
+        await loadBusinessDashboard({ silent: true });
+      }
+      if (activeRoute.pageId === 'settings') {
+        setWooOrderCommitSummary(result);
+        await loadWooSyncRuns();
+      }
+      return result;
+    } catch {
+      return null;
+    } finally {
+      wooOrderQuickSyncInFlight.current = false;
+    }
+  }
+
+  async function loadOpenOrders(filters = {}, options = {}) {
+    const requestId = openOrdersRequestIdRef.current + 1;
+    openOrdersRequestIdRef.current = requestId;
+    const silent = options.silent === true;
+    const effectiveFilters = options.preserveFilters ? openOrderFiltersRef.current : filters;
+    if (!options.preserveFilters) {
+      openOrderFiltersRef.current = filters;
+    }
+    if (!silent) {
+      setOpenOrdersLoading(true);
+    }
+    if (options.reset) {
+      setOpenOrders(emptyOpenOrders);
+      setOpenOrderDetail(null);
+    }
     setOpenOrdersError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/orders/open${plainFiltersToQueryString(openOrderFiltersToApi(filters))}`);
+      const ordersView = options.ordersView || activeRouteRef.current.ordersView || 'open';
+      const endpoint = ordersView === 'allocate' ? '/api/orders/allocate' : (ordersView === 'pick' ? '/api/orders/pick' : '/api/orders/open');
+      const response = await fetch(`${API_BASE_URL}${endpoint}${plainFiltersToQueryString(openOrderFiltersToApi(effectiveFilters))}`);
       if (!response.ok) {
         throw new Error(`Open Orders API returned ${response.status}`);
       }
       const body = await response.json();
+      if (requestId !== openOrdersRequestIdRef.current) return;
       setOpenOrders({ ...emptyOpenOrders, ...body });
-      if (body.orders?.length) {
-        await loadOpenOrderDetail(body.orders[0].id);
-      } else {
+      if (!options.preserveDetail) {
         setOpenOrderDetail(null);
       }
     } catch (error) {
-      setOpenOrdersError('Unable to load open orders from the backend.');
+      if (requestId === openOrdersRequestIdRef.current) {
+        setOpenOrdersError('Unable to load open orders from the backend.');
+      }
     } finally {
-      setOpenOrdersLoading(false);
+      if (!silent && requestId === openOrdersRequestIdRef.current) {
+        setOpenOrdersLoading(false);
+      }
     }
   }
 
-  async function loadCompletedOrders(filters = {}) {
-    setCompletedOrdersLoading(true);
+  async function loadCompletedOrders(filters = {}, options = {}) {
+    const silent = options.silent === true;
+    if (!silent) {
+      setCompletedOrdersLoading(true);
+    }
     setCompletedOrdersError('');
     try {
       const response = await fetch(`${API_BASE_URL}/api/orders/completed${plainFiltersToQueryString(completedOrderFiltersToApi(filters))}`);
@@ -1043,23 +1448,28 @@ export default function App() {
     } catch (error) {
       setCompletedOrdersError('Unable to load completed orders from the backend.');
     } finally {
-      setCompletedOrdersLoading(false);
+      if (!silent) {
+        setCompletedOrdersLoading(false);
+      }
     }
   }
 
   async function loadOpenOrderDetail(orderId) {
     if (!orderId) {
       setOpenOrderDetail(null);
-      return;
+      return null;
     }
     try {
       const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}`);
       if (!response.ok) {
         throw new Error(`Order detail API returned ${response.status}`);
       }
-      setOpenOrderDetail(await response.json());
+      const body = await response.json();
+      setOpenOrderDetail(body);
+      return body;
     } catch (error) {
       setOpenOrdersError('Unable to load order detail from the backend.');
+      return null;
     }
   }
 
@@ -1358,44 +1768,6 @@ export default function App() {
     }
   }
 
-  async function loadPickScanner(orderId) {
-    if (!orderId) {
-      setPickScannerOrder(null);
-      return;
-    }
-    setPickError('');
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/picks/orders/${orderId}/scanner`);
-      if (!response.ok) {
-        throw new Error(`Pick scanner API returned ${response.status}`);
-      }
-      setPickScannerOrder(await response.json());
-    } catch (error) {
-      setPickError('Unable to load scanner view for this order.');
-    }
-  }
-
-  async function commitPickScan(orderId, skuOrBarcode, quantity) {
-    if (!orderId) {
-      setPickError('Select an order before scanning.');
-      return;
-    }
-    setPickLoading(true);
-    setPickScannerMessage('');
-    setPickError('');
-    try {
-      const result = await postJson(`/api/picks/orders/${orderId}/scan/commit`, { sku_or_barcode: skuOrBarcode, quantity: toNumber(quantity) || 1, created_by: 'system', note: 'Scanner pick' });
-      setPickScannerMessage(result.errors?.length ? result.errors.join(' ') : `Scan ${result.status}.`);
-      await loadPickScanner(orderId);
-      await loadOpenOrderDetail(orderId);
-      await loadPicks();
-    } catch (error) {
-      setPickError(error.message || 'Unable to commit scan.');
-    } finally {
-      setPickLoading(false);
-    }
-  }
-
   async function previewPick(orderId) {
     if (!orderId) {
       setPickError('Select an allocated order before previewing picking.');
@@ -1405,35 +1777,91 @@ export default function App() {
     setPickError('');
     setPickCommitSummary(null);
     try {
-      setPickPreview(await postJson('/api/picks/preview', { order_ids: [orderId], pick_strategy: 'allocated_first', allow_partial: true, created_by: 'system' }));
+      const result = await postJson('/api/picks/preview', { order_ids: [orderId], pick_strategy: 'allocated_first', allow_partial: true, created_by: 'system' });
+      setPickPreview(result);
+      return result;
     } catch (error) {
       setPickError(error.message || 'Unable to preview picking.');
+      return null;
     } finally {
       setPickLoading(false);
     }
   }
 
-  async function commitPick(orderId) {
+  async function commitPick(orderId, lines = []) {
     if (!orderId) {
       setPickError('Select an allocated order before committing a pick.');
       return;
     }
-    const confirmed = window.confirm('Picking only records operational progress against allocated quantities. It does not update WooCommerce, reduce In Stock, reduce Allocated, or fulfill the order.');
+    const confirmed = window.confirm('Picking reduces local Pongo OS In Stock and Allocated quantities for the allocated locations. It does not update WooCommerce, create labels, routes, or notifications.');
     if (!confirmed) {
       return;
     }
     setPickLoading(true);
     setPickError('');
     try {
-      const result = await postJson('/api/picks/commit', { order_ids: [orderId], pick_strategy: 'allocated_first', allow_partial: true, created_by: 'system', notes: 'Picked from Open Orders' });
+      const result = await postJson('/api/picks/commit', {
+        order_ids: lines.length ? [] : [orderId],
+        lines,
+        pick_strategy: 'allocated_first',
+        allow_partial: true,
+        created_by: 'system',
+        notes: 'Manual quantities from Pick Orders',
+      });
       setPickCommitSummary(result);
+      if (result.status !== 'posted') {
+        setPickError((result.errors || []).join(' ') || 'The pick could not be posted. Review the quantities and try again.');
+        return result;
+      }
       await loadOpenOrders();
       await loadOpenOrderDetail(orderId);
       await loadPicks();
+      await loadItems();
+      await loadInventorySummary();
+      return result;
     } catch (error) {
       setPickError(error.message || 'Unable to commit pick.');
+      return null;
     } finally {
       setPickLoading(false);
+    }
+  }
+
+  async function completeOrder(orderId, pickStatus) {
+    if (!orderId) {
+      setOpenOrdersError('Select an order before completing it.');
+      return;
+    }
+    const fullyPicked = pickStatus === 'picked';
+    const confirmed = window.confirm(
+      fullyPicked
+        ? 'Complete this order in Pongo OS and WooCommerce now? Stock was already reduced during picking.'
+        : 'Warning: this order has not been fully picked. Completing it will close the order in Pongo OS and WooCommerce, release remaining allocations, and will not reduce unpicked stock. Continue?',
+    );
+    if (!confirmed) {
+      return;
+    }
+    setOpenOrdersLoading(true);
+    setOpenOrdersError('');
+    setOrderCompletionSummary(null);
+    try {
+      const result = await postJson(`/api/orders/${orderId}/complete/commit`, {
+        completion_mode: 'complete',
+        reason: fullyPicked ? undefined : 'Completed from Open Orders before picking was finished.',
+        queue_woo_status_update: true,
+      });
+      setOrderCompletionSummary(result);
+      if (result.woo_sync_status !== 'sent') {
+        setOpenOrdersError(result.woo_sync_error || `Order completed locally, but WooCommerce synchronization is ${result.woo_sync_status || 'pending'}. Review the WooCommerce writeback queue.`);
+      }
+      await loadOpenOrders();
+      await loadCompletedOrders({}, { silent: true });
+      await loadItems();
+      await loadInventorySummary();
+    } catch (error) {
+      setOpenOrdersError(error.message || 'Unable to complete order.');
+    } finally {
+      setOpenOrdersLoading(false);
     }
   }
 
@@ -1459,7 +1887,7 @@ export default function App() {
       setFulfillmentError('Select a picked order before committing fulfillment.');
       return;
     }
-    const confirmed = window.confirm('Fulfillment reduces local Pongo OS In Stock and Allocated quantities. It does not update WooCommerce order status, WooCommerce stock, routes, shipping labels, or notifications.');
+    const confirmed = window.confirm('Fulfillment is legacy completion compatibility. Stock should already be reduced during picking, and fulfillment will not reduce it again.');
     if (!confirmed) {
       return;
     }
@@ -1523,12 +1951,69 @@ export default function App() {
     }
   }
 
+  async function runWooCatalogBatches(endpoint, blockedSkus = []) {
+    let page = 1;
+    const summary = {
+      configured: true,
+      status: 'completed',
+      total_remote_records: 0,
+      create_count: 0,
+      update_count: 0,
+      matched_count: 0,
+      skipped_count: 0,
+      conflict_count: 0,
+      error_count: 0,
+      warnings: [],
+      errors: [],
+      preview_rows: [],
+      unmatched_local_count: 0,
+      unmatched_local_skus: [],
+    };
+    while (page) {
+      const batch = await postJson(endpoint, { include_statuses: ['publish'], page, per_page: 50, blocked_skus: blockedSkus, created_by: 'system' });
+      ['total_remote_records', 'create_count', 'update_count', 'matched_count', 'skipped_count', 'conflict_count', 'error_count'].forEach((key) => {
+        summary[key] += Number(batch[key] || 0);
+      });
+      summary.configured = summary.configured && batch.configured !== false;
+      summary.sync_run_id = batch.sync_run_id || summary.sync_run_id;
+      summary.warnings.push(...(batch.warnings || []));
+      summary.errors.push(...(batch.errors || []));
+      summary.preview_rows.push(...(batch.preview_rows || []));
+      summary.unmatched_local_count = batch.unmatched_local_count || 0;
+      summary.unmatched_local_skus = batch.unmatched_local_skus || [];
+      page = batch.has_more ? (batch.next_page || page + 1) : null;
+    }
+    if (endpoint.endsWith('/preview')) {
+      const counts = new Map();
+      summary.preview_rows.forEach((row) => {
+        const sku = String(row.sku || '').trim().toLowerCase();
+        if (sku) counts.set(sku, (counts.get(sku) || 0) + 1);
+      });
+      summary.duplicate_skus = [...counts.entries()].filter(([, count]) => count > 1).map(([sku]) => sku);
+      summary.preview_rows = summary.preview_rows.map((row) => {
+        const sku = String(row.sku || '').trim().toLowerCase();
+        if (!summary.duplicate_skus.includes(sku)) return row;
+        const message = 'Duplicate WooCommerce SKU; this product was not changed.';
+        return { ...row, action: 'conflict', status: 'conflict', errors: (row.errors || []).includes(message) ? row.errors : [...(row.errors || []), message] };
+      });
+      summary.create_count = summary.preview_rows.filter((row) => row.action === 'create').length;
+      summary.update_count = summary.preview_rows.filter((row) => row.action === 'update').length;
+      summary.skipped_count = summary.preview_rows.filter((row) => row.action === 'skip').length;
+      summary.conflict_count = summary.preview_rows.filter((row) => row.action === 'conflict').length;
+      summary.error_count = summary.preview_rows.filter((row) => row.action === 'error').length;
+      summary.errors = summary.preview_rows.flatMap((row) => row.errors || []);
+    } else if (summary.conflict_count || summary.error_count) {
+      summary.status = 'completed_with_errors';
+    }
+    return summary;
+  }
+
   async function previewWooProductSync() {
     setWooLoading(true);
     setWooError('');
     setWooCommitSummary(null);
     try {
-      setWooPreview(await postJson('/api/integrations/woocommerce/products/preview', { include_statuses: ['publish'], limit: 500, created_by: 'system' }));
+      setWooPreview(await runWooCatalogBatches('/api/integrations/woocommerce/products/preview'));
     } catch (error) {
       setWooError(error.message || 'Unable to preview WooCommerce product sync.');
     } finally {
@@ -1541,7 +2026,7 @@ export default function App() {
     setWooError('');
     setWooOrderCommitSummary(null);
     try {
-      setWooOrderPreview(await postJson('/api/integrations/woocommerce/orders/preview', { include_statuses: ['processing', 'on-hold'], limit: 500, created_by: 'system' }));
+      setWooOrderPreview(await postJson('/api/integrations/woocommerce/orders/preview', { include_statuses: wooOrderSyncStatuses, limit: 500, created_by: 'system' }));
     } catch (error) {
       setWooError(error.message || 'Unable to preview WooCommerce order sync.');
     } finally {
@@ -1550,17 +2035,18 @@ export default function App() {
   }
 
   async function commitWooOrderSync() {
-    const confirmed = window.confirm('This imports WooCommerce orders into local Pongo OS only. It does not allocate stock, pick orders, update statuses, or write back to WooCommerce.');
+    const confirmed = window.confirm('This imports WooCommerce orders into local Pongo OS and attempts safe local auto-allocation for active orders. It does not pick orders, update WooCommerce, create labels, routes, or notifications.');
     if (!confirmed) {
       return;
     }
     setWooLoading(true);
     setWooError('');
     try {
-      const result = await postJson('/api/integrations/woocommerce/orders/commit', { include_statuses: ['processing', 'on-hold'], limit: 500, created_by: 'system' });
+      const result = await postJson('/api/integrations/woocommerce/orders/commit', { include_statuses: wooOrderSyncStatuses, limit: 500, created_by: 'system' });
       setWooOrderCommitSummary(result);
       await loadWooSyncRuns();
       await loadOpenOrders();
+      await loadBusinessDashboard();
     } catch (error) {
       setWooError(error.message || 'Unable to commit WooCommerce order sync.');
     } finally {
@@ -1569,19 +2055,100 @@ export default function App() {
   }
 
   async function commitWooProductSync() {
-    const confirmed = window.confirm('This only creates or updates local Pongo OS items. It never writes WooCommerce products, orders, or stock.');
+    const confirmed = window.confirm('This maps existing Pongo items by unique SKU or barcode and creates missing Woo products locally. Existing Pongo fields, stock, locations, costs, and history are preserved. Nothing is written to WooCommerce.');
     if (!confirmed) {
       return;
     }
     setWooLoading(true);
     setWooError('');
     try {
-      const result = await postJson('/api/integrations/woocommerce/products/commit', { include_statuses: ['publish'], limit: 500, created_by: 'system' });
+      const result = await runWooCatalogBatches('/api/integrations/woocommerce/products/commit', wooPreview?.duplicate_skus || []);
       setWooCommitSummary(result);
       await loadWooSyncRuns();
       await loadItems();
     } catch (error) {
       setWooError(error.message || 'Unable to commit WooCommerce product sync.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function previewWooStockWriteback(payload) {
+    setWooLoading(true);
+    setWooError('');
+    setWooWritebackMessage('');
+    try {
+      setWooWritebackPreview(await postJson('/api/integrations/woocommerce/writeback/stock/preview', payload));
+    } catch (error) {
+      setWooError(error.message || 'Unable to preview stock writeback.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function previewWooOrderStatusWriteback(payload) {
+    setWooLoading(true);
+    setWooError('');
+    setWooWritebackMessage('');
+    try {
+      setWooWritebackPreview(await postJson('/api/integrations/woocommerce/writeback/order-status/preview', payload));
+    } catch (error) {
+      setWooError(error.message || 'Unable to preview order status writeback.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function queueWooWriteback(previewPayload) {
+    setWooLoading(true);
+    setWooError('');
+    try {
+      const result = await postJson('/api/integrations/woocommerce/writeback/queue', previewPayload);
+      setWooWritebackMessage(`Queued ${result.operation_type} as item ${result.id}.`);
+      setWooWritebackPreview(null);
+      await loadWooWritebackQueue();
+    } catch (error) {
+      setWooError(error.message || 'Unable to queue writeback.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function approveWooWriteback(queueId) {
+    setWooLoading(true);
+    setWooError('');
+    try {
+      await postJson(`/api/integrations/woocommerce/writeback/queue/${queueId}/approve`, {});
+      await loadWooWritebackQueue();
+    } catch (error) {
+      setWooError(error.message || 'Unable to approve writeback.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function sendWooWriteback(queueId) {
+    setWooLoading(true);
+    setWooError('');
+    try {
+      const result = await postJson(`/api/integrations/woocommerce/writeback/queue/${queueId}/send`, {});
+      setWooWritebackMessage(result.status === 'sent' ? 'Send to Staging completed and response was logged.' : `Writeback ${result.status}.`);
+      await loadWooWritebackQueue();
+    } catch (error) {
+      setWooError(error.message || 'Unable to send writeback.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function cancelWooWriteback(queueId) {
+    setWooLoading(true);
+    setWooError('');
+    try {
+      await postJson(`/api/integrations/woocommerce/writeback/queue/${queueId}/cancel`, {});
+      await loadWooWritebackQueue();
+    } catch (error) {
+      setWooError(error.message || 'Unable to cancel writeback.');
     } finally {
       setWooLoading(false);
     }
@@ -1622,9 +2189,21 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar activePage={route.pageId} route={route} onNavigate={(pageId) => setRoute({ pageId })} />
+      <Sidebar activePage={route.pageId} route={route} onNavigate={navigate} />
       <div className="workspace">
-        <TopHeader />
+        <TopHeader
+          notifications={orderNotificationHistory}
+          unreadCount={notificationOrderCount(orderNotificationHistory.filter((notification) => unreadOrderNotificationKeys.has(notification.key)))}
+          historyOpen={orderNotificationHistoryOpen}
+          onToggleHistory={toggleOrderNotificationHistory}
+          onCloseHistory={() => setOrderNotificationHistoryOpen(false)}
+          onViewOpenOrders={() => setOrderNotificationHistoryOpen(false)}
+        />
+        <NewOrderNotificationRegion
+          notifications={activeOrderNotifications}
+          onDismiss={dismissActiveOrderNotifications}
+          onViewOpenOrders={viewOpenOrdersFromNotification}
+        />
         <main className="main-content">
           <PageHeader meta={activeMeta} route={route} />
           <PageBody
@@ -1671,6 +2250,10 @@ export default function App() {
             dashboardLoading={dashboardLoading}
             dashboardError={dashboardError}
             onLoadDashboard={loadDashboard}
+            businessDashboard={businessDashboard}
+            businessDashboardLoading={businessDashboardLoading}
+            businessDashboardError={businessDashboardError}
+            onLoadBusinessDashboard={loadBusinessDashboard}
             cycleCounts={cycleCounts}
             cycleCountsLoading={cycleCountsLoading}
             cycleCountsError={cycleCountsError}
@@ -1685,6 +2268,9 @@ export default function App() {
             wooRemapMappings={wooRemapMappings}
             wooRemapPreview={wooRemapPreview}
             wooRemapMessage={wooRemapMessage}
+            wooWritebackQueue={wooWritebackQueue}
+            wooWritebackPreview={wooWritebackPreview}
+            wooWritebackMessage={wooWritebackMessage}
             wooLoading={wooLoading}
             wooError={wooError}
             onLoadWooStatus={loadWooStatus}
@@ -1695,6 +2281,12 @@ export default function App() {
             onPreviewWooRemap={previewWooRemap}
             onCommitWooRemap={commitWooRemap}
             onLoadWooRemap={loadWooRemap}
+            onPreviewWooStockWriteback={previewWooStockWriteback}
+            onPreviewWooOrderStatusWriteback={previewWooOrderStatusWriteback}
+            onQueueWooWriteback={queueWooWriteback}
+            onApproveWooWriteback={approveWooWriteback}
+            onSendWooWriteback={sendWooWriteback}
+            onCancelWooWriteback={cancelWooWriteback}
             openOrders={openOrders}
             openOrdersLoading={openOrdersLoading}
             openOrdersError={openOrdersError}
@@ -1705,6 +2297,8 @@ export default function App() {
             completedOrdersLoading={completedOrdersLoading}
             completedOrdersError={completedOrdersError}
             onLoadCompletedOrders={loadCompletedOrders}
+            orderCompletionSummary={orderCompletionSummary}
+            onCompleteOrder={completeOrder}
             allocationPreview={allocationPreview}
             allocationCommitSummary={allocationCommitSummary}
             allocationHistory={allocationHistory}
@@ -1718,15 +2312,11 @@ export default function App() {
             pickCommitSummary={pickCommitSummary}
             pickHistory={pickHistory}
             pickDetail={pickDetail}
-            pickScannerOrder={pickScannerOrder}
-            pickScannerMessage={pickScannerMessage}
             pickLoading={pickLoading}
             pickError={pickError}
             onPreviewPick={previewPick}
             onCommitPick={commitPick}
             onLoadPickDetail={loadPickDetail}
-            onLoadPickScanner={loadPickScanner}
-            onCommitPickScan={commitPickScan}
             fulfillmentPreview={fulfillmentPreview}
             fulfillmentCommitSummary={fulfillmentCommitSummary}
             fulfillmentHistory={fulfillmentHistory}
@@ -1767,10 +2357,14 @@ export default function App() {
 
 function Sidebar({ activePage, route, onNavigate }) {
   const [ordersExpanded, setOrdersExpanded] = useState(activePage === 'orders');
+  const [inventoryExpanded, setInventoryExpanded] = useState(activePage === 'inventory');
 
   useEffect(() => {
     if (activePage === 'orders') {
       setOrdersExpanded(true);
+    }
+    if (activePage === 'inventory') {
+      setInventoryExpanded(true);
     }
   }, [activePage]);
 
@@ -1789,6 +2383,29 @@ function Sidebar({ activePage, route, onNavigate }) {
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = item.id === activePage;
+          if (item.id === 'inventory') {
+            return (
+              <div className="nav-group" key={item.id}>
+                <button className={`nav-link nav-parent ${isActive ? 'active' : ''}`} aria-expanded={inventoryExpanded} onClick={() => setInventoryExpanded((current) => !current)} type="button">
+                  <Icon size={24} strokeWidth={1.8} />
+                  <span>{item.label}</span>
+                  <ChevronDown className="nav-caret" size={17} aria-hidden="true" />
+                </button>
+                {inventoryExpanded && (
+                  <div className="subnav-list" aria-label="Inventory sub-navigation">
+                    {inventorySubpages.map((subpage) => {
+                      const childActive = activePage === 'inventory' && (route.inventoryView || 'all') === subpage.id;
+                      return (
+                        <a className={`subnav-link ${childActive ? 'active' : ''}`} href={subpage.href} key={subpage.id} onClick={(event) => { event.preventDefault(); onNavigate(subpage.href); }}>
+                          {subpage.label}
+                        </a>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
           if (item.id === 'orders') {
             return (
               <div className="nav-group" key={item.id}>
@@ -1802,7 +2419,7 @@ function Sidebar({ activePage, route, onNavigate }) {
                     {orderSubpages.map((subpage) => {
                       const childActive = activePage === 'orders' && (route.ordersView || 'open') === subpage.id;
                       return (
-                        <a className={`subnav-link ${childActive ? 'active' : ''}`} href={subpage.href} key={subpage.id} onClick={() => onNavigate('orders')}>
+                        <a className={`subnav-link ${childActive ? 'active' : ''}`} href={subpage.href} key={subpage.id} onClick={(event) => { event.preventDefault(); onNavigate(subpage.href); }}>
                           {subpage.label}
                         </a>
                       );
@@ -1813,7 +2430,7 @@ function Sidebar({ activePage, route, onNavigate }) {
             );
           }
           return (
-            <a className={`nav-link ${isActive ? 'active' : ''}`} href={`#${item.id}`} key={item.id} onClick={() => onNavigate(item.id)}>
+            <a className={`nav-link ${isActive ? 'active' : ''}`} href={`#${item.id}`} key={item.id} onClick={(event) => { event.preventDefault(); onNavigate(`#${item.id}`); }}>
               <Icon size={24} strokeWidth={1.8} />
               <span>{item.label}</span>
             </a>
@@ -1828,7 +2445,85 @@ function Sidebar({ activePage, route, onNavigate }) {
   );
 }
 
-function TopHeader() {
+function mergeOrderNotifications(current, incoming, options = {}) {
+  const existingKeys = new Set((current || []).map((notification) => notification.key));
+  const additions = [];
+  (incoming || []).forEach((notification) => {
+    if (!notification?.key || existingKeys.has(notification.key)) {
+      return;
+    }
+    existingKeys.add(notification.key);
+    additions.push(notification);
+  });
+  const orderedAdditions = options.newestFirst ? [...additions].reverse() : additions;
+  const merged = options.newestFirst ? [...orderedAdditions, ...(current || [])] : [...(current || []), ...orderedAdditions];
+  return merged.slice(0, options.limit || ORDER_NOTIFICATION_HISTORY_LIMIT);
+}
+
+function webhookEventToNotification(event) {
+  return {
+    key: `webhook:${event.id}`,
+    source: 'webhook',
+    eventId: toNumber(event.id),
+    orderCount: 1,
+    wooOrderId: event.woo_order_id,
+    localOrderId: event.local_order_id,
+    wooOrderNumber: event.woo_order_number,
+    wooStatus: event.woo_status,
+    localStatus: event.local_status,
+    customerName: event.customer_name,
+    currency: event.currency,
+    total: event.total,
+    receivedAt: event.received_at,
+  };
+}
+
+function quickSyncToNotification(result, runIdentity, createdCount) {
+  return {
+    key: `quick-sync:${runIdentity}`,
+    source: 'quick-sync',
+    syncRunId: result?.sync_run_id,
+    orderCount: createdCount,
+    receivedAt: new Date().toISOString(),
+  };
+}
+
+function notificationOrderCount(notifications) {
+  return (notifications || []).reduce((total, notification) => total + Math.max(1, toNumber(notification.orderCount)), 0);
+}
+
+function orderNotificationTitle(notification) {
+  if (notification?.source === 'webhook' && notification.wooOrderNumber) {
+    return `WooCommerce order #${notification.wooOrderNumber}`;
+  }
+  const count = Math.max(1, toNumber(notification?.orderCount));
+  return `${count} WooCommerce ${count === 1 ? 'order' : 'orders'} imported`;
+}
+
+function orderNotificationDetail(notification) {
+  const details = [];
+  if (notification?.customerName) {
+    details.push(notification.customerName);
+  }
+  if (notification?.total != null) {
+    details.push(formatOrderNotificationCurrency(notification.total, notification.currency));
+  }
+  if (!details.length && notification?.source === 'quick-sync') {
+    details.push('Imported by the polling fallback.');
+  }
+  return details.join(' · ');
+}
+
+function formatOrderNotificationCurrency(value, currency) {
+  const currencyCode = /^[A-Z]{3}$/.test(String(currency || '').toUpperCase()) ? String(currency).toUpperCase() : 'USD';
+  try {
+    return new Intl.NumberFormat('en-CA', { style: 'currency', currency: currencyCode }).format(toNumber(value));
+  } catch {
+    return formatCurrency(value);
+  }
+}
+
+function TopHeader({ notifications = [], unreadCount = 0, historyOpen, onToggleHistory, onCloseHistory, onViewOpenOrders }) {
   return (
     <header className="top-header">
       <div className="warehouse-control">
@@ -1837,6 +2532,56 @@ function TopHeader() {
         <ChevronDown size={18} />
       </div>
       <div className="header-actions">
+        <div className="notification-center" onKeyDown={(event) => {
+          if (event.key === 'Escape' && historyOpen) {
+            event.stopPropagation();
+            onCloseHistory();
+          }
+        }}>
+          <button
+            className="icon-button header-icon notification-bell"
+            aria-controls="order-notification-history"
+            aria-expanded={historyOpen}
+            aria-label={unreadCount ? `Order notifications, ${unreadCount} unread` : 'Order notifications, no unread orders'}
+            onClick={onToggleHistory}
+            type="button"
+          >
+            <Bell size={21} aria-hidden="true" />
+            {unreadCount > 0 && <span className="notification-badge" aria-hidden="true">{unreadCount > 99 ? '99+' : unreadCount}</span>}
+          </button>
+          {historyOpen && (
+            <section className="notification-popover" id="order-notification-history" aria-label="Order notification history">
+              <div className="notification-popover-header">
+                <div>
+                  <span>Staff alerts</span>
+                  <h2>New orders</h2>
+                </div>
+                <button className="icon-button notification-popover-close" onClick={onCloseHistory} aria-label="Close order notification history" type="button">
+                  <X size={18} aria-hidden="true" />
+                </button>
+              </div>
+              <div className="notification-history-list">
+                {notifications.map((notification) => (
+                  <article className="notification-history-item" key={notification.key}>
+                    <span className="notification-history-icon" aria-hidden="true"><Bell size={16} /></span>
+                    <div>
+                      <strong>{orderNotificationTitle(notification)}</strong>
+                      {orderNotificationDetail(notification) && <p>{orderNotificationDetail(notification)}</p>}
+                      <time dateTime={notification.receivedAt || undefined}>{formatDateTime(notification.receivedAt)}</time>
+                    </div>
+                  </article>
+                ))}
+                {!notifications.length && (
+                  <div className="notification-history-empty">
+                    <Bell size={22} aria-hidden="true" />
+                    <p>No new order notifications this session.</p>
+                  </div>
+                )}
+              </div>
+              <a className="notification-history-action" href="#/orders/open" onClick={onViewOpenOrders}>View Open Orders</a>
+            </section>
+          )}
+        </div>
         <div className="user-chip" aria-label="Signed in user">
           <div className="avatar">
             <UserCircle size={26} />
@@ -1845,6 +2590,34 @@ function TopHeader() {
         </div>
       </div>
     </header>
+  );
+}
+
+function NewOrderNotificationRegion({ notifications = [], onDismiss, onViewOpenOrders }) {
+  const orderCount = notificationOrderCount(notifications);
+  const singleNotification = notifications.length === 1 ? notifications[0] : null;
+  const title = singleNotification?.source === 'webhook' && singleNotification.wooOrderNumber
+    ? `New WooCommerce order #${singleNotification.wooOrderNumber} imported`
+    : `${orderCount} new WooCommerce ${orderCount === 1 ? 'order' : 'orders'} imported`;
+  const detail = singleNotification ? orderNotificationDetail(singleNotification) : 'The new orders are ready for staff review.';
+
+  return (
+    <div className="new-order-notification-region" role="status" aria-live="polite" aria-atomic="true">
+      {!!notifications.length && (
+        <section className="new-order-toast" aria-label="New order notification">
+          <span className="new-order-toast-icon" aria-hidden="true"><Bell size={22} /></span>
+          <div className="new-order-toast-copy">
+            <span>Incoming order</span>
+            <strong>{title}</strong>
+            {detail && <p>{detail}</p>}
+          </div>
+          <button className="icon-button new-order-toast-dismiss" onClick={onDismiss} aria-label="Dismiss new order notification" type="button">
+            <X size={18} aria-hidden="true" />
+          </button>
+          <a className="primary-button new-order-toast-action" href="#/orders/open" onClick={onViewOpenOrders}>View Open Orders</a>
+        </section>
+      )}
+    </div>
   );
 }
 
@@ -1919,6 +2692,10 @@ function PageBody({
   dashboardLoading,
   dashboardError,
   onLoadDashboard,
+  businessDashboard,
+  businessDashboardLoading,
+  businessDashboardError,
+  onLoadBusinessDashboard,
   cycleCounts,
   cycleCountsLoading,
   cycleCountsError,
@@ -1933,6 +2710,9 @@ function PageBody({
   wooRemapMappings,
   wooRemapPreview,
   wooRemapMessage,
+  wooWritebackQueue,
+  wooWritebackPreview,
+  wooWritebackMessage,
   wooLoading,
   wooError,
   onLoadWooStatus,
@@ -1943,6 +2723,12 @@ function PageBody({
   onPreviewWooRemap,
   onCommitWooRemap,
   onLoadWooRemap,
+  onPreviewWooStockWriteback,
+  onPreviewWooOrderStatusWriteback,
+  onQueueWooWriteback,
+  onApproveWooWriteback,
+  onSendWooWriteback,
+  onCancelWooWriteback,
   openOrders,
   openOrdersLoading,
   openOrdersError,
@@ -1953,6 +2739,8 @@ function PageBody({
   completedOrdersLoading,
   completedOrdersError,
   onLoadCompletedOrders,
+  orderCompletionSummary,
+  onCompleteOrder,
   allocationPreview,
   allocationCommitSummary,
   allocationHistory,
@@ -1966,15 +2754,11 @@ function PageBody({
   pickCommitSummary,
   pickHistory,
   pickDetail,
-  pickScannerOrder,
-  pickScannerMessage,
   pickLoading,
   pickError,
   onPreviewPick,
   onCommitPick,
   onLoadPickDetail,
-  onLoadPickScanner,
-  onCommitPickScan,
   fulfillmentPreview,
   fulfillmentCommitSummary,
   fulfillmentHistory,
@@ -2011,12 +2795,31 @@ function PageBody({
     return <ItemsPage route={route} items={items} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
   }
 
+  if (route.pageId === 'insights') {
+    return <InsightsPage />;
+  }
+
   if (route.pageId === 'locations') {
     return <LocationsPage route={route} locations={locations} loading={locationsLoading} error={locationsError} onLoadLocations={onLoadLocations} onSaveLocation={onSaveLocation} />;
   }
 
   if (route.pageId === 'inventory') {
-    return <InventoryPage items={items} summary={inventorySummary} loading={inventoryLoading} error={inventoryError || itemsError} onLoadSummary={onLoadInventorySummary} />;
+    return (
+      <InventoryPage
+        route={route}
+        items={items}
+        itemsLoading={itemsLoading}
+        summary={inventorySummary}
+        loading={inventoryLoading}
+        error={inventoryError || itemsError}
+        onLoadItems={onLoadItems}
+        onLoadSummary={onLoadInventorySummary}
+        stockMovements={stockMovements}
+        stockMovementsLoading={stockMovementsLoading}
+        stockMovementsError={stockMovementsError}
+        onLoadStockMovements={onLoadStockMovements}
+      />
+    );
   }
 
   if (route.pageId === 'receiving') {
@@ -2092,6 +2895,8 @@ function PageBody({
         completedOrdersLoading={completedOrdersLoading}
         completedOrdersError={completedOrdersError}
         onLoadCompletedOrders={onLoadCompletedOrders}
+        orderCompletionSummary={orderCompletionSummary}
+        onCompleteOrder={onCompleteOrder}
         allocationPreview={allocationPreview}
         allocationCommitSummary={allocationCommitSummary}
         allocationHistory={allocationHistory}
@@ -2105,15 +2910,11 @@ function PageBody({
         pickCommitSummary={pickCommitSummary}
         pickHistory={pickHistory}
         pickDetail={pickDetail}
-        pickScannerOrder={pickScannerOrder}
-        pickScannerMessage={pickScannerMessage}
         pickLoading={pickLoading}
         pickError={pickError}
         onPreviewPick={onPreviewPick}
         onCommitPick={onCommitPick}
         onLoadPickDetail={onLoadPickDetail}
-        onLoadPickScanner={onLoadPickScanner}
-        onCommitPickScan={onCommitPickScan}
         fulfillmentPreview={fulfillmentPreview}
         fulfillmentCommitSummary={fulfillmentCommitSummary}
         fulfillmentHistory={fulfillmentHistory}
@@ -2140,6 +2941,9 @@ function PageBody({
         remapMappings={wooRemapMappings}
         remapPreview={wooRemapPreview}
         remapMessage={wooRemapMessage}
+        writebackQueue={wooWritebackQueue}
+        writebackPreview={wooWritebackPreview}
+        writebackMessage={wooWritebackMessage}
         loading={wooLoading}
         error={wooError}
         onCheckConnection={() => onLoadWooStatus(true)}
@@ -2150,6 +2954,12 @@ function PageBody({
         onPreviewRemap={onPreviewWooRemap}
         onCommitRemap={onCommitWooRemap}
         onLoadRemap={onLoadWooRemap}
+        onPreviewStockWriteback={onPreviewWooStockWriteback}
+        onPreviewOrderStatusWriteback={onPreviewWooOrderStatusWriteback}
+        onQueueWriteback={onQueueWooWriteback}
+        onApproveWriteback={onApproveWooWriteback}
+        onSendWriteback={onSendWooWriteback}
+        onCancelWriteback={onCancelWooWriteback}
       />
     );
   }
@@ -2184,10 +2994,357 @@ function PageBody({
   }
 
   if (route.pageId === 'dashboard') {
+    return <BusinessDashboardPage dashboard={businessDashboard} loading={businessDashboardLoading} error={businessDashboardError} onRefresh={onLoadBusinessDashboard} />;
+  }
+
+  if (route.pageId === 'inventory-overview') {
     return <CommandCenterPage dashboard={dashboard} loading={dashboardLoading} error={dashboardError} onRefresh={onLoadDashboard} />;
   }
 
   return <StandardPage icon={pageIcon(route.pageId)} title={pageMeta[route.pageId].title} description="Main Warehouse workspace." columns={['Area', 'Status', 'Type', 'Notes']} />;
+}
+
+function BusinessDashboardPage({ dashboard, loading, error, onRefresh }) {
+  const today = dashboard.today?.summary || {};
+  const openOrders = dashboard.open_orders?.rows || [];
+  const subscriptions = dashboard.subscriptions || {};
+  const revenue = dashboard.revenue_comparison || {};
+  const orderMap = dashboard.order_map || {};
+  const warnings = dashboard.data_quality || [];
+
+  return (
+    <section className="content-panel business-dashboard-page">
+      <div className="business-dashboard-hero">
+        <div>
+          <h2>Dashboard</h2>
+          <p>Live business snapshot for orders, customers, revenue, subscriptions, and delivery geography.</p>
+          <span>Last refreshed {dashboard.generated_at ? formatDateTime(dashboard.generated_at) : 'not yet'}</span>
+        </div>
+        <button className="primary-button" onClick={onRefresh} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
+      </div>
+      {error && <div className="api-error">{error}</div>}
+      {loading && <div className="loading-strip">Loading Dashboard...</div>}
+
+      <div className="business-kpi-grid">
+        <BusinessMetric label="Today's Orders" value={today.today_orders_count || 0} tone="blue" />
+        <BusinessMetric label="Today's Revenue" value={formatCurrency(today.today_revenue || 0)} tone="peach" />
+        <BusinessMetric label="New Customers" value={today.today_new_customers || 0} tone="orange" />
+        <BusinessMetric label="Returning Customers" value={today.today_returning_customers || 0} tone="green" />
+        <BusinessMetric label="Subscription Orders" value={today.today_subscription_orders || 0} tone="blue" />
+        <BusinessMetric label="AOV" value={formatCurrency(today.average_order_value_today || 0)} tone="peach" />
+      </div>
+
+      <div className="business-two-column">
+        <BusinessOpenOrdersCard rows={openOrders} />
+        <BusinessSubscriptionsCard subscriptions={subscriptions} />
+      </div>
+
+      <BusinessOrderMapCard orderMap={orderMap} />
+      <BusinessRevenueCard revenue={revenue} />
+
+      {!!warnings.length && (
+        <div className="business-card">
+          <div className="panel-title"><div><h2>Data Quality Warnings</h2><p>Local data limitations for this business dashboard.</p></div></div>
+          <div className="business-warning-list">
+            {warnings.map((warning) => <div className={`business-warning ${warning.severity || 'info'}`} key={warning.code}><strong>{titleize(warning.code)}</strong><span>{warning.message}</span></div>)}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function BusinessMetric({ label, value, tone }) {
+  return (
+    <article className={`business-metric-card ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </article>
+  );
+}
+
+function BusinessOpenOrdersCard({ rows }) {
+  return (
+    <div className="business-card">
+      <div className="panel-title"><div><h2>Open Orders</h2><p>Customers with locally open WooCommerce snapshots.</p></div></div>
+      <TableShell caption={`${rows.length} open order(s)`} columns={['Order', 'Customer', 'Email', 'Status', 'Date', 'Total']}>
+        {rows.slice(0, 12).map((order) => (
+          <tr key={`${order.woo_order_id || order.order_number}`}>
+            <td className="mono">{order.order_number || order.woo_order_id}</td>
+            <td>{order.customer_name || 'Unknown customer'}</td>
+            <td>{order.customer_email || ''}</td>
+            <td>{StatusText(order.status)}</td>
+            <td>{formatDateTime(order.placed_on)}</td>
+            <td>{formatCurrency(order.order_total)}</td>
+          </tr>
+        ))}
+        {!rows.length && <tr><td colSpan={6}><div className="empty-table-row">No open orders found in local snapshots.</div></td></tr>}
+      </TableShell>
+    </div>
+  );
+}
+
+function BusinessSubscriptionsCard({ subscriptions }) {
+  const rows = subscriptions.rows || [];
+  return (
+    <div className="business-card">
+      <div className="panel-title"><div><h2>Upcoming Subscriptions</h2><p>Renewals from local subscription snapshots.</p></div></div>
+      <div className="subscription-list">
+        {rows.slice(0, 8).map((row, index) => (
+          <article className="subscription-card" key={`${row.subscription_id || row.order_number || index}`}>
+            <strong>{row.product_name || row.sku || 'Subscription item'}</strong>
+            <span>{row.customer_name || row.customer_email || 'Customer'}</span>
+            <small>{row.quantity_due || 1} due {row.next_payment_date || 'date unavailable'}</small>
+            {row.status && <em>{StatusText(row.status)}</em>}
+          </article>
+        ))}
+        {!rows.length && <div className="soft-empty-state">{subscriptions.empty_state || 'Subscription data is not synced yet.'}</div>}
+      </div>
+    </div>
+  );
+}
+
+function BusinessOrderMapCard({ orderMap }) {
+  const cityRows = orderMap.city_breakdown || [];
+  const markers = orderMap.markers || [];
+  const total = orderMap.summary?.total_orders_today || 0;
+  return (
+    <div className="business-card business-map-card">
+      <div className="panel-title">
+        <div><h2>Today's Orders Map</h2><p>Orders grouped from local WooCommerce snapshots.</p></div>
+        <span className="status-pill">Local Snapshot</span>
+      </div>
+      <div className="business-map-layout">
+        <div className="map-visual" aria-label="Approximate city order map">
+          {markers.map((marker, index) => {
+            const position = markerPosition(marker);
+            return <span className={marker.approximate ? 'map-marker approximate' : 'map-marker'} style={{ left: `${position.left}%`, top: `${position.top}%` }} key={`${marker.marker_label}-${index}`}>{index + 1}</span>;
+          })}
+          {!markers.length && <div className="map-empty">Map uses city-level approximate markers until address geocoding is configured.</div>}
+        </div>
+        <div className="city-card-list">
+          <article><strong>{total}</strong><span>Today's orders</span></article>
+          {cityRows.slice(0, 6).map((row) => <article key={row.city}><strong>{row.city || 'Unknown'}</strong><span>{row.order_count} order(s)</span></article>)}
+          {!cityRows.length && <article><strong>No city data</strong><span>Shipping city fields are empty.</span></article>}
+        </div>
+      </div>
+      {(orderMap.data_quality || []).map((warning) => <div className="csv-note" key={warning.code}>{warning.message}</div>)}
+    </div>
+  );
+}
+
+function BusinessRevenueCard({ revenue }) {
+  const summary = revenue.summary || {};
+  const series = revenue.daily_series || [];
+  const maxValue = Math.max(...series.flatMap((row) => [toNumber(row.current_revenue), toNumber(row.previous_revenue)]), 1);
+  return (
+    <div className="business-card revenue-card">
+      <div className="panel-title">
+        <div>
+          <h2>Revenue per day, {summary.current_period_label || 'current period'} vs {summary.previous_period_label || 'previous period'}</h2>
+          <p>WooCommerce revenue per day from local order snapshots.</p>
+        </div>
+        <span className={toNumber(summary.delta_percent) < 0 ? 'delta-pill negative' : 'delta-pill'}>{formatNumber(summary.delta_percent || 0)}%</span>
+      </div>
+      <div className="revenue-summary-row">
+        <Metric label={summary.current_period_label || 'Current'} value={formatCurrency(summary.current_period_revenue || 0)} />
+        <Metric label={summary.previous_period_label || 'Previous'} value={formatCurrency(summary.previous_period_revenue || 0)} />
+      </div>
+      <div className="revenue-comparison-bars">
+        {series.map((row) => (
+          <div className="revenue-day" key={row.day_index}>
+            <span>{row.day_index}</span>
+            <div><i className="current" style={{ height: `${Math.max(5, (toNumber(row.current_revenue) / maxValue) * 100)}%` }} /><i className="previous" style={{ height: `${Math.max(5, (toNumber(row.previous_revenue) / maxValue) * 100)}%` }} /></div>
+          </div>
+        ))}
+        {!series.length && <div className="empty-table-row">No revenue series available yet.</div>}
+      </div>
+      <div className="chart-legend"><span><i className="legend-current" />Current period</span><span><i className="legend-previous" />Previous month</span></div>
+    </div>
+  );
+}
+
+function InsightsPage() {
+  const [activeTab, setActiveTab] = useState('overview');
+  const [cache, setCache] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [filters, setFilters] = useState({ start_date: '', end_date: '', brand: '', category: '', sku: '', customer_email: '', city: '', postal_code: '', payment_method: '', order_status: '' });
+  const activeConfig = insightTabs.find((tab) => tab.id === activeTab) || insightTabs[0];
+  const activeData = cache[activeTab];
+
+  useEffect(() => {
+    if (!cache[activeTab]) {
+      loadInsight(activeTab);
+    }
+  }, [activeTab]);
+
+  async function loadInsight(tabId = activeTab, forceFilters = filters) {
+    const config = insightTabs.find((tab) => tab.id === tabId) || insightTabs[0];
+    setLoading(true);
+    setError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}${config.endpoint}${plainFiltersToQueryString(forceFilters)}`);
+      if (!response.ok) {
+        throw new Error(`Insights API returned ${response.status}`);
+      }
+      const body = await response.json();
+      setCache((current) => ({ ...current, [tabId]: body }));
+    } catch (loadError) {
+      setError('Unable to load Pongo Insights from the backend.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function updateFilter(field, value) {
+    setFilters((current) => ({ ...current, [field]: value }));
+  }
+
+  function applyFilters() {
+    setCache((current) => {
+      const next = { ...current };
+      delete next[activeTab];
+      return next;
+    });
+    loadInsight(activeTab);
+  }
+
+  function clearFilters() {
+    const nextFilters = { start_date: '', end_date: '', brand: '', category: '', sku: '', customer_email: '', city: '', postal_code: '', payment_method: '', order_status: '' };
+    setFilters(nextFilters);
+    setCache((current) => {
+      const next = { ...current };
+      delete next[activeTab];
+      return next;
+    });
+    loadInsight(activeTab, nextFilters);
+  }
+
+  return (
+    <section className="content-panel insights-page">
+      <div className="insights-hero">
+        <div>
+          <h2>Pongo Insights</h2>
+          <p>Business intelligence, customer behavior, revenue, product demand, and forecasting.</p>
+        </div>
+        <div className="button-row">
+          {activeConfig.exportable && <a className="action-button" href={`${API_BASE_URL}/api/insights/${activeConfig.id}/export${plainFiltersToQueryString(filters)}`}><Download size={16} />Export CSV</a>}
+          <button className="primary-button" onClick={() => loadInsight(activeTab)} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
+        </div>
+      </div>
+
+      <div className="insights-tabs" role="tablist" aria-label="Insights dashboards">
+        {insightTabs.map((tab) => (
+          <button className={tab.id === activeTab ? 'insight-tab active' : 'insight-tab'} key={tab.id} onClick={() => setActiveTab(tab.id)} role="tab" aria-selected={tab.id === activeTab} type="button">
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="filter-card insights-filter-card">
+        <div className="filter-grid report-filter-grid">
+          <label className="field"><span>Start Date</span><input type="date" value={filters.start_date} onChange={(event) => updateFilter('start_date', event.target.value)} /></label>
+          <label className="field"><span>End Date</span><input type="date" value={filters.end_date} onChange={(event) => updateFilter('end_date', event.target.value)} /></label>
+          <label className="field"><span>Brand</span><input value={filters.brand} onChange={(event) => updateFilter('brand', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
+          <label className="field"><span>Category</span><input value={filters.category} onChange={(event) => updateFilter('category', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
+          <label className="field"><span>SKU</span><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
+          <label className="field"><span>Customer Email</span><input value={filters.customer_email} onChange={(event) => updateFilter('customer_email', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
+          <label className="field"><span>City</span><input value={filters.city} onChange={(event) => updateFilter('city', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
+          <label className="field"><span>Payment Method</span><input value={filters.payment_method} onChange={(event) => updateFilter('payment_method', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
+        </div>
+        <div className="button-row">
+          <button className="primary-button" onClick={applyFilters} type="button"><Filter size={16} />Apply Filters</button>
+          <button className="action-button" onClick={clearFilters} type="button"><X size={16} />Clear</button>
+        </div>
+      </div>
+
+      <div className="wide-panel insight-dashboard-panel">
+        <div className="panel-title">
+          <div>
+            <h2>{activeConfig.label}</h2>
+            <p>{activeConfig.description}</p>
+          </div>
+          <span className="status-pill">Read only</span>
+        </div>
+        {error && <div className="api-error">{error}</div>}
+        {loading && <div className="loading-strip">Loading {activeConfig.label}...</div>}
+        {activeData ? <InsightDashboard config={activeConfig} data={activeData} /> : !loading && <div className="empty-state"><h2>Loading dashboard</h2><p>Select a tab or refresh to load local analytics.</p></div>}
+      </div>
+    </section>
+  );
+}
+
+function InsightDashboard({ config, data }) {
+  const summaryEntries = Object.entries(data.summary || {}).filter(([, value]) => typeof value !== 'object' || value === null).slice(0, 12);
+  const tableRows = insightRowsForTab(config.id, data);
+  const columns = insightColumnsByTab[config.id] || Object.keys(tableRows[0] || {}).slice(0, 8);
+  const trendRows = data.trends?.daily_revenue || data.trends?.revenue_by_day || [];
+
+  return (
+    <div className="insight-report-layout">
+      <InsightDataQuality warnings={data.data_quality || []} emptyState={data.empty_state} />
+      <div className="summary-strip insights-summary-strip">
+        {summaryEntries.map(([key, value]) => <Metric key={key} label={titleize(key)} value={formatInsightValue(key, value)} />)}
+        {!summaryEntries.length && <div className="empty-table-row">No summary metrics available for this dashboard yet.</div>}
+      </div>
+
+      {!!trendRows.length && (
+        <div className="insight-trend-grid">
+          {trendRows.slice(-12).map((row) => {
+            const value = toNumber(row.net_sales ?? row.revenue ?? row.order_count);
+            const maxValue = Math.max(...trendRows.map((candidate) => toNumber(candidate.net_sales ?? candidate.revenue ?? candidate.order_count)), 1);
+            return (
+              <div className="trend-block" key={row.date || row.month}>
+                <span>{row.date || row.month}</span>
+                <div><i style={{ height: `${Math.max(8, (value / maxValue) * 100)}%` }} /></div>
+                <strong>{formatInsightValue('net_sales', row.net_sales ?? row.revenue ?? row.order_count)}</strong>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <TableShell caption={`${tableRows.length} insight row(s)`} columns={columns.map(titleize)}>
+        {tableRows.slice(0, 100).map((row, index) => (
+          <tr key={`${config.id}-${index}`}>
+            {columns.map((column) => <td key={column} className={column.includes('description') || column.includes('text') ? 'description-cell' : ''}>{formatInsightValue(column, row[column])}</td>)}
+          </tr>
+        ))}
+        {!tableRows.length && <tr><td colSpan={columns.length}><div className="empty-table-row">{data.empty_state || 'Not enough data yet for this dashboard.'}</div></td></tr>}
+      </TableShell>
+    </div>
+  );
+}
+
+function InsightDataQuality({ warnings, emptyState }) {
+  if (!warnings.length && !emptyState) {
+    return null;
+  }
+  return (
+    <div className="insight-warning-list" aria-label="Data quality warnings">
+      {emptyState && <div className="insight-warning info"><strong>Empty state</strong><span>{emptyState}</span></div>}
+      {warnings.map((warning) => (
+        <div className={`insight-warning ${warning.severity || 'info'}`} key={warning.code}>
+          <strong>{titleize(warning.code)}</strong>
+          <span>{warning.message}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function insightRowsForTab(tabId, data) {
+  if (tabId === 'overview') {
+    return data.tables?.stockout_risk || data.trends?.top_skus || [];
+  }
+  if (tabId === 'orders-revenue') {
+    return data.rows?.length ? data.rows : data.trends?.daily_revenue || [];
+  }
+  if (tabId === 'customer-segmentation') {
+    return data.tables?.segments || data.rows || [];
+  }
+  return data.rows || Object.values(data.tables || {})[0] || [];
 }
 
 function ItemsPage({ route, items, itemsLoading, itemsError, onLoadItems, onSaveItem, onCloneItem }) {
@@ -2227,27 +3384,24 @@ function ItemsPage({ route, items, itemsLoading, itemsError, onLoadItems, onSave
   return <ItemsList items={items} loading={itemsLoading} error={itemsError} onLoadItems={onLoadItems} />;
 }
 
-function InventoryPage({ items, summary, loading, error, onLoadSummary }) {
-  const [filters, setFilters] = useState({
-    warehouse: '',
-    inventoryLocation: '',
-    defaultLocation: '',
-    category: '',
-    brand: '',
-    underPar: '',
-  });
+function InventoryPage({ route, items, itemsLoading, summary, loading, error, onLoadItems, onLoadSummary, stockMovements, stockMovementsLoading, stockMovementsError, onLoadStockMovements }) {
+  const inventoryView = route.inventoryView || 'all';
+  const [queryDraft, setQueryDraft] = useState('');
+  const [activeSearch, setActiveSearch] = useState('');
+  const [filters, setFilters] = useState({ category: '', brand: '' });
   const [locationRows, setLocationRows] = useState([]);
   const [locationRowsLoading, setLocationRowsLoading] = useState(false);
   const [locationRowsError, setLocationRowsError] = useState('');
-  const [operationMessage, setOperationMessage] = useState('');
-  const [transferForm, setTransferForm] = useState({ itemLocationId: '', toWarehouse: '', toInventoryLocation: '', quantity: '', notes: '' });
-  const [adjustmentForm, setAdjustmentForm] = useState({ itemLocationId: '', adjustmentType: 'correction', quantityChange: '', reason: '', notes: '' });
+  const [message, setMessage] = useState('');
+  const [stockSyncError, setStockSyncError] = useState('');
+  const [stockSyncMode, setStockSyncMode] = useState('');
+  const [editingItem, setEditingItem] = useState(null);
+  const [adjustingItem, setAdjustingItem] = useState(null);
+  const [parItem, setParItem] = useState(null);
+  const [movementFilters, setMovementFilters] = useState({ movement_type: '', warehouse: '', inventory_location: '', date_from: '', date_to: '' });
 
   const options = useMemo(
     () => ({
-      warehouses: uniqueOptions(items, 'Warehouse'),
-      locations: uniqueOptions(items, 'Inventory Location'),
-      defaultLocations: uniqueOptions(items, 'Default Location'),
       categories: uniqueOptions(items, 'Category'),
       brands: uniqueOptions(items, 'Brand'),
     }),
@@ -2255,36 +3409,46 @@ function InventoryPage({ items, summary, loading, error, onLoadSummary }) {
   );
 
   useEffect(() => {
-    onLoadSummary(filters);
-    loadLocationRows(filters);
-  }, [filters]);
+    const apiFilters = inventoryView === 'low-stock' ? { ...filters, underPar: 'true' } : filters;
+    onLoadSummary(apiFilters);
+    loadLocationRows(apiFilters, activeSearch);
+    if (inventoryView === 'movements') {
+      onLoadStockMovements(stockMovementFiltersToApi(activeSearch, movementFilters));
+    }
+  }, [inventoryView, activeSearch, filters, movementFilters]);
+
+  const enrichedLocationRows = useMemo(() => {
+    const itemById = new Map(items.map((item) => [item.id, item]));
+    return locationRows.map((row) => ({ ...row, item: itemById.get(row.item_id) || normalizeItem({ id: row.item_id, SKU: row.sku, Barcode: row.barcode, Description: row.description }) }));
+  }, [items, locationRows]);
+  const itemRows = useMemo(() => buildInventoryItemRows(items, enrichedLocationRows, activeSearch, filters, inventoryView), [items, enrichedLocationRows, activeSearch, filters, inventoryView]);
+  const groupedRows = useMemo(() => groupLocationRows(enrichedLocationRows), [enrichedLocationRows]);
+
+  function submitSearch() {
+    setActiveSearch(queryDraft.trim());
+  }
 
   function updateFilter(name, value) {
     setFilters((current) => ({ ...current, [name]: value }));
   }
 
   function clearFilters() {
-    setFilters({
-      warehouse: '',
-      inventoryLocation: '',
-      defaultLocation: '',
-      category: '',
-      brand: '',
-      underPar: '',
-    });
+    setQueryDraft('');
+    setActiveSearch('');
+    setFilters({ category: '', brand: '' });
+    setMovementFilters({ movement_type: '', warehouse: '', inventory_location: '', date_from: '', date_to: '' });
   }
 
-  async function loadLocationRows(nextFilters = filters) {
+  async function loadLocationRows(nextFilters = filters, search = activeSearch) {
     setLocationRowsLoading(true);
     setLocationRowsError('');
     try {
       const query = plainFiltersToQueryString({
-        warehouse: nextFilters.warehouse || undefined,
-        inventory_location: nextFilters.inventoryLocation || undefined,
+        search: search || undefined,
         category: nextFilters.category || undefined,
         brand: nextFilters.brand || undefined,
         under_par: nextFilters.underPar || undefined,
-        limit: 50,
+        limit: 1000,
       });
       const response = await fetch(`${API_BASE_URL}/api/inventory/locations${query}`);
       if (!response.ok) {
@@ -2292,271 +3456,545 @@ function InventoryPage({ items, summary, loading, error, onLoadSummary }) {
       }
       const body = await response.json();
       setLocationRows(body.rows || []);
-    } catch (error) {
+    } catch (fetchError) {
       setLocationRowsError('Unable to load location stock rows from the backend.');
     } finally {
       setLocationRowsLoading(false);
     }
   }
 
-  async function commitTransfer() {
-    setOperationMessage('');
-    const source = locationRows.find((row) => String(row.id) === String(transferForm.itemLocationId));
-    if (!source) {
-      setOperationMessage('Select a source location row before transferring stock.');
-      return;
-    }
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/inventory/transfers`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          created_by: 'frontend',
-          notes: transferForm.notes || null,
-          lines: [
-            {
-              item_id: source.item_id,
-              from_inventory_item_location_id: source.id,
-              to_warehouse: transferForm.toWarehouse,
-              to_inventory_location: transferForm.toInventoryLocation,
-              quantity: Number(transferForm.quantity || 0),
-              notes: transferForm.notes || null,
-            },
-          ],
-        }),
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.detail || `Transfer API returned ${response.status}`);
-      }
-      const body = await response.json();
-      setOperationMessage(`Transfer ${body.transfer_number} committed.`);
-      setTransferForm({ itemLocationId: '', toWarehouse: '', toInventoryLocation: '', quantity: '', notes: '' });
-      await onLoadSummary(filters);
-      await loadLocationRows(filters);
-    } catch (error) {
-      setOperationMessage(error.message || 'Unable to commit transfer.');
+  async function refreshInventory() {
+    await onLoadItems({ search: activeSearch, includeNonInventory: true });
+    await onLoadSummary(filters);
+    await loadLocationRows(filters, activeSearch);
+    if (inventoryView === 'movements') {
+      await onLoadStockMovements(stockMovementFiltersToApi(activeSearch, movementFilters));
     }
   }
 
-  async function commitAdjustment() {
-    setOperationMessage('');
-    const source = locationRows.find((row) => String(row.id) === String(adjustmentForm.itemLocationId));
-    if (!source) {
-      setOperationMessage('Select a location row before adjusting stock.');
-      return;
-    }
+  async function saveProductInfo(item, payload) {
+    await patchJson(`/api/items/${item.id}`, payload);
+    setMessage(`Saved product info for ${item.SKU || item.Description || 'item'}.`);
+    setEditingItem(null);
+    await refreshInventory();
+  }
+
+  async function saveParLevel(item, payload) {
+    await patchJson(`/api/items/${item.id}`, payload);
+    setMessage(`Saved par level for ${item.SKU || item.Description || 'item'}.`);
+    setParItem(null);
+    await refreshInventory();
+  }
+
+  async function commitStockEdit(payload) {
+    const result = await postJson('/api/inventory/adjustments', payload);
+    setMessage(`Adjustment ${result.adjustment_number} committed. Changed stock was submitted to WooCommerce writeback.`);
+    setAdjustingItem(null);
+    await refreshInventory();
+  }
+
+  async function syncWooStock(force) {
+    const mode = force ? 'all' : 'changed';
+    setStockSyncMode(mode);
+    setStockSyncError('');
+    setMessage('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/inventory/adjustments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          adjustment_type: adjustmentForm.adjustmentType,
-          reason: adjustmentForm.reason,
-          notes: adjustmentForm.notes || null,
-          created_by: 'frontend',
-          lines: [
-            {
-              item_id: source.item_id,
-              inventory_item_location_id: source.id,
-              quantity_change: Number(adjustmentForm.quantityChange || 0),
-              notes: adjustmentForm.notes || null,
-            },
-          ],
-        }),
+      const result = await postJson('/api/integrations/woocommerce/writeback/stock/sync', {
+        force,
+        requested_by: force ? 'inventory-update-all' : 'inventory-update-changed',
       });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.detail || `Adjustment API returned ${response.status}`);
+      if (result.status === 'disabled' || result.status === 'failed') {
+        setStockSyncError((result.errors || []).join(' ') || 'WooCommerce stock writeback failed.');
+      } else if (result.status === 'no_changes') {
+        if (result.skipped_unmapped_count) {
+          setStockSyncError(`No stock was sent. ${result.skipped_unmapped_count} local item(s) are not linked to WooCommerce.`);
+        } else {
+          setMessage(force ? 'No WooCommerce-mapped inventory items were available to update.' : 'WooCommerce stock is already up to date.');
+        }
+      } else if (result.status === 'dry_run') {
+        setMessage(`${result.dry_run_count} stock level(s) passed through dry-run; WooCommerce was not changed.`);
+      } else {
+        const skipped = result.skipped_unmapped_count ? ` ${result.skipped_unmapped_count} unmapped local item(s) were skipped.` : '';
+        setMessage(`${result.sent_count} stock level(s) updated in WooCommerce.${skipped}`);
+        if (result.failed_count) setStockSyncError(`${result.failed_count} stock level(s) failed. ${(result.errors || []).join(' ')}`);
       }
-      const body = await response.json();
-      setOperationMessage(`Adjustment ${body.adjustment_number} committed.`);
-      setAdjustmentForm({ itemLocationId: '', adjustmentType: 'correction', quantityChange: '', reason: '', notes: '' });
-      await onLoadSummary(filters);
-      await loadLocationRows(filters);
-    } catch (error) {
-      setOperationMessage(error.message || 'Unable to commit adjustment.');
+      await refreshInventory();
+    } catch (syncError) {
+      setStockSyncError(syncError.message || 'Unable to update WooCommerce stock.');
+    } finally {
+      setStockSyncMode('');
     }
+  }
+
+  function viewLocationStock(item) {
+    setQueryDraft(item.SKU || item.Barcode || '');
+    setActiveSearch(item.SKU || item.Barcode || '');
+    window.location.hash = '#/inventory/by-location';
+  }
+
+  function viewMovements(item) {
+    setQueryDraft(item.SKU || item.Barcode || '');
+    setActiveSearch(item.SKU || item.Barcode || '');
+    window.location.hash = '#/inventory/movements';
+  }
+
+  function viewOrders(item) {
+    window.location.hash = `#/orders/open`;
+    setMessage(`Open Orders can be filtered for SKU ${item.SKU || item.Barcode || 'selected item'} from the Orders page.`);
   }
 
   return (
     <section className="content-panel inventory-page">
-      <div className="summary-strip">
-        <Metric label="Total Items" value={summary.total_items || 0} />
-        <Metric label="In Stock" value={formatNumber(summary.total_in_stock || 0)} />
-        <Metric label="Sellable" value={formatNumber(summary.total_sellable || 0)} />
-        <Metric label="Inventory Value" value={formatCurrency(summary.total_inventory_value || 0)} />
-        <Metric label="Under Par" value={summary.under_par_count || 0} />
+      <div className="inventory-sync-toolbar" aria-label="WooCommerce stock controls">
+        <button className="muted-button" disabled={Boolean(stockSyncMode)} onClick={() => syncWooStock(false)} type="button">
+          <RefreshCw size={17} />
+          Update Stock
+        </button>
+        <button className="primary-button" disabled={Boolean(stockSyncMode)} onClick={() => syncWooStock(true)} type="button">
+          <Upload size={17} />
+          Update Stock All
+        </button>
       </div>
-      <div className="toolbar items-toolbar">
-        <div className="filter-grid inventory-filter-grid">
-          <FilterSelect label="Warehouse" value={filters.warehouse} options={options.warehouses} onChange={(value) => updateFilter('warehouse', value)} />
-          <FilterSelect label="Inventory Location" value={filters.inventoryLocation} options={options.locations} onChange={(value) => updateFilter('inventoryLocation', value)} />
-          <FilterSelect label="Default Location" value={filters.defaultLocation} options={options.defaultLocations} onChange={(value) => updateFilter('defaultLocation', value)} />
-          <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
-          <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
-          <label className="field">
-            <span>Under Par</span>
-            <div className="select-shell">
-              <select value={filters.underPar} onChange={(event) => updateFilter('underPar', event.target.value)}>
-                <option value="">All</option>
-                <option value="true">Under Par</option>
-                <option value="false">Not Under Par</option>
-              </select>
-              <Filter size={18} />
-            </div>
-          </label>
-        </div>
-        <div className="button-row items-actions">
-          <button className="primary-button" onClick={() => onLoadSummary(filters)} type="button">
-            <RefreshCw size={17} />
-            Refresh
-          </button>
-          <button className="muted-button" onClick={clearFilters} type="button">
-            Clear
-          </button>
-          <button className="action-button" onClick={() => exportInventoryByLocationCsv(filters)} type="button">
-            <Download size={17} />
-            Export CSV
-          </button>
-        </div>
+      <div className="summary-strip inventory-summary-strip">
+        <Metric label="Total Items" value={summary.total_items || items.length || 0} />
+        <Metric label="In Stock" value={formatNumber(summary.total_in_stock || inventoryTotal(items, 'In Stock'))} />
+        <Metric label="Allocated" value={formatNumber(summary.total_allocated || inventoryTotal(items, 'Allocated'))} />
+        <Metric label="Sellable" value={formatNumber(summary.total_sellable || inventoryTotal(items, 'Sellable'))} />
+        <Metric label="Inventory Value" value={formatCurrency(summary.total_inventory_value || inventoryValue(items))} />
+        <Metric label="Under Par" value={summary.under_par_count || itemRows.filter((row) => row.underPar).length} />
       </div>
-      <div className="csv-note">Inventory by location currently uses item Warehouse, Inventory Location, and Default Location text fields.</div>
+
+      <InventoryScannerSearch value={queryDraft} onChange={setQueryDraft} onSubmit={submitSearch} onClear={clearFilters} filters={filters} options={options} onFilterChange={updateFilter} />
+
+      <div className="csv-note">Inventory search uses local Pongo OS data. Picked-order stock writes back when the order is completed; manual stock changes write back automatically. Use Update Stock to retry changed items or Update Stock All to resend every mapped item.</div>
       {error && <div className="api-error">{error}</div>}
       {locationRowsError && <div className="api-error">{locationRowsError}</div>}
-      {operationMessage && <div className="api-success">{operationMessage}</div>}
-      {loading && <div className="loading-strip">Loading inventory summary...</div>}
-      <InventorySummaryTable groups={summary.groups || []} />
-      <LocationInventoryOperations
-        rows={locationRows}
-        loading={locationRowsLoading}
-        transferForm={transferForm}
-        setTransferForm={setTransferForm}
-        adjustmentForm={adjustmentForm}
-        setAdjustmentForm={setAdjustmentForm}
-        onCommitTransfer={commitTransfer}
-        onCommitAdjustment={commitAdjustment}
-      />
+      {stockMovementsError && inventoryView === 'movements' && <div className="api-error">{stockMovementsError}</div>}
+      {stockSyncError && <div className="api-error" role="alert">{stockSyncError}</div>}
+      {message && <div className="api-success" role="status" aria-live="polite">{message}</div>}
+      {(loading || locationRowsLoading || itemsLoading) && <div className="loading-strip">Loading inventory...</div>}
+
+      {inventoryView === 'all' && <AllInventoryTable rows={itemRows} onEdit={setEditingItem} onStock={setAdjustingItem} onLocation={viewLocationStock} onMovements={viewMovements} onOrders={viewOrders} />}
+      {inventoryView === 'by-location' && <InventoryByLocationView groups={groupedRows} rows={enrichedLocationRows} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
+      {inventoryView === 'low-stock' && <LowStockTable rows={itemRows} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
+      {inventoryView === 'expiring' && <ExpiringStockView rows={itemRows.filter((row) => row.item.Perishable || row.item['Track Lot'])} />}
+      {inventoryView === 'par-level' && <ParLevelTable rows={itemRows} onEdit={setEditingItem} onPar={setParItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
+      {inventoryView === 'movements' && <InventoryMovementsView movements={stockMovements} loading={stockMovementsLoading} filters={movementFilters} setFilters={setMovementFilters} activeSearch={activeSearch} onLoad={() => onLoadStockMovements(stockMovementFiltersToApi(activeSearch, movementFilters))} />}
+
+      {editingItem && <ProductInfoModal item={editingItem} onClose={() => setEditingItem(null)} onSave={saveProductInfo} />}
+      {adjustingItem && <StockAdjustmentModal item={adjustingItem} locationRows={enrichedLocationRows.filter((row) => row.item_id === adjustingItem.id)} onClose={() => setAdjustingItem(null)} onCommit={commitStockEdit} />}
+      {parItem && <ParLevelModal item={parItem} onClose={() => setParItem(null)} onSave={saveParLevel} />}
     </section>
   );
 }
 
-function LocationInventoryOperations({ rows, loading, transferForm, setTransferForm, adjustmentForm, setAdjustmentForm, onCommitTransfer, onCommitAdjustment }) {
-  const rowOptions = rows.map((row) => ({
-    value: row.id,
-    label: `${row.sku || `Item ${row.item_id}`} · ${row.warehouse || 'Unassigned'} / ${row.inventory_location || 'Unassigned'} · ${formatNumber(row.sellable)} sellable`,
-  }));
+function InventoryScannerSearch({ value, onChange, onSubmit, onClear, filters, options, onFilterChange }) {
   return (
-    <div className="location-operations">
-      <div className="section-heading">
-        <div>
-          <h3>Location Stock</h3>
-          <p>{loading ? 'Loading rows...' : `${rows.length} location rows`}</p>
-        </div>
-        <a className="muted-button" href={`${API_BASE_URL}/api/inventory/locations/export`}>
-          <Download size={16} />
-          Export Rows
-        </a>
+    <div className="inventory-search-card">
+      <div className="inventory-search-row">
+        <label className="zenventory-filter-field">
+          <span>Category</span>
+          <select value={filters.category} onChange={(event) => onFilterChange('category', event.target.value)}>
+            <option value="">All Categories</option>
+            {options.categories.map((category) => <option key={category} value={category}>{category}</option>)}
+          </select>
+        </label>
+        <label className="zenventory-filter-field">
+          <span>Brand</span>
+          <select value={filters.brand} onChange={(event) => onFilterChange('brand', event.target.value)}>
+            <option value="">All Brands</option>
+            {options.brands.map((brand) => <option key={brand} value={brand}>{brand}</option>)}
+          </select>
+        </label>
+        <label className="zenventory-search-field">
+          <span>Scan or search inventory</span>
+          <input autoComplete="off" autoFocus value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, onSubmit)} placeholder="Search barcode, SKU, product name, description, or brand" type="search" />
+        </label>
+        <button className="inventory-search-button" onClick={onSubmit} type="button">Search</button>
+        <button className="inventory-reset-button" onClick={onClear} type="button">Reset</button>
       </div>
-      <div className="table-wrap compact-table-wrap">
-        <div className="table-scroll">
-          <table className="inventory-summary-table">
-            <thead>
-              <tr>
-                <th>SKU</th>
-                <th>Description</th>
-                <th>Warehouse</th>
-                <th>Location</th>
-                <th>In Stock</th>
-                <th>Allocated</th>
-                <th>Sellable</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td>{row.sku || 'Unassigned'}</td>
-                  <td>{row.description || ''}</td>
-                  <td>{row.warehouse || 'Unassigned'}</td>
-                  <td>{row.inventory_location || 'Unassigned'}</td>
-                  <td>{formatNumber(row.in_stock)}</td>
-                  <td>{formatNumber(row.allocated)}</td>
-                  <td>{formatNumber(row.sellable)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    </div>
+  );
+}
+
+function AllInventoryTable({ rows, onEdit, onStock, onLocation, onMovements, onOrders }) {
+  return (
+    <TableShell caption={`${rows.length} inventory item(s)`} columns={['Actions', 'SKU / Barcode', 'Description', 'Brand', 'Category', 'Location', 'In Stock', 'Open Orders', 'Allocated', 'Sellable', 'Unit Cost', 'Value', 'Active']}>
+      {rows.map((row) => <InventoryItemRow key={row.item.id} row={row} onEdit={onEdit} onStock={onStock} onLocation={onLocation} onMovements={onMovements} onOrders={onOrders} />)}
+      {!rows.length && <tr><td colSpan={13}><div className="empty-table-row">No inventory items match the current search.</div></td></tr>}
+    </TableShell>
+  );
+}
+
+function InventoryItemRow({ row, onEdit, onStock, onLocation, onMovements, onOrders }) {
+  const item = row.item;
+  return (
+    <tr>
+      <td><InventoryRowActions item={item} onEdit={onEdit} onStock={onStock} onLocation={onLocation} onMovements={onMovements} onOrders={onOrders} /></td>
+      <td><div className="sku-barcode-cell"><strong>{item.SKU || 'No SKU'}</strong><span>{item.Barcode || 'No barcode'}</span></div></td>
+      <td className="description-cell">{item.Description}</td>
+      <td>{item.Brand}</td>
+      <td>{item.Category}</td>
+      <td>{row.locationSummary}</td>
+      <td>{formatNumber(item['In Stock'])}</td>
+      <td>{formatOpenOrders(item)}</td>
+      <td>{formatNumber(item.Allocated)}</td>
+      <td>{formatNumber(item.Sellable)}</td>
+      <td>{formatCurrency(item['Unit Cost'])}</td>
+      <td>{formatCurrency(toNumber(item['In Stock']) * toNumber(item['Unit Cost']))}</td>
+      <td><StatusBadge active={item.active} /></td>
+    </tr>
+  );
+}
+
+function InventoryRowActions({ item, onEdit, onStock, onLocation, onMovements, onOrders }) {
+  const actions = [
+    { label: 'Edit Product Info', icon: Edit3, onClick: () => onEdit(item) },
+    { label: 'Edit Current Stock', icon: SlidersHorizontal, onClick: () => onStock(item) },
+    { label: 'View Location Stock', onClick: () => onLocation(item) },
+    { label: 'View Stock Movements', onClick: () => onMovements(item) },
+    { label: 'View Orders for SKU', onClick: () => onOrders(item) },
+  ];
+  return <InventoryActionsMenu actions={actions} />;
+}
+
+function InventoryCompactActions({ item, onEdit, onStock, onMovements }) {
+  const actions = [
+    { label: 'Edit Product Info', icon: Edit3, onClick: () => onEdit(item) },
+    { label: 'Edit Current Stock', icon: SlidersHorizontal, onClick: () => onStock(item) },
+    { label: 'View Stock Movements', onClick: () => onMovements(item) },
+  ];
+  return <InventoryActionsMenu actions={actions} />;
+}
+
+function InventoryParActions({ item, onEdit, onPar, onStock, onMovements }) {
+  const actions = [
+    { label: 'Edit Product Info', icon: Edit3, onClick: () => onEdit(item) },
+    { label: 'Edit Par Level', onClick: () => onPar(item) },
+    { label: 'Edit Current Stock', icon: SlidersHorizontal, onClick: () => onStock(item) },
+    { label: 'View Stock Movements', onClick: () => onMovements(item) },
+  ];
+  return <InventoryActionsMenu actions={actions} />;
+}
+
+function InventoryActionsMenu({ actions }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="inventory-actions-menu">
+      <button className="inventory-actions-trigger" onClick={() => setOpen((current) => !current)} aria-haspopup="menu" aria-expanded={open} aria-label="Open inventory actions" type="button">
+        <Menu size={18} />
+        <span>Actions</span>
+      </button>
+      {open && (
+        <div className="inventory-actions-popover" role="menu">
+          {actions.map((action) => {
+            const Icon = action.icon;
+            return (
+              <button key={action.label} onClick={() => { setOpen(false); action.onClick(); }} role="menuitem" type="button">
+                {Icon ? <Icon size={15} /> : <span className="menu-dot" aria-hidden="true" />}
+                {action.label}
+              </button>
+            );
+          })}
         </div>
+      )}
+    </div>
+  );
+}
+
+function InventoryByLocationView({ groups, rows, onEdit, onStock, onMovements }) {
+  return (
+    <div className="location-inventory-sections">
+      <InventorySummaryTable groups={groups} />
+      {groups.map((group) => {
+        const groupRows = rows.filter((row) => inventoryLocationKey(row) === group.key);
+        return (
+          <section className="location-operations" key={group.key}>
+            <div className="section-heading">
+              <div>
+                <h3>{group.warehouse || 'Unassigned'} / {group.inventory_location || 'Unassigned'}</h3>
+                <p>{group.item_count} item(s), {formatNumber(group.total_sellable)} sellable</p>
+              </div>
+              <Metric label="Value" value={formatCurrency(group.total_inventory_value)} />
+            </div>
+            <TableShell caption={`${groupRows.length} location row(s)`} columns={['Actions', 'SKU / Barcode', 'Description', 'Brand', 'Category', 'In Stock', 'Allocated', 'Sellable', 'Unit Cost', 'Value']}>
+              {groupRows.map((row) => {
+                const item = row.item || {};
+                return (
+                  <tr key={row.id}>
+                    <td><InventoryCompactActions item={item} onEdit={onEdit} onStock={onStock} onMovements={onMovements} /></td>
+                    <td><div className="sku-barcode-cell"><strong>{row.sku || item.SKU}</strong><span>{row.barcode || item.Barcode}</span></div></td>
+                    <td className="description-cell">{row.description || item.Description}</td>
+                    <td>{item.Brand}</td>
+                    <td>{item.Category}</td>
+                    <td>{formatNumber(row.in_stock)}</td>
+                    <td>{formatNumber(row.allocated)}</td>
+                    <td>{formatNumber(row.sellable)}</td>
+                    <td>{formatCurrency(item['Unit Cost'])}</td>
+                    <td>{formatCurrency(toNumber(row.in_stock) * toNumber(item['Unit Cost']))}</td>
+                  </tr>
+                );
+              })}
+              {!groupRows.length && <tr><td colSpan={10}><div className="empty-table-row">No products in this location.</div></td></tr>}
+            </TableShell>
+          </section>
+        );
+      })}
+      {!groups.length && <div className="empty-state"><h2>No location inventory found</h2><p>Search or filters did not match any location stock rows.</p></div>}
+    </div>
+  );
+}
+
+function LowStockTable({ rows, onEdit, onStock, onMovements }) {
+  const lowRows = rows.filter((row) => row.underPar);
+  return (
+    <TableShell caption={`${lowRows.length} low stock item(s)`} columns={['Actions', 'SKU / Barcode', 'Description', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Par Level', 'Under Par', 'Suggested Reorder', 'Open Orders']}>
+      {lowRows.map((row) => (
+        <tr key={row.item.id}>
+          <td><InventoryCompactActions item={row.item} onEdit={onEdit} onStock={onStock} onMovements={onMovements} /></td>
+          <td><div className="sku-barcode-cell"><strong>{row.item.SKU}</strong><span>{row.item.Barcode}</span></div></td>
+          <td className="description-cell">{row.item.Description}</td>
+          <td>{row.locationSummary}</td>
+          <td>{formatNumber(row.item['In Stock'])}</td>
+          <td>{formatNumber(row.item.Allocated)}</td>
+          <td>{formatNumber(row.item.Sellable)}</td>
+          <td>{formatNumber(row.item['Par Level'])}</td>
+          <td>{formatNumber(Math.max(0, toNumber(row.item['Par Level']) - toNumber(row.item['In Stock'])))}</td>
+          <td>{formatNumber(Math.max(0, toNumber(row.item['Default Econ Order']) || (toNumber(row.item['Par Level']) - toNumber(row.item.Sellable))))}</td>
+          <td>{formatOpenOrders(row.item)}</td>
+        </tr>
+      ))}
+      {!lowRows.length && <tr><td colSpan={11}><div className="empty-table-row">No low stock items match the current filters.</div></td></tr>}
+    </TableShell>
+  );
+}
+
+function ExpiringStockView() {
+  return (
+    <div className="empty-state">
+      <h2>No expiring stock records found.</h2>
+      <p>Expiration tracking will appear here when receipt lots include expiration dates.</p>
+    </div>
+  );
+}
+
+function ParLevelTable({ rows, onEdit, onPar, onStock, onMovements }) {
+  return (
+    <TableShell caption={`${rows.length} par level item(s)`} columns={['Actions', 'SKU / Barcode', 'Description', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Par Level', 'Under Par', 'Reorder Enabled', 'Default Econ Order', 'Suggested Order Qty']}>
+      {rows.map((row) => (
+        <tr key={row.item.id}>
+          <td><InventoryParActions item={row.item} onEdit={onEdit} onPar={onPar} onStock={onStock} onMovements={onMovements} /></td>
+          <td><div className="sku-barcode-cell"><strong>{row.item.SKU}</strong><span>{row.item.Barcode}</span></div></td>
+          <td className="description-cell">{row.item.Description}</td>
+          <td>{row.locationSummary}</td>
+          <td>{formatNumber(row.item['In Stock'])}</td>
+          <td>{formatNumber(row.item.Allocated)}</td>
+          <td>{formatNumber(row.item.Sellable)}</td>
+          <td>{formatNumber(row.item['Par Level'])}</td>
+          <td>{row.underPar ? 'Yes' : 'No'}</td>
+          <td>{row.item['Re-Order'] ? 'Yes' : 'No'}</td>
+          <td>{formatNumber(row.item['Default Econ Order'])}</td>
+          <td>{formatNumber(Math.max(0, toNumber(row.item['Default Econ Order']) || (toNumber(row.item['Par Level']) - toNumber(row.item.Sellable))))}</td>
+        </tr>
+      ))}
+      {!rows.length && <tr><td colSpan={12}><div className="empty-table-row">No par level rows match the current filters.</div></td></tr>}
+    </TableShell>
+  );
+}
+
+function InventoryMovementsView({ movements, loading, filters, setFilters, activeSearch, onLoad }) {
+  function update(field, value) {
+    setFilters((current) => ({ ...current, [field]: value }));
+  }
+  return (
+    <div className="inventory-movement-ledger">
+      <div className="toolbar items-toolbar">
+        <div className="filter-grid report-filter-grid">
+          <label className="field"><span>Movement Type</span><input value={filters.movement_type} onChange={(event) => update('movement_type', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, onLoad)} /></label>
+          <label className="field"><span>Warehouse</span><input value={filters.warehouse} onChange={(event) => update('warehouse', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, onLoad)} /></label>
+          <label className="field"><span>Inventory Location</span><input value={filters.inventory_location} onChange={(event) => update('inventory_location', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, onLoad)} /></label>
+          <label className="field"><span>Date From</span><input type="date" value={filters.date_from} onChange={(event) => update('date_from', event.target.value)} /></label>
+          <label className="field"><span>Date To</span><input type="date" value={filters.date_to} onChange={(event) => update('date_to', event.target.value)} /></label>
+        </div>
+        <div className="button-row"><button className="primary-button" onClick={onLoad} type="button"><Search size={16} />Filter</button><button className="action-button" onClick={() => exportStockMovementsCsv(stockMovementFiltersToApi(activeSearch, filters))} type="button"><Download size={16} />Export CSV</button></div>
       </div>
-      <div className="operation-grid">
-        <div className="operation-panel">
-          <h3>Transfer</h3>
-          <label className="field">
-            <span>Source Row</span>
-            <select value={transferForm.itemLocationId} onChange={(event) => setTransferForm((current) => ({ ...current, itemLocationId: event.target.value }))}>
-              <option value="">Select row</option>
-              {rowOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span>To Warehouse</span>
-            <input value={transferForm.toWarehouse} onChange={(event) => setTransferForm((current) => ({ ...current, toWarehouse: event.target.value }))} />
-          </label>
-          <label className="field">
-            <span>To Location</span>
-            <input value={transferForm.toInventoryLocation} onChange={(event) => setTransferForm((current) => ({ ...current, toInventoryLocation: event.target.value }))} />
-          </label>
-          <label className="field">
-            <span>Quantity</span>
-            <input min="0" step="0.001" type="number" value={transferForm.quantity} onChange={(event) => setTransferForm((current) => ({ ...current, quantity: event.target.value }))} />
-          </label>
-          <button className="primary-button" onClick={onCommitTransfer} type="button">
-            <Save size={16} />
-            Commit Transfer
-          </button>
+      {loading && <div className="loading-strip">Loading stock movements...</div>}
+      <TableShell caption={`${movements.length} stock movement(s)`} columns={['Date', 'Movement Type', 'SKU', 'Barcode', 'Description', 'Warehouse', 'Location', 'Quantity Change', 'Old Stock', 'New Stock', 'Reference', 'Reason', 'Notes', 'Action']}>
+        {movements.map((movement) => (
+          <tr key={movement.id}>
+            <td>{formatDateTime(movement.created_at)}</td>
+            <td>{movement.movement_type}</td>
+            <td className="mono">{movement.sku}</td>
+            <td className="mono">{movement.barcode}</td>
+            <td className="description-cell">{movement.description || ''}</td>
+            <td>{movement.warehouse}</td>
+            <td>{movement.inventory_location}</td>
+            <td>{formatNumber(movement.quantity_delta)}</td>
+            <td>{formatNumber(movement.previous_in_stock ?? movement.previous_location_in_stock)}</td>
+            <td>{formatNumber(movement.new_in_stock ?? movement.new_location_in_stock)}</td>
+            <td>{movement.reference_number || movement.reference_type || ''}</td>
+            <td>{movement.reason || ''}</td>
+            <td>{movement.notes || ''}</td>
+            <td><a className="action-button btn-sm" href={`#/items/${movement.item_id}`}>View Item</a></td>
+          </tr>
+        ))}
+        {!movements.length && <tr><td colSpan={14}><div className="empty-table-row">No stock movements match the current filters.</div></td></tr>}
+      </TableShell>
+    </div>
+  );
+}
+
+function ProductInfoModal({ item, onClose, onSave }) {
+  const [form, setForm] = useState(() => ({
+    Description: item.Description || '',
+    Barcode: item.Barcode || '',
+    Brand: item.Brand || '',
+    Category: item.Category || '',
+    'Unit Cost': item['Unit Cost'] || '',
+    'Sales Price': item['Sales Price'] || '',
+    Manufacturer: item.Manufacturer || '',
+    'Manufacturer Website': item['Manufacturer Website'] || '',
+    'Par Level': item['Par Level'] || '',
+    active: Boolean(item.active),
+  }));
+  const [error, setError] = useState('');
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function save() {
+    setError('');
+    try {
+      await onSave(item, {
+        Description: form.Description,
+        Barcode: form.Barcode,
+        Brand: form.Brand,
+        Category: form.Category,
+        'Unit Cost': form['Unit Cost'],
+        'Sales Price': form['Sales Price'],
+        Manufacturer: form.Manufacturer,
+        'Manufacturer Website': form['Manufacturer Website'],
+        'Par Level': form['Par Level'],
+        active: Boolean(form.active),
+      });
+    } catch (saveError) {
+      setError(saveError.message || 'Unable to save product info.');
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="import-modal" role="dialog" aria-modal="true" aria-label="Edit product info">
+        <div className="modal-header"><div><h2>Edit Product Info</h2><p>{item.SKU || item.Description}. Stock quantities are not edited here.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close edit product info" title="Close" type="button"><X size={20} /></button></div>
+        <div className="form-grid">
+          {['Description', 'Barcode', 'Brand', 'Category', 'Manufacturer', 'Manufacturer Website', 'Unit Cost', 'Sales Price', 'Par Level'].map((field) => (
+            <label className={`field ${field === 'Description' || field === 'Manufacturer Website' ? 'wide-field' : ''}`} key={field}>
+              <span>{field}</span>
+              <input value={form[field]} onChange={(event) => update(field, event.target.value)} />
+            </label>
+          ))}
+          <label className="check-field"><input checked={form.active} onChange={(event) => update('active', event.target.checked)} type="checkbox" />Active</label>
         </div>
-        <div className="operation-panel">
-          <h3>Adjustment</h3>
-          <label className="field">
-            <span>Location Row</span>
-            <select value={adjustmentForm.itemLocationId} onChange={(event) => setAdjustmentForm((current) => ({ ...current, itemLocationId: event.target.value }))}>
-              <option value="">Select row</option>
-              {rowOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span>Type</span>
-            <select value={adjustmentForm.adjustmentType} onChange={(event) => setAdjustmentForm((current) => ({ ...current, adjustmentType: event.target.value }))}>
-              <option value="correction">Correction</option>
-              <option value="damage">Damage</option>
-              <option value="loss">Loss</option>
-              <option value="found">Found</option>
-              <option value="manual_increase">Manual Increase</option>
-              <option value="manual_decrease">Manual Decrease</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Quantity Change</span>
-            <input step="0.001" type="number" value={adjustmentForm.quantityChange} onChange={(event) => setAdjustmentForm((current) => ({ ...current, quantityChange: event.target.value }))} />
-          </label>
-          <label className="field">
-            <span>Reason</span>
-            <input value={adjustmentForm.reason} onChange={(event) => setAdjustmentForm((current) => ({ ...current, reason: event.target.value }))} />
-          </label>
-          <button className="primary-button" onClick={onCommitAdjustment} type="button">
-            <Save size={16} />
-            Commit Adjustment
-          </button>
+        {error && <div className="api-error">{error}</div>}
+        <div className="detail-actions"><button className="muted-button" onClick={onClose} type="button">Cancel</button><button className="primary-button" onClick={save} type="button"><Save size={16} />Save Product Info</button></div>
+      </section>
+    </div>
+  );
+}
+
+function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
+  const defaultRow = locationRows[0] || null;
+  const [form, setForm] = useState({ itemLocationId: defaultRow?.id || '', mode: 'new_quantity', newQuantity: defaultRow ? String(defaultRow.in_stock) : '', quantityChange: '', reason: '', notes: '' });
+  const [error, setError] = useState('');
+  const selectedRow = locationRows.find((row) => String(row.id) === String(form.itemLocationId)) || defaultRow;
+  const oldQuantity = toNumber(selectedRow?.in_stock);
+  const newQuantity = form.mode === 'new_quantity' ? toNumber(form.newQuantity) : roundNumber(oldQuantity + toNumber(form.quantityChange));
+  const quantityChange = roundNumber(newQuantity - oldQuantity);
+  const allocated = toNumber(selectedRow?.allocated);
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function commit() {
+    setError('');
+    if (!selectedRow) {
+      setError('Select a location row before editing stock.');
+      return;
+    }
+    if (!form.reason.trim()) {
+      setError('Reason is required for stock edits.');
+      return;
+    }
+    if (newQuantity < allocated) {
+      setError(`New stock cannot be below allocated quantity (${formatNumber(allocated)}).`);
+      return;
+    }
+    const confirmed = window.confirm(`Commit stock adjustment for ${item.SKU || item.Description}?\nOld: ${formatNumber(oldQuantity)}\nNew: ${formatNumber(newQuantity)}\nDifference: ${formatNumber(quantityChange)}`);
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await onCommit({
+        adjustment_type: quantityChange < 0 ? 'manual_decrease' : 'manual_increase',
+        reason: form.reason,
+        notes: form.notes || null,
+        created_by: 'frontend',
+        lines: [{ item_id: item.id, inventory_item_location_id: selectedRow.id, quantity_change: quantityChange, notes: form.notes || null }],
+      });
+    } catch (commitError) {
+      setError(commitError.message || 'Unable to commit stock edit.');
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="import-modal" role="dialog" aria-modal="true" aria-label="Edit current stock">
+        <div className="modal-header"><div><h2>Edit Current Stock</h2><p>{item.SKU || item.Description}. This creates an audited stock adjustment.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close edit current stock" title="Close" type="button"><X size={20} /></button></div>
+        <div className="form-grid">
+          <label className="field wide-field"><span>Location</span><select value={form.itemLocationId} onChange={(event) => update('itemLocationId', event.target.value)}>{locationRows.map((row) => <option key={row.id} value={row.id}>{row.warehouse || 'Unassigned'} / {row.inventory_location || 'Unassigned'} · {formatNumber(row.in_stock)} in stock</option>)}</select></label>
+          <label className="field"><span>Mode</span><select value={form.mode} onChange={(event) => update('mode', event.target.value)}><option value="new_quantity">New current stock</option><option value="quantity_change">Quantity change</option></select></label>
+          {form.mode === 'new_quantity' ? <label className="field"><span>New Stock Quantity</span><input type="number" step="0.001" value={form.newQuantity} onChange={(event) => update('newQuantity', event.target.value)} /></label> : <label className="field"><span>Quantity Change</span><input type="number" step="0.001" value={form.quantityChange} onChange={(event) => update('quantityChange', event.target.value)} /></label>}
+          <label className="field wide-field"><span>Reason</span><input value={form.reason} onChange={(event) => update('reason', event.target.value)} placeholder="Required" /></label>
+          <label className="field wide-field"><span>Notes</span><textarea value={form.notes} onChange={(event) => update('notes', event.target.value)} /></label>
         </div>
-      </div>
+        <div className="summary-strip inventory-adjust-preview">
+          <Metric label="Old Stock" value={formatNumber(oldQuantity)} />
+          <Metric label="New Stock" value={formatNumber(newQuantity)} />
+          <Metric label="Difference" value={formatNumber(quantityChange)} />
+          <Metric label="Allocated" value={formatNumber(allocated)} />
+        </div>
+        {error && <div className="api-error">{error}</div>}
+        <div className="detail-actions"><button className="muted-button" onClick={onClose} type="button">Cancel</button><button className="primary-button" onClick={commit} type="button"><Save size={16} />Commit Adjustment</button></div>
+      </section>
+    </div>
+  );
+}
+
+function ParLevelModal({ item, onClose, onSave }) {
+  const [form, setForm] = useState({ 'Par Level': item['Par Level'] || '', 'Default Econ Order': item['Default Econ Order'] || '', 'Re-Order': Boolean(item['Re-Order']) });
+  const [error, setError] = useState('');
+  async function save() {
+    setError('');
+    try {
+      await onSave(item, form);
+    } catch (saveError) {
+      setError(saveError.message || 'Unable to save par level.');
+    }
+  }
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="import-modal" role="dialog" aria-modal="true" aria-label="Edit par level">
+        <div className="modal-header"><div><h2>Edit Par Level</h2><p>{item.SKU || item.Description}. This does not change stock.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close edit par level" title="Close" type="button"><X size={20} /></button></div>
+        <div className="form-grid">
+          <label className="field"><span>Par Level</span><input value={form['Par Level']} onChange={(event) => setForm((current) => ({ ...current, 'Par Level': event.target.value }))} /></label>
+          <label className="field"><span>Default Econ Order</span><input value={form['Default Econ Order']} onChange={(event) => setForm((current) => ({ ...current, 'Default Econ Order': event.target.value }))} /></label>
+          <label className="check-field"><input checked={form['Re-Order']} onChange={(event) => setForm((current) => ({ ...current, 'Re-Order': event.target.checked }))} type="checkbox" />Reorder Enabled</label>
+        </div>
+        {error && <div className="api-error">{error}</div>}
+        <div className="detail-actions"><button className="muted-button" onClick={onClose} type="button">Cancel</button><button className="primary-button" onClick={save} type="button"><Save size={16} />Save Par Level</button></div>
+      </section>
     </div>
   );
 }
@@ -3194,7 +4632,7 @@ function ImportModal({ onClose, onImported }) {
             <p>Zenventory-compatible inventory columns are required.</p>
           </div>
           <button className="icon-button modal-close" onClick={onClose} aria-label="Close import modal" type="button">
-            <MoreVertical size={20} />
+            <X size={20} />
           </button>
         </div>
         <div className="import-steps">
@@ -3375,7 +4813,7 @@ function LocationImportModal({ onClose, onImported }) {
             <p>Warehouse, Location Code, and Location Name are required.</p>
           </div>
           <button className="icon-button modal-close" onClick={onClose} aria-label="Close import modal" type="button">
-            <MoreVertical size={20} />
+            <X size={20} />
           </button>
         </div>
         <div className="import-steps">
@@ -3575,7 +5013,7 @@ function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh }) {
             <h2>{item?.sku || 'Item Detail'}</h2>
             <p>{item?.description || 'Loading item control center...'}</p>
           </div>
-          <button className="icon-button modal-close" onClick={onClose} aria-label="Close item detail" type="button"><MoreVertical size={20} /></button>
+          <button className="icon-button modal-close" onClick={onClose} aria-label="Close item detail" type="button"><X size={20} /></button>
         </div>
         {!detail && <div className="loading-strip">Loading item detail...</div>}
         {detail && (
@@ -3614,7 +5052,7 @@ function ItemOverview({ detail, onRefresh }) {
           ['SKU', item.sku], ['Barcode', item.barcode], ['Brand', item.brand], ['Category', item.category], ['Unit Cost', formatCurrency(item.unit_cost)], ['Sales Price', formatCurrency(item.sales_price)], ['Woo Mapping', item.woo_product_id || item.woo_variation_id ? `${item.woo_product_id || ''}/${item.woo_variation_id || ''}` : 'Unmapped'], ['Last Received', formatDateTime(stats.last_received_at)], ['Last Counted', formatDateTime(stats.last_counted_at)],
         ].map(([label, value]) => <tr key={label}><td>{label}</td><td>{value || ''}</td></tr>)}
       </TableShell>
-      <div className="button-row"><button className="muted-button" onClick={onRefresh} type="button"><RefreshCw size={16} />Refresh Detail</button><a className="action-button" href="#receiving">Receive</a><a className="action-button" href="#inventory">Transfer</a><a className="action-button" href="#cycle-count">Cycle Count</a></div>
+      <div className="button-row"><button className="muted-button" onClick={onRefresh} type="button"><RefreshCw size={16} />Refresh Detail</button><a className="action-button" href="#receiving">Receive</a><a className="action-button" href="#/inventory/all">Inventory</a><a className="action-button" href="#cycle-count">Cycle Count</a></div>
     </div>
   );
 }
@@ -3645,7 +5083,7 @@ function ItemHistoryPanel({ itemId }) {
   }, [itemId, section]);
   return (
     <div className="drawer-section">
-      <FilterSelect label="History" value={section} options={['receipts', 'cycle-counts', 'adjustments', 'transfers', 'allocations', 'picks', 'fulfillments', 'orders', 'stock-movements']} onChange={setSection} />
+      <FilterSelect label="History" value={section} options={['receipts', 'cycle-counts', 'adjustments', 'allocations', 'picks', 'fulfillments', 'orders', 'stock-movements']} onChange={setSection} />
       <ItemActivityTimeline rows={history.rows || []} />
     </div>
   );
@@ -3664,7 +5102,7 @@ function ItemMetadataPanel({ item, onSaved }) {
       active: Boolean(form.active),
     };
     await patchJson(`/api/items/${item.id}`, payload);
-    setMessage('Metadata saved. Stock quantities remain controlled by receiving, count, transfer, and adjustment workflows.');
+    setMessage('Metadata saved. Stock quantities remain controlled by receiving, counts, and adjustment workflows.');
     onSaved();
   }
   return (
@@ -3681,7 +5119,7 @@ function BulkEditModal({ selectedCount, updates, setUpdates, preview, onPreview,
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="import-modal" role="dialog" aria-modal="true" aria-label="Bulk edit items">
-        <div className="modal-header"><div><h2>Bulk Edit Metadata</h2><p>{selectedCount} selected item(s). Stock and Woo fields are blocked.</p></div><button className="icon-button modal-close" onClick={onClose} type="button"><MoreVertical size={20} /></button></div>
+        <div className="modal-header"><div><h2>Bulk Edit Metadata</h2><p>{selectedCount} selected item(s). Stock and Woo fields are blocked.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close bulk edit" title="Close" type="button"><X size={20} /></button></div>
         <div className="operation-grid">
           {Object.keys(updates).map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={updates[field]} onChange={(event) => setUpdates((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
         </div>
@@ -3705,7 +5143,7 @@ function LocalRemapSearchModal({ onClose }) {
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="import-modal" role="dialog" aria-modal="true" aria-label="Local remap search">
-        <div className="modal-header"><div><h2>Local Remap Search</h2><p>This only searches local item candidates. Remap commit remains in Settings and never writes to WooCommerce.</p></div><button className="icon-button modal-close" onClick={onClose} type="button"><MoreVertical size={20} /></button></div>
+        <div className="modal-header"><div><h2>Local Remap Search</h2><p>This only searches local item candidates. Remap commit remains in Settings and never writes to WooCommerce.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close local remap search" title="Close" type="button"><X size={20} /></button></div>
         <div className="scanner-input-row"><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && search()} placeholder="Search SKU, barcode, or name" /><button className="primary-button" onClick={search} type="button"><Search size={16} />Search</button></div>
         <TableShell caption={`${results.length} candidate(s)`} columns={['SKU', 'Barcode', 'Description', 'Brand', 'Woo Mapping']}>
           {results.map((item) => <tr key={item.id}><td>{item.sku}</td><td>{item.barcode}</td><td>{item.description}</td><td>{item.brand}</td><td>{item.woo_mapping_summary?.mapped ? 'Mapped' : 'Unmapped'}</td></tr>)}
@@ -3763,7 +5201,7 @@ function ItemDetail({ item, onSave, onClone, isNew = false }) {
         </a>
         <div>
           <h2>{isNew ? 'New Item' : calculatedItem.SKU || 'Edit Item'}</h2>
-          <p>Clean item metadata entry. Stock quantities are controlled by receiving, counts, transfers, and adjustments.</p>
+          <p>Clean item metadata entry. Stock quantities are controlled by receiving, counts, and adjustments.</p>
         </div>
       </div>
       <div className="detail-layout">
@@ -3811,7 +5249,7 @@ function ItemDetail({ item, onSave, onClone, isNew = false }) {
           <div className="image-dropzone">Add Image</div>
           <div className="mapping-card item-editor-note">
             <h2>Stock Control</h2>
-            <p>Do not enter stock here. Receive, count, transfer, or adjust stock from the operational workflows so every change has an audit trail.</p>
+            <p>Do not enter stock here. Receive, count, or adjust stock from the operational workflows so every change has an audit trail.</p>
           </div>
         </aside>
       </div>
@@ -3890,13 +5328,13 @@ function CommandCenterPage({ dashboard, loading, error, onRefresh }) {
       <div className="wide-panel">
         <div className="panel-title">
           <div>
-            <h2>Command Center</h2>
+            <h2>Inventory Overview</h2>
             <p>Last refreshed {dashboard.generated_at ? formatDateTime(dashboard.generated_at) : 'not yet'}.</p>
           </div>
           <button className="primary-button" onClick={onRefresh} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
         </div>
         {error && <div className="api-error">{error}</div>}
-        {loading && <div className="loading-strip">Loading Command Center...</div>}
+        {loading && <div className="loading-strip">Loading Inventory Overview...</div>}
       </div>
       <DashboardCardSection title="Inventory Health" cards={[
         ['Items', inventory.total_items, 'Total records', PackageSearch],
@@ -3905,7 +5343,6 @@ function CommandCenterPage({ dashboard, loading, error, onRefresh }) {
         ['Reorder', inventory.reorder_count, 'Under par + reorder', TriangleAlert],
         ['Under Par', inventory.under_par_count, 'Needs review', TriangleAlert],
         ['Damage/Loss', formatCurrency(inventory.damage_loss_value_this_month), 'This month', TriangleAlert],
-        ['Transfers', inventory.transfers_this_week, 'Last 7 days', Warehouse],
         ['Receiving', inventory.receiving_this_week, 'Last 7 days', PackagePlus],
         ['Adjustments', inventory.adjustment_count_this_week, 'Last 7 days', SlidersHorizontal],
         ['Negative Sellable', inventory.negative_sellable_count, 'Data warning', TriangleAlert],
@@ -3915,7 +5352,7 @@ function CommandCenterPage({ dashboard, loading, error, onRefresh }) {
         ['Open', orders.open_orders_count, 'Local open orders', ShoppingCart],
         ['Allocated', orders.allocated_orders_count, 'Fully allocated', ClipboardList],
         ['Part Allocated', orders.partially_allocated_orders_count, 'Partial reservations', ClipboardList],
-        ['Picked', orders.picked_orders_count, 'Ready for fulfillment', ClipboardCheck],
+        ['Picked', orders.picked_orders_count, 'Ready to complete', ClipboardCheck],
         ['Fulfilled', orders.fulfilled_orders_count, 'Completed locally', CheckCircle2],
         ['Attention', orders.orders_needing_attention_count, 'Needs review', TriangleAlert],
       ]} />
@@ -3963,9 +5400,9 @@ function CommandCenterPage({ dashboard, loading, error, onRefresh }) {
             ['Sync Woo Orders', '#settings'],
             ['Receive Inventory', '#receiving'],
             ['Cycle Count', '#cycle-count'],
-            ['Allocate Orders', '#/orders/allocate'],
+            ['Allocate', '#/orders/allocate'],
             ['Pick Orders', '#/orders/pick'],
-            ['Fulfill Orders', '#/orders/fulfillment'],
+            ['Completed Orders', '#/orders/completed'],
             ['Create Route', '#routes'],
             ['Reports', '#reports'],
           ].map(([title, href]) => <a className="widget-row" href={href} key={title}><div><strong>{title}</strong><em>Open workflow</em></div><span>Open</span></a>)}
@@ -4159,7 +5596,7 @@ function CycleCountPage({ items, locations, cycleCounts, cycleCountsLoading, cyc
                     </td>
                     <td>
                       <button className="pager-button" onClick={() => removeLine(index)} disabled={form.lines.length === 1} type="button">
-                        <MoreVertical size={17} />
+                        <X size={17} />
                       </button>
                     </td>
                   </tr>
@@ -4492,7 +5929,7 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
                     </td>
                     <td>
                       <button className="pager-button" onClick={() => removeLine(index)} disabled={form.lines.length === 1} type="button">
-                        <MoreVertical size={17} />
+                        <X size={17} />
                       </button>
                     </td>
                   </tr>
@@ -4641,7 +6078,7 @@ function BulkReceivingPreview({ preview }) {
 
 function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }) {
   const [mode, setMode] = useState('inventory');
-  const [form, setForm] = useState({ scan_input: '', quantity: 1, warehouse: 'Main Warehouse', inventory_location: '', counted_quantity: '', from_warehouse: 'Main Warehouse', from_inventory_location: '', to_warehouse: 'Main Warehouse', to_inventory_location: '', adjustment_type: 'correction', quantity_change: '', new_quantity: '', reason: '', notes: '', order_id: '' });
+  const [form, setForm] = useState({ scan_input: '', quantity: 1, warehouse: 'Main Warehouse', inventory_location: '', counted_quantity: '', adjustment_type: 'correction', quantity_change: '', new_quantity: '', reason: '', notes: '', order_id: '' });
   const [result, setResult] = useState(null);
   const [recent, setRecent] = useState([]);
   const [error, setError] = useState('');
@@ -4651,9 +6088,7 @@ function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }
     { key: 'location', label: 'Location Lookup' },
     { key: 'receiving', label: 'Receiving' },
     { key: 'cycle-count', label: 'Cycle Count' },
-    { key: 'transfer', label: 'Transfer' },
     { key: 'adjustment', label: 'Adjustment' },
-    { key: 'picking', label: 'Picking' },
   ];
   const activeMode = modes.find((candidate) => candidate.key === mode) || modes[0];
 
@@ -4671,14 +6106,10 @@ function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }
       } else if (mode === 'location') {
         const response = await fetch(`${API_BASE_URL}/api/scanner/location/lookup?scan_input=${encodeURIComponent(form.scan_input)}`);
         nextResult = await response.json();
-      } else if (mode === 'picking') {
-        window.location.hash = '#orders';
-        return;
       } else {
         const endpoint = {
           receiving: `/api/scanner/receiving/scan/${commit ? 'commit' : 'preview'}`,
           'cycle-count': `/api/scanner/cycle-count/${commit ? 'commit' : 'preview'}`,
-          transfer: `/api/scanner/transfers/${commit ? 'commit' : 'preview'}`,
           adjustment: `/api/scanner/adjustments/${commit ? 'commit' : 'preview'}`,
         }[mode];
         nextResult = await postJson(endpoint, { ...form, quantity: toNumber(form.quantity), counted_quantity: toNumber(form.counted_quantity), quantity_change: form.quantity_change === '' ? '' : toNumber(form.quantity_change), new_quantity: form.new_quantity === '' ? '' : toNumber(form.new_quantity) });
@@ -4710,7 +6141,7 @@ function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }
           <div className="scanner-card-header">
             <div>
               <span>{activeMode.label}</span>
-              <h2>{mode === 'picking' ? 'Open the order pick scanner' : 'Ready to scan'}</h2>
+              <h2>Ready to scan</h2>
             </div>
             <Badge tone={result?.matched === false || result?.can_commit === false ? 'warning' : result ? 'success' : 'neutral'}>{result ? 'Result loaded' : 'Waiting'}</Badge>
           </div>
@@ -4718,16 +6149,14 @@ function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }
             <input autoFocus value={form.scan_input} onChange={(event) => update('scan_input', event.target.value)} onKeyDown={(event) => event.key === 'Enter' && runScan(false)} placeholder={mode === 'location' ? 'Scan location code or name' : 'Scan SKU, barcode, or item ID'} />
             <button className="primary-button" onClick={() => runScan(false)} type="button"><Search size={16} />Scan</button>
           </div>
-          {['receiving', 'cycle-count', 'transfer', 'adjustment'].includes(mode) && (
+          {['receiving', 'cycle-count', 'adjustment'].includes(mode) && (
             <div className="operation-grid">
               {mode === 'receiving' && <><ScannerLocationFields form={form} locations={activeLocations} update={update} /><label className="field"><span>Quantity</span><input value={form.quantity} onChange={(event) => update('quantity', event.target.value)} /></label><label className="field"><span>Unit Cost</span><input value={form.unit_cost || ''} onChange={(event) => update('unit_cost', event.target.value)} /></label></>}
               {mode === 'cycle-count' && <><ScannerLocationFields form={form} locations={activeLocations} update={update} /><label className="field"><span>Counted Quantity</span><input value={form.counted_quantity} onChange={(event) => update('counted_quantity', event.target.value)} /></label><label className="field"><span>Reason</span><input value={form.reason} onChange={(event) => update('reason', event.target.value)} /></label></>}
-              {mode === 'transfer' && <><label className="field"><span>From Location</span><input value={form.from_inventory_location} onChange={(event) => update('from_inventory_location', event.target.value)} /></label><label className="field"><span>To Location</span><input value={form.to_inventory_location} onChange={(event) => update('to_inventory_location', event.target.value)} /></label><label className="field"><span>Quantity</span><input value={form.quantity} onChange={(event) => update('quantity', event.target.value)} /></label></>}
               {mode === 'adjustment' && <><ScannerLocationFields form={form} locations={activeLocations} update={update} /><FilterSelect label="Adjustment Type" value={form.adjustment_type} options={['correction', 'damage', 'loss', 'found', 'manual_increase', 'manual_decrease']} onChange={(value) => update('adjustment_type', value)} /><label className="field"><span>Qty Change</span><input value={form.quantity_change} onChange={(event) => update('quantity_change', event.target.value)} /></label><label className="field"><span>New Qty</span><input value={form.new_quantity} onChange={(event) => update('new_quantity', event.target.value)} /></label><label className="field"><span>Reason</span><input value={form.reason} onChange={(event) => update('reason', event.target.value)} /></label></>}
             </div>
           )}
-          {['receiving', 'cycle-count', 'transfer', 'adjustment'].includes(mode) && <div className="button-row"><button className="muted-button" onClick={() => runScan(false)} type="button">Preview</button><button className="primary-button" onClick={() => runScan(true)} type="button">Commit</button></div>}
-          {mode === 'picking' && <div className="empty-state"><h2>Picking Scanner</h2><p>Picking scanner is tied to open orders so it can prevent over-pick.</p><a className="primary-button" href="#/orders/pick">Open Pick Orders</a></div>}
+          {['receiving', 'cycle-count', 'adjustment'].includes(mode) && <div className="button-row"><button className="muted-button" onClick={() => runScan(false)} type="button">Preview</button><button className="primary-button" onClick={() => runScan(true)} type="button">Commit</button></div>}
           {error && <div className="api-error">{error}</div>}
           <ScannerResult result={result} />
         </div>
@@ -5477,6 +6906,8 @@ function OrdersPage({
   completedOrdersLoading,
   completedOrdersError,
   onLoadCompletedOrders,
+  orderCompletionSummary,
+  onCompleteOrder,
   allocationPreview,
   allocationCommitSummary,
   allocationHistory,
@@ -5490,15 +6921,11 @@ function OrdersPage({
   pickCommitSummary,
   pickHistory,
   pickDetail,
-  pickScannerOrder,
-  pickScannerMessage,
   pickLoading,
   pickError,
   onPreviewPick,
   onCommitPick,
   onLoadPickDetail,
-  onLoadPickScanner,
-  onCommitPickScan,
   fulfillmentPreview,
   fulfillmentCommitSummary,
   fulfillmentHistory,
@@ -5509,25 +6936,177 @@ function OrdersPage({
   onCommitFulfillment,
   onLoadFulfillmentDetail,
 }) {
-  const [filters, setFilters] = useState({ search: '', wooStatus: '', availabilityStatus: '', matchedStatus: '' });
+  const emptyOrderFilters = { orderNumber: '', customer: '', containingItem: '', warehouse: '', search: '', wooStatus: '', availabilityStatus: '', matchedStatus: '' };
+  const [filters, setFilters] = useState(emptyOrderFilters);
+  const [appliedOrderFilters, setAppliedOrderFilters] = useState(emptyOrderFilters);
+  const [ordersPageNumber, setOrdersPageNumber] = useState(1);
+  const [ordersPageSize, setOrdersPageSize] = useState(20);
+  const [orderDialogOpen, setOrderDialogOpen] = useState(false);
+  const [selectedOpenOrderIds, setSelectedOpenOrderIds] = useState([]);
+  const [bulkActionLoading, setBulkActionLoading] = useState(false);
+  const [bulkActionMessage, setBulkActionMessage] = useState('');
+  const [bulkActionError, setBulkActionError] = useState('');
+  const [bulkPrintOrders, setBulkPrintOrders] = useState([]);
   const orders = ordersData.orders || [];
+  const filteredOpenOrders = useMemo(() => orders.filter((order) => {
+    const orderNumber = String(order.woo_order_number || order.woo_order_id || '').toLowerCase();
+    const customer = String(order.customer_name || '').toLowerCase();
+    const itemText = [...(order.skus || []), ...(order.item_names || [])].join(' ').toLowerCase();
+    const shipFrom = String(order.ship_from || 'Main Warehouse').toLowerCase();
+    return (!appliedOrderFilters.orderNumber || orderNumber.includes(appliedOrderFilters.orderNumber.trim().toLowerCase()))
+      && (!appliedOrderFilters.customer || customer.includes(appliedOrderFilters.customer.trim().toLowerCase()))
+      && (!appliedOrderFilters.containingItem || itemText.includes(appliedOrderFilters.containingItem.trim().toLowerCase()))
+      && (!appliedOrderFilters.warehouse || shipFrom === appliedOrderFilters.warehouse.toLowerCase());
+  }), [orders, appliedOrderFilters]);
+  const ordersPageCount = Math.max(1, Math.ceil(filteredOpenOrders.length / ordersPageSize));
+  const pagedOpenOrders = filteredOpenOrders.slice((ordersPageNumber - 1) * ordersPageSize, ordersPageNumber * ordersPageSize);
+  const selectedOpenOrderSet = useMemo(() => new Set(selectedOpenOrderIds), [selectedOpenOrderIds]);
   const selectedOrderId = detail?.id;
   const view = route.ordersView || 'open';
+  const isOpenOrdersView = view === 'open';
 
   useEffect(() => {
-    if (view === 'pick' && selectedOrderId) {
-      onLoadPickScanner(selectedOrderId);
-    }
-  }, [view, selectedOrderId]);
+    const visibleIds = new Set(orders.map((order) => order.id));
+    setSelectedOpenOrderIds((current) => current.filter((orderId) => visibleIds.has(orderId)));
+  }, [ordersData.orders]);
+
+  useEffect(() => {
+    setOrdersPageNumber((current) => Math.min(current, ordersPageCount));
+  }, [ordersPageCount]);
 
   function updateFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value }));
   }
 
   function clearFilters() {
-    const cleared = { search: '', wooStatus: '', availabilityStatus: '', matchedStatus: '' };
+    const cleared = emptyOrderFilters;
     setFilters(cleared);
-    onLoadOpenOrders(cleared);
+    setAppliedOrderFilters(cleared);
+    setOrdersPageNumber(1);
+    onLoadOpenOrders({});
+  }
+
+  function applyOpenOrderFilters() {
+    setAppliedOrderFilters(filters);
+    setOrdersPageNumber(1);
+  }
+
+  async function viewOpenOrder(orderId) {
+    const loaded = await onLoadOpenOrderDetail(orderId);
+    if (loaded) {
+      setOrderDialogOpen(true);
+      window.requestAnimationFrame(() => document.getElementById('open-order-detail')?.focus());
+    }
+  }
+
+  async function editOpenOrder(orderId) {
+    await viewOpenOrder(orderId);
+  }
+
+  async function printOpenOrder(orderId) {
+    const loaded = await onLoadOpenOrderDetail(orderId);
+    if (loaded) {
+      setOrderDialogOpen(true);
+      window.requestAnimationFrame(() => window.print());
+    }
+  }
+
+  async function unpickOpenOrder(order) {
+    if (!window.confirm(`Unpick order ${order.woo_order_number || order.woo_order_id}? Stock and allocation will be restored at the original pick locations.`)) return;
+    setBulkActionLoading(true);
+    setBulkActionError('');
+    try {
+      const result = await postJson('/api/orders/bulk/unpick', { order_ids: [order.id], created_by: 'system', reason: 'Unpicked from Open Orders row action.' });
+      if (result.status === 'rejected') throw new Error((result.errors || []).join(' ') || 'The order could not be unpicked.');
+      setBulkActionMessage(`Order ${order.woo_order_number || order.woo_order_id} was unpicked.`);
+      await onLoadOpenOrders({}, { ordersView: 'open' });
+    } catch (unpickError) {
+      setBulkActionError(unpickError.message || 'Unable to unpick this order.');
+    } finally {
+      setBulkActionLoading(false);
+    }
+  }
+
+  async function importOpenOrders() {
+    if (!window.confirm('Import the latest processing orders from WooCommerce into Pongo OS now?')) return;
+    setBulkActionLoading(true);
+    setBulkActionError('');
+    setBulkActionMessage('');
+    try {
+      const result = await postJson('/api/integrations/woocommerce/orders/quick-sync', {});
+      if (result.status === 'not_configured') throw new Error((result.errors || []).join(' ') || 'WooCommerce is not configured.');
+      setBulkActionMessage(`WooCommerce import complete: ${result.created_count ?? 0} created, ${result.updated_count ?? 0} updated.`);
+      await onLoadOpenOrders({});
+    } catch (importError) {
+      setBulkActionError(importError.message || 'Unable to import WooCommerce orders.');
+    } finally {
+      setBulkActionLoading(false);
+    }
+  }
+
+  function toggleOpenOrderSelection(orderId, checked) {
+    setSelectedOpenOrderIds((current) => checked ? Array.from(new Set([...current, orderId])) : current.filter((id) => id !== orderId));
+  }
+
+  function toggleAllOpenOrders(checked) {
+    setSelectedOpenOrderIds(checked ? pagedOpenOrders.map((order) => order.id) : []);
+  }
+
+  async function runOpenOrdersBulkAction(action) {
+    if (!selectedOpenOrderIds.length) return;
+    if (action === 'print') {
+      setBulkActionLoading(true);
+      setBulkActionError('');
+      try {
+        const responses = await Promise.all(selectedOpenOrderIds.map((orderId) => fetch(`${API_BASE_URL}/api/orders/${orderId}`)));
+        if (responses.some((response) => !response.ok)) throw new Error('One or more selected orders could not be loaded for printing.');
+        setBulkPrintOrders(await Promise.all(responses.map((response) => response.json())));
+        document.body.classList.add('bulk-order-printing');
+        window.setTimeout(() => {
+          window.print();
+          document.body.classList.remove('bulk-order-printing');
+        }, 0);
+      } catch (printError) {
+        setBulkActionError(printError.message || 'Unable to print selected orders.');
+      } finally {
+        setBulkActionLoading(false);
+      }
+      return;
+    }
+
+    const confirmation = action === 'complete'
+      ? `Mark ${selectedOpenOrderIds.length} selected order(s) completed in Pongo OS and WooCommerce? Unpicked stock will not be reduced.`
+      : `Unpick all picked quantities from ${selectedOpenOrderIds.length} selected order(s)? Stock and allocation will be restored at the original pick locations.`;
+    if (!window.confirm(confirmation)) return;
+    setBulkActionLoading(true);
+    setBulkActionMessage('');
+    setBulkActionError('');
+    try {
+      const endpoint = action === 'complete' ? '/api/orders/bulk/complete' : '/api/orders/bulk/unpick';
+      const result = await postJson(endpoint, {
+        order_ids: selectedOpenOrderIds,
+        created_by: 'system',
+        reason: action === 'complete' ? 'Bulk completed from Open Orders.' : 'Bulk unpick all from Open Orders.',
+      });
+      if (result.status === 'rejected') throw new Error((result.errors || []).join(' ') || 'The bulk action was rejected.');
+      setBulkActionMessage(`${result.succeeded_count} of ${result.requested_count} selected order(s) updated.`);
+      if (result.errors?.length) setBulkActionError(result.errors.join(' '));
+      if (action === 'complete') {
+        const unsynced = (result.results || []).filter((row) => row.woo_sync_status !== 'sent');
+        if (unsynced.length) {
+          const syncErrors = [...new Set(unsynced.map((row) => row.woo_sync_error).filter(Boolean))];
+          setBulkActionError(syncErrors.length
+            ? syncErrors.join(' ')
+            : `${unsynced.length} completed order(s) were not sent to WooCommerce. Review the WooCommerce writeback queue.`);
+        }
+      }
+      setSelectedOpenOrderIds([]);
+      await onLoadOpenOrders(filters, { ordersView: 'open' });
+    } catch (bulkError) {
+      setBulkActionError(bulkError.message || 'Unable to complete the bulk action.');
+    } finally {
+      setBulkActionLoading(false);
+    }
   }
 
   const summaryCards = (
@@ -5542,7 +7121,7 @@ function OrdersPage({
 
   const filtersPanel = (
     <div className="filter-panel">
-      <div className="filter-grid orders-filter-grid">
+      <div className={`filter-grid orders-filter-grid${isOpenOrdersView ? ' open-orders-search-grid' : ''}`}>
         <label className="field">
           <span>Search</span>
           <div className="input-with-icon">
@@ -5550,9 +7129,9 @@ function OrdersPage({
             <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadOpenOrders(filters))} placeholder="Order, customer, SKU, barcode" type="search" />
           </div>
         </label>
-        <FilterSelect label="Woo Status" value={filters.wooStatus} options={['processing', 'on-hold']} onChange={(value) => updateFilter('wooStatus', value)} />
-        <FilterSelect label="Availability" value={filters.availabilityStatus} options={['available', 'partial', 'unavailable', 'unknown']} onChange={(value) => updateFilter('availabilityStatus', value)} />
-        <FilterSelect label="Matched" value={filters.matchedStatus} options={['matched', 'unmatched', 'conflict', 'unknown']} onChange={(value) => updateFilter('matchedStatus', value)} />
+        {!isOpenOrdersView && <FilterSelect label="Woo Status" value={filters.wooStatus} options={['processing', 'on-hold']} onChange={(value) => updateFilter('wooStatus', value)} />}
+        {!isOpenOrdersView && <FilterSelect label="Availability" value={filters.availabilityStatus} options={['available', 'partial', 'unavailable', 'unknown']} onChange={(value) => updateFilter('availabilityStatus', value)} />}
+        {!isOpenOrdersView && <FilterSelect label="Matched" value={filters.matchedStatus} options={['matched', 'unmatched', 'conflict', 'unknown']} onChange={(value) => updateFilter('matchedStatus', value)} />}
       </div>
       <div className="button-row">
         <button className="muted-button" onClick={clearFilters} type="button">
@@ -5591,7 +7170,7 @@ function OrdersPage({
           <div className="panel-title">
             <div>
               <h2>Order History</h2>
-              <p>Read-only local allocation, pick, and fulfillment records.</p>
+              <p>Read-only local allocation, pick, and legacy fulfillment/completion records.</p>
             </div>
             <div className="button-row compact">
               <button className="muted-button" onClick={() => { onLoadAllocationDetail(null); onLoadFulfillmentDetail(null); onLoadPickDetail(null); }} type="button">
@@ -5613,156 +7192,701 @@ function OrdersPage({
   if (view === 'allocate') {
     return (
       <section className="content-panel orders-page">
-        <div className="wide-panel">
-          <OrdersWorkflowHeader title="Allocate Orders" description="Reserve local Pongo OS inventory for open WooCommerce order snapshots." loading={loading || allocationLoading} onRefresh={() => onLoadOpenOrders(filters)} onExport={() => exportOpenOrdersCsv(filters)} />
-          {summaryCards}
-          {filtersPanel}
-          <div className="csv-note">Allocation reserves local inventory only. It does not update WooCommerce, reduce In Stock, or pick orders.</div>
-          <div className="context-action-panel">
-            <div>
-              <span>Allocation workflow</span>
-              <strong>{selectedLabel}</strong>
-            </div>
-            <div className="button-row">
-              <button className="primary-button" onClick={() => onPreviewAllocation(selectedOrderId)} disabled={!selectedOrderId || allocationLoading} type="button">
-                <ClipboardList size={17} />
-                Preview Allocation
-              </button>
-              <button className="action-button" onClick={() => onCommitAllocation(selectedOrderId)} disabled={!selectedOrderId || allocationLoading || !allocationPreview} type="button">
-                <CheckCircle2 size={17} />
-                Commit Allocation
-              </button>
-            </div>
-          </div>
-          {openStatus}
-          {allocationLoading && <div className="loading-strip">Working on allocation...</div>}
-          {allocationError && <div className="api-error">{allocationError}</div>}
-          {allocationCommitSummary && <OrderWorkflowSummary summary={allocationCommitSummary} type="Allocation" quantityField="total_quantity_allocated" />}
-        </div>
-        {allocationPreview && <AllocationPreviewPanel preview={allocationPreview} />}
-        <div className="orders-grid">
-          <OpenOrdersTable orders={orders} selectedOrderId={detail?.id} onSelect={onLoadOpenOrderDetail} renderActions={(order) => (
-            <div className="button-row compact table-button-row">
-              <button className="muted-button" onClick={() => onLoadOpenOrderDetail(order.id)} type="button">View</button>
-              <button className="primary-button" onClick={() => { onLoadOpenOrderDetail(order.id); onPreviewAllocation(order.id); }} disabled={allocationLoading} type="button">Preview</button>
-            </div>
-          )} />
-          <OpenOrderDetailPanel order={detail} />
-        </div>
+        <AllocationExceptionsPage onRefreshOperationalOrders={() => onLoadOpenOrders({}, { ordersView: 'allocate' })} />
       </section>
     );
   }
 
   if (view === 'pick') {
     return (
-      <section className="content-panel orders-page">
-        <div className="wide-panel">
-          <OrdersWorkflowHeader title="Pick Orders" description="Scan allocated order lines and record local picking progress." loading={loading || pickLoading} onRefresh={() => onLoadOpenOrders(filters)} onExport={() => exportOpenOrdersCsv(filters)} />
-          {summaryCards}
-          {filtersPanel}
-          <div className="csv-note">Picking records operational progress only. It does not update WooCommerce and does not reduce In Stock.</div>
-          <div className="context-action-panel">
-            <div>
-              <span>Picking workflow</span>
-              <strong>{selectedOrderId ? selectedLabel : 'Select an allocated order to start picking.'}</strong>
-            </div>
-            <div className="button-row">
-              <button className="primary-button" onClick={() => onPreviewPick(selectedOrderId)} disabled={!selectedOrderId || pickLoading} type="button">
-                <ClipboardCheck size={17} />
-                Preview Pick
-              </button>
-              <button className="action-button" onClick={() => onCommitPick(selectedOrderId)} disabled={!selectedOrderId || pickLoading || !pickPreview} type="button">
-                <CheckCircle2 size={17} />
-                Commit Pick
-              </button>
-            </div>
-          </div>
-          {openStatus}
-          {pickLoading && <div className="loading-strip">Working on picking...</div>}
-          {pickError && <div className="api-error">{pickError}</div>}
-          {pickCommitSummary && <OrderWorkflowSummary summary={pickCommitSummary} type="Pick" quantityField="total_quantity_picked" />}
-        </div>
-        <div className="orders-grid">
-          <OpenOrdersTable orders={orders} selectedOrderId={detail?.id} onSelect={onLoadOpenOrderDetail} renderActions={(order) => (
-            <div className="button-row compact table-button-row">
-              <button className="muted-button" onClick={() => onLoadOpenOrderDetail(order.id)} type="button">Select</button>
-              <button className="primary-button" onClick={() => { onLoadOpenOrderDetail(order.id); onPreviewPick(order.id); }} disabled={pickLoading} type="button">Preview</button>
-            </div>
-          )} />
-          <OpenOrderDetailPanel order={detail} />
-        </div>
-        <PickScannerPanel order={pickScannerOrder} message={pickScannerMessage} loading={pickLoading} onScan={(skuOrBarcode, quantity) => onCommitPickScan(selectedOrderId, skuOrBarcode, quantity)} />
-        {pickPreview && <PickPreviewPanel preview={pickPreview} />}
-      </section>
+      <PickOrdersWorkspace
+        orders={orders}
+        loading={loading || pickLoading}
+        error={error || pickError}
+        order={detail}
+        preview={pickPreview}
+        commitSummary={pickCommitSummary}
+        onLoadOrders={(nextFilters) => onLoadOpenOrders(nextFilters, { ordersView: 'pick' })}
+        onLoadOrder={onLoadOpenOrderDetail}
+        onPreviewPick={onPreviewPick}
+        onCommitPick={onCommitPick}
+      />
     );
   }
 
-  if (view === 'fulfillment') {
+  return (
+    <section className="orders-page zen-orders-page">
+      <header className="zen-orders-heading">
+        <h2>Open Customer Orders</h2>
+        <div className="zen-orders-heading-actions">
+          <button disabled={bulkActionLoading} onClick={importOpenOrders} title="Import processing WooCommerce orders" type="button"><Upload size={20} />Import</button>
+          <button onClick={() => exportOpenOrdersCsv({})} type="button"><Download size={20} />Export</button>
+          <button disabled={loading} onClick={() => onLoadOpenOrders({})} type="button"><RefreshCw size={20} />Refresh</button>
+        </div>
+      </header>
+
+      <div className="zen-orders-filters">
+        <label><span>Order Number</span><input onChange={(event) => updateFilter('orderNumber', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyOpenOrderFilters)} value={filters.orderNumber} /></label>
+        <label><span>Customer</span><div className="zen-filter-input"><input onChange={(event) => updateFilter('customer', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyOpenOrderFilters)} value={filters.customer} /><Search size={18} /></div></label>
+        <label><span>Containing Item</span><div className="zen-filter-input"><input onChange={(event) => updateFilter('containingItem', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyOpenOrderFilters)} value={filters.containingItem} /><Search size={18} /></div></label>
+        <label><span>Ship From</span><select onChange={(event) => updateFilter('warehouse', event.target.value)} value={filters.warehouse}><option value="">All Warehouses</option><option value="Main Warehouse">Main Warehouse</option></select></label>
+        <div className="zen-orders-filter-buttons">
+          <button className="primary-button" disabled={loading} onClick={applyOpenOrderFilters} type="button">Search</button>
+          <button className="muted-button" onClick={clearFilters} type="button">Clear</button>
+        </div>
+      </div>
+
+      {openStatus}
+      {allocationError && <div className="api-error">{allocationError}</div>}
+      {allocationCommitSummary && <OrderWorkflowSummary summary={allocationCommitSummary} type="Allocation" quantityField="total_quantity_allocated" />}
+      {orderCompletionSummary && <div className="success-strip">{orderCompletionSummary.message}</div>}
+      {bulkActionMessage && <div className="success-strip">{bulkActionMessage}</div>}
+      {bulkActionError && <div className="api-error">{bulkActionError}</div>}
+
+      <OrdersPager count={filteredOpenOrders.length} page={ordersPageNumber} pageCount={ordersPageCount} pageSize={ordersPageSize} onPageChange={setOrdersPageNumber} onPageSizeChange={(size) => { setOrdersPageSize(size); setOrdersPageNumber(1); }} />
+      <BulkActionsBar
+        actions={[
+          { label: 'Mark as completed', icon: <CheckCircle2 size={17} />, onSelect: () => runOpenOrdersBulkAction('complete') },
+          { label: 'Print', icon: <Printer size={17} />, onSelect: () => runOpenOrdersBulkAction('print') },
+          { label: 'Unpick all', icon: <RotateCcw size={17} />, onSelect: () => runOpenOrdersBulkAction('unpick'), danger: true },
+        ]}
+        busy={bulkActionLoading}
+        label="Filters"
+        selectedCount={selectedOpenOrderIds.length}
+      />
+      <OpenOrdersTable
+        orders={pagedOpenOrders}
+        selectable
+        selectedIds={selectedOpenOrderSet}
+        onSelect={viewOpenOrder}
+        onToggleAll={toggleAllOpenOrders}
+        onToggleSelection={toggleOpenOrderSelection}
+        renderActions={(order) => (
+          <OrderActionsMenu
+            order={order}
+            disabled={loading}
+            onView={() => viewOpenOrder(order.id)}
+            onEdit={() => editOpenOrder(order.id)}
+            onPrint={() => printOpenOrder(order.id)}
+            onComplete={() => onCompleteOrder(order.id, order.pick_status)}
+            onUnpick={() => unpickOpenOrder(order)}
+            onTimeline={() => { window.location.hash = '#/orders/history'; }}
+          />
+        )}
+      />
+      <OrdersPager count={filteredOpenOrders.length} page={ordersPageNumber} pageCount={ordersPageCount} pageSize={ordersPageSize} onPageChange={setOrdersPageNumber} onPageSizeChange={(size) => { setOrdersPageSize(size); setOrdersPageNumber(1); }} />
+      {orderDialogOpen && <OpenOrderDetailPanel order={detail} onClose={() => { setOrderDialogOpen(false); onLoadOpenOrderDetail(null); }} onPrint={() => window.print()} />}
+      <BulkPrintSheet orders={bulkPrintOrders} />
+    </section>
+  );
+}
+
+function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSummary, onLoadOrders, onLoadOrder, onPreviewPick, onCommitPick }) {
+  const [search, setSearch] = useState('');
+  const [pickedQuantities, setPickedQuantities] = useState({});
+  const [selectedOrderIds, setSelectedOrderIds] = useState([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState('');
+  const [bulkError, setBulkError] = useState('');
+  const selectedOrderSet = useMemo(() => new Set(selectedOrderIds), [selectedOrderIds]);
+  const previewOrder = (preview?.preview_orders || []).find((candidate) => candidate.order_id === order?.id);
+  const lines = previewOrder?.lines || [];
+  const isDetailOpen = Boolean(order && previewOrder);
+  const quantityLines = lines
+    .map((line) => ({ order_line_id: line.order_line_id, quantity_to_pick: Number(pickedQuantities[line.order_line_id] || 0) }))
+    .filter((line) => line.quantity_to_pick > 0);
+  const totalPickedNow = quantityLines.reduce((total, line) => total + line.quantity_to_pick, 0);
+
+  useEffect(() => {
+    setPickedQuantities(Object.fromEntries(lines.map((line) => [line.order_line_id, 0])));
+  }, [previewOrder?.order_id, preview?.total_quantity_to_pick]);
+
+  useEffect(() => {
+    const visibleIds = new Set(orders.map((candidate) => candidate.id));
+    setSelectedOrderIds((current) => current.filter((orderId) => visibleIds.has(orderId)));
+  }, [orders]);
+
+  async function openOrder(orderId) {
+    setPickedQuantities({});
+    const loaded = await onLoadOrder(orderId);
+    if (loaded) {
+      await onPreviewPick(orderId);
+    }
+  }
+
+  function updatePickedQuantity(line, rawValue) {
+    const parsed = Number(rawValue);
+    const maxQuantity = Number(line.recommended_pick_quantity || 0);
+    const nextValue = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0), maxQuantity) : 0;
+    setPickedQuantities((current) => ({ ...current, [line.order_line_id]: nextValue }));
+  }
+
+  function markAllPicked() {
+    setPickedQuantities(Object.fromEntries(lines.map((line) => [line.order_line_id, Number(line.recommended_pick_quantity || 0)])));
+  }
+
+  async function confirmPick() {
+    if (!order || quantityLines.length === 0) return;
+    const result = await onCommitPick(order.id, quantityLines);
+    if (result?.status === 'posted') {
+      onLoadOrder(null);
+      await onLoadOrders({ search });
+    }
+  }
+
+  function toggleOrderSelection(orderId, checked) {
+    setSelectedOrderIds((current) => checked ? Array.from(new Set([...current, orderId])) : current.filter((id) => id !== orderId));
+  }
+
+  function toggleAllOrders(checked) {
+    setSelectedOrderIds(checked ? orders.map((candidate) => candidate.id) : []);
+  }
+
+  async function runPickBulkAction(action) {
+    const eligibleIds = orders
+      .filter((candidate) => selectedOrderSet.has(candidate.id) && (action === 'pick' ? candidate.can_pick : Number(candidate.total_quantity_picked || 0) > 0))
+      .map((candidate) => candidate.id);
+    if (!eligibleIds.length) return;
+    const confirmation = action === 'pick'
+      ? `Pick all allocated quantities for ${eligibleIds.length} selected order(s)? This immediately reduces local stock.`
+      : `Unpick ${eligibleIds.length} selected order(s)? Stock and allocation will be restored at the original pick locations.`;
+    if (!window.confirm(confirmation)) return;
+    setBulkBusy(true);
+    setBulkMessage('');
+    setBulkError('');
+    try {
+      const result = action === 'pick'
+        ? await postJson('/api/picks/commit', { order_ids: eligibleIds, lines: [], pick_strategy: 'allocated_first', allow_partial: false, created_by: 'system', notes: 'Bulk Pick Selected' })
+        : await postJson('/api/orders/bulk/unpick', { order_ids: eligibleIds, created_by: 'system', reason: 'Bulk Unpick Selected from Pick Orders.' });
+      if (!['posted', 'completed', 'partial'].includes(result.status)) throw new Error((result.errors || []).join(' ') || 'The bulk action was rejected.');
+      const succeeded = result.succeeded_count ?? result.total_orders ?? eligibleIds.length;
+      setBulkMessage(`${succeeded} selected order(s) ${action === 'pick' ? 'picked' : 'unpicked'}.`);
+      if (result.errors?.length) setBulkError(result.errors.join(' '));
+      setSelectedOrderIds([]);
+      onLoadOrder(null);
+      await onLoadOrders({ search });
+    } catch (bulkActionError) {
+      setBulkError(bulkActionError.message || 'Unable to complete the bulk pick action.');
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  if (isDetailOpen) {
     return (
-      <section className="content-panel orders-page">
-        <div className="wide-panel">
-          <OrdersWorkflowHeader title="Fulfillment" description="Complete picked local orders and reduce local Pongo OS inventory." loading={loading || fulfillmentLoading} onRefresh={() => onLoadOpenOrders(filters)} onExport={() => exportOpenOrdersCsv(filters)} />
-          {summaryCards}
-          {filtersPanel}
-          <div className="csv-note">Fulfillment reduces local Pongo OS inventory only. It does not update WooCommerce order status or WooCommerce stock.</div>
-          <div className="context-action-panel">
-            <div>
-              <span>Fulfillment workflow</span>
-              <strong>{selectedLabel}</strong>
+      <section className="orders-page pick-workspace pick-page-inline">
+        <div className="pick-detail-card">
+          <div className="pick-detail-toolbar">
+            <button className="muted-button" onClick={() => onLoadOrder(null)} type="button">
+              <ArrowLeft size={17} />
+              Back to pick list
+            </button>
+            <div className="pick-detail-heading">
+              <span>Order picking</span>
+              <h2>Order {order.woo_order_number || order.woo_order_id}</h2>
             </div>
-            <div className="button-row">
-              <button className="primary-button" onClick={() => onPreviewFulfillment(selectedOrderId)} disabled={!selectedOrderId || fulfillmentLoading} type="button">
-                <PackagePlus size={17} />
-                Preview Fulfillment
-              </button>
-              <button className="action-button" onClick={() => onCommitFulfillment(selectedOrderId)} disabled={!selectedOrderId || fulfillmentLoading || !fulfillmentPreview} type="button">
-                <CheckCircle2 size={17} />
-                Commit Fulfillment
-              </button>
+            <div className="pick-progress-pill" aria-live="polite">
+              <strong>{formatNumber(totalPickedNow)}</strong>
+              <span>picked now</span>
             </div>
           </div>
-          {openStatus}
-          {fulfillmentLoading && <div className="loading-strip">Working on fulfillment...</div>}
-          {fulfillmentError && <div className="api-error">{fulfillmentError}</div>}
-          {fulfillmentCommitSummary && <OrderWorkflowSummary summary={fulfillmentCommitSummary} type="Fulfillment" quantityField="total_quantity_fulfilled" />}
-        </div>
-        {fulfillmentPreview && <FulfillmentPreviewPanel preview={fulfillmentPreview} />}
-        <div className="orders-grid">
-          <OpenOrdersTable orders={orders} selectedOrderId={detail?.id} onSelect={onLoadOpenOrderDetail} renderActions={(order) => (
-            <div className="button-row compact table-button-row">
-              <button className="muted-button" onClick={() => onLoadOpenOrderDetail(order.id)} type="button">View</button>
-              <button className="primary-button" onClick={() => { onLoadOpenOrderDetail(order.id); onPreviewFulfillment(order.id); }} disabled={fulfillmentLoading} type="button">Preview</button>
-            </div>
-          )} />
-          <OpenOrderDetailPanel order={detail} />
+
+          <div className="pick-order-facts">
+            <div><span>Customer</span><strong>{order.customer_name || '—'}</strong></div>
+            <div><span>City</span><strong>{order.shipping_city || '—'}</strong></div>
+            <div><span>State</span><strong>{order.shipping_state || '—'}</strong></div>
+            <div><span>Shipping via</span><strong>{order.shipping_via || '—'}</strong></div>
+            <div><span>Order total</span><strong>{formatCurrency(order.total)}</strong></div>
+          </div>
+
+          <div className="pick-safety-note">
+            Enter the quantity physically picked for each product. Confirming reduces local In Stock and Allocated quantities and writes the stock-movement audit trail.
+          </div>
+          {loading && <div className="loading-strip">Updating pick...</div>}
+          {error && <div className="api-error">{error}</div>}
+          {commitSummary?.pick_id && <div className="success-strip">Pick {commitSummary.pick_number} posted: {formatNumber(commitSummary.total_quantity_picked)} unit(s) picked.</div>}
+
+          <div className="pick-lines-table-wrap">
+            <table className="data-table pick-lines-table">
+              <caption>{lines.length} product line(s) in this order</caption>
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>Description</th>
+                  <th>Location</th>
+                  <th>Ordered</th>
+                  <th>Allocated</th>
+                  <th>Already picked</th>
+                  <th>Picked</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((line) => (
+                  <tr key={line.order_line_id}>
+                    <td className="mono">{line.sku || '—'}</td>
+                    <td className="pick-product-description">{line.description || 'Unnamed product'}</td>
+                    <td><strong>{line.inventory_location || 'No location'}</strong><span className="table-subline">{line.warehouse || ''}</span></td>
+                    <td>{formatNumber(line.quantity_ordered)}</td>
+                    <td>{formatNumber(line.quantity_allocated)}</td>
+                    <td>{formatNumber(line.quantity_previously_picked)}</td>
+                    <td>
+                      <label className="pick-quantity-field">
+                        <span className="sr-only">Picked quantity for {line.description || line.sku}</span>
+                        <input
+                          aria-label={`Picked quantity for ${line.description || line.sku}`}
+                          max={line.recommended_pick_quantity}
+                          min="0"
+                          onChange={(event) => updatePickedQuantity(line, event.target.value)}
+                          step="1"
+                          type="number"
+                          value={pickedQuantities[line.order_line_id] ?? 0}
+                        />
+                        <small>max {formatNumber(line.recommended_pick_quantity)}</small>
+                      </label>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="pick-confirm-bar">
+            <button className="muted-button" disabled={loading || lines.length === 0} onClick={markAllPicked} type="button">
+              <ClipboardCheck size={17} />
+              Mark all allocated
+            </button>
+            <span>{formatNumber(totalPickedNow)} unit(s) ready to confirm</span>
+            <button className="primary-button" disabled={loading || quantityLines.length === 0} onClick={confirmPick} type="button">
+              <CheckCircle2 size={17} />
+              Confirm Pick
+            </button>
+          </div>
         </div>
       </section>
     );
   }
 
   return (
-    <section className="content-panel orders-page">
-      <div className="wide-panel">
-        <OrdersWorkflowHeader title="Open Orders" description="Read-only local order queue imported from WooCommerce processing and on-hold orders." loading={loading} onRefresh={() => onLoadOpenOrders(filters)} onExport={() => exportOpenOrdersCsv(filters)} />
-        {summaryCards}
-        {filtersPanel}
-        <div className="csv-note">Orders are local snapshots imported from WooCommerce. This page does not update WooCommerce.</div>
-        {openStatus}
-        {allocationError && <div className="api-error">{allocationError}</div>}
-        {allocationCommitSummary && <OrderWorkflowSummary summary={allocationCommitSummary} type="Allocation" quantityField="total_quantity_allocated" />}
-      </div>
-      <div className="orders-grid">
-        <OpenOrdersTable orders={orders} selectedOrderId={detail?.id} onSelect={onLoadOpenOrderDetail} renderActions={(order) => (
-          <div className="button-row compact table-button-row">
-            <button className="muted-button" onClick={() => onLoadOpenOrderDetail(order.id)} type="button">View Details</button>
-            <button className="primary-button" onClick={() => { onLoadOpenOrderDetail(order.id); onPreviewAllocation(order.id); }} disabled={allocationLoading} type="button">Preview Allocation</button>
-            <button className="action-button" onClick={() => onCommitAllocation(order.id)} disabled={allocationLoading} type="button">Allocate</button>
-          </div>
-        )} />
-        <OpenOrderDetailPanel order={detail} />
+    <section className="orders-page pick-workspace pick-page-inline">
+      <div className="pick-list-panel">
+        <div className="pick-list-search">
+          <label className="field">
+            <span>Order number or customer</span>
+            <div className="input-with-icon">
+              <Search size={18} />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadOrders({ search }))} placeholder="Search pick orders" type="search" />
+            </div>
+          </label>
+          <button className="primary-button" disabled={loading} onClick={() => onLoadOrders({ search })} type="button">Search</button>
+        </div>
+        <BulkActionsBar
+          actions={[
+            {
+              label: 'Pick Selected',
+              icon: <ClipboardCheck size={17} />,
+              disabled: !orders.some((candidate) => selectedOrderSet.has(candidate.id) && candidate.can_pick),
+              onSelect: () => runPickBulkAction('pick'),
+            },
+            {
+              label: 'Unpick Selected',
+              icon: <RotateCcw size={17} />,
+              disabled: !orders.some((candidate) => selectedOrderSet.has(candidate.id) && Number(candidate.total_quantity_picked || 0) > 0),
+              onSelect: () => runPickBulkAction('unpick'),
+              danger: true,
+            },
+          ]}
+          busy={bulkBusy}
+          label="Pick Orders bulk actions"
+          selectedCount={selectedOrderIds.length}
+        />
+        {loading && <div className="loading-strip">Loading pick orders...</div>}
+        {error && <div className="api-error">{error}</div>}
+        {bulkMessage && <div className="success-strip">{bulkMessage}</div>}
+        {bulkError && <div className="api-error">{bulkError}</div>}
+        <div className="pick-orders-table-wrap">
+          <table className="data-table pick-orders-table">
+            <caption>{orders.length} order(s) ready to pick</caption>
+            <thead>
+              <tr>
+                <th><input aria-label="Select all pick orders" checked={orders.length > 0 && orders.every((candidate) => selectedOrderSet.has(candidate.id))} onChange={(event) => toggleAllOrders(event.target.checked)} type="checkbox" /></th>
+                <th><span className="sr-only">Open</span></th>
+                <th>Order number</th>
+                <th>Placed on</th>
+                <th>Customer</th>
+                <th>City</th>
+                <th>Shipping via</th>
+                <th>Order total</th>
+                <th>Ordered</th>
+                <th>Picked</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map((pickOrder) => (
+                <tr key={pickOrder.id}>
+                  <td className="bulk-select-cell"><input aria-label={`Select order ${pickOrder.woo_order_number || pickOrder.woo_order_id}`} checked={selectedOrderSet.has(pickOrder.id)} onChange={(event) => toggleOrderSelection(pickOrder.id, event.target.checked)} type="checkbox" /></td>
+                  <td>
+                    <button className="pick-open-button" aria-label={`Open order ${pickOrder.woo_order_number || pickOrder.woo_order_id} for picking`} disabled={loading} onClick={() => openOrder(pickOrder.id)} type="button">
+                      <ChevronRight size={20} />
+                    </button>
+                  </td>
+                  <td className="mono pick-order-number">{pickOrder.woo_order_number || pickOrder.woo_order_id}</td>
+                  <td>{formatDateTime(pickOrder.date_created)}</td>
+                  <td>{pickOrder.customer_name || '—'}</td>
+                  <td>{pickOrder.shipping_city || '—'}</td>
+                  <td>{pickOrder.shipping_via || '—'}</td>
+                  <td>{formatCurrency(pickOrder.total)}</td>
+                  <td>{formatNumber(pickOrder.total_quantity_ordered)}</td>
+                  <td>{formatNumber(pickOrder.total_quantity_picked)}</td>
+                </tr>
+              ))}
+              {orders.length === 0 && <tr><td colSpan={10}><div className="empty-table-row">No orders are ready to pick.</div></td></tr>}
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
   );
+}
+
+function AllocationExceptionsPage({ onRefreshOperationalOrders }) {
+  const emptyData = { lines: [], total_orders: 0, total_lines: 0, total_quantity_unallocated: 0, lines_with_available_stock: 0, lines_out_of_stock: 0 };
+  const emptyFilters = { search: '', warehouse: '', orderedFrom: '', orderedTo: '', includeFullyAllocated: false };
+  const [data, setData] = useState(emptyData);
+  const [filters, setFilters] = useState(emptyFilters);
+  const [tab, setTab] = useState('items');
+  const [focusedItemKey, setFocusedItemKey] = useState('');
+  const [adjustingLine, setAdjustingLine] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    loadExceptions(emptyFilters);
+  }, []);
+
+  async function loadExceptions(nextFilters = filters) {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/allocations/exceptions${plainFiltersToQueryString({
+        search: nextFilters.search,
+        warehouse: nextFilters.warehouse,
+        ordered_from: nextFilters.orderedFrom,
+        ordered_to: nextFilters.orderedTo,
+        include_fully_allocated: nextFilters.includeFullyAllocated || undefined,
+      })}`);
+      if (!response.ok) throw new Error(`Allocation exceptions API returned ${response.status}`);
+      setData({ ...emptyData, ...(await response.json()) });
+    } catch (loadError) {
+      setError(loadError.message || 'Unable to load allocation exceptions.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runFifoAllocation() {
+    setLoading(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = await postJson('/api/allocations/auto/commit', {});
+      setMessage(`${formatNumber(result.total_quantity_allocated)} unit(s) reserved in first-come-first-served order. ${result.allocated_orders} order(s) became fully allocated.`);
+      await loadExceptions(filters);
+      await onRefreshOperationalOrders?.();
+    } catch (allocationRunError) {
+      setError(allocationRunError.message || 'Unable to run FIFO allocation.');
+      setLoading(false);
+    }
+  }
+
+  async function stockSaved(result) {
+    setAdjustingLine(null);
+    setMessage(`Stock updated${result?.adjustment_number ? ` with ${result.adjustment_number}` : ''}; FIFO allocation was retried automatically.`);
+    await loadExceptions(filters);
+    await onRefreshOperationalOrders?.();
+  }
+
+  function updateFilter(name, value) {
+    setFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function clearFilters() {
+    setFilters(emptyFilters);
+    setFocusedItemKey('');
+    loadExceptions(emptyFilters);
+  }
+
+  function showAffectedOrders(group) {
+    setFocusedItemKey(group.key);
+    setTab('orders');
+  }
+
+  const groupedItems = groupAllocationExceptionItems(data.lines || []);
+  const visibleOrderLines = focusedItemKey
+    ? (data.lines || []).filter((line) => allocationItemKey(line) === focusedItemKey)
+    : (data.lines || []);
+  const warehouses = [...new Set((data.lines || []).map((line) => line.warehouse).filter(Boolean))].sort();
+
+  return (
+    <div className="allocation-exceptions-workspace">
+      <div className="wide-panel allocation-exceptions-header">
+        <div className="panel-title">
+          <div>
+            <h2>Allocate Orders</h2>
+            <p>Available stock is reserved automatically for WooCommerce processing orders, oldest order first.</p>
+          </div>
+          <div className="button-row compact">
+            <button className="muted-button" onClick={() => loadExceptions(filters)} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
+            <button className="action-button" onClick={() => downloadAllocationExceptionsCsv(data.lines || [])} disabled={!data.lines?.length} type="button"><Download size={17} />Export Results</button>
+            <button className="primary-button" onClick={runFifoAllocation} disabled={loading} type="button"><CheckCircle2 size={17} />Run FIFO Allocation</button>
+          </div>
+        </div>
+
+        {data.total_orders > 0 && (
+          <div className="allocation-failure-alert" role="status">
+            <div className="allocation-failure-icon"><TriangleAlert size={22} /></div>
+            <div>
+              <strong>{data.total_orders} order(s) could not be fully auto-allocated</strong>
+              <span>Only the unresolved item quantities are listed below. Fully allocated orders move directly to Pick Orders.</span>
+            </div>
+            <button className="muted-button" onClick={() => { setFocusedItemKey(''); setTab('items'); }} type="button">Review shortages</button>
+          </div>
+        )}
+
+        <div className="summary-strip allocation-exception-summary">
+          <Metric label="Orders Waiting" value={data.total_orders || 0} />
+          <Metric label="Exception Lines" value={data.total_lines || 0} />
+          <Metric label="Units Unallocated" value={formatNumber(data.total_quantity_unallocated)} />
+          <Metric label="Stock Available" value={data.lines_with_available_stock || 0} />
+          <Metric label="Out of Stock" value={data.lines_out_of_stock || 0} />
+        </div>
+
+        <div className="allocation-view-tabs" role="tablist" aria-label="Allocation exception views">
+          <button className={tab === 'orders' ? 'active' : ''} onClick={() => { setFocusedItemKey(''); setTab('orders'); }} role="tab" aria-selected={tab === 'orders'} type="button">Orders <span>{data.total_orders || 0}</span></button>
+          <button className={tab === 'items' ? 'active' : ''} onClick={() => { setFocusedItemKey(''); setTab('items'); }} role="tab" aria-selected={tab === 'items'} type="button">Items <span>{groupedItems.length}</span></button>
+        </div>
+
+        <div className="filter-panel allocation-exception-filters">
+          <div className="filter-grid">
+            <label className="field"><span>Item, order, SKU or barcode</span><div className="input-with-icon"><Search size={18} /><input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => loadExceptions(filters))} placeholder="Scan or search" /></div></label>
+            <label className="field"><span>Ordered From</span><input type="date" value={filters.orderedFrom} onChange={(event) => updateFilter('orderedFrom', event.target.value)} /></label>
+            <label className="field"><span>Ordered To</span><input type="date" value={filters.orderedTo} onChange={(event) => updateFilter('orderedTo', event.target.value)} /></label>
+            <FilterSelect label="Ship From" value={filters.warehouse} options={warehouses} onChange={(value) => updateFilter('warehouse', value)} />
+          </div>
+          <div className="allocation-filter-footer">
+            <label className="check-field"><input checked={filters.includeFullyAllocated} onChange={(event) => updateFilter('includeFullyAllocated', event.target.checked)} type="checkbox" />Include 100% allocated items in list</label>
+            <div className="button-row"><button className="muted-button" onClick={clearFilters} type="button">Clear</button><button className="primary-button" onClick={() => loadExceptions(filters)} disabled={loading} type="button"><Filter size={17} />Filter</button></div>
+          </div>
+        </div>
+        {loading && <div className="loading-strip">Reconciling allocation exceptions...</div>}
+        {error && <div className="api-error">{error}</div>}
+        {message && <div className="success-strip">{message}</div>}
+      </div>
+
+      {tab === 'items' ? (
+        <AllocationExceptionItemsTable groups={groupedItems} loading={loading} onViewOrders={showAffectedOrders} onAdjustStock={setAdjustingLine} onAllocate={runFifoAllocation} />
+      ) : (
+        <AllocationExceptionOrdersTable lines={visibleOrderLines} focused={Boolean(focusedItemKey)} onClearFocus={() => setFocusedItemKey('')} onAdjustStock={setAdjustingLine} onAllocate={runFifoAllocation} />
+      )}
+      {adjustingLine && <AllocationStockModal line={adjustingLine} onClose={() => setAdjustingLine(null)} onSaved={stockSaved} />}
+    </div>
+  );
+}
+
+function AllocationExceptionItemsTable({ groups, loading, onViewOrders, onAdjustStock, onAllocate }) {
+  return (
+    <TableShell caption={`${groups.length} item exception(s)`} columns={['Actions', 'SKU / Barcode', 'Description', 'Affected Orders', 'Ordered', 'Allocated', 'Unallocated', 'Picked', 'Available', 'Reason']} className="allocation-exception-table" showActionBand={false}>
+      {groups.map((group) => (
+        <tr key={group.key}>
+          <td><AllocationExceptionActions label={group.sku || group.barcode || group.description} canAdjust={Boolean(group.item_id)} canAllocate={group.quantity_available > 0} disabled={loading} onView={() => onViewOrders(group)} onAdjust={() => onAdjustStock(group.lines[0])} onAllocate={onAllocate} /></td>
+          <td><strong className="mono">{group.sku || 'Unmatched'}</strong><span className="table-subline mono">{group.barcode || ''}</span></td>
+          <td className="description-cell">{group.description}</td>
+          <td>{group.affected_order_count}</td>
+          <td>{formatNumber(group.quantity_ordered)}</td>
+          <td>{formatNumber(group.quantity_allocated)}</td>
+          <td><strong className="allocation-shortage-number">{formatNumber(group.quantity_unallocated)}</strong></td>
+          <td>{formatNumber(group.quantity_picked)}</td>
+          <td>{formatNumber(group.quantity_available)}</td>
+          <td>{StatusText(group.reason_codes[0])}</td>
+        </tr>
+      ))}
+      {!groups.length && <tr><td colSpan={10}><div className="empty-table-row">All processing orders are fully allocated. Nothing needs attention.</div></td></tr>}
+    </TableShell>
+  );
+}
+
+function AllocationExceptionOrdersTable({ lines, focused, onClearFocus, onAdjustStock, onAllocate }) {
+  return (
+    <div className="allocation-order-lines-panel">
+      {focused && <div className="focused-allocation-filter"><span>Showing affected orders for one item.</span><button className="muted-button" onClick={onClearFocus} type="button">Show all orders</button></div>}
+      <TableShell caption={`${lines.length} unresolved order line(s)`} columns={['Actions', 'Order', 'Placed On', 'Customer', 'SKU / Barcode', 'Description', 'Ordered', 'Allocated', 'Unallocated', 'Picked', 'Available', 'Reason']} className="allocation-exception-table allocation-orders-table" showActionBand={false}>
+        {lines.map((line) => (
+          <tr key={line.order_line_id}>
+            <td><AllocationExceptionActions label={line.woo_order_number} canAdjust={Boolean(line.item_id)} canAllocate={line.quantity_available > 0} onView={() => { window.location.hash = '#/orders/open'; }} onAdjust={() => onAdjustStock(line)} onAllocate={onAllocate} /></td>
+            <td className="mono">{line.woo_order_number || line.woo_order_id}</td>
+            <td>{formatDateTime(line.ordered_at)}</td>
+            <td>{line.customer_name}</td>
+            <td><strong className="mono">{line.sku || 'Unmatched'}</strong><span className="table-subline mono">{line.barcode || ''}</span></td>
+            <td className="description-cell">{line.description}</td>
+            <td>{formatNumber(line.quantity_ordered)}</td>
+            <td>{formatNumber(line.quantity_allocated)}</td>
+            <td><strong className="allocation-shortage-number">{formatNumber(line.quantity_unallocated)}</strong></td>
+            <td>{formatNumber(line.quantity_picked)}</td>
+            <td>{formatNumber(line.quantity_available)}</td>
+            <td>{StatusText(line.exception_reason)}</td>
+          </tr>
+        ))}
+        {!lines.length && <tr><td colSpan={12}><div className="empty-table-row">No processing orders have unresolved allocation lines.</div></td></tr>}
+      </TableShell>
+    </div>
+  );
+}
+
+function AllocationExceptionActions({ label, canAdjust, canAllocate, disabled = false, onView, onAdjust, onAllocate }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (event) => { if (!menuRef.current?.contains(event.target)) setOpen(false); };
+    const escape = (event) => { if (event.key === 'Escape') setOpen(false); };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', escape); };
+  }, [open]);
+  const actions = [
+    { label: 'View affected orders', icon: Search, enabled: true, run: onView },
+    { label: 'Update stock levels', icon: SlidersHorizontal, enabled: canAdjust, run: onAdjust },
+    { label: 'Allocate available stock', icon: CheckCircle2, enabled: canAllocate, run: onAllocate },
+  ];
+  return (
+    <div className="order-actions-menu" ref={menuRef}>
+      <button className="order-actions-trigger" onClick={() => setOpen((value) => !value)} aria-label={`Open allocation actions for ${label || 'exception'}`} aria-haspopup="menu" aria-expanded={open} disabled={disabled} type="button"><EllipsisVertical size={20} /></button>
+      {open && <div className="order-actions-popover allocation-actions-popover" role="menu">{actions.map((action) => { const Icon = action.icon; return <button key={action.label} disabled={!action.enabled} onClick={() => { setOpen(false); action.run?.(); }} role="menuitem" type="button"><Icon size={16} />{action.label}</button>; })}</div>}
+    </div>
+  );
+}
+
+function AllocationStockModal({ line, onClose, onSaved }) {
+  const [locations, setLocations] = useState([]);
+  const [locationId, setLocationId] = useState('');
+  const [warehouse, setWarehouse] = useState(line.warehouse || 'Main Warehouse');
+  const [locationName, setLocationName] = useState(line.inventory_location || 'Receiving');
+  const [newQuantity, setNewQuantity] = useState('');
+  const [reason, setReason] = useState('Stock found during allocation review');
+  const [notes, setNotes] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${API_BASE_URL}/api/inventory/locations?item_id=${line.item_id}&limit=100`)
+      .then((response) => { if (!response.ok) throw new Error('Unable to load item locations.'); return response.json(); })
+      .then((body) => {
+        if (!active) return;
+        const rows = body.rows || [];
+        setLocations(rows);
+        if (rows[0]) {
+          setLocationId(String(rows[0].id));
+          setNewQuantity(String(rows[0].in_stock ?? 0));
+        } else {
+          setNewQuantity('0');
+        }
+      })
+      .catch((loadError) => { if (active) setError(loadError.message); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [line.item_id]);
+
+  const selected = locations.find((row) => String(row.id) === String(locationId));
+  const currentQuantity = toNumber(selected?.in_stock);
+  const quantityChange = toNumber(newQuantity) - currentQuantity;
+
+  function selectLocation(value) {
+    setLocationId(value);
+    const row = locations.find((candidate) => String(candidate.id) === String(value));
+    if (row) setNewQuantity(String(row.in_stock ?? 0));
+  }
+
+  async function commit() {
+    if (!reason.trim()) {
+      setError('Reason is required.');
+      return;
+    }
+    if (toNumber(newQuantity) < 0) {
+      setError('New stock cannot be negative.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      let result;
+      if (selected) {
+        result = await postJson('/api/inventory/adjustments', {
+          adjustment_type: quantityChange < 0 ? 'manual_decrease' : 'manual_increase',
+          reason,
+          notes: notes || null,
+          created_by: 'allocation-review',
+          lines: [{ item_id: line.item_id, inventory_item_location_id: selected.id, quantity_change: quantityChange, notes: notes || null }],
+        });
+      } else {
+        result = await postJson('/api/scanner/adjustments/commit', {
+          scan_input: line.sku || line.barcode,
+          warehouse,
+          inventory_location: locationName,
+          new_quantity: toNumber(newQuantity),
+          adjustment_type: 'manual_increase',
+          reason,
+          notes: notes || null,
+          created_by: 'allocation-review',
+        });
+      }
+      await onSaved(result);
+    } catch (commitError) {
+      setError(commitError.message || 'Unable to update stock.');
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="import-modal allocation-stock-modal" role="dialog" aria-modal="true" aria-label="Update stock levels">
+        <div className="modal-header"><div><h2>Update Stock Levels</h2><p>{line.sku || line.barcode} · {line.description}</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close stock adjustment" type="button"><X size={20} /></button></div>
+        <div className="allocation-stock-warning"><TriangleAlert size={18} /><span>This creates an audited stock adjustment. Enter only stock that is physically present.</span></div>
+        <div className="form-grid">
+          {locations.length ? <label className="field wide-field"><span>Location</span><select value={locationId} onChange={(event) => selectLocation(event.target.value)}>{locations.map((row) => <option key={row.id} value={row.id}>{row.warehouse} / {row.inventory_location} · {formatNumber(row.in_stock)} in stock</option>)}</select></label> : <><label className="field"><span>Warehouse</span><input value={warehouse} onChange={(event) => setWarehouse(event.target.value)} /></label><label className="field"><span>New Stock Location</span><input value={locationName} onChange={(event) => setLocationName(event.target.value)} /></label></>}
+          <label className="field"><span>Current Stock</span><input value={formatNumber(currentQuantity)} disabled /></label>
+          <label className="field"><span>New Stock Quantity</span><input type="number" min="0" step="0.001" value={newQuantity} onChange={(event) => setNewQuantity(event.target.value)} /></label>
+          <label className="field wide-field"><span>Reason</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+          <label className="field wide-field"><span>Note</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} /></label>
+        </div>
+        {loading && <div className="loading-strip">Loading stock levels...</div>}
+        {error && <div className="api-error">{error}</div>}
+        <div className="detail-actions"><button className="muted-button" onClick={onClose} type="button">Cancel</button><button className="primary-button" onClick={commit} disabled={loading || !newQuantity} type="button"><Save size={16} />Update and Auto-Allocate</button></div>
+      </section>
+    </div>
+  );
+}
+
+function allocationItemKey(line) {
+  return line.item_id ? `item:${line.item_id}` : `unmatched:${line.order_line_id}`;
+}
+
+function groupAllocationExceptionItems(lines) {
+  const groups = new Map();
+  lines.forEach((line) => {
+    const key = allocationItemKey(line);
+    const group = groups.get(key) || { key, item_id: line.item_id, sku: line.sku, barcode: line.barcode, description: line.description, quantity_ordered: 0, quantity_allocated: 0, quantity_unallocated: 0, quantity_picked: 0, quantity_available: 0, affectedOrders: new Set(), reason_codes: [], lines: [] };
+    group.quantity_ordered += toNumber(line.quantity_ordered);
+    group.quantity_allocated += toNumber(line.quantity_allocated);
+    group.quantity_unallocated += toNumber(line.quantity_unallocated);
+    group.quantity_picked += toNumber(line.quantity_picked);
+    group.quantity_available = Math.max(group.quantity_available, toNumber(line.quantity_available));
+    group.affectedOrders.add(line.order_id);
+    if (!group.reason_codes.includes(line.exception_reason)) group.reason_codes.push(line.exception_reason);
+    group.lines.push(line);
+    groups.set(key, group);
+  });
+  return [...groups.values()].map((group) => ({ ...group, affected_order_count: group.affectedOrders.size }));
 }
 
 function OrdersWorkflowHeader({ title, description, loading, onRefresh, onExport }) {
@@ -5795,153 +7919,281 @@ function OrderWorkflowSummary({ summary, type, quantityField }) {
   );
 }
 
-function OpenOrdersTable({ orders, selectedOrderId, onSelect, renderActions }) {
-  const columns = ['Order', 'Local Status', 'Woo Status', 'Customer', 'Email', 'Total', 'Availability', 'Matched', 'Lines', 'Created', 'Last Sync'];
-  if (renderActions) {
-    columns.push('Actions');
-  }
+function BulkActionsBar({ selectedCount, actions, busy = false, label = 'Bulk actions' }) {
+  const [open, setOpen] = useState(false);
   return (
-    <TableShell caption={`${orders.length} open order(s)`} columns={columns}>
+    <div className="bulk-actions-bar">
+      <div>
+        <strong>{label}</strong>
+        <span>{selectedCount ? `${selectedCount} order${selectedCount === 1 ? '' : 's'} selected` : 'Select one or more orders'}</span>
+      </div>
+      <div className="bulk-actions-menu">
+        <button aria-expanded={open} className="bulk-actions-trigger" disabled={busy} onClick={() => setOpen((current) => !current)} type="button">
+          Actions
+          <ChevronDown size={18} />
+        </button>
+        {open && (
+          <div className="bulk-actions-popover" role="menu">
+            {actions.map((action) => (
+              <button
+                className={action.danger ? 'danger-action' : ''}
+                disabled={busy || selectedCount === 0 || action.disabled}
+                key={action.label}
+                onClick={() => {
+                  setOpen(false);
+                  action.onSelect();
+                }}
+                role="menuitem"
+                type="button"
+              >
+                {action.icon}
+                <span>{action.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BulkPrintSheet({ orders }) {
+  if (!orders.length) return null;
+  return (
+    <section className="bulk-print-sheet" aria-label="Selected orders print sheet">
+      <h1>Pongo Inventory OS — Selected Orders</h1>
       {orders.map((order) => (
-        <tr key={order.id} className={selectedOrderId === order.id ? 'selected-row' : ''} onClick={() => onSelect(order.id)}>
-          <td className="mono">{order.woo_order_number || order.woo_order_id}</td>
-          <td>{StatusText(order.local_status)}</td>
-          <td>{StatusText(order.woo_status)}</td>
-          <td>{order.customer_name}</td>
-          <td>{order.customer_email}</td>
-          <td>{formatCurrency(order.total)}</td>
-          <td>{StatusText(order.availability_status)}</td>
-          <td>{StatusText(order.matched_status)}</td>
-          <td>{order.line_count}</td>
-          <td>{formatDateTime(order.date_created)}</td>
-          <td>{formatDateTime(order.last_synced_at)}</td>
-          {renderActions && (
-            <td onClick={(event) => event.stopPropagation()}>
-              {renderActions(order)}
-            </td>
-          )}
-        </tr>
+        <article key={order.id}>
+          <header>
+            <div><span>Order</span><strong>#{order.woo_order_number || order.woo_order_id}</strong></div>
+            <div><span>Customer</span><strong>{order.customer_name || '—'}</strong></div>
+            <div><span>Placed</span><strong>{formatDateTime(order.date_created)}</strong></div>
+            <div><span>Total</span><strong>{formatCurrency(order.total)}</strong></div>
+          </header>
+          <p>{formatAddressSummary(order.shipping_summary)}</p>
+          <table>
+            <thead><tr><th>SKU</th><th>Product</th><th>Ordered</th><th>Allocated</th><th>Picked</th></tr></thead>
+            <tbody>
+              {(order.lines || []).map((line) => (
+                <tr key={line.id}><td>{line.sku}</td><td>{line.name}</td><td>{formatNumber(line.quantity_ordered)}</td><td>{formatNumber(line.quantity_allocated)}</td><td>{formatNumber(line.quantity_picked)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </article>
       ))}
-      {orders.length === 0 && (
-        <tr>
-          <td colSpan={columns.length}>
-            <div className="empty-table-row">No local open orders match the current filters.</div>
-          </td>
-        </tr>
-      )}
-    </TableShell>
+    </section>
   );
 }
 
-function OpenOrderDetailPanel({ order }) {
-  if (!order) {
-    return (
-      <aside className="order-detail-panel">
-        <div className="empty-state">
-          <h2>No order selected</h2>
-          <p>Preview or commit WooCommerce order sync from Settings, then select an open order here.</p>
-        </div>
-      </aside>
-    );
-  }
+function OrdersPager({ count, page, pageCount, pageSize, onPageChange, onPageSizeChange }) {
+  const first = count === 0 ? 0 : ((page - 1) * pageSize) + 1;
+  const last = Math.min(page * pageSize, count);
   return (
-    <aside className="order-detail-panel">
-      <div className="panel-title compact-title">
-        <div>
-          <h2>Order {order.woo_order_number || order.woo_order_id}</h2>
-          <p>{order.customer_name || 'Customer'} · {formatCurrency(order.total)}</p>
-        </div>
+    <div className="zen-orders-pager">
+      <span>Showing records {first}-{last} out of {count}</span>
+      <div>
+        <label>
+          <span className="sr-only">Results per page</span>
+          <select aria-label="Results per page" onChange={(event) => onPageSizeChange(Number(event.target.value))} value={pageSize}>
+            {[20, 50, 100].map((size) => <option key={size} value={size}>{size} Results</option>)}
+          </select>
+        </label>
+        <button aria-label="Previous orders page" disabled={page <= 1} onClick={() => onPageChange(page - 1)} type="button"><ChevronLeft size={20} /></button>
+        <span>{page} / {pageCount}</span>
+        <button aria-label="Next orders page" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)} type="button"><ChevronRight size={20} /></button>
       </div>
-      <div className="detail-kv-grid">
-        <Metric label="Local Status" value={order.local_status || ''} />
-        <Metric label="Woo Status" value={order.woo_status || ''} />
-        <Metric label="Availability" value={order.availability_status || ''} />
-        <Metric label="Matched" value={order.matched_status || ''} />
-        <Metric label="Lines" value={order.line_count || 0} />
-      </div>
-      <div className="detail-address">
-        <strong>{order.customer_email || 'No email'}</strong>
-        <span>{order.customer_phone || 'No phone'}</span>
-        <span>{formatAddressSummary(order.shipping_summary)}</span>
-      </div>
-      <TableShell caption={`${order.lines?.length || 0} line(s)`} columns={['SKU', 'Barcode', 'Name', 'Ordered', 'Allocated', 'Picked', 'Fulfilled', 'Remaining To Pick', 'Remaining To Fulfill', 'Remaining To Allocate', 'Match', 'Availability', 'Pick Status', 'Fulfillment Status', 'Short', 'Local Sellable', 'Woo Product', 'Woo Variation']}>
-        {(order.lines || []).map((line) => (
-          <tr key={line.id}>
-            <td className="mono">{line.sku}</td>
-            <td className="mono">{line.barcode}</td>
-            <td className="description-cell">{line.name}</td>
-            <td>{formatNumber(line.quantity_ordered)}</td>
-            <td>{formatNumber(line.quantity_allocated)}</td>
-            <td>{formatNumber(line.quantity_picked)}</td>
-            <td>{formatNumber(line.quantity_fulfilled)}</td>
-            <td>{formatNumber(line.remaining_to_pick)}</td>
-            <td>{formatNumber(line.remaining_to_fulfill)}</td>
-            <td>{formatNumber(line.remaining_to_allocate)}</td>
-            <td>{StatusText(line.matched_status)}</td>
-            <td>{StatusText(line.availability_status)}</td>
-            <td>{StatusText(line.picking_status)}</td>
-            <td>{StatusText(line.fulfillment_status)}</td>
-            <td>{formatNumber(line.shortage_quantity)}</td>
-            <td>{formatNumber(line.local_sellable ?? line.sellable_snapshot)}</td>
-            <td className="mono">{line.woo_product_id}</td>
-            <td className="mono">{line.woo_variation_id}</td>
-          </tr>
-        ))}
-      </TableShell>
-    </aside>
+    </div>
   );
 }
 
-function PickScannerPanel({ order, message, loading, onScan }) {
-  const [scan, setScan] = useState('');
-  const [quantity, setQuantity] = useState(1);
+function OpenOrdersTable({ orders, onSelect, renderActions, selectable = false, selectedIds = new Set(), onToggleSelection, onToggleAll }) {
+  const allSelected = orders.length > 0 && orders.every((order) => selectedIds.has(order.id));
+  return (
+    <table className="zen-orders-table">
+        <thead>
+          <tr>
+            <th><span className="sr-only">Order actions</span></th>
+            <th>Order Number</th>
+            <th>Placed On</th>
+            <th>Customer</th>
+            <th>City</th>
+            <th>Ship Via</th>
+            <th>Order Total</th>
+            <th>SKU</th>
+            <th>Ordered</th>
+            <th>Picked</th>
+            {selectable && <th><input aria-label="Select all open orders" checked={allSelected} onChange={(event) => onToggleAll?.(event.target.checked)} type="checkbox" /></th>}
+          </tr>
+        </thead>
+        <tbody>
+          {orders.map((order) => (
+            <tr key={order.id} onDoubleClick={() => onSelect(order.id)}>
+              <td className="order-actions-cell">{renderActions?.(order)}</td>
+              <td className="mono open-order-number" data-label="Order Number">{order.woo_order_number || order.woo_order_id}</td>
+              <td data-label="Placed On">{formatDateTime(order.date_created)}</td>
+              <td data-label="Customer">{order.customer_name || '—'}</td>
+              <td data-label="City">{order.shipping_city || '—'}</td>
+              <td data-label="Ship Via">{order.shipping_via || '—'}</td>
+              <td data-label="Order Total">{formatCurrency(order.total)}</td>
+              <td className="mono" data-label="SKU">{(order.skus || []).length > 1 ? '(Multiple)' : (order.skus || [])[0] || '—'}</td>
+              <td data-label="Ordered">{formatNumber(order.total_quantity_ordered)}</td>
+              <td data-label="Picked">{formatNumber(order.total_quantity_picked)}</td>
+              {selectable && (
+                <td className="bulk-select-cell">
+                  <input aria-label={`Select order ${order.woo_order_number || order.woo_order_id}`} checked={selectedIds.has(order.id)} onChange={(event) => onToggleSelection?.(order.id, event.target.checked)} type="checkbox" />
+                </td>
+              )}
+            </tr>
+          ))}
+          {orders.length === 0 && <tr className="zen-orders-empty-row"><td colSpan={selectable ? 11 : 10}><div className="empty-table-row">No open customer orders match the current filters.</div></td></tr>}
+        </tbody>
+      </table>
+  );
+}
+
+function openOrderState(order) {
+  if (order.pick_status === 'picked') return 'picked';
+  if (order.pick_status === 'partially_picked') return 'partially picked';
+  return 'not picked';
+}
+
+function OrderActionsMenu({ order, disabled, onView, onEdit, onPrint, onComplete, onUnpick, onTimeline }) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+  const triggerRef = useRef(null);
+  const popoverRef = useRef(null);
+  const orderNumber = order.woo_order_number || order.woo_order_id;
 
   useEffect(() => {
-    const input = document.querySelector('[data-pick-scan-input="true"]');
-    if (input) input.focus();
-  }, [order?.order_id, message]);
+    if (!open) return undefined;
+    function updatePosition() {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const menuWidth = Math.min(235, window.innerWidth - 20);
+      const menuHeight = 290;
+      const gutter = 10;
+      const left = Math.min(Math.max(gutter, rect.left), Math.max(gutter, window.innerWidth - menuWidth - gutter));
+      const opensAbove = rect.bottom + menuHeight + gutter > window.innerHeight && rect.top > menuHeight;
+      const top = opensAbove ? Math.max(gutter, rect.top - menuHeight - 6) : rect.bottom + 6;
+      setPosition({ left, top });
+    }
+    function closeOnOutsidePointer(event) {
+      if (!triggerRef.current?.contains(event.target) && !popoverRef.current?.contains(event.target)) setOpen(false);
+    }
+    function closeOnEscape(event) {
+      if (event.key === 'Escape') setOpen(false);
+    }
+    updatePosition();
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', closeOnEscape);
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open]);
 
-  function submit(event) {
-    event.preventDefault();
-    if (!scan.trim()) return;
-    onScan(scan.trim(), quantity);
-    setScan('');
-  }
-
-  const lines = order?.lines || [];
+  const actions = [
+    { label: 'View order', icon: Search, onClick: onView },
+    { label: 'Edit order', icon: Edit3, onClick: onEdit },
+    { label: 'Print order', icon: Printer, onClick: onPrint },
+    { label: 'Complete order', icon: CheckCircle2, onClick: onComplete, danger: true },
+    { label: 'Unpick', icon: RotateCcw, onClick: onUnpick, disabled: Number(order.total_quantity_picked || 0) <= 0 },
+    { label: 'View timeline', icon: CalendarDays, onClick: onTimeline },
+  ];
   return (
-    <div className="wide-panel allocation-panel">
-      <div className="panel-title">
-        <div>
-          <h2>Pick Scanner</h2>
-          <p>{order ? `Order ${order.woo_order_number || order.order_id}: ${order.complete_lines}/${order.line_count} lines complete.` : 'Select an allocated order to scan picks.'}</p>
+    <div className="order-actions-menu">
+      <button ref={triggerRef} className="order-actions-trigger" onClick={() => setOpen((current) => !current)} aria-label={`Open actions for order ${orderNumber}`} aria-haspopup="menu" aria-expanded={open} disabled={disabled} type="button">
+        <ClipboardList size={20} />
+      </button>
+      {open && typeof document !== 'undefined' && createPortal(
+        <div className="order-actions-popover" ref={popoverRef} role="menu" style={{ left: position.left, top: position.top }}>
+          {actions.map((action) => {
+            const Icon = action.icon;
+            return (
+              <button className={action.danger ? 'danger-action' : ''} disabled={action.disabled} key={action.label} onClick={() => { setOpen(false); action.onClick(); }} role="menuitem" type="button">
+                <Icon size={16} />
+                {action.label}
+              </button>
+            );
+          })}
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
+function OpenOrderDetailPanel({ order, onClose, onPrint }) {
+  useEffect(() => {
+    if (!order) return undefined;
+    function closeOnEscape(event) {
+      if (event.key === 'Escape') onClose();
+    }
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [order, onClose]);
+
+  if (!order) return null;
+  const shipping = order.shipping_summary || {};
+  const address = [
+    shipping.address_1,
+    shipping.address_2,
+    [shipping.city || order.shipping_city, shipping.state || order.shipping_state, shipping.postcode || order.shipping_zip].filter(Boolean).join(' '),
+  ].filter(Boolean);
+  return (
+    <div className="order-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section aria-labelledby="open-order-detail-title" aria-modal="true" className="order-detail-dialog print-order-panel" id="open-order-detail" role="dialog" tabIndex={-1}>
+        <header className="order-detail-dialog-header">
+          <h2 id="open-order-detail-title">View Customer Order</h2>
+          <button aria-label="Close customer order" className="icon-button" onClick={onClose} type="button"><X size={20} /></button>
+        </header>
+        <div className="order-detail-dialog-body">
+          <div className="order-detail-summary">
+            <div className="order-address-card">
+              <strong>Ship/Bill To</strong>
+              <div>
+                <b>{order.customer_name || 'Customer'}</b>
+                {address.map((line) => <span key={line}>{line}</span>)}
+              </div>
+            </div>
+            <dl className="order-facts-list">
+              <div><dt>Order Number</dt><dd>{order.woo_order_number || order.woo_order_id}</dd></div>
+              <div><dt>Placed On</dt><dd>{formatDateTime(order.date_created)}</dd></div>
+              <div><dt>Order Reference</dt><dd>{order.woo_order_number || order.woo_order_id}</dd></div>
+              <div><dt>Customer</dt><dd>{order.customer_name || '—'}</dd></div>
+              <div><dt>Customer Email</dt><dd>{order.customer_email || '—'}</dd></div>
+              <div><dt>Ship From</dt><dd>{order.ship_from || 'Main Warehouse'}</dd></div>
+            </dl>
+          </div>
+          <div className="order-detail-lines-scroll">
+            <table className="order-detail-lines-table">
+              <thead><tr><th>SKU</th><th>Description</th><th>UOM</th><th>Quantity</th><th>Picked</th><th>Shipped</th><th>Total</th></tr></thead>
+              <tbody>
+                {(order.lines || []).map((line) => (
+                  <tr key={line.id}>
+                    <td className="mono">{line.sku || '—'}</td>
+                    <td>{line.name || 'Unnamed product'}</td>
+                    <td>Each</td>
+                    <td>{formatNumber(line.quantity_ordered)}</td>
+                    <td>{formatNumber(line.quantity_picked)}</td>
+                    <td>{formatNumber(line.quantity_fulfilled)}</td>
+                    <td>{formatCurrency(line.line_total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
-      <form className="receiving-form route-form" onSubmit={submit}>
-        <div className="receiving-header-fields route-header-fields">
-          <label className="field wide-field"><span>SKU / Barcode</span><input data-pick-scan-input="true" value={scan} onChange={(event) => setScan(event.target.value)} placeholder="Scan or type SKU/barcode" /></label>
-          <label className="field"><span>Qty</span><input value={quantity} onChange={(event) => setQuantity(event.target.value)} inputMode="decimal" /></label>
-        </div>
-        <div className="button-row"><button className="primary-button" disabled={!order || loading || !scan.trim()} type="submit"><ClipboardCheck size={17} />Commit Scan</button></div>
-      </form>
-      {message && <div className={message.includes('exceeds') || message.includes('not') ? 'api-error' : 'success-strip'}>{message}</div>}
-      <TableShell caption={`${lines.length} scanner line(s)`} columns={['Status', 'SKU', 'Barcode', 'Description', 'Ordered', 'Allocated', 'Picked', 'Remaining', 'Location', 'Warnings']}>
-        {lines.map((line) => (
-          <tr key={line.order_line_id}>
-            <td>{StatusText(line.status)}</td>
-            <td className="mono">{line.sku}</td>
-            <td className="mono">{line.barcode}</td>
-            <td className="description-cell">{line.description}</td>
-            <td>{formatNumber(line.ordered_quantity)}</td>
-            <td>{formatNumber(line.allocated_quantity)}</td>
-            <td>{formatNumber(line.picked_quantity)}</td>
-            <td>{formatNumber(line.remaining_to_pick)}</td>
-            <td>{line.inventory_location}</td>
-            <td className="description-cell">{(line.warnings || []).join(' ')}</td>
-          </tr>
-        ))}
-        {lines.length === 0 && <tr><td colSpan={10}><div className="empty-table-row">No scanner lines loaded for the selected order.</div></td></tr>}
-      </TableShell>
+        <footer className="order-detail-dialog-footer">
+          <button className="primary-button" onClick={onPrint} type="button"><Printer size={17} />Print</button>
+          <button className="muted-button" onClick={onClose} type="button">Close</button>
+        </footer>
+      </section>
     </div>
   );
 }
@@ -6162,7 +8414,7 @@ function PickHistoryPanel({ picks, detail, onSelect }) {
         <div className="panel-title">
           <div>
             <h2>Pick History</h2>
-            <p>Posted local pick records. Picking does not reduce In Stock or Allocated.</p>
+            <p>Posted local pick records. Picking reduces local In Stock and Allocated at the picked location.</p>
           </div>
         </div>
         <TableShell caption={`${picks.length} pick(s)`} columns={['Pick', 'Status', 'Woo Order', 'Lines', 'Qty Picked', 'Created By', 'Created At', 'Posted At']}>
@@ -6239,7 +8491,7 @@ function FulfillmentHistoryPanel({ fulfillments, detail, onSelect }) {
         <div className="panel-title">
           <div>
             <h2>Fulfillment History</h2>
-            <p>Posted local completion records that reduce In Stock and Allocated.</p>
+            <p>Legacy local completion records. Stock reduction now happens during picking.</p>
           </div>
         </div>
         <TableShell caption={`${fulfillments.length} fulfillment(s)`} columns={['Fulfillment', 'Status', 'Woo Order', 'Lines', 'Qty Fulfilled', 'Created By', 'Created At', 'Posted At']}>
@@ -6360,7 +8612,7 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
       </div>
       <div className="filter-panel">
         <div className="filter-grid orders-filter-grid">
-          <FilterSelect label="Local Status" value={filters.localStatus} options={['fulfilled', 'partially_fulfilled']} onChange={(value) => updateFilter('localStatus', value)} />
+          <FilterSelect label="Local Status" value={filters.localStatus} options={['completed', 'closed', 'fulfilled', 'partially_fulfilled']} onChange={(value) => updateFilter('localStatus', value)} />
           <label className="field"><span>Date From</span><div className="input-with-icon"><input value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" /><CalendarDays size={18} /></div></label>
           <label className="field"><span>Date To</span><div className="input-with-icon"><input value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" /><CalendarDays size={18} /></div></label>
           <label className="field"><span>Customer Email</span><div className="input-with-icon"><input value={filters.customerEmail} onChange={(event) => updateFilter('customerEmail', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
@@ -6377,25 +8629,27 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
       <div className="csv-note">Completed Orders is read-only and does not modify inventory, WooCommerce, routes, shipping labels, or notifications.</div>
       {error && <div className="api-error">{error}</div>}
       {loading && <div className="loading-strip">Loading completed orders...</div>}
-      <TableShell caption={`${orders.length} completed order(s)`} columns={['Woo Order', 'Woo Status', 'Local Status', 'Customer', 'Email', 'Order Total', 'Qty Ordered', 'Qty Allocated', 'Qty Picked', 'Qty Fulfilled', 'Remaining', 'Fulfilled Value', 'Date Created']}>
+      <TableShell caption={`${orders.length} completed order(s)`} columns={['Woo Order', 'Woo Status', 'Local Status', 'Completion', 'Customer', 'Email', 'Order Total', 'Picked', 'Completed Without Picking', 'Stock Reduced', 'Qty Ordered', 'Qty Allocated', 'Qty Picked', 'Qty Fulfilled', 'Closed']}>
         {orders.map((order) => (
           <tr key={order.id}>
             <td className="mono">{order.woo_order_number || order.woo_order_id}</td>
             <td>{StatusText(order.woo_status)}</td>
             <td>{StatusText(order.local_status)}</td>
+            <td>{StatusText(order.completion_status)}</td>
             <td>{order.customer_name}</td>
             <td>{order.customer_email}</td>
             <td>{formatCurrency(order.total)}</td>
+            <td>{order.total_quantity_picked > 0 ? 'Yes' : 'No'}</td>
+            <td>{order.completed_without_picking ? 'Yes' : 'No'}</td>
+            <td>{formatNumber(order.total_quantity_stock_reduced)}</td>
             <td>{formatNumber(order.total_quantity_ordered)}</td>
             <td>{formatNumber(order.total_quantity_allocated)}</td>
             <td>{formatNumber(order.total_quantity_picked)}</td>
             <td>{formatNumber(order.total_quantity_fulfilled)}</td>
-            <td>{formatNumber(order.total_remaining_to_fulfill)}</td>
-            <td>{formatCurrency(order.total_fulfilled_value)}</td>
-            <td>{formatDateTime(order.date_created)}</td>
+            <td>{formatDateTime(order.closed_at || order.completed_at || order.date_modified || order.date_created)}</td>
           </tr>
         ))}
-        {orders.length === 0 && <tr><td colSpan={13}><div className="empty-table-row">No completed orders match the current filters.</div></td></tr>}
+        {orders.length === 0 && <tr><td colSpan={15}><div className="empty-table-row">No completed orders match the current filters.</div></td></tr>}
       </TableShell>
     </div>
   );
@@ -6816,18 +9070,18 @@ function StatusText(value) {
   return <span className={`status-pill order-status-${String(value || 'unknown').replace(/[^a-z0-9-]/gi, '-').toLowerCase()}`}>{value || 'unknown'}</span>;
 }
 
-function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, remapCandidates, remapMappings, remapPreview, remapMessage, loading, error, onCheckConnection, onPreview, onCommit, onPreviewOrders, onCommitOrders, onPreviewRemap, onCommitRemap, onLoadRemap }) {
+function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, remapCandidates, remapMappings, remapPreview, remapMessage, writebackQueue, writebackPreview, writebackMessage, loading, error, onCheckConnection, onPreview, onCommit, onPreviewOrders, onCommitOrders, onPreviewRemap, onCommitRemap, onLoadRemap, onPreviewStockWriteback, onPreviewOrderStatusWriteback, onQueueWriteback, onApproveWriteback, onSendWriteback, onCancelWriteback }) {
   const latestRun = syncRuns.find((run) => run.sync_type === 'products') || syncRuns[0];
   const latestOrderRun = syncRuns.find((run) => run.sync_type === 'orders');
-  const commitDisabled = !status.configured || !preview || preview.conflict_count > 0 || preview.error_count > 0;
+  const commitDisabled = !status.configured || !preview || preview.error_count > 0;
   const orderCommitDisabled = !status.configured || !orderPreview;
   return (
     <section className="content-panel settings-page">
       <div className="wide-panel">
         <div className="panel-title">
           <div>
-            <h2>WooCommerce Product Sync</h2>
-            <p>This sync is read-only against WooCommerce. It only creates or updates local Pongo OS items. It does not change WooCommerce products, orders, or stock.</p>
+            <h2>WooCommerce Catalog Mapping &amp; Import</h2>
+            <p>Reads WooCommerce in batches, maps existing items by unique SKU then barcode, and creates only missing products. Existing Pongo fields and item IDs stay unchanged.</p>
           </div>
           <div className="button-row compact">
             <button className="muted-button" onClick={onCheckConnection} type="button">
@@ -6836,29 +9090,38 @@ function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview,
             </button>
             <button className="primary-button" disabled={loading || !status.configured} onClick={onPreview} type="button">
               <Search size={17} />
-              Preview Product Sync
+              Preview Catalog Mapping
             </button>
             <button className="action-button" disabled={loading || commitDisabled} onClick={onCommit} type="button">
               <RefreshCw size={17} />
-              Commit Product Sync
+              Import &amp; Map Catalog
             </button>
           </div>
         </div>
         <div className="summary-strip report-summary-strip">
           <Metric label="Configured" value={status.configured ? 'Yes' : 'No'} />
-          <Metric label="Base URL" value={status.base_url_present ? 'Present' : 'Missing'} />
-          <Metric label="Consumer Key" value={status.consumer_key_present ? 'Present' : 'Missing'} />
-          <Metric label="Consumer Secret" value={status.consumer_secret_present ? 'Present' : 'Missing'} />
-          <Metric label="Last Sync" value={latestRun ? latestRun.status : 'None'} />
-          <Metric label="Last Records" value={latestRun ? latestRun.total_remote_records : 0} />
+          <Metric label="Environment" value={status.environment || 'unknown'} />
+          <Metric label="Base Host" value={status.base_url_host || (status.base_url_present ? 'Present' : 'Missing')} />
+          <Metric label="Allowed Host" value={status.host_allowed ? 'Matched' : 'Not matched'} />
+          <Metric label="Read-only" value={status.read_only ? 'Yes' : 'No'} />
+          <Metric label="Dry-run" value={status.dry_run ? 'On' : 'Off'} />
+          <Metric label="Live Test" value={status.staging_live_test_mode ? 'On' : 'Off'} />
+          <Metric label="Last Sync" value={status.last_product_sync?.status || latestRun?.status || 'None'} />
         </div>
+        <div className="warning-strip">Staging connection only. Credentials stay in backend environment variables and are never shown in the browser.</div>
         <div className="csv-note">{status.message}</div>
+        {status.last_error && <div className="api-error">{status.last_error}</div>}
         {loading && <div className="loading-strip">Working with the Pongo backend...</div>}
         {error && <div className="api-error">{error}</div>}
         {preview && <WooPreviewSummary preview={preview} />}
         {commitSummary && (
           <div className="success-strip">
-            Sync run {commitSummary.sync_run_id || 'not created'} finished with status {commitSummary.status}. Created {commitSummary.created_count}, updated {commitSummary.updated_count}, skipped {commitSummary.skipped_count}.
+            Catalog import finished with status {commitSummary.status}. Created {commitSummary.created_count}, mapped {commitSummary.updated_count}, conflicts {commitSummary.conflict_count}, and left {commitSummary.unmatched_local_count} local item(s) unmatched.
+          </div>
+        )}
+        {commitSummary?.unmatched_local_count > 0 && (
+          <div className="warning-strip">
+            Unmatched local SKUs: {(commitSummary.unmatched_local_skus || []).join(', ')}{commitSummary.unmatched_local_count > (commitSummary.unmatched_local_skus || []).length ? ' …' : ''}
           </div>
         )}
       </div>
@@ -6867,7 +9130,7 @@ function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview,
         <div className="panel-title">
           <div>
             <h2>WooCommerce Order Sync</h2>
-            <p>Imports processing and on-hold orders into local open orders. It is read-only against WooCommerce and does not allocate or change stock.</p>
+            <p>Imports WooCommerce order snapshots into Pongo OS. Open statuses become local open orders; completed, failed, cancelled, and refunded orders stay read-only snapshots.</p>
           </div>
           <div className="button-row compact">
             <button className="primary-button" disabled={loading || !status.configured} onClick={onPreviewOrders} type="button">
@@ -6881,12 +9144,22 @@ function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview,
           </div>
         </div>
         <div className="summary-strip report-summary-strip">
-          <Metric label="Default Statuses" value="processing, on-hold" />
-          <Metric label="Last Order Sync" value={latestOrderRun ? latestOrderRun.status : 'None'} />
-          <Metric label="Last Orders" value={latestOrderRun ? latestOrderRun.total_remote_records : 0} />
+          <Metric label="Sync Statuses" value="open + completed snapshots" />
+          <Metric label="Last Order Sync" value={status.last_order_sync?.status || latestOrderRun?.status || 'None'} />
+          <Metric label="Last Orders" value={status.last_order_sync?.total_remote_records || latestOrderRun?.total_remote_records || 0} />
+          <Metric label="Webhook Receiver" value={status.webhook_configured ? 'Ready' : (status.webhook_enabled ? 'Needs setup' : 'Off')} />
+          <Metric label="Webhook Secret" value={status.webhook_secret_present ? 'Present' : 'Missing'} />
+          <Metric label="Last Webhook" value={status.last_webhook_delivery?.status || 'None'} />
+          <Metric label="Webhook Order" value={status.last_webhook_delivery?.woo_order_id ? `#${status.last_webhook_delivery.woo_order_id}` : 'None'} />
           <Metric label="Safety" value="Read-only Woo" />
         </div>
-        <div className="csv-note">Order sync stores local order/order line snapshots only. It does not write WooCommerce, update product stock, create stock movements, allocate, pick, or route orders.</div>
+        <div className="csv-note">Order sync stores local order/order line snapshots and may safely auto-allocate active local orders. It does not write WooCommerce, update product stock, create stock movements, pick, fulfill, or route orders.</div>
+        {status.last_webhook_delivery && (
+          <div className="api-success">
+            Last webhook delivery {status.last_webhook_delivery.status} {formatDateTime(status.last_webhook_delivery.received_at)}.
+            {status.last_webhook_delivery.created_order ? ' A new local order was created.' : ' No new local order was created.'}
+          </div>
+        )}
         {orderPreview && <WooOrderPreviewSummary preview={orderPreview} />}
         {orderCommitSummary && (
           <div className="success-strip">
@@ -6895,6 +9168,7 @@ function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview,
         )}
       </div>
       {orderPreview && <WooOrderPreviewTable orders={orderPreview.preview_orders || []} />}
+      <WooWritebackPanel status={status} queue={writebackQueue?.queue || []} preview={writebackPreview} message={writebackMessage} loading={loading} onPreviewStock={onPreviewStockWriteback} onPreviewOrderStatus={onPreviewOrderStatusWriteback} onQueue={onQueueWriteback} onApprove={onApproveWriteback} onSend={onSendWriteback} onCancel={onCancelWriteback} />
       <WooRemapPanel candidates={remapCandidates?.candidates || []} mappings={remapMappings?.mappings || []} preview={remapPreview} message={remapMessage} loading={loading} onPreview={onPreviewRemap} onCommit={onCommitRemap} onRefresh={onLoadRemap} />
       <div className="wide-panel">
         <div className="panel-title">
@@ -6913,8 +9187,8 @@ function WooPreviewSummary({ preview }) {
   return (
     <div className="summary-strip woo-summary-strip">
       <Metric label="Remote Records" value={preview.total_remote_records} />
-      <Metric label="Create" value={preview.create_count} />
-      <Metric label="Update" value={preview.update_count} />
+      <Metric label="Create Missing" value={preview.create_count} />
+      <Metric label="Map Existing" value={preview.update_count} />
       <Metric label="Matched" value={preview.matched_count} />
       <Metric label="Skipped" value={preview.skipped_count} />
       <Metric label="Conflicts" value={preview.conflict_count} />
@@ -7002,6 +9276,114 @@ function WooOrderPreviewTable({ orders }) {
       )}
     </TableShell>
   );
+}
+
+function WooWritebackPanel({ status, queue, preview, message, loading, onPreviewStock, onPreviewOrderStatus, onQueue, onApprove, onSend, onCancel }) {
+  const [stockForm, setStockForm] = useState({ sku: '', item_id: '', proposed_stock_quantity: '' });
+  const [orderForm, setOrderForm] = useState({ woo_order_id: '', order_id: '', proposed_status: 'completed' });
+  const liveLabel = status.dry_run ? 'Dry Run On' : 'Live Staging Writes On';
+  function stockPayload() {
+    return {
+      sku: stockForm.sku || null,
+      item_id: stockForm.item_id ? Number(stockForm.item_id) : null,
+      proposed_stock_quantity: stockForm.proposed_stock_quantity === '' ? null : Number(stockForm.proposed_stock_quantity),
+    };
+  }
+  function orderPayload() {
+    return {
+      woo_order_id: orderForm.woo_order_id ? Number(orderForm.woo_order_id) : null,
+      order_id: orderForm.order_id ? Number(orderForm.order_id) : null,
+      proposed_status: orderForm.proposed_status,
+    };
+  }
+  return (
+    <div className="wide-panel woo-writeback-panel">
+      <div className="panel-title">
+        <div>
+          <h2>Staging Writeback Testing</h2>
+          <p>Explicit local queue for staging stock and order-status writeback tests.</p>
+        </div>
+        <span className={`status-pill ${status.dry_run ? 'order-status-pending' : 'order-status-completed'}`}>{liveLabel}</span>
+      </div>
+      <div className="warning-strip">Live staging write testing is enabled when dry-run is off. This can change staging WooCommerce stock/order status only. No DELETE, refunds, customer writes, coupon writes, or product metadata writes are available.</div>
+      <div className="summary-strip report-summary-strip">
+        <Metric label="Environment" value={status.environment || 'unknown'} />
+        <Metric label="Writeback Enabled" value={status.writeback_enabled ? 'Yes' : 'No'} />
+        <Metric label="Dry-run" value={status.dry_run ? 'On' : 'Off'} />
+        <Metric label="Live Test Mode" value={status.staging_live_test_mode ? 'On' : 'Off'} />
+        <Metric label="Stock Write" value={status.stock_write_allowed ? 'Allowed' : 'Blocked'} />
+        <Metric label="Order Status Write" value={status.order_status_write_allowed ? 'Allowed' : 'Blocked'} />
+        <Metric label="Allowed Host" value={status.allowed_host || 'Not set'} />
+      </div>
+      <div className="summary-strip report-summary-strip">
+        <Metric label="Product Metadata" value={status.product_metadata_write_allowed ? 'Allowed' : 'Blocked'} />
+        <Metric label="Customer Write" value={status.customer_write_allowed ? 'Allowed' : 'Blocked'} />
+        <Metric label="Coupon Write" value={status.coupon_write_allowed ? 'Allowed' : 'Blocked'} />
+        <Metric label="Refund Write" value={status.refund_write_allowed ? 'Allowed' : 'Blocked'} />
+        <Metric label="Delete" value={status.delete_allowed ? 'Allowed' : 'Blocked'} />
+      </div>
+      {message && <div className="success-strip">{message}</div>}
+      <div className="receiving-form route-form">
+        <div className="receiving-header-fields route-header-fields">
+          <label className="field"><span>SKU</span><input value={stockForm.sku} onChange={(event) => setStockForm((current) => ({ ...current, sku: event.target.value }))} /></label>
+          <label className="field"><span>Item ID</span><input value={stockForm.item_id} onChange={(event) => setStockForm((current) => ({ ...current, item_id: event.target.value }))} /></label>
+          <label className="field"><span>Proposed Woo Stock</span><input value={stockForm.proposed_stock_quantity} onChange={(event) => setStockForm((current) => ({ ...current, proposed_stock_quantity: event.target.value }))} /></label>
+          <button className="primary-button" disabled={loading || (!stockForm.sku && !stockForm.item_id)} onClick={() => onPreviewStock(stockPayload())} type="button"><Search size={17} />Preview Stock Writeback</button>
+        </div>
+        <div className="receiving-header-fields route-header-fields">
+          <label className="field"><span>Woo Order ID</span><input value={orderForm.woo_order_id} onChange={(event) => setOrderForm((current) => ({ ...current, woo_order_id: event.target.value }))} /></label>
+          <label className="field"><span>Local Order ID</span><input value={orderForm.order_id} onChange={(event) => setOrderForm((current) => ({ ...current, order_id: event.target.value }))} /></label>
+          <label className="field"><span>Proposed Status</span><select value={orderForm.proposed_status} onChange={(event) => setOrderForm((current) => ({ ...current, proposed_status: event.target.value }))}><option value="processing">processing</option><option value="on-hold">on-hold</option><option value="completed">completed</option><option value="cancelled">cancelled</option><option value="refunded">refunded</option><option value="failed">failed</option></select></label>
+          <button className="primary-button" disabled={loading || (!orderForm.woo_order_id && !orderForm.order_id)} onClick={() => onPreviewOrderStatus(orderPayload())} type="button"><Search size={17} />Preview Order Status Writeback</button>
+        </div>
+      </div>
+      {preview && (
+        <div className="success-strip">
+          Preview ready for {preview.operation_type}. Proposed payload is queued locally before any send.
+          <button className="action-button inline-action" disabled={loading} onClick={() => onQueue(preview)} type="button"><Plus size={16} />Queue Preview</button>
+        </div>
+      )}
+      <WooWritebackQueueTable rows={queue} dryRun={status.dry_run} loading={loading} onApprove={onApprove} onSend={onSend} onCancel={onCancel} />
+    </div>
+  );
+}
+
+function WooWritebackQueueTable({ rows, dryRun, loading, onApprove, onSend, onCancel }) {
+  return (
+    <TableShell caption={`${rows.length} writeback queue item(s)`} columns={['Created', 'Operation', 'Entity', 'Woo ID', 'Status', 'Environment', 'Dry-run', 'Preview', 'Actions']}>
+      {rows.map((row) => (
+        <tr key={row.id}>
+          <td>{formatDateTime(row.created_at)}</td>
+          <td>{row.operation_type}</td>
+          <td>{row.entity_type} {row.entity_id}</td>
+          <td className="mono">{row.woo_entity_id}</td>
+          <td>{StatusText(row.status)}</td>
+          <td>{row.environment}</td>
+          <td>{row.dry_run ? 'Yes' : 'No'}</td>
+          <td className="description-cell">{writebackPreviewLabel(row)}</td>
+          <td>
+            <div className="button-row compact">
+              <button className="muted-button" disabled={loading || !['pending', 'failed'].includes(row.status)} onClick={() => onApprove(row.id)} type="button">{row.status === 'failed' ? 'Retry' : 'Approve'}</button>
+              <button className="action-button" disabled={loading || row.status !== 'approved'} onClick={() => onSend(row.id)} type="button">{dryRun || row.dry_run ? 'Dry Run Send' : 'Send to Staging'}</button>
+              <button className="muted-button" disabled={loading || !['pending', 'approved', 'failed'].includes(row.status)} onClick={() => onCancel(row.id)} type="button">Cancel</button>
+            </div>
+          </td>
+        </tr>
+      ))}
+      {rows.length === 0 && <tr><td colSpan={9}><div className="empty-table-row">No staging writeback queue items yet.</div></td></tr>}
+    </TableShell>
+  );
+}
+
+function writebackPreviewLabel(row) {
+  const preview = row.preview_json || {};
+  if (row.operation_type === 'update_product_stock') {
+    return `${preview.sku || 'item'}: Woo stock ${formatNumber(preview.woo_stock_snapshot)} -> ${formatNumber(preview.proposed_woo_stock)}`;
+  }
+  if (row.operation_type === 'update_order_status') {
+    return `${preview.woo_order_number || preview.woo_order_id}: ${preview.current_woo_status || 'unknown'} -> ${preview.proposed_status}`;
+  }
+  return row.operation_type;
 }
 
 function WooRemapPanel({ candidates, mappings, preview, message, loading, onPreview, onCommit, onRefresh }) {
@@ -7147,9 +9529,9 @@ function StandardPage({ icon: Icon, title, description, columns }) {
   );
 }
 
-function TableShell({ caption, columns, children }) {
+function TableShell({ caption, columns, children, className = '', showActionBand = true }) {
   return (
-    <div className="table-wrap table-card">
+    <div className={`table-wrap table-card ${className}`.trim()}>
       <div className="table-meta">
         <span>{caption}</span>
         <div className="table-pager">
@@ -7163,16 +9545,18 @@ function TableShell({ caption, columns, children }) {
           </button>
         </div>
       </div>
-      <div className="table-action-band">
-        <span>Actions</span>
-        <ChevronDown size={18} />
-      </div>
+      {showActionBand && (
+        <div className="table-action-band">
+          <span>Actions</span>
+          <ChevronDown size={18} />
+        </div>
+      )}
       <div className="table-scroll">
         <table className="data-table">
           <thead>
             <tr>
               {columns.map((column) => (
-                <th key={column}>{column}</th>
+                <th key={typeof column === 'string' ? column : column.key}>{typeof column === 'string' ? column : column.label}</th>
               ))}
             </tr>
           </thead>
@@ -7202,6 +9586,10 @@ function getHeaderMeta(route, items) {
   }
   if (route.pageId === 'orders') {
     const meta = orderSubpageMeta[route.ordersView || 'open'] || orderSubpageMeta.open;
+    return { ...meta, tabs: [] };
+  }
+  if (route.pageId === 'inventory') {
+    const meta = inventorySubpageMeta[route.inventoryView || 'all'] || inventorySubpageMeta.all;
     return { ...meta, tabs: [] };
   }
   return pageMeta[route.pageId];
@@ -7256,6 +9644,105 @@ function filterItems(items, filters) {
       (filters.stockStatus === 'negative_sellable' && toNumber(item.Sellable) < 0);
     return matchesSearch && matchesCategory && matchesBrand && matchesStatus && matchesInventoryType && matchesStockStatus;
   });
+}
+
+function buildInventoryItemRows(items, locationRows, activeSearch, filters, inventoryView) {
+  const rowsByItem = new Map();
+  locationRows.forEach((row) => {
+    if (!rowsByItem.has(row.item_id)) {
+      rowsByItem.set(row.item_id, []);
+    }
+    rowsByItem.get(row.item_id).push(row);
+  });
+  const query = String(activeSearch || '').trim().toLowerCase();
+  return items
+    .filter((item) => {
+      const itemLocationRows = rowsByItem.get(item.id) || [];
+      const matchesSearch =
+        !query ||
+        SEARCH_FIELDS.some((field) => String(item[field] ?? '').toLowerCase().includes(query)) ||
+        itemLocationRows.some((row) => [row.warehouse, row.inventory_location, row.location_code, row.location_name].some((value) => String(value || '').toLowerCase().includes(query)));
+      const matchesCategory = !filters.category || item.Category === filters.category;
+      const matchesBrand = !filters.brand || item.Brand === filters.brand;
+      const underPar = Boolean(item['Under Par']) || itemLocationRows.some((row) => row.under_par);
+      const matchesView = inventoryView !== 'low-stock' ? true : underPar;
+      return matchesSearch && matchesCategory && matchesBrand && matchesView;
+    })
+    .map((item) => {
+      const itemLocationRows = rowsByItem.get(item.id) || [];
+      const defaultRow = itemLocationRows.find((row) => row.is_default_location) || itemLocationRows[0];
+      const extraLocations = Math.max(0, itemLocationRows.length - 1);
+      const locationSummary = defaultRow ? `${defaultRow.inventory_location || defaultRow.location_code || 'Unassigned'}${extraLocations ? ` +${extraLocations} locations` : ''}` : item['Default Location'] || item['Inventory Location'] || 'Unassigned';
+      return { item, locationRows: itemLocationRows, locationSummary, underPar: Boolean(item['Under Par']) || itemLocationRows.some((row) => row.under_par) };
+    });
+}
+
+function inventoryLocationKey(row) {
+  return `${row.warehouse || ''}::${row.inventory_location || ''}`;
+}
+
+function groupLocationRows(rows) {
+  const groups = new Map();
+  rows.forEach((row) => {
+    const key = inventoryLocationKey(row);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        warehouse: row.warehouse || '',
+        inventory_location: row.inventory_location || '',
+        item_count: 0,
+        total_in_stock: 0,
+        total_allocated: 0,
+        total_sellable: 0,
+        total_on_order: 0,
+        total_inventory_value: 0,
+        under_par_count: 0,
+      });
+    }
+    const group = groups.get(key);
+    group.item_count += 1;
+    group.total_in_stock += toNumber(row.in_stock);
+    group.total_allocated += toNumber(row.allocated);
+    group.total_sellable += toNumber(row.sellable);
+    group.total_on_order += toNumber(row.on_order);
+    group.total_inventory_value += toNumber(row.in_stock) * toNumber(row.item?.['Unit Cost']);
+    group.under_par_count += row.under_par ? 1 : 0;
+  });
+  return [...groups.values()].sort((a, b) => `${a.warehouse} ${a.inventory_location}`.localeCompare(`${b.warehouse} ${b.inventory_location}`));
+}
+
+function inventoryTotal(items, field) {
+  return items.reduce((total, item) => total + toNumber(item[field]), 0);
+}
+
+function inventoryValue(items) {
+  return items.reduce((total, item) => total + toNumber(item['In Stock']) * toNumber(item['Unit Cost']), 0);
+}
+
+function formatOpenOrders(item) {
+  const quantity = toNumber(item.open_order_quantity);
+  const count = toNumber(item.open_orders_count);
+  if (quantity && count) {
+    return `${formatNumber(quantity)} qty / ${formatNumber(count)} order${count === 1 ? '' : 's'}`;
+  }
+  if (quantity) {
+    return `${formatNumber(quantity)} qty`;
+  }
+  if (count) {
+    return `${formatNumber(count)} order${count === 1 ? '' : 's'}`;
+  }
+  return '0';
+}
+
+function stockMovementFiltersToApi(search, filters = {}) {
+  return {
+    search,
+    movement_type: filters.movement_type,
+    warehouse: filters.warehouse,
+    inventory_location: filters.inventory_location,
+    date_from: filters.date_from,
+    date_to: filters.date_to,
+  };
 }
 
 function normalizeItem(item) {
@@ -7490,6 +9977,50 @@ function formatReportValue(value) {
   return String(value);
 }
 
+function formatInsightValue(key, value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'Yes' : 'No';
+  }
+  if (typeof value === 'number') {
+    if (String(key).includes('rate') || String(key).includes('percent') || String(key).includes('margin')) {
+      return `${formatNumber(value)}%`;
+    }
+    if (/(revenue|sales|value|amount|discount|cost|margin|spend|total|aov)/i.test(String(key))) {
+      return formatCurrency(value);
+    }
+    return formatNumber(value);
+  }
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
+    return formatDateTime(value);
+  }
+  if (typeof value === 'object') {
+    return value.sku || value.description || value.label || '';
+  }
+  return String(value);
+}
+
+function titleize(value) {
+  return String(value || '')
+    .replace(/_/g, ' ')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function markerPosition(marker) {
+  const latitude = toNumber(marker.latitude);
+  const longitude = toNumber(marker.longitude);
+  const minLat = 53.15;
+  const maxLat = 53.75;
+  const minLng = -114.05;
+  const maxLng = -113.1;
+  const left = Math.min(92, Math.max(8, ((longitude - minLng) / (maxLng - minLng)) * 100));
+  const top = Math.min(88, Math.max(12, 100 - ((latitude - minLat) / (maxLat - minLat)) * 100));
+  return { left, top };
+}
+
 function formatCountType(value) {
   return value === 'full_location' ? 'Full Location' : 'Selected Items';
 }
@@ -7551,6 +10082,23 @@ async function exportInventoryByLocationCsv(filters) {
   const link = document.createElement('a');
   link.href = url;
   link.download = 'pongo-inventory-by-location-export.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+async function exportStockMovementsCsv(filters) {
+  const response = await fetch(`${API_BASE_URL}/api/stock-movements/export${plainFiltersToQueryString(filters)}`);
+  if (!response.ok) {
+    showPlaceholder('Unable to export stock movements from the backend.');
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'pongo-stock-movements-export.csv';
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -7673,6 +10221,36 @@ async function exportAllocationCsv(allocationId, allocationNumber) {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function downloadAllocationExceptionsCsv(lines) {
+  const columns = [
+    ['Order Number', 'woo_order_number'],
+    ['Placed On', 'ordered_at'],
+    ['Customer', 'customer_name'],
+    ['SKU', 'sku'],
+    ['Barcode', 'barcode'],
+    ['Description', 'description'],
+    ['Warehouse', 'warehouse'],
+    ['Inventory Location', 'inventory_location'],
+    ['Ordered', 'quantity_ordered'],
+    ['Allocated', 'quantity_allocated'],
+    ['Unallocated', 'quantity_unallocated'],
+    ['Picked', 'quantity_picked'],
+    ['Available', 'quantity_available'],
+    ['Reason', 'exception_reason'],
+  ];
+  const rows = [
+    columns.map(([label]) => escapeCsvValue(label)).join(','),
+    ...lines.map((line) => columns.map(([, key]) => escapeCsvValue(line[key])).join(',')),
+  ];
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'pongo-allocation-exceptions.csv';
+  link.click();
   URL.revokeObjectURL(url);
 }
 
@@ -7926,6 +10504,7 @@ function plainFiltersToQueryString(filters = {}) {
 
 function inventoryFiltersToQueryString(filters = {}) {
   const params = new URLSearchParams();
+  if (filters.search) params.set('search', filters.search);
   if (filters.warehouse) params.set('warehouse', filters.warehouse);
   if (filters.inventoryLocation) params.set('inventory_location', filters.inventoryLocation);
   if (filters.defaultLocation) params.set('default_location', filters.defaultLocation);
@@ -8049,7 +10628,9 @@ function todayDateInput() {
 function itemToApiPayload(item) {
   const payload = {};
   CANONICAL_ITEM_COLUMNS.forEach((column) => {
-    payload[column] = item[column];
+    if (!['In Stock', 'Allocated', 'Sellable', 'Under Par', 'On Order', 'Storage Volume'].includes(column)) {
+      payload[column] = item[column];
+    }
   });
   payload.imageUrl = item.imageUrl || '';
   payload.active = Boolean(item.active);

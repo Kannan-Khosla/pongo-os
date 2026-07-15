@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, object_session, selectinload
 from app.models.fulfillments import Fulfillment, FulfillmentLine
 from app.models.inventory import InventoryAuditEvent, InventoryItem, StockMovement
 from app.models.orders import Order, OrderItem
+from app.models.picks import PickLine
 from app.schemas.fulfillments import (
     FulfillmentCommitResponse,
     FulfillmentDetail,
@@ -21,7 +22,8 @@ from app.schemas.fulfillments import (
     FulfillmentRead,
     FulfillmentRequest,
 )
-from app.services.location_inventory import choose_allocated_location, fulfill_from_location
+from app.services.location_inventory import choose_allocated_location
+from app.services.order_workflow import add_audit_event, first_item_location
 
 FULFILLABLE_ORDER_STATUSES = {"picked", "partially_picked", "partially_fulfilled"}
 
@@ -79,22 +81,17 @@ def commit_fulfillment(db: Session, payload: FulfillmentRequest) -> FulfillmentC
             in_stock_before = item.in_stock or Decimal("0")
             allocated_before = item.allocated or Decimal("0")
             sellable_before = current_sellable(item)
-            if quantity_to_fulfill <= 0 or quantity_to_fulfill > remaining or quantity_to_fulfill > picked or quantity_to_fulfill > allocated or quantity_to_fulfill > in_stock_before or quantity_to_fulfill > allocated_before:
+            already_stock_reduced = picked > 0 and (order_line.quantity_stock_reduced or Decimal("0")) >= picked
+            if not already_stock_reduced:
+                raise ValueError("Fulfillment no longer reduces stock. Pick the order first or use direct completion without stock reduction.")
+            if quantity_to_fulfill <= 0 or quantity_to_fulfill > remaining or quantity_to_fulfill > picked or quantity_to_fulfill > allocated:
                 raise ValueError(f"Order line {order_line.id} is no longer valid for fulfillment.")
-            change = fulfill_from_location(
-                db,
-                item,
-                quantity_to_fulfill,
-                reference_number=fulfillment.fulfillment_number,
-                reference_id=fulfillment.id,
-                notes=payload.notes,
-                created_by=payload.created_by or "system",
-            )
-            in_stock_after = change.item.in_stock or Decimal("0")
-            allocated_after = change.item.allocated or Decimal("0")
+            location_row = last_pick_location(db, order_line) or first_item_location(db, item)
+            in_stock_after = in_stock_before
+            allocated_after = allocated_before
             fulfilled_after = previously_fulfilled + quantity_to_fulfill
             remaining_after = max(picked - fulfilled_after, Decimal("0"))
-            sellable_after = change.item.sellable or current_sellable(item)
+            sellable_after = sellable_before
             order_line.quantity_fulfilled = fulfilled_after
             order_line.fulfilled_qty = fulfilled_after
             order_line.status = "fulfilled" if remaining_after == 0 else "partial"
@@ -103,12 +100,12 @@ def commit_fulfillment(db: Session, payload: FulfillmentRequest) -> FulfillmentC
                 order_id=order_line.order_id,
                 order_line_id=order_line.id,
                 item_id=item.id,
-                inventory_item_location_id=change.item_location.id,
+                inventory_item_location_id=location_row.id if location_row else None,
                 sku=order_line.sku or item.sku,
                 barcode=order_line.barcode or item.barcode,
                 description=order_line.name or order_line.description or item.description,
-                warehouse=change.item_location.warehouse,
-                inventory_location=change.item_location.inventory_location,
+                warehouse=location_row.warehouse if location_row else item.warehouse,
+                inventory_location=location_row.inventory_location if location_row else item.inventory_location,
                 quantity_ordered=order_line.quantity_ordered or Decimal("0"),
                 quantity_allocated=allocated,
                 quantity_picked=picked,
@@ -126,29 +123,25 @@ def commit_fulfillment(db: Session, payload: FulfillmentRequest) -> FulfillmentC
                 notes=payload.notes,
             )
             db.add(fulfillment_line)
-            db.add(
-                InventoryAuditEvent(
-                    item_id=item.id,
-                    sku=item.sku,
-                    barcode=item.barcode,
-                    event_type="fulfill",
-                    quantity_delta=-quantity_to_fulfill,
+            if location_row is not None:
+                add_audit_event(
+                    db,
+                    item,
+                    location_row,
+                    "fulfillment_no_stock_reduction",
+                    Decimal("0"),
                     previous_in_stock=in_stock_before,
                     new_in_stock=in_stock_after,
-                    previous_allocated=change.old_item_allocated,
-                    new_allocated=change.new_item_allocated,
+                    previous_allocated=allocated_before,
+                    new_allocated=allocated_after,
                     previous_sellable=sellable_before,
                     new_sellable=sellable_after,
-                    warehouse=change.item_location.warehouse,
-                    inventory_location=change.item_location.inventory_location,
                     reference_type="fulfillment",
                     reference_id=fulfillment.id,
                     reference_number=fulfillment.fulfillment_number,
-                    notes=payload.notes,
+                    notes="Stock already reduced during picking.",
                     created_by=payload.created_by or "system",
                 )
-            )
-            movement_count += 1
             audit_count += 1
             fulfilled_lines += 1
             partial_lines += 1 if remaining_after > 0 else 0
@@ -172,7 +165,7 @@ def commit_fulfillment(db: Session, payload: FulfillmentRequest) -> FulfillmentC
             total_quantity_fulfilled=decimal_to_float(sum((line.quantity_to_fulfill for line in fulfillment.lines), Decimal("0"))),
             created_stock_movements=movement_count,
             created_audit_events=audit_count,
-            warnings=preview.warnings,
+            warnings=preview.warnings + ["Stock already reduced during picking."],
             errors=[],
         )
     except Exception as exc:
@@ -287,6 +280,7 @@ def build_preview_line(line: OrderItem, requested_quantity: Decimal | None = Non
     inventory_location = item.inventory_location if item else None
     recommended = Decimal("0")
     status = "skipped"
+    already_stock_reduced = picked > 0 and (line.quantity_stock_reduced or Decimal("0")) >= picked
     if line.matched_status != "matched":
         status = "conflict" if line.matched_status == "conflict" else "skipped"
         errors.append(f"Order line matched status is {line.matched_status or 'unknown'}.")
@@ -301,10 +295,31 @@ def build_preview_line(line: OrderItem, requested_quantity: Decimal | None = Non
         errors.append("Order line fulfilled quantity exceeds picked quantity.")
     elif remaining <= 0:
         warnings.append("Order line is already fully fulfilled.")
+    elif not already_stock_reduced:
+        errors.append("Fulfillment no longer reduces stock. Pick the order first or use direct completion without stock reduction.")
+    elif already_stock_reduced:
+        db = object_session(line)
+        location_row = last_pick_location(db, line) if db is not None else None
+        if location_row is not None:
+            item_location_id = location_row.id
+            warehouse = location_row.warehouse
+            inventory_location = location_row.inventory_location
+        recommended = remaining
+        if requested_quantity is not None:
+            if requested_quantity <= 0:
+                errors.append("Requested fulfillment quantity must be greater than zero.")
+                recommended = Decimal("0")
+            elif requested_quantity > remaining:
+                errors.append("Requested fulfillment quantity exceeds remaining quantity to fulfill.")
+                recommended = Decimal("0")
+            else:
+                recommended = requested_quantity
+        status = "fulfilled" if recommended == remaining and recommended > 0 else ("partial" if recommended > 0 else "skipped")
+        warnings.append("Stock already reduced during picking; fulfillment will not reduce stock again.")
     elif item_allocated <= 0:
-        errors.append("Matched item has no allocated inventory to release.")
+        errors.append("Fulfillment no longer reduces stock. Pick the order first or use direct completion without stock reduction.")
     elif in_stock <= 0:
-        errors.append("Matched item has no In Stock quantity to fulfill.")
+        errors.append("Fulfillment no longer reduces stock. Pick the order first or use direct completion without stock reduction.")
     else:
         try:
             db = object_session(line)
@@ -389,8 +404,14 @@ def update_order_fulfillment_status(order: Order) -> None:
     all_fulfilled = bool(matched_picked_lines) and all((line.quantity_fulfilled or Decimal("0")) >= (line.quantity_picked or Decimal("0")) for line in matched_picked_lines)
     if all_fulfilled and not blocked:
         order.local_status = "fulfilled"
+        order.completion_status = "completed"
+        order.completed_at = order.completed_at or datetime.now(timezone.utc)
+        order.closed_at = order.closed_at or order.completed_at
     elif any_fulfilled:
         order.local_status = "partially_fulfilled"
+        order.completion_status = "completed"
+        order.completed_at = order.completed_at or datetime.now(timezone.utc)
+        order.closed_at = order.closed_at or order.completed_at
     order.allocation_status = order.local_status
 
 
@@ -566,6 +587,21 @@ def next_fulfillment_number(db: Session, now: datetime) -> str:
 
 def remaining_to_fulfill(line: OrderItem) -> Decimal:
     return max((line.quantity_picked or Decimal("0")) - (line.quantity_fulfilled or Decimal("0")), Decimal("0"))
+
+
+def last_pick_location(db: Session | None, line: OrderItem):
+    if db is None:
+        return None
+    pick_line = db.scalars(
+        select(PickLine)
+        .where(PickLine.order_line_id == line.id, PickLine.inventory_item_location_id.is_not(None))
+        .order_by(PickLine.created_at.desc(), PickLine.id.desc())
+    ).first()
+    if pick_line is None or pick_line.inventory_item_location_id is None:
+        return None
+    from app.models.inventory import InventoryItemLocation
+
+    return db.get(InventoryItemLocation, pick_line.inventory_item_location_id)
 
 
 def current_sellable(item: InventoryItem) -> Decimal:

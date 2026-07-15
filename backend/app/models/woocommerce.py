@@ -64,3 +64,68 @@ class WooItemMapping(Base):
     __table_args__ = (
         UniqueConstraint("item_id", "woo_product_id", "woo_variation_id", "active", name="uq_woo_item_mappings_item_remote_active"),
     )
+
+
+class WooWritebackQueue(Base):
+    __tablename__ = "woo_writeback_queue"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    operation_type: Mapped[str] = mapped_column(String(80), index=True, nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(80), index=True, nullable=False)
+    entity_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    woo_entity_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    woo_product_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    woo_variation_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    woo_order_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="pending", index=True, nullable=False)
+    environment: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    allowed_host: Mapped[str | None] = mapped_column(String(255), index=True)
+    preview_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    response_json: Mapped[dict | None] = mapped_column(JSON)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    requested_by: Mapped[str | None] = mapped_column(String(120), index=True)
+    approved_by: Mapped[str | None] = mapped_column(String(120), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False, index=True)
+
+
+class WooCommerceWebhookDelivery(Base):
+    __tablename__ = "woocommerce_webhook_deliveries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    delivery_id: Mapped[str] = mapped_column(String(191), index=True, nullable=False)
+    webhook_id: Mapped[str] = mapped_column(String(80), index=True, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    topic: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
+    resource: Mapped[str | None] = mapped_column(String(80), index=True)
+    event: Mapped[str | None] = mapped_column(String(80), index=True)
+    source_host: Mapped[str | None] = mapped_column(String(255), index=True)
+    woo_order_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    local_order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), index=True)
+    sync_run_id: Mapped[int | None] = mapped_column(ForeignKey("woocommerce_sync_runs.id"), index=True)
+    processing_status: Mapped[str] = mapped_column(String(40), default="received", index=True, nullable=False)
+    created_order: Mapped[bool] = mapped_column(Boolean, default=False, index=True, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True, nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("webhook_id", "delivery_id", "payload_sha256", name="uq_woo_webhook_delivery_identity"),
+    )
+
+
+class WooCommerceOrderEvent(Base):
+    __tablename__ = "woocommerce_order_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    webhook_delivery_id: Mapped[int] = mapped_column(ForeignKey("woocommerce_webhook_deliveries.id"), unique=True, nullable=False)
+    local_order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True, nullable=False)
+    woo_order_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(80), default="order_created", index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True, nullable=False)

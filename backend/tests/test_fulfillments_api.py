@@ -25,9 +25,6 @@ def picked_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2
     sync = client.post("/api/integrations/woocommerce/orders/commit", json={})
     assert sync.status_code == 200, sync.text
     order = [row for row in client.get("/api/orders/open").json()["orders"] if row["woo_order_id"] == woo_id][0]
-    allocation = client.post("/api/allocations/commit", json={"order_ids": [order["id"]], "allow_partial": True, "created_by": "pytest"})
-    assert allocation.status_code == 200, allocation.text
-    assert allocation.json()["status"] == "posted"
     pick = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": True, "created_by": "pytest"})
     assert pick.status_code == 200, pick.text
     assert pick.json()["status"] == "posted"
@@ -55,10 +52,10 @@ def test_fulfillment_preview_valid_picked_order_does_not_write(client, monkeypat
     assert preview_line["fulfillment_status"] == "fulfilled"
     after_item = client.get("/api/items", params={"sku": "FULFILL-SKU"}).json()["items"][0]
     after_order = client.get(f"/api/orders/{order['id']}").json()
-    assert after_item["In Stock"] == before_item["In Stock"] == 6
-    assert after_item["Allocated"] == before_item["Allocated"] == 3
+    assert after_item["In Stock"] == before_item["In Stock"] == 4
+    assert after_item["Allocated"] == before_item["Allocated"] == 1
     assert after_order["lines"][0]["quantity_fulfilled"] == line["quantity_fulfilled"] == 0
-    assert client.get("/api/stock-movements").json()["total"] == 0
+    assert client.get("/api/stock-movements", params={"movement_type": "fulfill_order"}).json()["total"] == 0
     assert client.get("/api/fulfillments").json()["total"] == 0
 
 
@@ -96,7 +93,7 @@ def test_fulfillment_preview_skips_fully_fulfilled_line(client, monkeypatch):
     assert fully_fulfilled["preview_orders"][0]["lines"][0]["remaining_to_fulfill"] == 0
 
 
-def test_fulfillment_commit_creates_records_reduces_stock_and_audit(client, monkeypatch):
+def test_fulfillment_commit_creates_records_without_reducing_stock_again(client, monkeypatch):
     order, _ = picked_order(client, monkeypatch)
     before_item = client.get("/api/items", params={"sku": "FULFILL-SKU"}).json()["items"][0]
 
@@ -108,11 +105,12 @@ def test_fulfillment_commit_creates_records_reduces_stock_and_audit(client, monk
     assert body["fulfillment_id"]
     assert body["fulfilled_lines"] == 1
     assert body["total_quantity_fulfilled"] == 2
-    assert body["created_stock_movements"] == 1
+    assert body["created_stock_movements"] == 0
     assert body["created_audit_events"] == 1
+    assert "Stock already reduced during picking." in body["warnings"]
     item = client.get("/api/items", params={"sku": "FULFILL-SKU"}).json()["items"][0]
-    assert item["In Stock"] == before_item["In Stock"] - 2 == 4
-    assert item["Allocated"] == before_item["Allocated"] - 2 == 1
+    assert item["In Stock"] == before_item["In Stock"] == 4
+    assert item["Allocated"] == before_item["Allocated"] == 1
     assert item["Sellable"] == 3
     assert item["Under Par"] is True
     order_after = client.get(f"/api/orders/{order['id']}").json()
@@ -121,11 +119,7 @@ def test_fulfillment_commit_creates_records_reduces_stock_and_audit(client, monk
     assert order_after["lines"][0]["quantity_picked"] == 2
     assert order_after["lines"][0]["quantity_fulfilled"] == 2
     assert order_after["lines"][0]["remaining_to_fulfill"] == 0
-    movements = client.get("/api/stock-movements", params={"movement_type": "fulfill_order"}).json()["movements"]
-    assert movements[0]["quantity_delta"] == -2
-    assert movements[0]["previous_in_stock"] == 6
-    assert movements[0]["new_in_stock"] == 4
-    assert movements[0]["reference_type"] == "fulfillment"
+    assert client.get("/api/stock-movements", params={"movement_type": "fulfill_order"}).json()["total"] == 0
 
 
 def test_fulfillment_commit_partial_updates_order_status(client, monkeypatch):
@@ -140,8 +134,8 @@ def test_fulfillment_commit_partial_updates_order_status(client, monkeypatch):
     assert detail["lines"][0]["quantity_fulfilled"] == 1
     assert detail["lines"][0]["remaining_to_fulfill"] == 1
     item = client.get("/api/items", params={"sku": "FULFILL-SKU"}).json()["items"][0]
-    assert item["In Stock"] == 5
-    assert item["Allocated"] == 2
+    assert item["In Stock"] == 4
+    assert item["Allocated"] == 1
 
 
 def test_fulfillment_commit_rejects_overfulfill_and_is_atomic(client, monkeypatch):
@@ -161,13 +155,19 @@ def test_fulfillment_commit_rejects_overfulfill_and_is_atomic(client, monkeypatc
     assert client.get("/api/stock-movements", params={"movement_type": "fulfill_order"}).json()["total"] == 0
 
 
-def test_fulfillment_commit_rejects_when_stock_or_allocated_would_go_negative(client, monkeypatch):
-    order, line = picked_order(client, monkeypatch, item_stock=2, item_allocated=0, quantity=2, sku="LOW-FULFILL-SKU", barcode="LOW-FULFILL-BAR", woo_id=706, product_id=306)
-    client.patch(f"/api/items/{line['item_id']}", json={"Allocated": 1})
+def test_fulfillment_commit_rejects_unpicked_order_without_reducing_stock(client, monkeypatch):
+    seed_item(client, sku="UNPICKED-COMMIT-SKU", Barcode="UNPICKED-COMMIT-BAR", wooProductId=306, **{"In Stock": 2, "Allocated": 0})
+    patch_woo_order_client(monkeypatch, [woo_order(id=706, number="706", line_items=[{**woo_order()["line_items"][0], "id": 1706, "product_id": 306, "sku": "UNPICKED-COMMIT-SKU", "meta_data": [{"key": "barcode", "value": "UNPICKED-COMMIT-BAR"}]}])])
+    client.post("/api/integrations/woocommerce/orders/commit", json={})
+    order = [row for row in client.get("/api/orders/open").json()["orders"] if row["woo_order_id"] == 706][0]
+    line = client.get(f"/api/orders/{order['id']}").json()["lines"][0]
+    before = client.get("/api/items", params={"sku": "UNPICKED-COMMIT-SKU"}).json()["items"][0]
 
     response = client.post("/api/fulfillments/commit", json={"lines": [{"order_line_id": line["id"], "quantity_to_fulfill": 2}], "allow_partial": True})
 
     assert response.json()["status"] == "rejected"
+    after = client.get("/api/items", params={"sku": "UNPICKED-COMMIT-SKU"}).json()["items"][0]
+    assert after["In Stock"] == before["In Stock"]
     assert client.get("/api/fulfillments").json()["total"] == 0
 
 
@@ -185,7 +185,7 @@ def test_fulfillment_list_detail_export_and_open_orders_reflect_fulfilled(client
     assert listing.json()["total"] == 1
     assert detail.status_code == 200
     assert len(detail.json()["lines"]) == 1
-    assert detail.json()["stock_movement_ids"]
+    assert detail.json()["stock_movement_ids"] == []
     assert detail.json()["audit_event_ids"]
     assert exported.status_code == 200
     assert exported.text.splitlines()[0] == "Fulfillment Number,Status,Created At,Posted At,Woo Order Number,Order ID,SKU,Barcode,Description,Warehouse,Inventory Location,Quantity Ordered,Quantity Allocated,Quantity Picked,Previously Fulfilled,Quantity Fulfilled,Fulfilled After,Remaining To Fulfill,In Stock Before,Allocated Before,Sellable Before,In Stock After,Allocated After,Sellable After,Line Status,Notes"
@@ -193,5 +193,6 @@ def test_fulfillment_list_detail_export_and_open_orders_reflect_fulfilled(client
     assert rows[0]["Fulfillment Number"] == commit.json()["fulfillment_number"]
     assert rows[0]["Quantity Fulfilled"] == "2.0"
     fulfilled_orders = [row for row in open_orders.json()["orders"] if row["id"] == order["id"]]
-    assert fulfilled_orders
-    assert fulfilled_orders[0]["local_status"] == "fulfilled"
+    assert not fulfilled_orders
+    completed = client.get("/api/orders/completed").json()["orders"]
+    assert order["id"] in {row["id"] for row in completed}

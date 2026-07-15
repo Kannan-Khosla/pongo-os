@@ -1,5 +1,6 @@
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_locations_api import seed_location
+from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
 
 
 def direct_payload(**overrides):
@@ -82,6 +83,42 @@ def test_direct_receiving_commit_creates_receipt_line_stock_and_movement(client)
     assert movements[0]["previous_in_stock"] == 10
     assert movements[0]["new_in_stock"] == 15
     assert movements[0]["reference_type"] == "direct_receipt"
+
+
+def test_direct_receiving_auto_allocates_oldest_waiting_processing_order(client, monkeypatch):
+    seed_item(
+        client,
+        sku="RCV-FIFO",
+        Barcode="RCV-FIFO-BAR",
+        wooProductId=951,
+        **{"In Stock": 0, "Allocated": 0, "Inventory Location": "REC-FIFO"},
+    )
+    seed_location(client, code="REC-FIFO", name="REC-FIFO")
+    order_line = {
+        **woo_order()["line_items"][0],
+        "id": 9951,
+        "product_id": 951,
+        "sku": "RCV-FIFO",
+        "quantity": 2,
+        "meta_data": [{"key": "barcode", "value": "RCV-FIFO-BAR"}],
+    }
+    patch_woo_order_client(monkeypatch, [woo_order(id=951, number="RCV-WAITING", line_items=[order_line])])
+    client.post("/api/integrations/woocommerce/orders/commit", json={})
+    waiting = next(row for row in client.get("/api/orders/allocate").json()["orders"] if row["woo_order_number"] == "RCV-WAITING")
+
+    response = client.post(
+        "/api/receipts/direct/commit",
+        json=direct_payload(
+            reference_number="FIFO-RESTOCK",
+            lines=[{"sku": "RCV-FIFO", "inventory_location": "REC-FIFO", "quantity_received": 2}],
+        ),
+    )
+
+    assert response.status_code == 200, response.text
+    detail = client.get(f"/api/orders/{waiting['id']}").json()
+    assert detail["lines"][0]["quantity_allocated"] == 2
+    assert detail["shows_in_allocate"] is False
+    assert detail["shows_in_pick_orders"] is True
 
 
 def test_receiving_by_sku_works(client):

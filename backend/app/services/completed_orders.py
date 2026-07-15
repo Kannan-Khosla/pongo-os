@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.orders import Order, OrderItem
 from app.schemas.orders import CompletedOrderListResponse, CompletedOrderRead
 
-COMPLETED_ORDER_STATUSES = {"fulfilled", "partially_fulfilled"}
+COMPLETED_ORDER_STATUSES = {"completed", "closed", "fulfilled", "partially_fulfilled"}
 COMPLETED_ORDERS_CSV_COLUMNS = [
     "Woo Order Number",
     "Woo Order ID",
@@ -49,14 +49,14 @@ class CompletedOrderFilters:
 
 
 def list_completed_orders(db: Session, filters: CompletedOrderFilters) -> CompletedOrderListResponse:
-    statement = select(Order).where(Order.local_status.in_(COMPLETED_ORDER_STATUSES)).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.date_modified.desc().nullslast(), Order.date_created.desc().nullslast(), Order.id.desc())
+    statement = select(Order).where((Order.local_status.in_(COMPLETED_ORDER_STATUSES)) | (Order.completion_status.in_(["completed", "completed_without_picking"]))).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.closed_at.desc().nullslast(), Order.completed_at.desc().nullslast(), Order.date_modified.desc().nullslast(), Order.date_created.desc().nullslast(), Order.id.desc())
     orders = list(db.scalars(statement).all())
     rows = [completed_order_to_read(order) for order in orders if order_matches_filters(order, filters)]
     return CompletedOrderListResponse(orders=rows, total=len(rows))
 
 
 def export_completed_orders_csv(db: Session, filters: CompletedOrderFilters) -> str:
-    statement = select(Order).where(Order.local_status.in_(COMPLETED_ORDER_STATUSES)).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.date_modified.desc().nullslast(), Order.date_created.desc().nullslast(), Order.id.desc())
+    statement = select(Order).where((Order.local_status.in_(COMPLETED_ORDER_STATUSES)) | (Order.completion_status.in_(["completed", "completed_without_picking"]))).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.closed_at.desc().nullslast(), Order.completed_at.desc().nullslast(), Order.date_modified.desc().nullslast(), Order.date_created.desc().nullslast(), Order.id.desc())
     orders = [order for order in db.scalars(statement).all() if order_matches_filters(order, filters)]
     output = StringIO()
     writer = csv.writer(output)
@@ -87,8 +87,14 @@ def completed_order_to_read(order: Order) -> CompletedOrderRead:
         total_quantity_allocated=decimal_to_float(sum((line.quantity_allocated or Decimal("0")) for line in lines)),
         total_quantity_picked=decimal_to_float(sum((line.quantity_picked or Decimal("0")) for line in lines)),
         total_quantity_fulfilled=decimal_to_float(sum((line.quantity_fulfilled or Decimal("0")) for line in lines)),
+        total_quantity_stock_reduced=decimal_to_float(sum((line.quantity_stock_reduced or Decimal("0")) for line in lines)),
         total_remaining_to_fulfill=decimal_to_float(sum(remaining_to_fulfill(line) for line in lines)),
         total_fulfilled_value=decimal_to_float(sum(fulfilled_value(line) for line in lines)),
+        completed_without_picking=bool(order.completed_without_picking),
+        completion_status=order.completion_status,
+        pick_status=order.pick_status,
+        completed_at=order.completed_at,
+        closed_at=order.closed_at,
     )
 
 

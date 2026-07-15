@@ -5,9 +5,12 @@ future boundaries. The backend implements health, Command Center dashboard,
 Items, item import/export, Locations, inventory by-location reporting/export,
 Stock by Location v2, inventory transfers, stock adjustments, direct receiving,
 received inventory reporting, cycle counts, read-only
-WooCommerce product and order sync, local WooCommerce remap metadata, open
-orders, allocations, scanner-style picks, fulfillments, completed orders, SKU
-Orders reporting, and local-only route creation/management.
+WooCommerce product and order sync, signed phase-1 order webhooks and staff
+event feed, local WooCommerce remap metadata, guarded WooCommerce writeback,
+open orders, allocations,
+scanner-style picks with pick-time stock reduction, local completion,
+fulfillment compatibility/history, completed orders, SKU Orders reporting, and
+local-only route creation/management.
 
 ## API Rules
 
@@ -15,7 +18,20 @@ Orders reporting, and local-only route creation/management.
 - Frontend never calls WooCommerce directly.
 - WooCommerce credentials live only in backend environment variables.
 - Stock-changing endpoints must create stock movement/audit rows.
-- WooCommerce stock writeback is disabled until local workflows are stable and explicitly enabled.
+- WooCommerce credentials are never returned by API responses.
+- WooCommerce writeback is allowlisted, queued, and audited. Production permits
+  only an explicitly enabled order-status update; stock writes remain
+  staging-only.
+- WooCommerce DELETE is always blocked.
+- Order completion sends the linked WooCommerce order a guarded `completed`
+  status update through the backend writeback queue.
+- The inbound webhook receiver is disabled by default, uses a separate secret,
+  authenticates the exact raw body, and never treats CORS or source headers
+  alone as authentication.
+- Webhook-backed UI notices are internal staff feedback only. They do not send
+  customer messages or make outbound WooCommerce requests.
+- Allocation reserves local stock only; picking is the local stock reduction
+  step; completion never reduces stock again.
 - Route map/geocoding/optimization providers are disabled unless configured
   backend-side. Provider endpoints must never expose secrets.
 
@@ -35,9 +51,13 @@ Orders reporting, and local-only route creation/management.
 - Cycle counts: `/api/cycle-counts`
 - WooCommerce read-only product sync: `/api/integrations/woocommerce/products/*`
 - WooCommerce read-only order sync: `/api/integrations/woocommerce/orders/*`
+- WooCommerce signed order webhook and event cursor:
+  `/api/integrations/woocommerce/webhooks/*`
 - WooCommerce local remap: `/api/integrations/woocommerce/remap/*`
-- Orders: `/api/orders/open`, `/api/orders/completed`, `/api/orders/{id}`
-- Allocations: `/api/allocations`
+- WooCommerce staging writeback queue: `/api/integrations/woocommerce/writeback/*`
+- Orders: `/api/orders/open`, `/api/orders/allocate`, `/api/orders/pick`, `/api/orders/completed`, `/api/orders/history`, `/api/orders/{id}`
+- Allocations: `/api/allocations`, `/api/allocations/exceptions`,
+  `/api/allocations/auto/commit`
 - Picks and scanner picks: `/api/picks`
 - Fulfillments: `/api/fulfillments`
 - Routes: `/api/routes`
@@ -94,6 +114,91 @@ metadata and local item Woo ID metadata.
 Remap preserves manual Pongo OS item fields and does not change stock,
 allocated, sellable, picked, fulfilled, or order status quantities.
 
+## WooCommerce Status And Staging Writeback
+
+### GET /api/integrations/woocommerce/status
+
+Returns configuration state without exposing secrets:
+
+- `configured`
+- `base_url_host`
+- `environment`
+- `read_only`
+- `writeback_enabled`
+- `dry_run`
+- `read_enabled`
+- `staging_live_test_mode`
+- `stock_write_allowed`
+- `order_status_write_allowed`
+- `product_metadata_write_allowed`
+- `customer_write_allowed`
+- `coupon_write_allowed`
+- `refund_write_allowed`
+- `delete_allowed`
+- `allowed_host`
+- `host_allowed`
+- `last_product_sync`
+- `last_order_sync`
+- `webhook_enabled`
+- `webhook_configured`
+- `webhook_secret_present`
+- `last_webhook_delivery`
+- `last_error`
+
+The status endpoint may show whether key/secret env vars are present, but it
+never returns their values.
+
+`webhook_configured` is true only when the receiver is enabled, the webhook
+secret is at least 32 UTF-8 bytes, and `WOOCOMMERCE_ALLOWED_HOST` is nonblank.
+`last_webhook_delivery`, when present, contains only `id`, `topic`, `status`,
+`woo_order_id`, `created_order`, and `received_at`.
+
+### Staging writeback endpoints
+
+- `POST /api/integrations/woocommerce/writeback/stock/preview`
+- `POST /api/integrations/woocommerce/writeback/stock/sync`
+- `POST /api/integrations/woocommerce/writeback/order-status/preview`
+- `POST /api/integrations/woocommerce/writeback/queue`
+- `GET /api/integrations/woocommerce/writeback/queue`
+- `GET /api/integrations/woocommerce/writeback/queue/{id}`
+- `POST /api/integrations/woocommerce/writeback/queue/{id}/approve`
+- `POST /api/integrations/woocommerce/writeback/queue/{id}/send`
+- `POST /api/integrations/woocommerce/writeback/queue/{id}/cancel`
+- `GET /api/integrations/woocommerce/writeback/status`
+- `GET /api/integrations/woocommerce/writeback/logs`
+
+Preview endpoints build local proposed payloads only. Queue creates local
+`woo_writeback_queue` rows only. Send requires an approved queue item and
+records a dry-run result without sending when `WOOCOMMERCE_WRITEBACK_DRY_RUN=true`.
+
+`POST /writeback/stock/sync` accepts `{ "force": false }` for changed mapped
+items only and `{ "force": true }` for every active mapped item. It creates,
+approves, and sends the existing audited queue operation per item. The response
+reports sent, dry-run, failed, unchanged, and unmapped counts. Successful sends
+refresh each item's WooCommerce stock snapshot.
+For local items without stored Woo IDs, sync first attempts an unambiguous
+mapping from matched imported order lines. Positive quantities explicitly send
+`stock_status=instock`; zero sends `stock_status=outofstock`.
+
+Live staging send is guarded by all of these conditions:
+
+- `WOOCOMMERCE_ENVIRONMENT=staging`
+- `WOOCOMMERCE_READ_ONLY=false`
+- `WOOCOMMERCE_STAGING_LIVE_TEST_MODE=true`
+- `WOOCOMMERCE_WRITEBACK_ENABLED=true`
+- `WOOCOMMERCE_WRITEBACK_DRY_RUN=false`
+- Woo base URL host exactly matches `WOOCOMMERCE_ALLOWED_HOST`
+- operation type is allowlisted
+- endpoint path is allowlisted
+- HTTP method is `PUT` or `PATCH`
+- payload fields are allowlisted for the operation
+
+Allowed operation types are `update_product_stock`, `update_variation_stock`,
+and `update_order_status`. Product/variation stock writes may send only
+`stock_quantity`, `stock_status`, and `manage_stock`. Order-status writes may
+send only `status`. No customer, coupon, refund, metadata/product-edit,
+arbitrary endpoint, POST, or DELETE writeback is available.
+
 ## Pick Scanner
 
 Scanner-style picking is additive on top of the existing pick commit service:
@@ -102,9 +207,11 @@ Scanner-style picking is additive on top of the existing pick commit service:
 - `POST /api/picks/orders/{order_id}/scan/preview`
 - `POST /api/picks/orders/{order_id}/scan/commit`
 
-Scanner commit increments local picked quantity only through the existing pick
-audit path. It does not reduce `In Stock`, reduce `Allocated`, change
-`Sellable`, or write WooCommerce.
+Scanner commit increments local picked quantity and reduces local stock through
+the pick service. It reduces `In Stock`, reduces `Allocated`, recalculates
+`Sellable`, creates `pick_stock_reduction` stock movements, and never writes
+WooCommerce. Scanner commit accepts an `idempotency_key`; replaying the same
+key does not reduce stock a second time.
 
 ## SKU Orders Report
 
@@ -327,14 +434,19 @@ All WooCommerce integration endpoints are backend-only. The React frontend calls
 the Pongo backend and never calls WooCommerce directly. Credentials are read
 only from backend environment variables and are never returned in API responses.
 
-Required backend environment variables:
+Backend environment variables used by WooCommerce integration. The webhook
+secret may remain blank while the receiver is disabled:
 - `WOOCOMMERCE_BASE_URL`
 - `WOOCOMMERCE_CONSUMER_KEY`
 - `WOOCOMMERCE_CONSUMER_SECRET`
+- `WOOCOMMERCE_ALLOWED_HOST`
 - `WOOCOMMERCE_TIMEOUT_SECONDS`
 - `WOOCOMMERCE_PAGE_SIZE`
 - `WOOCOMMERCE_ORDER_SYNC_PAGE_SIZE`
 - `WOOCOMMERCE_ORDER_SYNC_DEFAULT_STATUSES`
+- `WOOCOMMERCE_WEBHOOK_ENABLED`
+- `WOOCOMMERCE_WEBHOOK_SECRET`
+- `WOOCOMMERCE_WEBHOOK_MAX_BODY_BYTES`
 
 ### GET /api/integrations/woocommerce/status
 
@@ -345,9 +457,17 @@ Response:
 - `base_url_present`
 - `consumer_key_present`
 - `consumer_secret_present`
+- `webhook_enabled`
+- `webhook_configured`
+- `webhook_secret_present`
+- `last_webhook_delivery`
 - `message`
 
 No secret values are returned.
+
+Webhook configuration is independent from REST credential configuration and
+writeback enablement. The response reports only enable/configuration/presence
+booleans and safe last-delivery metadata.
 
 Optional query param:
 - `check=true`: performs a safe read-only product request to verify
@@ -361,6 +481,9 @@ API client and return what would happen locally without database writes.
 Request:
 - `include_statuses`: defaults to `["publish"]`
 - `limit`: defaults to `500`
+- `page`: optional Woo parent-product page for batched catalog reads
+- `per_page`: defaults to `50`, maximum `100`
+- `blocked_skus`: normalized duplicate Woo SKUs that commit must leave unchanged
 - `created_by`: defaults to `system`
 
 Preview does not:
@@ -380,6 +503,8 @@ Response:
 - `warnings`
 - `errors`
 - `preview_rows`
+- `page`, `next_page`, `has_more`
+- `unmatched_local_count`, `unmatched_local_skus` (populated after the final commit batch)
 
 Preview row fields:
 - `remote_type`
@@ -416,9 +541,13 @@ Pongo OS items. This endpoint never writes to WooCommerce.
 Commit behavior:
 - Creates one local item for each sellable simple product with a SKU.
 - Creates one local item for each sellable variation with a SKU.
-- Updates existing items by Woo product/variation IDs, SKU, or Barcode.
+- Reuses an existing Woo ID mapping, otherwise matches by unique SKU, then by
+  unique Barcode only when SKU did not match.
+- Attaches only Woo mapping and snapshot metadata to existing items; existing
+  item IDs and Pongo-owned fields are preserved.
 - Skips blank-SKU records.
-- Skips conflicts.
+- Skips duplicate local/remote SKUs and mapping conflicts.
+- Reports local items still unmatched after the final batch without changing them.
 - Stores sync run history and sync errors.
 - Does not create stock movements.
 - Does not overwrite local In Stock, Allocated, Warehouse, Inventory Location,
@@ -446,7 +575,7 @@ Fetch eligible WooCommerce orders through the backend WooCommerce REST API
 client and return what would happen locally without database writes.
 
 Request:
-- `include_statuses`: defaults to `["processing", "on-hold"]`
+- `include_statuses`: defaults to `["processing", "on-hold", "pending"]`
 - `limit`: defaults to `500`
 - `after`, `before`, `modified_after`, `modified_before`: optional WooCommerce date filters
 - `created_by`: defaults to `system`
@@ -473,32 +602,300 @@ Availability is a read-only snapshot:
 
 ### POST /api/integrations/woocommerce/orders/commit
 
-Fetch eligible WooCommerce orders again, validate again, and create/update only
-local `orders` and `order_items` rows. This endpoint never writes to
-WooCommerce and never changes local stock or allocation quantities.
+Fetch eligible WooCommerce orders again, validate again, create/update local
+`orders` and `order_items` rows, and run safe local FIFO auto-allocation for
+active `processing` orders. This endpoint never writes to WooCommerce and never
+reduces local In Stock.
 
 Commit behavior:
 - Stores a local order snapshot for eligible open WooCommerce orders.
 - Upserts order lines by Woo line item ID.
 - Stores unmatched and conflict lines for staff review instead of creating
   inventory items.
+- After all snapshots in the batch are stored, evaluates processing orders by
+  `date_created ASC`, then local order ID ASC; missing dates sort last.
+- Reserves all currently available quantity for the oldest competing order,
+  including partial quantities, before evaluating newer orders.
+- Creates posted allocation records/lines and increases local Allocated for
+  full or partial reservations.
+- For remaining shortages, unmatched lines, conflicts, partial stock, or no
+  location stock, records allocation exception status/reasons for Allocate.
+- Non-processing snapshots do not reserve stock or enter operational queues.
+- When an existing allocated order changes to a non-processing WooCommerce
+  status, releases its remaining unpicked allocation before rerunning FIFO.
 - Reuses `woocommerce_sync_runs` with `sync_type = orders`.
 - Stores order/line context in `woocommerce_sync_errors` for unmatched and
   conflict rows.
+- Summary responses include `auto_allocated_count`,
+  `allocation_exception_count`, `unmatched_line_count`,
+  `conflict_line_count`, and `pick_ready_count`.
+
+### POST /api/integrations/woocommerce/orders/quick-sync
+
+Fetch the newest WooCommerce orders per requested status and upsert local order
+snapshots. This endpoint is used by the frontend for near-instant order pickup
+while Dashboard, Orders, or Settings is open. Retrieval remains newest first,
+but the subsequent local allocation pass evaluates all eligible processing
+orders oldest `date_created` first. It is still read-only against WooCommerce:
+it may increase local Allocated, but it does not pick, fulfill, reduce In Stock,
+or write back.
+
+Query parameters:
+- `per_status_limit`, default `10`, maximum `25`
+
+Typical frontend payload:
+
+```json
+{
+  "include_statuses": ["processing", "on-hold", "pending"],
+  "limit": 30,
+  "created_by": "auto-order-poll"
+}
+```
+
+Quick sync remains enabled every 10 seconds on order-aware frontend pages as a
+recovery and reconciliation path. It is not the primary phase-1 new-order
+ingestion path once the signed webhook is enabled.
+
+### POST /api/integrations/woocommerce/webhooks/orders
+
+Receive WooCommerce webhook deliveries. The receiver is disabled by default
+and fails closed unless all receiver configuration is present:
+
+- `WOOCOMMERCE_WEBHOOK_ENABLED=true`
+- `WOOCOMMERCE_WEBHOOK_SECRET` contains a distinct secret of at least 32 UTF-8
+  bytes
+- `WOOCOMMERCE_ALLOWED_HOST`, or the host from `WOOCOMMERCE_BASE_URL` when the
+  explicit allowlist is blank, identifies the allowed webhook source host
+- `WOOCOMMERCE_WEBHOOK_MAX_BODY_BYTES` sets the body limit; the default is
+  `1048576` bytes and the runtime clamps it to 1 KiB through 10 MiB
+
+The delivery URL must be publicly reachable over HTTPS, for example:
+
+```text
+https://<backend-host>/api/integrations/woocommerce/webhooks/orders
+```
+
+Localhost URLs cannot receive deliveries from a remote WooCommerce staging or
+production site.
+
+WooCommerce sends these expected delivery headers:
+
+- `X-WC-Webhook-Source`
+- `X-WC-Webhook-Topic`
+- `X-WC-Webhook-Resource`
+- `X-WC-Webhook-Event`
+- `X-WC-Webhook-Signature`
+- `X-WC-Webhook-ID`
+- `X-WC-Webhook-Delivery-ID`
+
+The backend computes base64-encoded HMAC-SHA256 over the exact raw request body
+using `WOOCOMMERCE_WEBHOOK_SECRET` and compares it in constant time with
+`X-WC-Webhook-Signature`. It then verifies that topic/resource/event agree and
+that the normalized `X-WC-Webhook-Source` host exactly matches the allowlisted
+host. JSON must use `Content-Type: application/json` and contain a positive
+order `id`, a nonblank `status`, and a `line_items` array.
+
+WooCommerce sends an unsigned setup ping when a webhook is first activated.
+The receiver accepts only the exact body `webhook_id=<positive integer>` with no
+signature as a no-op and returns `status = ready`. It creates no ledger, order,
+allocation, or notification event.
+
+Phase-1 topic behavior:
+
+- Authenticated `order.created` imports the REST-shaped order payload through
+  the existing local order-sync pipeline.
+- An `order.created` snapshot whose WooCommerce `date_modified` is older than or equal to
+  the existing local order snapshot is audited with `processing_status =
+  ignored`; it cannot regress newer REST or webhook data and does not emit a
+  staff event.
+- Any other authenticated, internally consistent topic is recorded with
+  `processing_status = ignored` and returns HTTP 200 without importing an order.
+- A processing-order import runs the same audited queue-wide FIFO allocation as
+  manual and quick sync. It can increase local `Allocated`, but does not reduce
+  `In Stock`, create a stock movement, write WooCommerce, or send a customer
+  notification.
+
+Every authenticated JSON delivery is identified by the unique tuple
+`(webhook_id, delivery_id, payload_sha256)`. Replaying a terminal delivery
+increments its attempt count and returns `status = duplicate` without importing,
+allocating, or notifying again. The raw customer payload is not duplicated in
+the delivery ledger.
+
+Response fields:
+
+- `status`: `ready`, `processed`, `processed_with_errors`, `ignored`, or
+  `duplicate`
+- `duplicate`
+- `delivery_id`
+- `event_id`: immutable `woocommerce_order_events.id` when a new local order was
+  published to the staff feed; otherwise `null`
+- `woo_order_id`
+- `local_order_id`
+- `sync_run_id`
+- `created_order`
+- `message`
+
+Validation errors use safe messages and do not expose the secret. Important
+status codes are `400` for malformed JSON or inconsistent headers, `401` for a
+missing/invalid signature, `403` for a disallowed source host, `413` for an
+oversized body, `415` for a non-JSON media type, `422` for an invalid order
+shape, and `503` when the receiver is disabled/misconfigured or a transaction
+cannot be committed.
+
+WooCommerce’s current delivery and header behavior is documented in the
+[WooCommerce webhook API documentation](https://developer.woocommerce.com/docs/apis/rest-api/v2/webhooks)
+and its [webhook implementation reference](https://woocommerce.github.io/code-reference/files/woocommerce-includes-class-wc-webhook.html).
+
+### GET /api/integrations/woocommerce/webhooks/events
+
+Return a read-only cursor feed used by the internal staff new-order notice.
+
+Query parameters:
+
+- `after_id`: exclusive immutable order-event cursor, default `0`; negative values are
+  treated as `0`
+- `limit`: default `50`, clamped to `1..100`
+- `initialize`: boolean, default `false`; when `true`, returns no events and
+  sets `next_after_id` to the current order-event high-water mark so a new UI session
+  does not announce historical orders
+
+Only immutable `woocommerce_order_events` rows created atomically with a
+successful new local order appear in `events`. Ignored, duplicate, failed,
+setup-ping, update-only, and already-local deliveries never produce an outbox
+row or staff new-order event. A failed delivery that later succeeds receives a
+new immutable event ID at successful commit time, so an earlier feed cursor
+cannot skip it.
+
+Event fields:
+
+- `id`
+- `topic`
+- `woo_order_id`
+- `local_order_id`
+- `woo_order_number`
+- `woo_status`
+- `local_status`
+- `customer_name`
+- `currency`
+- `total`
+- `created_order`
+- `received_at`
+
+Response cursor fields:
+
+- `latest_event_id` is the informational maximum immutable order-event ID.
+- `next_after_id` is the safe exclusive cursor for the next request. Consumers
+  must advance with this field, not directly with `latest_event_id`.
+- `has_more` means another event page remains. Consumers must keep requesting
+  with `after_id = next_after_id` until it becomes false.
+
+The frontend begins a session with `initialize=true`, then polls globally every
+2 seconds while the document is visible and also on focus/visibility changes.
+The feed does not acknowledge events globally, mutate orders, call
+WooCommerce, or send outbound/customer notifications.
 
 ### GET /api/orders/open
 
-List local open orders imported from WooCommerce order sync.
+List active local open orders whose latest stored WooCommerce status is exactly
+`processing`. Results are newest first. Fully auto-allocated processing orders
+can appear here and in Pick Orders at the same time. Pending, on-hold, failed,
+cancelled, refunded, and completed snapshots are excluded from this endpoint.
 
 Filters:
 - `search`
-- `woo_status`
 - `availability_status`
 - `matched_status`
+
+`search` matches order number, customer name/email/phone, order-line SKU,
+barcode or name, and the matched local inventory item's SKU, barcode or
+description. Rows include allocation, pick, completion, can-pick/can-complete,
+completed-without-picking, and stock-reduction fields. Queue rows also expose
+`shipping_zip`, `company`, `ship_from`, `item_names`, and
+`total_quantity_fulfilled` for the Open Customer Orders grid.
+
+### GET /api/orders/allocate
+
+List processing orders that need allocation attention: shortages, unmatched
+lines, conflicts, unavailable location stock, partial allocation, or failed
+auto-allocation. Fully allocated orders are excluded.
+
+### GET /api/orders/pick
+
+List processing orders whose required inventory lines are fully allocated and
+are managed by picking. Partially allocated orders remain in Allocate. Fully
+picked orders leave this queue and remain correctable through Open Orders'
+audited Unpick action. Picking happens in this view and reduces local stock.
+Queue rows also include `order_source`, `shipping_city`,
+`shipping_state`, `shipping_via`, `skus`, `total_quantity_ordered`,
+`total_quantity_allocated`, and `total_quantity_picked` for the manual picking
+interface.
 
 ### GET /api/orders/{id}
 
 Return one local order with line-level match and availability detail.
+
+### POST /api/orders/bulk/complete
+
+Mark selected local Open Orders completed. Picked orders complete without a
+second stock reduction. Unpicked orders complete without reducing unpicked
+stock and release remaining allocation. The response reports per-order success
+or failure plus `woo_sync_status` and `woo_writeback_queue_id` for each order.
+
+### POST /api/orders/bulk/unpick
+
+Reverse all reversible picked quantities for selected active orders. The
+operation restores In Stock and Allocated at original pick locations, updates
+order and pick records, and creates `unpick_stock_restoration` movement and
+audit rows. Completed or fulfilled orders are rejected, and reversed pick lines
+cannot be reversed again.
+
+### GET /api/orders/{id}/workflow
+
+Return the order, line statuses, workflow visibility flags, allocation
+preview/status, pick status, stock-reduction status, and history references.
+
+### POST /api/orders/{id}/auto-allocate/preview
+
+Evaluate a local order for auto-allocation without writing data.
+
+### POST /api/orders/{id}/auto-allocate/commit
+
+Commit local auto-allocation for one active processing order. Available stock
+may be reserved partially; unresolved quantities remain in Allocate. This
+endpoint creates allocation records and audit events, increases local
+Allocated, and never reduces In Stock or writes WooCommerce. Normal queue-wide
+reconciliation uses `POST /api/allocations/auto/commit` so competing orders are
+processed in FIFO order.
+
+### POST /api/orders/{id}/complete/preview
+
+Preview local order completion. `completion_mode` can be `complete`,
+`complete_picked`, or `complete_without_picking`. `complete` selects the safe
+path from current server-side pick state.
+
+### POST /api/orders/{id}/complete/commit
+
+Complete or close a local order.
+
+`complete` is the normal Open Orders command. It completes a fully picked order
+without reducing stock again. For any not-fully-picked order, it releases
+remaining allocation and completes without reducing unpicked stock. The UI
+must warn the staff member before sending that request.
+
+`complete_picked` marks an already picked order completed/closed and does not
+reduce stock again.
+
+`complete_without_picking` marks the order completed/closed, releases remaining
+unpicked allocation, creates an audit event that stock was not reduced, and
+does not reduce stock.
+
+Unless `queue_woo_status_update` is explicitly false, the endpoint creates,
+approves, and sends an audited queue item that patches the linked WooCommerce
+order to `completed`. The response includes `woo_sync_status`,
+`woo_writeback_queue_id`, and `woo_sync_error`. Local completion remains
+recorded if WooCommerce is unavailable so the failed queue item can be audited
+and retried without repeating stock actions.
 
 ### GET /api/orders/open/export
 
@@ -506,8 +903,8 @@ Export filtered local open orders as CSV.
 
 ### GET /api/orders/completed
 
-Read-only list of local orders whose `local_status` is `fulfilled` or
-`partially_fulfilled`.
+Read-only list of local orders whose local completion state is completed,
+closed, fulfilled, partially fulfilled, or completed without picking.
 
 Filters:
 - `local_status`
@@ -550,13 +947,70 @@ CSV header order:
 
 ## Allocations
 
-Allocation reserves local Pongo OS sellable inventory for local open orders.
+Allocation reserves local Pongo OS sellable inventory for active processing
+orders.
 Allocation is local-only: it does not write WooCommerce, reduce In Stock, pick
-orders, create routes, fulfill orders, or send notifications.
+orders, create routes, fulfill orders, or send outbound/customer notifications.
+
+Auto-allocation uses the same local reservation rules after WooCommerce order
+sync and whenever a stock-changing workflow makes sellable stock available.
+Only active `processing` orders participate. The queue is ordered by
+WooCommerce `date_created ASC`, then local order ID ASC; missing dates sort
+after dated orders. It may split one order line across multiple active
+item-location rows, preferring the default location and then highest sellable
+quantity. The oldest order receives any partial quantity before a newer order
+can reserve the same stock.
+
+### POST /api/allocations/auto/commit
+
+Run queue-wide FIFO allocation and commit the result.
+
+The operation is idempotent for already reserved quantities: it evaluates only
+remaining unallocated quantities. PostgreSQL runs serialize through a
+transaction-level allocation lock, and each order is isolated so a failed order
+does not partially commit its allocation plan.
+
+Response fields:
+
+- `status`
+- `attempted_orders`
+- `allocated_orders`
+- `partially_allocated_orders`
+- `exception_orders`
+- `total_quantity_allocated`
+- `allocation_ids`
+- `errors`
+
+The same FIFO reconciliation runs automatically after order sync, direct/bulk/
+scanner receiving, standard/scanner adjustments, standard/scanner cycle count,
+completion releases, and synchronized non-processing WooCommerce status
+changes that release unpicked allocations.
+
+### GET /api/allocations/exceptions
+
+List line-level allocation exceptions for processing orders. By default the
+endpoint returns only lines with unresolved quantities; use
+`include_fully_allocated=true` to include 100% allocated matched lines.
+
+Filters:
+
+- `search`: order number, customer, SKU, barcode, or description
+- `warehouse`
+- `ordered_from`
+- `ordered_to`
+- `include_fully_allocated`
+
+Each line includes order and item identifiers, ordered date, customer, SKU,
+barcode, description, warehouse/location, ordered, allocated, unallocated,
+picked and currently available quantities, allocation status, and exception
+reason. Summary fields are `total_orders`, `total_lines`,
+`total_quantity_unallocated`, `lines_with_available_stock`, and
+`lines_out_of_stock`.
 
 ### POST /api/allocations/preview
 
-Preview allocation recommendations for one or more local open orders.
+Preview allocation recommendations for one or more eligible local processing
+orders.
 
 Request:
 - `order_ids`: local order IDs
@@ -639,9 +1093,11 @@ CSV columns:
 ## Picks
 
 Picking records operational progress against already allocated local order
-lines. Picking is local-only: it does not write WooCommerce, reduce local
-`In Stock`, reduce local `Allocated`, create routes, fulfill orders, or send
-notifications.
+lines and is the local stock reduction step. Picking is local-only: it does not
+write WooCommerce, create routes, fulfill orders, or send outbound/customer
+notifications. The primary frontend workflow is manual quantity entry per
+order line; scanner endpoints remain backend compatibility APIs and are not
+required by the Pick Orders screen.
 
 ### POST /api/picks/preview
 
@@ -681,19 +1137,22 @@ Commit picking after revalidating all selected lines.
 Commit behavior:
 - Creates a posted pick header and pick lines.
 - Updates local order line `quantity_picked` and legacy `picked_qty`.
-- Leaves local order line `quantity_allocated` unchanged.
-- Leaves item `In Stock`, `Allocated`, and `Sellable` unchanged.
+- Updates local order line `quantity_stock_reduced`.
+- Reduces local item-location and aggregate `In Stock`.
+- Reduces local item-location and aggregate `Allocated`.
+- Recalculates `Sellable`.
 - Updates local order status to `partially_picked` or `picked` when applicable.
-- Creates `inventory_audit_events` rows with `event_type = pick`; previous and
-  new stock/allocation/sellable values are identical because picking is not a
-  stock movement.
-- Does not create stock movement rows.
+- Creates `stock_movements` rows with `movement_type = pick_stock_reduction`.
+- Creates `inventory_audit_events` rows with `event_type = pick_stock_reduction`.
 - Never writes WooCommerce.
 
 Atomicity:
 - Commit revalidates remaining quantity to pick.
 - Requested quantity cannot exceed allocated quantity.
 - Requested quantity cannot exceed allocated minus already picked.
+- Requested quantity cannot reduce stock more than picked or allocated
+  quantity.
+- Commit cannot make location or aggregate In Stock/Allocated negative.
 - When `allow_partial` is false, any non-fully-pickable selected line rejects
   the entire commit.
 
@@ -728,11 +1187,12 @@ CSV columns:
 
 ## Fulfillments
 
-Fulfillment/completion records the local operational moment when picked items
-are completed and removed from physical available inventory. Fulfillment is
+Fulfillment remains for legacy compatibility and history/reporting. It is no
+longer the normal stock reduction step; picking reduces stock. Fulfillment is
 local-only: it does not write WooCommerce, update WooCommerce order status,
 update WooCommerce stock/products, create routes, create shipping labels, send
-notifications, create purchase orders, or add supplier workflows.
+outbound/customer notifications, create purchase orders, or add supplier
+workflows.
 
 ### POST /api/fulfillments/preview
 
@@ -772,33 +1232,26 @@ Commit fulfillment after revalidating all selected lines.
 Commit behavior:
 - Creates a posted fulfillment header and fulfillment lines.
 - Updates local order line `quantity_fulfilled` and legacy `fulfilled_qty`.
-- Reduces local item `In Stock` by fulfilled quantity.
-- Reduces local item `Allocated` by fulfilled quantity.
-- Recalculates item `Sellable` and `Under Par`.
-- Updates local order status to `partially_fulfilled` or `fulfilled`.
-- Creates `stock_movements` rows with `movement_type = fulfill_order`.
-- Creates `inventory_audit_events` rows with `event_type = fulfill`.
+- If picking already reduced stock, does not reduce stock again and returns a
+  warning that stock was already reduced during picking.
+- Updates local order completion/legacy fulfillment state.
+- Creates `inventory_audit_events` rows for compatibility history.
+- Creates no stock movement rows in the normal picked-order path.
+- Rejects unpicked orders instead of silently reducing stock through the old
+  path.
 - Never writes WooCommerce.
 
 Atomicity:
 - Commit revalidates remaining quantity to fulfill.
 - Requested quantity cannot exceed picked quantity.
 - Requested quantity cannot exceed allocated quantity.
-- Requested quantity cannot exceed current item In Stock.
-- Requested quantity cannot exceed current item Allocated.
-- Fulfillment cannot make In Stock or Allocated negative.
-- Fulfillment cannot leave Allocated greater than In Stock.
+- Fulfillment cannot double-reduce stock already reduced by picking.
 - When `allow_partial` is false, any non-fully-fulfillable selected line rejects
   the entire commit.
 
 Stock movement rows:
-- `movement_type = fulfill_order`
-- `quantity_delta`/`quantity_change` is negative
-- `previous_in_stock`/`old_stock` is item In Stock before fulfillment
-- `new_in_stock`/`new_stock` is item In Stock after fulfillment
-- `reference_type = fulfillment`
-- `reference_id = fulfillments.id`
-- `reference_number = fulfillment_number`
+- Normal picked-order fulfillment creates no stock movement rows because
+  picking already created `pick_stock_reduction` movements.
 
 Audit event rows:
 - `event_type = fulfill`
@@ -1013,7 +1466,9 @@ On success:
 - Creates a `receipts` row with `receipt_type = direct` and `status = posted`.
 - Creates receipt line rows.
 - Increases item `In Stock`.
-- Leaves `Allocated` unchanged.
+- The receipt operation itself does not reserve stock, but it runs FIFO
+  reconciliation in the same transaction; waiting processing orders may
+  therefore increase `Allocated` immediately after receipt stock is posted.
 - Recalculates item Sellable, Under Par, and Storage Volume.
 - Creates one stock movement/audit row per received line.
 
@@ -1021,7 +1476,8 @@ Intentional exclusions:
 - No purchase orders.
 - No supplier management.
 - No WooCommerce calls.
-- No cycle count, allocation, picking, route, or fulfillment workflow.
+- No picking, route, or fulfillment workflow. Receiving may trigger local FIFO
+  allocation for waiting processing orders.
 - No weighted average cost update.
 
 ### POST /api/receipts
@@ -1055,8 +1511,10 @@ Implemented filters:
 ## Cycle Count
 
 Cycle Count is implemented as the second stock-changing workflow after Direct
-Receiving. It does not call WooCommerce and does not run allocation, picking,
-route, fulfillment, purchase order, or supplier workflows.
+Receiving. It does not call WooCommerce and does not run picking, route,
+fulfillment, purchase order, or supplier workflows. A committed count reruns
+local FIFO allocation because a positive variance may make stock available to
+waiting processing orders.
 
 ### POST /api/cycle-counts/preview
 
@@ -1114,7 +1572,8 @@ Implemented behavior:
 - Creates a `cycle_counts` header row with `status = posted`.
 - Creates one `cycle_count_lines` row per valid line.
 - Updates item `In Stock` to `counted_quantity` only when variance is non-zero.
-- Leaves `Allocated` unchanged.
+- The count adjustment itself leaves Allocated unchanged, then FIFO
+  reconciliation may reserve newly available stock.
 - Recalculates Sellable, Under Par, and Storage Volume.
 - Creates stock movement rows only for variance lines.
 
@@ -1178,42 +1637,34 @@ draft counts.
 
 ## Orders
 
-### POST /api/orders/sync/woocommerce
+Implemented Zenventory-style order workflow endpoints:
+- `POST /api/integrations/woocommerce/orders/preview`
+- `POST /api/integrations/woocommerce/orders/commit`
+- `POST /api/integrations/woocommerce/orders/quick-sync`
+- `POST /api/integrations/woocommerce/webhooks/orders`
+- `GET /api/integrations/woocommerce/webhooks/events`
+- `GET /api/orders/open`
+- `GET /api/orders/allocate`
+- `GET /api/orders/pick`
+- `GET /api/orders/completed`
+- `GET /api/orders/history`
+- `GET /api/orders/{id}`
+- `GET /api/orders/{id}/workflow`
+- `POST /api/orders/{id}/auto-allocate/preview`
+- `POST /api/orders/{id}/auto-allocate/commit`
+- `GET /api/allocations/exceptions`
+- `POST /api/allocations/auto/commit`
+- `POST /api/orders/{id}/complete/preview`
+- `POST /api/orders/{id}/complete/commit`
+- `GET /api/picks/orders/{order_id}/scanner`
+- `POST /api/picks/orders/{order_id}/scan/preview`
+- `POST /api/picks/orders/{order_id}/scan/commit`
 
-Sync eligible WooCommerce orders into the local database.
-
-### GET /api/orders/open
-
-List local open/allocated/picked orders in the operational order queue.
-Line-level responses include `quantity_allocated`, `quantity_picked`,
-`quantity_fulfilled`, `remaining_to_allocate`, `remaining_to_pick`,
-`remaining_to_fulfill`, `picking_status`, `fulfillment_status`,
-`shortage_quantity`, and `local_sellable`.
-
-### GET /api/orders/allocated
-
-Future endpoint. The current MVP uses `GET /api/orders/open` plus `/api/picks`
-preview/commit.
-
-### POST /api/orders/{id}/allocate
-
-Future endpoint. The current MVP uses `/api/allocations/preview` and
-`/api/allocations/commit`.
-
-### GET /api/orders/{id}/pick
-
-Future endpoint. The current MVP uses `GET /api/orders/{id}` plus
-`/api/picks` detail.
-
-### POST /api/orders/{id}/pick-scan
-
-Future scanner endpoint. The current MVP supports pick preview and commit
-against allocated quantities only.
-
-### POST /api/orders/{id}/complete
-
-Future fulfillment endpoint. Not implemented. Picking does not mark orders
-fulfilled and does not update WooCommerce order status.
+Order sync runs processing-only FIFO auto-allocation. Open Orders lists active
+processing orders, Allocate lists unresolved order/item quantities, Pick Orders
+lists fully allocated processing orders ready to pick, and Completed Orders
+lists locally closed orders. Picking reduces local stock and completion does not
+reduce stock again.
 
 ## Reports
 
@@ -1419,7 +1870,8 @@ SKU/barcode order report with search by SKU, barcode, description, and date rang
 ## Routes
 
 Route creation is local-only. These endpoints do not call WooCommerce, maps,
-geocoding, routing, shipping label, notification, inventory stock, or stock
+geocoding, routing, shipping label, outbound/customer notification, inventory
+stock, or stock
 movement services.
 
 Eligible route candidates are local orders with `local_status = fulfilled` or
@@ -1551,7 +2003,8 @@ Implemented endpoints:
 
 Bulk commit creates one `receipts` row, one `receipt_items` row per valid
 line, updates `inventory_item_locations`, recalculates item aggregate stock
-fields, and creates one stock movement per committed line. Preview is read-only.
+fields, creates one stock movement per committed line, and reruns FIFO
+allocation for waiting processing orders before commit. Preview is read-only.
 
 ## Scanner Workflows
 
@@ -1569,7 +2022,9 @@ Implemented endpoints:
 
 Scanner endpoints treat hardware scanners as keyboard input. Stock-changing
 scanner commits are local only and create stock movement/audit records through
-the existing stock services.
+the existing stock services. Scanner receiving, positive stock adjustments,
+and positive cycle-count results rerun FIFO allocation; scanner previews remain
+read-only.
 
 ## Expanded Reports
 
@@ -1584,3 +2039,51 @@ Implemented read-only row, summary, and CSV export endpoints:
 - `/api/reports/adjustments`
 
 Each report also supports `/summary` and `/export`.
+
+## Pongo Insights
+
+Implemented read-only dashboard endpoints:
+- `GET /api/insights/overview`
+- `GET /api/insights/orders-revenue`
+- `GET /api/insights/customer-metrics`
+- `GET /api/insights/customer-segmentation`
+- `GET /api/insights/product-sku`
+- `GET /api/insights/subscriptions`
+- `GET /api/insights/subscription-products`
+- `GET /api/insights/inventory-forecasting`
+- `GET /api/insights/coupons`
+- `GET /api/insights/payment-health`
+- `GET /api/insights/geography`
+- `GET /api/insights/product-affinity`
+- `GET /api/insights/reorder-forecast`
+
+Implemented CSV exports:
+- `GET /api/insights/orders-revenue/export`
+- `GET /api/insights/customer-metrics/export`
+- `GET /api/insights/product-sku/export`
+- `GET /api/insights/reorder-forecast/export`
+- `GET /api/insights/geography/export`
+
+Common query params include `start_date`, `end_date`, `brand`, `category`,
+`sku`, `customer_email`, `city`, `postal_code`, `payment_method`,
+`order_status`, `limit`, and `offset`.
+
+Insights endpoints read local tables only and return `data_quality` warnings
+for missing source data instead of faking metrics.
+
+## Business Dashboard
+
+Implemented read-only dashboard endpoints:
+- `GET /api/business-dashboard`
+- `GET /api/business-dashboard/today`
+- `GET /api/business-dashboard/open-orders`
+- `GET /api/business-dashboard/subscriptions`
+- `GET /api/business-dashboard/revenue-comparison`
+- `GET /api/business-dashboard/order-map`
+
+`/api/business-dashboard` combines today's metrics, open orders, subscription
+state, revenue comparison, order map/geography, and data quality warnings.
+
+The business dashboard reads local order snapshots and order lines only. It does
+not call WooCommerce, mutate orders, mutate stock, or geocode addresses through
+an external provider.

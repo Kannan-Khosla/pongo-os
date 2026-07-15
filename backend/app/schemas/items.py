@@ -90,6 +90,8 @@ class InventoryItemRead(InventoryItemBase):
     woo_last_synced_at: datetime | None = Field(default=None, alias="wooLastSyncedAt")
     woo_sync_status: str | None = Field(default=None, alias="wooSyncStatus")
     woo_sync_error: str | None = Field(default=None, alias="wooSyncError")
+    open_orders_count: int = 0
+    open_order_quantity: float = 0
 
 
 class InventoryItemListResponse(BaseModel):

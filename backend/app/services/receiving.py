@@ -19,6 +19,7 @@ from app.schemas.receipts import (
 from app.services.calculations import calculate_inventory_value
 from app.services.items import apply_calculated_fields
 from app.services.location_inventory import find_item_location, receive_to_location
+from app.services.order_workflow import auto_allocate_processing_orders_fifo
 
 
 @dataclass
@@ -226,6 +227,7 @@ def commit_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple[R
         total_value += calculate_inventory_value(line.quantity_received, line.unit_cost)
         movement_count += 1
 
+    auto_allocate_processing_orders_fifo(db, source=f"direct-receipt:{receipt.receipt_number}")
     db.commit()
     db.refresh(receipt)
     return receipt, movement_count, total_quantity, total_value, warnings

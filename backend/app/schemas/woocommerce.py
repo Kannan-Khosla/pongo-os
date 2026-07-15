@@ -8,17 +8,43 @@ class WooCommerceStatusResponse(BaseModel):
     base_url_present: bool
     consumer_key_present: bool
     consumer_secret_present: bool
+    base_url_host: str | None = None
+    environment: str = "development"
+    read_enabled: bool = True
+    read_only: bool = True
+    writeback_enabled: bool = False
+    dry_run: bool = True
+    staging_live_test_mode: bool = False
+    stock_write_allowed: bool = False
+    order_status_write_allowed: bool = False
+    product_metadata_write_allowed: bool = False
+    customer_write_allowed: bool = False
+    coupon_write_allowed: bool = False
+    refund_write_allowed: bool = False
+    delete_allowed: bool = False
+    allowed_host: str | None = None
+    host_allowed: bool = False
+    webhook_enabled: bool = False
+    webhook_configured: bool = False
+    webhook_secret_present: bool = False
+    last_webhook_delivery: dict | None = None
+    last_product_sync: dict | None = None
+    last_order_sync: dict | None = None
+    last_error: str | None = None
     message: str
 
 
 class WooCommerceSyncRequest(BaseModel):
     include_statuses: list[str] = Field(default_factory=lambda: ["publish"])
     limit: int | None = 500
+    page: int | None = Field(default=None, ge=1)
+    per_page: int = Field(default=50, ge=1, le=100)
+    blocked_skus: list[str] = Field(default_factory=list)
     created_by: str | None = "system"
 
 
 class WooCommerceOrderSyncRequest(BaseModel):
-    include_statuses: list[str] = Field(default_factory=lambda: ["processing", "on-hold"])
+    include_statuses: list[str] = Field(default_factory=lambda: ["processing", "on-hold", "pending"])
     limit: int | None = 500
     after: str | None = None
     before: str | None = None
@@ -59,6 +85,11 @@ class WooCommerceProductPreviewResponse(BaseModel):
     warnings: list[str] = []
     errors: list[str] = []
     preview_rows: list[WooCommerceProductPreviewRow] = []
+    page: int | None = None
+    next_page: int | None = None
+    has_more: bool = False
+    unmatched_local_count: int = 0
+    unmatched_local_skus: list[str] = []
 
 
 class WooCommerceProductCommitResponse(BaseModel):
@@ -73,6 +104,11 @@ class WooCommerceProductCommitResponse(BaseModel):
     error_count: int
     warnings: list[str] = []
     errors: list[str] = []
+    page: int | None = None
+    next_page: int | None = None
+    has_more: bool = False
+    unmatched_local_count: int = 0
+    unmatched_local_skus: list[str] = []
 
 
 class WooCommerceOrderPreviewLine(BaseModel):
@@ -126,6 +162,11 @@ class WooCommerceOrderPreviewResponse(BaseModel):
     partial_count: int
     unavailable_count: int
     unknown_count: int
+    auto_allocated_count: int = 0
+    allocation_exception_count: int = 0
+    unmatched_line_count: int = 0
+    conflict_line_count: int = 0
+    pick_ready_count: int = 0
     warnings: list[str] = []
     errors: list[str] = []
     preview_orders: list[WooCommerceOrderPreviewOrder] = []
@@ -145,8 +186,47 @@ class WooCommerceOrderCommitResponse(BaseModel):
     partial_count: int
     unavailable_count: int
     unknown_count: int
+    auto_allocated_count: int = 0
+    allocation_exception_count: int = 0
+    unmatched_line_count: int = 0
+    conflict_line_count: int = 0
+    pick_ready_count: int = 0
     warnings: list[str] = []
     errors: list[str] = []
+
+
+class WooCommerceWebhookDeliveryResponse(BaseModel):
+    status: str
+    duplicate: bool = False
+    delivery_id: str | None = None
+    event_id: int | None = None
+    woo_order_id: int | None = None
+    local_order_id: int | None = None
+    sync_run_id: int | None = None
+    created_order: bool = False
+    message: str
+
+
+class WooCommerceWebhookEventRead(BaseModel):
+    id: int
+    topic: str
+    woo_order_id: int | None = None
+    local_order_id: int | None = None
+    woo_order_number: str | None = None
+    woo_status: str | None = None
+    local_status: str | None = None
+    customer_name: str | None = None
+    currency: str | None = None
+    total: float | None = None
+    created_order: bool
+    received_at: datetime
+
+
+class WooCommerceWebhookEventListResponse(BaseModel):
+    events: list[WooCommerceWebhookEventRead]
+    latest_event_id: int
+    next_after_id: int
+    has_more: bool = False
 
 
 class WooCommerceSyncErrorRead(BaseModel):
@@ -186,6 +266,98 @@ class WooCommerceSyncRunDetail(WooCommerceSyncRunRead):
 class WooCommerceSyncRunListResponse(BaseModel):
     sync_runs: list[WooCommerceSyncRunRead]
     total: int
+
+
+class WooWritebackStockPreviewRequest(BaseModel):
+    item_id: int | None = None
+    sku: str | None = None
+    proposed_stock_quantity: float | None = None
+    proposed_stock_status: str | None = None
+    fetch_live: bool = False
+
+
+class WooWritebackOrderStatusPreviewRequest(BaseModel):
+    order_id: int | None = None
+    woo_order_id: int | None = None
+    proposed_status: str
+    fetch_live: bool = False
+
+
+class WooWritebackPreviewResponse(BaseModel):
+    operation_type: str
+    entity_type: str
+    entity_id: int
+    woo_entity_id: int | None = None
+    woo_product_id: int | None = None
+    woo_variation_id: int | None = None
+    woo_order_id: int | None = None
+    payload_json: dict
+    preview_json: dict
+    environment: str
+    dry_run: bool
+    warnings: list[str] = []
+
+
+class WooWritebackQueueCreateRequest(BaseModel):
+    operation_type: str
+    entity_type: str
+    entity_id: int
+    woo_entity_id: int | None = None
+    woo_product_id: int | None = None
+    woo_variation_id: int | None = None
+    woo_order_id: int | None = None
+    payload_json: dict
+    preview_json: dict
+    requested_by: str | None = None
+
+
+class WooWritebackQueueRead(BaseModel):
+    id: int
+    operation_type: str
+    entity_type: str
+    entity_id: int
+    woo_entity_id: int | None = None
+    woo_product_id: int | None = None
+    woo_variation_id: int | None = None
+    woo_order_id: int | None = None
+    payload_json: dict
+    status: str
+    environment: str
+    dry_run: bool
+    allowed_host: str | None = None
+    preview_json: dict
+    response_json: dict | None = None
+    error_message: str | None = None
+    requested_by: str | None = None
+    approved_by: str | None = None
+    created_at: datetime
+    approved_at: datetime | None = None
+    sent_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class WooWritebackQueueListResponse(BaseModel):
+    queue: list[WooWritebackQueueRead]
+    total: int
+
+
+class WooStockSyncRequest(BaseModel):
+    force: bool = False
+    requested_by: str | None = "inventory-page"
+
+
+class WooStockSyncResponse(BaseModel):
+    status: str
+    mode: str
+    requested_count: int
+    candidate_count: int
+    sent_count: int
+    dry_run_count: int
+    failed_count: int
+    skipped_unmapped_count: int
+    unchanged_count: int
+    queue_ids: list[int] = []
+    errors: list[str] = []
 
 
 class WooRemapItemSummary(BaseModel):

@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -51,6 +51,15 @@ class Order(TimestampMixin, Base):
     completed_on: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str | None] = mapped_column(String(80), index=True)
     allocation_status: Mapped[str | None] = mapped_column(String(80), index=True)
+    pick_status: Mapped[str | None] = mapped_column(String(80), index=True)
+    completion_status: Mapped[str | None] = mapped_column(String(80), index=True)
+    auto_allocation_status: Mapped[str | None] = mapped_column(String(80), index=True)
+    completed_without_picking: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    picked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    allocation_exception_reason: Mapped[str | None] = mapped_column(Text)
+    workflow_notes: Mapped[str | None] = mapped_column(Text)
     shipping_address_1: Mapped[str | None] = mapped_column(String(240))
     shipping_address_2: Mapped[str | None] = mapped_column(String(240))
     shipping_address_3: Mapped[str | None] = mapped_column(String(240))
@@ -93,6 +102,8 @@ class OrderItem(TimestampMixin, Base):
     quantity_allocated: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
     quantity_picked: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
     quantity_fulfilled: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
+    quantity_stock_reduced: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
+    stock_reduced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     ordered_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
     ordered_uom: Mapped[str | None] = mapped_column(String(50))
     allocated_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
@@ -105,6 +116,9 @@ class OrderItem(TimestampMixin, Base):
     line_tax: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     matched_status: Mapped[str | None] = mapped_column(String(80), index=True)
     availability_status: Mapped[str | None] = mapped_column(String(80), index=True)
+    allocation_status: Mapped[str | None] = mapped_column(String(80), index=True)
+    pick_status: Mapped[str | None] = mapped_column(String(80), index=True)
+    allocation_exception_reason: Mapped[str | None] = mapped_column(Text)
     sellable_snapshot: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
     shortage_quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
     sync_status: Mapped[str | None] = mapped_column(String(80), index=True)

@@ -12,7 +12,10 @@ rendering, scanner console polish, contextual order actions, and
 Vitest/Testing Library coverage.
 
 Safety notes:
-- No WooCommerce writes.
+- WooCommerce read sync is backend-only.
+- WooCommerce writeback is staging-only, queued, allowlisted, audited, and
+  blocked unless explicit live staging test flags are enabled.
+- No production WooCommerce writes.
 - No frontend WooCommerce calls.
 - No external map/geocoding/routing calls.
 - No visible frontend action should be fake: actions must work, navigate to a
@@ -315,25 +318,45 @@ What not to build yet:
 
 Goal: Pull eligible WooCommerce orders into local tables.
 
-Status: Completed for read-only order sync foundation. The backend supports
-WooCommerce order preview, local-only commit, sync run history, open order
-list/detail/export endpoints, and line-level matching/availability snapshots.
+Status: Completed for backend-only WooCommerce order sync foundation. The
+backend supports WooCommerce order preview, local commit, sync run history, open
+order list/detail/export endpoints, line-level matching/availability snapshots,
+safe local auto-allocation for active open orders, and a 10-second quick-sync
+recovery path. Phase 1 also adds a signed event-driven `order.created` receiver,
+durable delivery ledger, immutable order-event outbox, and cursor feed for an
+internal staff new-order notice.
 The frontend Settings page exposes WooCommerce Order Sync controls and the
 Orders page shows the local Open Orders queue.
 
 Deliverables:
 - Order sync endpoint
+- Signed `order.created` webhook receiver
+- Durable webhook delivery/idempotency ledger
+- Immutable successful new-order event outbox
+- Internal staff new-order event cursor
 - Open orders screen
 
 Acceptance criteria:
-- Eligible statuses default to `processing,on-hold` and can be configured.
+- Eligible REST sync statuses default to `processing,on-hold,pending` and can be
+  configured.
 - Preview writes nothing.
-- Commit creates/updates local orders and order lines only.
-- Order sync does not allocate, pick, route, fulfill, change local item stock,
+- Commit creates/updates local orders and order lines and may auto-allocate
+  active open orders.
+- Webhook receiver is disabled by default and requires an explicit enable flag,
+  a separate secret of at least 32 bytes, raw-body HMAC verification, source
+  host validation, and a public HTTPS delivery URL.
+- Only authenticated `order.created` imports in phase 1; other authenticated
+  topics are durably audited and ignored.
+- Replayed webhook deliveries do not repeat order import, allocation, or staff
+  notification.
+- Order sync does not pick, route, fulfill, complete, reduce local In Stock,
   create stock movements, or write WooCommerce.
 
 Safety notes:
 - Read-only WooCommerce calls only.
+- Inbound webhooks never grant writeback permission and never expose secrets.
+- The staff new-order notice is local UI feedback, not outbound/customer
+  messaging.
 - No fulfillment/status writes until picking is stable and explicitly approved.
 
 What not to build yet:
@@ -341,58 +364,69 @@ What not to build yet:
 
 ## Phase 13: Open, Allocate, Pick Order Workflow
 
-Goal: Support three-stage order workflow.
+Goal: Support the Zenventory-style order workflow.
 
-Status: In progress. Open Orders, Allocation foundation, and Picking foundation
-are implemented. Allocation preview and commit reserve local sellable inventory
-by increasing item Allocated, leave In Stock unchanged, update local order line
-allocation quantities/statuses, and create allocation audit events. Picking
-preview and commit record operational progress against allocated quantities by
-updating local order line picked quantities and creating pick audit events.
+Status: Implemented for the MVP workflow correction. WooCommerce order sync
+imports local order snapshots and attempts transaction-safe auto-allocation for
+active open orders. Fully allocated orders stay visible in Open Orders and also
+appear in Pick Orders. Allocate is now exception handling for shortages,
+unmatched lines, conflicts, no location stock, and partial allocation. Picking
+reduces local stock and allocated quantity at the item-location level, creates
+`pick_stock_reduction` stock movements, updates picked/stock-reduced order line
+quantities, and leaves the order in Open Orders until local completion.
 
 Deliverables:
 - Open Orders
-- Allocate Orders
+- Allocate exception workflow
 - Pick Orders
+- Completed Orders
+- Order History
 
 Acceptance criteria:
-- Allocation uses sellable stock.
+- WooCommerce order sync attempts auto-allocation for active open orders.
+- Auto-allocation uses location-level sellable stock and can split one order
+  line across multiple active locations.
 - Allocation commit is atomic and cannot over-allocate.
 - Allocation creates allocation records, allocation lines, and
   `inventory_audit_events`.
-- Picking uses already allocated quantities only.
+- Picking uses already allocated quantities only and reduces stock from the
+  allocated location rows.
 - Picking commit is atomic and cannot overpick allocated or remaining quantity.
-- Picking creates pick records, pick lines, and `inventory_audit_events`.
-- Open Orders exposes Remaining To Pick and picking status.
+- Picking creates pick records, pick lines, `pick_stock_reduction` stock
+  movements, and `inventory_audit_events`.
+- Open Orders exposes allocation, pick, completion, and stock-reduction status.
+- Completing a picked order does not reduce stock again.
+- Completing without picking does not reduce stock and releases remaining
+  allocation.
 
 Safety notes:
 - Allocation is local-only and never writes WooCommerce.
 - Allocation does not reduce In Stock and does not create stock movement rows.
 - Picking is local-only and never writes WooCommerce.
-- Picking does not reduce In Stock, reduce Allocated, or create stock movement
-  rows.
+- Picking reduces local In Stock and Allocated and creates stock movement rows.
+- Completion closes locally and sends an audited, allowlisted WooCommerce
+  order-status update to `completed`; it never writes WooCommerce stock.
 - No route, PO, shipping label, customer notification, or supplier workflows are
   included in the open/allocate/pick phase.
-- Every allocation/pick movement is audited.
+- Every allocation, pick, and completion action is audited.
 
 What not to build yet:
 - Route optimization
 
 ## Phase 14: Fulfillment and SKU/Barcode Reports
 
-Goal: Add order fulfillment exports.
+Goal: Add order completion exports and legacy fulfillment reporting.
 
-Status: In progress. Fulfillment/completion foundation is implemented for
-picked local orders. It previews picked quantities, posts local fulfillment
-records, reduces item In Stock and Allocated, recalculates Sellable/Under Par,
-updates order line fulfilled quantities, creates stock movement rows, and
-creates inventory audit events. Fulfillment does not write WooCommerce or add
-route, shipping label, notification, PO, or supplier workflows.
-Fulfillment Report and Completed Orders export are implemented as read-only
-audit/reporting surfaces.
+Status: Implemented as compatibility/reporting. Fulfillment endpoints remain
+available for older integrations and history, but fulfillment is no longer the
+normal stock reduction step. If picking already reduced stock, fulfillment can
+create local compatibility records and returns a warning that stock was already
+reduced during picking. Unpicked fulfillment is blocked instead of silently
+using the old stock-decrement path. Fulfillment Report and Completed Orders are
+read-only audit/reporting surfaces.
 
 Deliverables:
-- Fulfillment preview/commit
+- Fulfillment preview/commit compatibility
 - Fulfillment records and fulfillment lines
 - Fulfillment CSV export
 - Fulfillment Report JSON/summary/CSV
@@ -400,25 +434,27 @@ Deliverables:
 - SKU/barcode order report
 
 Acceptance criteria:
-- Fulfillment commit is atomic and cannot exceed picked, allocated, In Stock,
-  or remaining-to-fulfill quantities.
-- Fulfillment reduces both In Stock and Allocated.
-- Fulfillment creates `fulfill_order` stock movements and `fulfill` audit
-  events.
+- Fulfillment does not double-reduce stock after picking.
+- Unpicked fulfillment is rejected unless a future explicit compatibility flag
+  is added.
+- Fulfillment creates compatibility records/audits without becoming the normal
+  warehouse stock-decrement step.
 - Fulfillment reports read from fulfillment lines and do not modify inventory.
-- Completed Orders export lists fulfilled and partially fulfilled local orders.
+- Completed Orders lists locally completed, closed, fulfilled, and
+  completed-without-picking orders.
 - Reports export CSV.
 
 Safety notes:
 - Fulfillment is local-only and never writes WooCommerce.
 - Fulfillment does not update WooCommerce order status or stock.
-- Fulfillment itself does not create routes, shipping labels, notifications,
+- Fulfillment itself does not create routes, shipping labels,
+  outbound/customer notifications,
   purchase orders, or supplier workflows.
 
 What not to build yet:
 - Fulfillment-driven route auto-creation
 - Shipping labels
-- Notifications
+- Outbound/customer notifications
 
 ## Phase 15: Route Creation
 
@@ -506,7 +542,9 @@ Acceptance criteria:
 - App deploys with no committed secrets.
 
 Safety notes:
-- Verify production credentials and permissions before enabling writebacks.
+- Production writeback is restricted to explicitly enabled, allowlisted order
+  status updates. Product and stock writes remain staging-only. All writeback
+  stays behind operation, payload, approval, dry-run/live, and host guards.
 
 ## Phase 18: Items Control Center, Bulk Receiving, Scanners, Reports
 
@@ -531,3 +569,101 @@ Safety notes:
 - No purchase orders or supplier workflows.
 - Stock-changing workflows use `inventory_item_locations` as the operational
   quantity source and create stock movements/audit records.
+
+## Phase 19: Pongo Insights
+
+Status: Completed locally.
+
+Deliverables:
+- New `Insights` sidebar page titled `Pongo Insights`.
+- Tabbed read-only BI dashboards for executive overview, orders/revenue,
+  customer metrics, customer segmentation, product/SKU metrics, subscriptions,
+  subscription products, inventory forecasting, coupons, payment health,
+  geography, product affinity, and reorder forecast.
+- New backend insights router, schemas, and service layer.
+- CSV exports for orders/revenue, customer metrics, product/SKU, geography, and
+  reorder forecast.
+- Data quality warnings and clean empty states for unavailable coupon,
+  subscription, refund, and limited-history data.
+
+Safety notes:
+- No WooCommerce writes.
+- No frontend WooCommerce calls.
+- No customer notifications.
+- No local inventory/order mutations.
+- Forecasting is deterministic from local order demand; no ML model.
+
+## Phase 20: Business Dashboard Home
+
+Status: Completed locally.
+
+Deliverables:
+- New default `Dashboard` page for business/customer/order metrics.
+- Renamed old operational Command Center page to `Inventory Overview`.
+- Read-only `/api/business-dashboard*` endpoint group.
+- KPI cards for today's orders, revenue, new customers, returning customers,
+  subscription orders, and AOV.
+- Open orders customer table.
+- Upcoming subscriptions card with clean empty state when subscription data is
+  not synced.
+- Revenue comparison against the previous month same period.
+- City-level order geography/map-style section with approximate city markers.
+
+Safety notes:
+- No WooCommerce writes.
+- No frontend WooCommerce calls.
+- No fake customers, orders, subscriptions, or revenue.
+- No live geocoding provider or map credentials.
+
+## Phase 21: WooCommerce Order Webhook And Staff Notice
+
+Status: Phase 1 completed locally.
+
+Deliverables:
+- `POST /api/integrations/woocommerce/webhooks/orders`
+- Disabled-by-default webhook configuration with a separate minimum-32-byte
+  secret and configurable request-body limit
+- Exact raw-body base64 HMAC-SHA256 verification
+- WooCommerce source-host and delivery-header validation
+- Exact unsigned setup-ping no-op support
+- Phase-1 `order.created` import only
+- Authenticated non-phase-1 topic audit/ignore behavior
+- Migration `20260710_0018_woocommerce_order_webhooks.py`
+- Migration `20260710_0019_woocommerce_order_event_outbox.py`
+- Durable `woocommerce_webhook_deliveries` idempotency/audit ledger
+- Immutable `woocommerce_order_events` staff-notification outbox
+- `GET /api/integrations/woocommerce/webhooks/events` cursor feed with
+  initialization and safe paginated `next_after_id` advancement
+- Global 2-second event polling while visible, with a dismissible toast,
+  session-only Bell history/unread badge, and Open Orders action
+- Quick-sync `created_count` fallback notice deduplicated by sync-run identity
+- 10-second REST quick-sync recovery/reconciliation fallback
+
+Acceptance criteria:
+- A valid signed `order.created` payload is committed atomically through the
+  existing local order import and auto-allocation workflow.
+- Invalid signatures, disallowed source hosts, oversized bodies, malformed
+  payloads, disabled/misconfigured receivers, and inconsistent delivery headers
+  fail closed without order mutation.
+- Replaying the same webhook ID, delivery ID, and raw payload hash cannot create
+  a duplicate order, allocation, or staff notice.
+- A stale `order.created` snapshot cannot regress a newer local order and is
+  audited as ignored without a staff event.
+- The frontend initializes without announcing historical events, advances only
+  by `next_after_id`, drains every page while `has_more` is true, and does not
+  announce the same delivery or quick-sync run twice.
+- WooCommerce can reach the receiver through a public HTTPS backend URL.
+
+Safety notes:
+- No webhook or REST credentials are exposed to the frontend.
+- No raw customer payload is duplicated in the delivery ledger.
+- No WooCommerce write, stock movement, customer email/SMS/push, or browser
+  notification permission is introduced.
+- Quick sync remains available if webhook delivery is delayed, disabled, or
+  unavailable.
+
+Deferred:
+- `order.updated` and `order.deleted` processing
+- Server-sent events or WebSocket push
+- Per-user notification acknowledgement after auth/RBAC
+- Outbound/customer notifications

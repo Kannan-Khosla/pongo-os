@@ -18,6 +18,7 @@ from app.schemas.cycle_counts import (
 )
 from app.services.calculations import calculate_inventory_value
 from app.services.location_inventory import cycle_count_location, find_item_location
+from app.services.order_workflow import auto_allocate_processing_orders_fifo
 
 CYCLE_COUNT_EXPORT_COLUMNS = [
     "Count Number",
@@ -230,6 +231,7 @@ def commit_cycle_count(payload: CycleCountRequest, db: Session) -> tuple[CycleCo
         if variance_quantity != 0:
             created_movements += 1
 
+    auto_allocate_processing_orders_fifo(db, source=f"cycle-count:{count.count_number}")
     db.commit()
     db.refresh(count)
     totals = summarize_count_lines(count.lines)

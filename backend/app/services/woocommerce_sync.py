@@ -1,10 +1,11 @@
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.models.inventory import InventoryItem
@@ -55,7 +56,7 @@ def preview_product_sync(db: Session, client: WooCommerceClient, payload: WooCom
             errors=["WooCommerce credentials are not configured."],
         )
     try:
-        remote_records = client.fetch_all_sellable_products_and_variations(payload.include_statuses, payload.limit)
+        remote_records, has_more = fetch_product_records(client, payload)
     except WooCommerceClientError as error:
         return WooCommerceProductPreviewResponse(
             configured=True,
@@ -68,8 +69,8 @@ def preview_product_sync(db: Session, client: WooCommerceClient, payload: WooCom
             error_count=1,
             errors=[error.message],
         )
-    rows = [build_preview_row(db, normalize_remote_record(record["product"], record.get("variation"))) for record in remote_records]
-    return build_preview_response(True, rows)
+    rows = build_preview_rows(db, remote_records, payload.blocked_skus)
+    return build_preview_response(True, rows, payload.page, has_more)
 
 
 def commit_product_sync(db: Session, client: WooCommerceClient, payload: WooCommerceSyncRequest) -> tuple[WooCommerceSyncRun | None, WooCommerceProductPreviewResponse]:
@@ -77,7 +78,7 @@ def commit_product_sync(db: Session, client: WooCommerceClient, payload: WooComm
     if not client.configured:
         return None, preview_product_sync(db, client, payload)
     try:
-        remote_records = client.fetch_all_sellable_products_and_variations(payload.include_statuses, payload.limit)
+        remote_records, has_more = fetch_product_records(client, payload)
     except WooCommerceClientError as error:
         return None, WooCommerceProductPreviewResponse(
             configured=True,
@@ -90,8 +91,10 @@ def commit_product_sync(db: Session, client: WooCommerceClient, payload: WooComm
             error_count=1,
             errors=[error.message],
         )
-    row_records = [(build_preview_row(db, record), record) for record in [normalize_remote_record(remote["product"], remote.get("variation")) for remote in remote_records]]
-    preview = build_preview_response(True, [row for row, _ in row_records])
+    normalized_records = [normalize_remote_record(remote["product"], remote.get("variation")) for remote in remote_records]
+    rows = build_preview_rows(db, remote_records, payload.blocked_skus)
+    row_records = list(zip(rows, normalized_records))
+    preview = build_preview_response(True, rows, payload.page, has_more)
     sync_run = WooCommerceSyncRun(sync_type="products", status="completed", started_at=started_at, created_by=payload.created_by or "system", total_remote_records=preview.total_remote_records)
     db.add(sync_run)
     db.flush()
@@ -116,7 +119,7 @@ def commit_product_sync(db: Session, client: WooCommerceClient, payload: WooComm
                     error_count += 1
                     store_sync_error(db, sync_run.id, row, ["Matched local item no longer exists."])
                     continue
-                update_item_from_woo(item, record, now)
+                attach_woo_mapping(item, record, now)
                 db.add(item)
                 updated_count += 1
                 matched_count += 1
@@ -134,6 +137,7 @@ def commit_product_sync(db: Session, client: WooCommerceClient, payload: WooComm
     sync_run.status = "completed_with_errors" if conflict_count or error_count else "completed"
     db.commit()
     db.refresh(sync_run)
+    unmatched_count, unmatched_skus = unmatched_local_items(db) if not has_more else (0, [])
     response = WooCommerceProductPreviewResponse(
         configured=True,
         total_remote_records=preview.total_remote_records,
@@ -146,8 +150,34 @@ def commit_product_sync(db: Session, client: WooCommerceClient, payload: WooComm
         warnings=preview.warnings,
         errors=preview.errors,
         preview_rows=[],
+        page=payload.page,
+        next_page=(payload.page + 1) if payload.page is not None and has_more else None,
+        has_more=has_more,
+        unmatched_local_count=unmatched_count,
+        unmatched_local_skus=unmatched_skus,
     )
     return sync_run, response
+
+
+def fetch_product_records(client: WooCommerceClient, payload: WooCommerceSyncRequest) -> tuple[list[dict[str, Any]], bool]:
+    if payload.page is not None:
+        return client.fetch_sellable_product_batch(payload.page, payload.per_page, payload.include_statuses)
+    return client.fetch_all_sellable_products_and_variations(payload.include_statuses, payload.limit), False
+
+
+def build_preview_rows(db: Session, remote_records: list[dict[str, Any]], blocked_skus: list[str] | None = None) -> list[WooCommerceProductPreviewRow]:
+    records = [normalize_remote_record(remote["product"], remote.get("variation")) for remote in remote_records]
+    sku_counts = Counter(normalize_key(record.sku) for record in records if record.sku)
+    duplicate_skus = {sku for sku, count in sku_counts.items() if count > 1} | {normalize_key(sku) for sku in (blocked_skus or []) if sku}
+    rows = []
+    for record in records:
+        row = build_preview_row(db, record)
+        if normalize_key(record.sku) in duplicate_skus:
+            row.action = "conflict"
+            row.status = "conflict"
+            row.errors.append("Duplicate WooCommerce SKU; this product was not changed.")
+        rows.append(row)
+    return rows
 
 
 def normalize_remote_record(product: dict[str, Any], variation: dict[str, Any] | None = None) -> NormalizedWooRecord:
@@ -176,7 +206,7 @@ def normalize_remote_record(product: dict[str, Any], variation: dict[str, Any] |
         price=price,
         permalink=source.get("permalink") or product.get("permalink") or "",
         status=source.get("status") or product.get("status") or "",
-        manage_stock=source.get("manage_stock"),
+        manage_stock=(product.get("manage_stock") if source.get("manage_stock") == "parent" else source.get("manage_stock")),
         stock_quantity=to_decimal_or_none(source.get("stock_quantity")),
         stock_status=source.get("stock_status") or product.get("stock_status") or "",
         weight=to_decimal_or_none(source.get("weight") or product.get("weight")),
@@ -227,22 +257,46 @@ def build_preview_row(db: Session, record: NormalizedWooRecord) -> WooCommercePr
 
 
 def find_matching_item(db: Session, record: NormalizedWooRecord, errors: list[str]) -> InventoryItem | None:
-    woo_match = db.scalars(
+    woo_matches = list(db.scalars(
         select(InventoryItem).where(
             InventoryItem.woo_product_id == record.woo_product_id,
             InventoryItem.woo_variation_id.is_(None) if record.woo_variation_id is None else InventoryItem.woo_variation_id == record.woo_variation_id,
         )
-    ).first()
-    sku_match = db.scalars(select(InventoryItem).where(InventoryItem.sku == record.sku)).first() if record.sku else None
-    barcode_match = db.scalars(select(InventoryItem).where(InventoryItem.barcode == record.barcode)).first() if record.barcode else None
-    candidates = [candidate for candidate in [woo_match, sku_match, barcode_match] if candidate is not None]
-    if len({candidate.id for candidate in candidates}) > 1:
-        errors.append("WooCommerce IDs, SKU, or Barcode match different local items.")
+    ).all())
+    if len(woo_matches) > 1:
+        errors.append("WooCommerce product and variation IDs are mapped to multiple local items.")
         return None
-    return candidates[0] if candidates else None
+    woo_match = woo_matches[0] if woo_matches else None
+    sku_match = unique_text_match(db, InventoryItem.sku, record.sku, "SKU", errors)
+    if errors:
+        return None
+    if woo_match and sku_match and woo_match.id != sku_match.id:
+        errors.append("WooCommerce IDs and SKU match different local items.")
+        return None
+    match = woo_match or sku_match
+    if match is None:
+        match = unique_text_match(db, InventoryItem.barcode, record.barcode, "Barcode", errors)
+    if errors or match is None:
+        return None
+    remote_ids = (record.woo_product_id, record.woo_variation_id)
+    local_ids = (match.woo_product_id, match.woo_variation_id)
+    if match.woo_product_id is not None and local_ids != remote_ids:
+        errors.append("The matching local item is already mapped to a different WooCommerce product or variation.")
+        return None
+    return match
 
 
-def build_preview_response(configured: bool, rows: list[WooCommerceProductPreviewRow]) -> WooCommerceProductPreviewResponse:
+def unique_text_match(db: Session, column, value: str, label: str, errors: list[str]) -> InventoryItem | None:
+    if not value:
+        return None
+    matches = list(db.scalars(select(InventoryItem).where(func.lower(func.trim(column)) == normalize_key(value))).all())
+    if len(matches) > 1:
+        errors.append(f"Duplicate local {label}: {value}. No item was changed.")
+        return None
+    return matches[0] if matches else None
+
+
+def build_preview_response(configured: bool, rows: list[WooCommerceProductPreviewRow], page: int | None = None, has_more: bool = False) -> WooCommerceProductPreviewResponse:
     return WooCommerceProductPreviewResponse(
         configured=configured,
         total_remote_records=len(rows),
@@ -255,6 +309,9 @@ def build_preview_response(configured: bool, rows: list[WooCommerceProductPrevie
         warnings=[warning for row in rows for warning in row.warnings],
         errors=[error for row in rows for error in row.errors],
         preview_rows=rows,
+        page=page,
+        next_page=(page + 1) if page is not None and has_more else None,
+        has_more=has_more,
     )
 
 
@@ -288,6 +345,11 @@ def update_item_from_woo(item: InventoryItem, record: NormalizedWooRecord, synce
     item.image_url = record.image_url or item.image_url
     if record.barcode and not item.barcode:
         item.barcode = record.barcode
+    attach_woo_mapping(item, record, synced_at)
+    apply_calculated_fields(item)
+
+
+def attach_woo_mapping(item: InventoryItem, record: NormalizedWooRecord, synced_at: datetime) -> None:
     item.woo_product_id = record.woo_product_id
     item.woo_variation_id = record.woo_variation_id
     item.woo_product_type = record.remote_type
@@ -299,7 +361,16 @@ def update_item_from_woo(item: InventoryItem, record: NormalizedWooRecord, synce
     item.woo_last_synced_at = synced_at
     item.woo_sync_status = "synced"
     item.woo_sync_error = None
-    apply_calculated_fields(item)
+
+
+def unmatched_local_items(db: Session) -> tuple[int, list[str]]:
+    statement = select(InventoryItem).where(InventoryItem.woo_product_id.is_(None)).order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())
+    items = list(db.scalars(statement).all())
+    return len(items), [item.sku or f"item-{item.id}" for item in items[:100]]
+
+
+def normalize_key(value: str | None) -> str:
+    return str(value or "").strip().casefold()
 
 
 def store_sync_error(db: Session, sync_run_id: int, row: WooCommerceProductPreviewRow, messages: list[str]) -> None:

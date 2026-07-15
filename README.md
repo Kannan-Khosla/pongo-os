@@ -1,6 +1,6 @@
 # Pongo Inventory OS
 
-Pongo Inventory OS is a standalone internal inventory and operations system for Pongo Pet Supplies. It is the operational inventory layer beside WooCommerce: WooCommerce remains the customer-facing storefront, while Pongo OS manages local item data, stock workflows, fulfillment, reports, and routes.
+Pongo Inventory OS is a standalone internal inventory and operations system for Pongo Pet Supplies. It is the operational inventory layer beside WooCommerce: WooCommerce remains the customer-facing storefront, while Pongo OS manages local item data, stock workflows, order allocation, picking, completion, reports, and routes.
 
 This is not a WordPress plugin, not a WooCommerce plugin, and not a shortcode app.
 
@@ -13,7 +13,7 @@ This is not a WordPress plugin, not a WooCommerce plugin, and not a shortcode ap
 - Target production DB: PostgreSQL
 - Frontend: React with Vite
 - Deployment target: Heroku later
-- WooCommerce integration: backend-only WooCommerce REST API
+- WooCommerce integration: backend-only REST API plus a signed order webhook
 
 ## Current Modules
 
@@ -29,18 +29,30 @@ Implemented locally:
 - Read-only WooCommerce product/variation sync
 - Local WooCommerce remap metadata
 - Read-only WooCommerce order sync and open orders
-- Allocation
-- Scanner-style picking and pick history
-- Fulfillment/completion
-- Inventory transfers and stock adjustments
-- Fulfillment report
+- Signed phase-1 WooCommerce `order.created` webhook import with a durable
+  delivery ledger, immutable order-event outbox, cursor feed, and
+  session-scoped staff notification center
+- Staging-only WooCommerce writeback queue foundation with optional live test mode
+- Automatic guarded staging stock writeback when picked orders are completed
+  and after manual adjustments, plus changed-only and full-catalog controls
+- Processing-only FIFO auto-allocation on WooCommerce order import and stock
+  availability changes; oldest WooCommerce `date_created` receives stock first
+  and partial quantities are reserved
+- Allocate shortage workflow with Orders/Items views, audited stock adjustment,
+  and manual FIFO reconciliation
+- Arrow-driven pick queue, manual per-line picked quantities, pick history,
+  selectable Pick/Unpick bulk actions, and audited pick-time stock reduction
+- Local order completion
+- Legacy fulfillment compatibility/history
+- Stock adjustments
+- Fulfillment/completion report
 - Completed orders export
 - SKU Orders report
 - Local-only route creation, metadata edit, stop reorder, map payload, disabled geocode/optimization architecture
 
 Not implemented yet:
 - Staff auth/login
-- Live WooCommerce stock or order-status writeback
+- Production WooCommerce stock or order-status writeback
 - Real map/geocoding/routing provider calls
 - Heroku production deployment files
 - Supplier management, purchase orders, delivery issue logs, customer notifications, and shipping labels
@@ -49,13 +61,41 @@ Not implemented yet:
 
 - Do not commit credentials, API keys, secrets, or real customer data.
 - WooCommerce credentials live only in backend environment variables.
+- The webhook receiver is disabled by default. Its separate secret must be at
+  least 32 bytes and must never be committed, logged, or returned by the API.
 - Frontend code must never call WooCommerce directly.
-- WooCommerce sync is read-only unless explicitly approved later.
+- WooCommerce sync reads staging/production data through backend env vars only.
+- WooCommerce writeback is allowlisted, queued, and audited. Product/stock
+  writes remain staging-only; production permits only the explicitly enabled
+  order-status completion path.
+- WooCommerce DELETE is always blocked.
 - WooCommerce stock is stored only as a read-only snapshot.
+- Completing an order sends a guarded, audited `completed` status update through
+  the backend writeback queue. The frontend never calls WooCommerce directly.
+- Phase 1 imports only authenticated `order.created` webhook deliveries. Other
+  authenticated topics are audited and ignored, and the 10-second quick sync
+  remains the recovery/reconciliation fallback.
+- The frontend seeds the durable event cursor without replaying old alerts,
+  polls it every 2 seconds while visible, and uses quick-sync creation counts as
+  a deduplicated fallback alert.
+- The new-order notice is an internal Pongo staff UI alert. It does not send
+  email, SMS, browser push, or any customer-facing notification.
 - Pongo OS local inventory is the operational source of truth.
 - Location stock rows are the operational quantity source; item stock fields
   are cached aggregates for compatibility and fast display.
 - Stock-changing local workflows must create stock movement or audit rows.
+- Picking reduces local In Stock and Allocated quantities and creates
+  `pick_stock_reduction` stock movements.
+- Completing a picked order never reduces stock again.
+- Completing an unpicked order does not reduce stock and releases remaining
+  local allocation.
+- Only WooCommerce `processing` orders participate in Open, Allocate, and Pick.
+  Allocation runs oldest first with a deterministic local-order-ID tie-break;
+  partially allocated orders remain in Allocate until fully pick-ready.
+- Receiving, stock adjustments, cycle counts, completion releases, and synced
+  non-processing status changes automatically retry FIFO allocation. A status
+  change out of processing releases the order's remaining unpicked reservation
+  before the next eligible order is evaluated.
 - Route, dashboard, report, remap, and metadata work must not mutate stock quantities.
 - Map/geocoding/optimization providers are disabled unless configured backend-side.
 
@@ -69,7 +109,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-DATABASE_URL=sqlite:///local_items_dev.db .venv/bin/alembic upgrade head
+DATABASE_URL=sqlite:///local_items_dev.db .venv/bin/python -m alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
@@ -91,7 +131,7 @@ Local URLs:
 Backend tests:
 
 ```bash
-backend/.venv/bin/pytest backend/tests -q
+backend/.venv/bin/python -m pytest backend/tests -q
 ```
 
 Frontend build:
@@ -114,6 +154,54 @@ Frontend QA checklist: `docs/FRONTEND_QA.md`.
 
 Use placeholders only in `.env.example`. Real values belong in local or deployment environment variables.
 
+WooCommerce credentials belong only in `backend/.env` or deployment secret
+configuration. Do not commit keys, print keys, put keys in docs, or expose keys
+to the frontend. Production WooCommerce writeback stays blocked.
+
+The inbound order webhook is a separate, read-only integration and does not
+require writeback to be enabled. Its safe defaults are:
+
+```bash
+WOOCOMMERCE_WEBHOOK_ENABLED=false
+WOOCOMMERCE_WEBHOOK_SECRET=
+WOOCOMMERCE_WEBHOOK_MAX_BODY_BYTES=1048576
+```
+
+When deliberately enabling it, set a distinct random secret of at least 32
+bytes in both WooCommerce and the backend deployment environment. WooCommerce
+must deliver to a publicly reachable HTTPS URL:
+`https://<backend-host>/api/integrations/woocommerce/webhooks/orders`.
+`WOOCOMMERCE_ALLOWED_HOST` is required and is the exact allowlisted
+`X-WC-Webhook-Source` host. Localhost URLs cannot receive a staging
+WooCommerce webhook.
+
+Live staging write tests are configured separately and require all of these
+non-secret guard flags in addition to the staging REST API key and secret:
+
+```bash
+WOOCOMMERCE_ENVIRONMENT=staging
+WOOCOMMERCE_READ_ONLY=false
+WOOCOMMERCE_READ_ENABLED=true
+WOOCOMMERCE_WRITEBACK_ENABLED=true
+WOOCOMMERCE_WRITEBACK_DRY_RUN=false
+WOOCOMMERCE_STAGING_LIVE_TEST_MODE=true
+WOOCOMMERCE_ALLOW_STOCK_WRITE=true
+WOOCOMMERCE_ALLOW_ORDER_STATUS_WRITE=true
+WOOCOMMERCE_ALLOW_PRODUCT_METADATA_WRITE=false
+WOOCOMMERCE_ALLOW_CUSTOMER_WRITE=false
+WOOCOMMERCE_ALLOW_COUPON_WRITE=false
+WOOCOMMERCE_ALLOW_REFUND_WRITE=false
+WOOCOMMERCE_ALLOW_DELETE=false
+WOOCOMMERCE_ALLOWED_HOST=staging-hostname-only
+```
+
+Allowed staging writeback operation types are `update_product_stock`,
+`update_variation_stock`, and `update_order_status`. Stock payloads may include
+only `stock_quantity`, `stock_status`, and `manage_stock`; order payloads may
+include only `status`. Writeback requests must be previewed, queued, approved,
+and sent through backend endpoints. The frontend never calls WooCommerce
+directly, and DELETE remains blocked even in live test mode.
+
 Route provider placeholders are intentionally disabled by default:
 
 ```bash
@@ -126,16 +214,32 @@ ROUTE_OPTIMIZATION_PROVIDER=disabled
 
 Current local build now includes:
 - Pongo-branded frontend design tokens using primary blue `#0f149a`, soft peach surfaces, consistent button states, contained table scrolling, and no-horizontal-body-overflow safeguards.
+- A new default `Dashboard` home page for business metrics, customer/order activity, subscription empty states, revenue comparison, and city-level order geography. See `docs/BUSINESS_DASHBOARD.md`.
+- The former operational dashboard is now `Inventory Overview`.
 - Frontend Vitest/Testing Library coverage for design-system primitives, app shell navigation, Items, Scanner mode switching, and Reports single-panel switching.
 - Production-grade Items page controls: rich filters, image-aware table rows, column visibility, saved item views, safe metadata-only bulk edit, local item search, and an Item Detail Control Center.
-- Item Detail Control Center tabs for overview, stock by location, activity, history, and metadata edit. Stock quantity edits remain routed through receiving, cycle count, transfer, or adjustment workflows.
+- Item Detail Control Center tabs for overview, stock by location, activity, history, and metadata edit. Stock quantity edits remain routed through receiving, cycle count, or adjustment workflows.
 - Bulk Receiving Session under Receiving. It previews multi-row receiving carts, commits valid rows into one local receipt, updates `inventory_item_locations`, recalculates item aggregate stock fields, and creates stock movements.
-- Scanner page for inventory lookup, location lookup, receiving, cycle count, transfer, adjustment, and a link into existing pick-order scanner support.
+- Scanner page for inventory lookup, location lookup, receiving, cycle count,
+  and adjustment. Pick Orders uses manual per-line quantities and does not
+  require barcode scanning.
+- Inventory is organized into sidebar subpages: All Inventory, Inventory by Location, Low Stock, Expiring Stock, Par Level, and Stock Movements. Transfer UI is hidden and is not part of the active frontend workflow.
 - Expanded read-only reports: inventory valuation, low stock/reorder, stock movement ledger, item activity, location utilization, margin by SKU, receiving cost, and adjustment/damage/loss.
+- Pongo Insights: a separate read-only BI page with tabbed dashboards for executive overview, revenue, customers, segmentation, SKU demand, subscriptions empty states, forecasting, coupons, payment health, geography, affinity, and reorder forecast. See `docs/INSIGHTS.md`.
+- Zenventory-style Orders workflow: Woo order sync runs processing-only FIFO
+  auto-allocation, Open Orders is review/completion, Allocate shows unresolved
+  Orders/Items shortages, fully allocated orders enter Pick Orders, and Order
+  History holds allocation/pick/legacy fulfillment records. See
+  `docs/ORDER_WORKFLOW.md`.
+- Event-driven phase-1 Woo order creation: signed `order.created` deliveries are
+  imported through the backend, recorded in a durable idempotency ledger, and
+  published to an immutable local event outbox for the internal staff
+  new-order alert. The
+  10-second REST quick sync remains enabled as recovery fallback.
 
 Still intentionally delayed:
 - Auth/RBAC.
-- WooCommerce stock or order-status writeback.
+- Production WooCommerce stock or order-status writeback.
 - Purchase orders and supplier management.
 - Shipping labels, customer notifications, delivery issue logs, return-to-inventory workflows, and real map/geocode/route optimization provider calls.
 # pathwright

@@ -46,9 +46,9 @@ display.
 Reason: A SKU can exist in multiple physical locations, and totals must be derived from those rows.
 
 Update 2026-07-07: Stock by Location v2 is implemented. Receiving, cycle count,
-allocation, picking, and fulfillment now resolve item-location rows. Transfers
-and explicit adjustments are local-only workflows. WooCommerce writeback remains
-disabled.
+allocation, picking, and fulfillment compatibility now resolve item-location
+rows. Transfers and explicit adjustments are local-only workflows. WooCommerce
+writeback remains disabled.
 
 ## ADR-008: Direct Receiving Without PO
 
@@ -56,11 +56,14 @@ Decision: Build direct receiving only.
 
 Reason: Pongo does not use purchase orders.
 
-## ADR-009: Only Three Order Stages
+## ADR-009: Focused Order Workflow Views
 
-Decision: Support only Open Orders, Allocate Orders, and Pick Orders.
+Decision: Support focused Orders views: Open Orders, Allocate, Pick Orders,
+Completed Orders, and Order History.
 
-Reason: Pongo does not need complex warehouse/delivery stages in MVP.
+Reason: Pongo needs Zenventory-style warehouse operations without complex
+enterprise delivery stages. The same active order can appear in Open Orders and
+Pick Orders when allocated, while Allocate is reserved for exceptions.
 
 ## ADR-010: Routes as Separate Module
 
@@ -143,20 +146,23 @@ stock movements, and never writes WooCommerce products, orders, or stock.
 
 ## ADR-016: WooCommerce Order Sync Is Read-Only and Local-Only
 
-Decision: Implement WooCommerce order sync as a backend-only, read-only
-integration with preview and local-only commit.
+Decision: Implement WooCommerce order sync as a backend-only integration with
+preview, local order snapshot commit, and local-only auto-allocation for active
+open orders.
 
-Reason: Pongo needs a local Open Orders queue before allocation, picking,
-fulfillment exports, route creation, or WooCommerce status/stock writeback can
-be safely designed. Preview lets staff inspect unmatched lines, conflicts, and
-shortages before local order snapshots are stored.
+Reason: Pongo needs imported WooCommerce orders to enter the warehouse workflow
+without manual reservation when enough local stock is available. Preview lets
+staff inspect unmatched lines, conflicts, and shortages before local order
+snapshots are stored, while commit can safely reserve stock locally for
+matched, fully available active orders.
 
 Safety: Order sync reads WooCommerce orders only. Preview writes nothing.
-Commit creates or updates local `orders` and `order_items` rows only, stores
-sync run/error history, and preserves unmatched/conflict lines for review. It
-does not create inventory items, allocate, pick, route, fulfill, change local
-item stock or Allocated quantities, create stock movements, or write
-WooCommerce orders/products/stock.
+Commit creates or updates local `orders` and `order_items` rows, stores sync
+run/error history, preserves unmatched/conflict lines for review, and may
+auto-allocate active open orders. Auto-allocation increases local Allocated and
+creates allocation/audit rows only. It does not create inventory items, pick,
+route, fulfill, reduce In Stock, create stock movements, or write WooCommerce
+orders/products/stock.
 
 ## ADR-017: Allocation Reserves Local Sellable Inventory Only
 
@@ -176,85 +182,107 @@ stock movement rows, reduce In Stock, pick items, create routes, fulfill
 orders, change WooCommerce order status, update WooCommerce stock/products, or
 call WooCommerce write APIs.
 
-## ADR-018: Picking Tracks Operational Progress Only
+## ADR-018: Picking Reduces Local Stock
 
-Decision: Implement Picking as a local progress workflow against already
-allocated order quantities. Picking creates `picks`, `pick_lines`, and
-`inventory_audit_events` rows, updates local order line picked quantities, and
-updates local order status to `partially_picked` or `picked` when applicable.
+Decision: Implement Picking as the local stock reduction workflow against
+already allocated order quantities. Picking creates `picks`, `pick_lines`,
+`stock_movements`, and `inventory_audit_events` rows, updates local order line
+picked quantities, tracks stock-reduced quantity, reduces item-location In
+Stock and Allocated, and updates order pick status.
 
-Reason: Picking confirms staff have physically gathered allocated items, but it
-is not the same as shipping, completion, or inventory reduction. Keeping picking
-separate preserves the future ability to review, route, fulfill, and audit
-orders before local stock or WooCommerce state changes.
+Reason: In Pongo's Zenventory-style workflow, the warehouse pick is the moment
+stock leaves local on-hand inventory. Completing or fulfilling later should not
+remove stock a second time.
 
 Safety: Picking is atomic and cannot pick more than allocated or more than the
-remaining quantity to pick. Picking does not reduce item In Stock, does not
-reduce item Allocated, does not recalculate Sellable, does not create stock
-movement rows, does not fulfill orders, does not create routes, and does not
-write WooCommerce order status, products, or stock.
+remaining quantity to pick. Picking cannot make In Stock or Allocated negative
+and cannot leave Allocated greater than In Stock. Picking is idempotent for
+scanner commits with an idempotency key. It does not fulfill orders, create
+routes, create labels, notify customers, or write WooCommerce order status,
+products, or stock.
 
-## ADR-019: Fulfillment Reduces Local In Stock and Allocated
+## ADR-019: Completion Closes Orders Without Stock Reduction
 
-Decision: Implement Fulfillment/Completion as the first order workflow that
-removes picked quantities from local physical inventory. Fulfillment reduces
-item In Stock and item Allocated by the same fulfilled quantity, recalculates
-Sellable and Under Par, updates local order line fulfilled quantities, creates
-`fulfillments` and `fulfillment_lines`, creates `fulfill_order` stock movement
-rows, and creates `fulfill` inventory audit events.
+Decision: Implement local order completion as the closing step after picking or
+as an explicit complete-without-picking path. Completion marks local orders
+completed/closed, releases remaining unpicked allocations when needed, and
+creates audit events. Completion never reduces stock.
 
-Reason: Allocation reserves stock and Picking records staff progress, but
-neither should imply physical inventory has left the warehouse. Fulfillment is
-the local operational boundary where picked goods are completed and should no
-longer count as physically on hand or reserved. Reducing In Stock and Allocated
-together keeps Sellable stable for already reserved units while accurately
-lowering physical inventory.
+Reason: Picking already removed stock from local inventory. Completion is an
+administrative close of the customer order, not a second inventory movement.
+The complete-without-picking path is useful for exceptions and must clearly
+record that stock was not reduced.
 
-Safety: Fulfillment is atomic and cannot fulfill more than picked, allocated,
-current item In Stock, current item Allocated, or remaining-to-fulfill quantity.
-It cannot make In Stock or Allocated negative and cannot leave Allocated greater
-than In Stock. Fulfillment does not write WooCommerce order status, products, or
-stock, does not create routes, does not create shipping labels, does not send
-notifications, and does not add purchase order or supplier workflows.
+Safety: Completing a picked order does not reduce stock again. Completing an
+unpicked order does not reduce stock and releases remaining local allocation.
+Completion creates an audited, allowlisted backend writeback that sets only the
+linked WooCommerce order status to `completed`. It does not write WooCommerce
+products or stock, does not create routes, does not create shipping labels, does not send
+outbound/customer notifications,
+and does not add purchase order or supplier workflows.
 
-## ADR-020: Fulfillment Reports Are Read-Only Line Audits
+## ADR-020: Fulfillment Compatibility And Reports Are Read-Only
 
-Decision: Build Fulfillment Report and Completed Orders export from local
-fulfillment/order data only. The fulfillment report uses `fulfillment_lines` as
-the primary source and enriches from fulfillment headers, local orders, order
-lines, and items. Completed Orders uses local orders with `fulfilled` or
-`partially_fulfilled` status.
+Decision: Preserve fulfillment endpoints for compatibility and reporting, but
+remove fulfillment as the normal stock-reduction step. Fulfillment Report reads
+local fulfillment/completion records, and Completed Orders reads local
+completed, closed, fulfilled, partially fulfilled, and completed-without-picking
+orders.
 
-Reason: Fulfillment already created the stock-changing audit trail. Reports
-should explain what happened without causing any new inventory or WooCommerce
-side effects.
+Reason: Existing records and integrations may still reference fulfillment, but
+the warehouse workflow now reduces stock during picking. Reports should explain
+what happened without causing new inventory or WooCommerce side effects.
 
-Safety: Fulfillment report and completed-order endpoints do not modify item
-stock, Allocated, orders, fulfillment records, stock movements, audit events, or
-WooCommerce. They do not add route, shipping label, notification, purchase
+Safety: Fulfillment does not double-reduce stock after picking. Unpicked
+fulfillment is blocked instead of silently reducing stock through the old path.
+Fulfillment report and completed-order endpoints do not modify item stock,
+Allocated, orders, fulfillment records, stock movements, audit events, or
+WooCommerce. They do not add route, shipping label, outbound/customer
+notification, purchase
 order, or supplier workflows.
 
-## ADR-021: Route Creation Is Local Manual Planning
+## ADR-021: WooCommerce Writeback Testing Is Staging-Only And Queued
+
+Decision: Add a local `woo_writeback_queue` foundation for staging-only
+WooCommerce writeback tests, limited to simple-product stock, variation stock,
+and order-status updates.
+
+Reason: Pongo needs to test real WooCommerce API write paths safely before any
+production writeback exists. Preview, queue, approval, dry-run, and allowlisted
+operation checks make each proposed write auditable and explicit.
+
+Safety: Credentials remain backend env vars only. The frontend never calls
+WooCommerce and never receives keys. DELETE is always blocked. Live send is
+blocked unless environment is `staging`, live staging test mode is enabled,
+read-only is false, writeback is enabled, dry-run is false, the base URL host
+matches the allowed host, the method is `PUT` or `PATCH`, and the operation,
+path, and payload fields are allowlisted. Product metadata, customer, coupon,
+refund, POST, arbitrary endpoint, and production WooCommerce writebacks remain
+disabled.
+
+## ADR-022: Route Creation Is Local Manual Planning
 
 Decision: Build route creation as a local planning foundation that uses
-completed local orders only. Eligible candidates are local orders with
-`fulfilled` or `partially_fulfilled` status and no non-cancelled route. Route
-preview validates selected orders without writes. Commit creates a `draft`
-route and route-stop snapshots, then list/detail/export/finalize/cancel operate
-on local route records.
+completed local orders only. Eligible candidates are locally completed/closed
+orders, including legacy fulfilled compatibility statuses, with no
+non-cancelled route. Route preview validates selected orders without writes.
+Commit creates a `draft` route and route-stop snapshots, then
+list/detail/export/finalize/cancel operate on local route records.
 
 Reason: Pongo needs a route planning surface after local fulfillment, but map
 provider selection, route optimization, labels, dispatch, delivery tracking,
-notifications, and WooCommerce status writeback are separate higher-risk
+outbound/customer notifications, and WooCommerce status writeback are separate
+higher-risk
 workflows.
 
 Safety: Route creation does not call WooCommerce, maps, geocoding, routing,
-shipping label, notification, purchase order, supplier, or inventory stock
+shipping label, outbound/customer notification, purchase order, supplier, or
+inventory stock
 services. It does not change local item In Stock, Allocated, Sellable, On Order,
 order status, stock movements, or audit rows. Cancelled routes retain stops for
 review while making their orders eligible for future route planning.
 
-## ADR-022: Command Center Is Read-Only Local Operations Data
+## ADR-023: Command Center Is Read-Only Local Operations Data
 
 Decision: Build the dashboard as a read-only Command Center over local records:
 items, orders, routes, stock movements, audit events, receipts, cycle counts,
@@ -266,7 +294,7 @@ activity without triggering business workflows.
 Safety: Dashboard endpoints do not mutate inventory, orders, routes,
 WooCommerce, stock movements, or audit rows.
 
-## ADR-023: Remap Is Local Metadata Only
+## ADR-024: Remap Is Local Metadata Only
 
 Decision: Build WooCommerce remap as local metadata using `woo_item_mappings`
 plus local item Woo ID metadata. Remap preview and commit never call
@@ -278,7 +306,7 @@ preserving the backend-only WooCommerce boundary and Pongo OS field ownership.
 Safety: Remap does not update WooCommerce, stock, allocation, sellable, picked,
 fulfilled, route, or order status quantities. Manual item fields are preserved.
 
-## ADR-024: Route Providers Default To Disabled
+## ADR-025: Route Providers Default To Disabled
 
 Decision: Add route map/geocode/optimization architecture as local endpoints
 with disabled/no-op provider behavior by default.
@@ -288,14 +316,15 @@ future provider integration without committing to Google, Mapbox, or another
 paid routing provider.
 
 Safety: No provider keys are exposed in frontend responses. No external
-geocoding, maps, routing, optimization, WooCommerce, notification, label, or
+geocoding, maps, routing, optimization, WooCommerce, outbound/customer
+notification, label, or
 delivery tracking calls are made by the current implementation.
 
-## ADR-025: Item Control Center Uses Local Activity Composition
+## ADR-026: Item Control Center Uses Local Activity Composition
 
 Decision: Build item detail as a local control center assembled from existing
 records: item rows, `inventory_item_locations`, stock movements, receipts,
-cycle counts, transfers, adjustments, allocations, picks, fulfillments, local
+cycle counts, adjustments, allocations, picks, fulfillments, local
 orders, and item notes.
 
 Reason: Operators need one place to inspect item state without duplicating
@@ -303,9 +332,10 @@ activity into a new event stream.
 
 Safety: Item detail and activity endpoints are read-only except item notes and
 metadata-only edit paths. Stock fields must still be changed through receiving,
-cycle count, transfer, or adjustment workflows.
+cycle count, or adjustment workflows. Transfer backend infrastructure may exist,
+but transfer UI is hidden from the active frontend workflow.
 
-## ADR-026: Bulk Receiving Is One Local Receipt Session
+## ADR-027: Bulk Receiving Is One Local Receipt Session
 
 Decision: Bulk receiving preview validates all rows without writes. Commit
 creates one local receipt and one receipt item per valid row, updates
@@ -318,11 +348,12 @@ preserving stock auditability.
 Safety: No WooCommerce calls or writeback. Invalid rows block commit by
 default. Stock is changed only through the location inventory service.
 
-## ADR-027: Scanner Workflows Are Keyboard-Input Local Operations
+## ADR-028: Scanner Workflows Are Keyboard-Input Local Operations
 
 Decision: Treat barcode scanners as keyboard input and expose local scanner
-endpoints for inventory lookup, location lookup, receiving, cycle count,
-transfer, and adjustment. Picking continues to use the existing order scanner.
+endpoints for inventory lookup, location lookup, receiving, cycle count, and
+adjustment. Picking continues to use the existing order scanner. Transfer UI is
+hidden from active scanner workflows.
 
 Reason: Pongo can support warehouse devices without hardware-specific
 integration or browser plugins.
@@ -331,7 +362,7 @@ Safety: Scanner commits are local only. Cycle count requires a reason when the
 count differs from system quantity. Transfer and adjustment checks prevent
 negative location stock.
 
-## ADR-028: Expanded Reports Are Read-Only
+## ADR-029: Expanded Reports Are Read-Only
 
 Decision: Build inventory valuation, low stock/reorder, stock movement ledger,
 item activity, location utilization, margin by SKU, receiving cost, and
@@ -343,7 +374,7 @@ orders, WooCommerce, or route state.
 Safety: All expanded report endpoints are read-only and include CSV export
 only.
 
-## ADR-029: Pongo Frontend Design System
+## ADR-030: Pongo Frontend Design System
 
 Decision: Use centralized CSS variables for Pongo blue `#0f149a`, blue hover
 and active states, soft peach backgrounds, white/off-white surfaces, borders,
@@ -357,3 +388,67 @@ Safety: Tables must scroll inside `.table-scroll`; the page/body must not
 overflow horizontally. Visible action controls must work, navigate to a real
 workflow, or be disabled/removed. Frontend tests run with Vitest and Testing
 Library through `npm test -- --run`.
+
+## ADR-031: Pongo Insights Is Read-Only Local BI
+
+Decision: Add Pongo Insights as a separate sidebar page and backend router
+built from local `orders`, `order_items`, and `inventory_items` data.
+
+Reason: Pongo needs business intelligence and forecasting without disturbing the
+operational Command Center or introducing WooCommerce writeback risk.
+
+Safety: Insights endpoints are read-only, do not call WooCommerce, do not mutate
+local stock or orders, and return explicit data quality warnings or empty states
+when subscription, coupon, refund, or other source fields are not synced yet.
+
+## ADR-032: Dashboard Is Business Home, Inventory Overview Is Operations
+
+Decision: Rename the old operational Dashboard/Command Center to `Inventory
+Overview` and add a new default `Dashboard` page for business metrics.
+
+Reason: Pongo needs a business-facing landing page without losing the
+operational inventory command center.
+
+Safety: The new Dashboard reads local order snapshots only. It does not call
+WooCommerce, geocoding providers, or map providers, does not mutate local
+orders or inventory, and uses explicit empty states for missing subscription
+data.
+
+## ADR-033: Signed Order-Created Webhooks With Durable Staff Events
+
+Decision: Add a disabled-by-default backend receiver at
+`POST /api/integrations/woocommerce/webhooks/orders`. Phase 1 imports only
+authenticated `order.created` payloads. It authenticates the exact raw body with
+base64 HMAC-SHA256 using a separate secret of at least 32 bytes, verifies the
+WooCommerce source host and related delivery headers, enforces a configured body
+limit, and accepts WooCommerce's exact unsigned setup ping as a no-op.
+
+Each authenticated JSON delivery is recorded in
+`woocommerce_webhook_deliveries` and uniquely identified by webhook ID,
+delivery ID, and raw-body SHA-256. Other authenticated topics are audited as
+ignored. A delayed `order.created` payload older than or equal to the local order snapshot
+is also audited as ignored so it cannot regress newer data. A successful new
+order transaction creates a separate immutable `woocommerce_order_events`
+outbox row. The cursor endpoint reads this commit-time event sequence for a
+dismissible internal staff UI notice. New sessions initialize at the current
+order-event high-water mark, and subsequent pagination advances through
+`next_after_id`. The existing 10-second REST quick sync remains a recovery and
+reconciliation fallback.
+
+Reason: New storefront orders should enter Pongo OS without waiting for the
+next outbound REST poll, while retries, duplicate deliveries, configuration
+mistakes, and future topics remain observable and safe. A durable delivery
+ledger plus immutable event outbox works across restarts, retries, and multiple
+backend processes; an in-memory notification queue would not.
+
+The frontend polls the cursor feed every 2 seconds while visible, maintains a
+session-only Bell history/unread state, and uses nonzero quick-sync creation
+counts as a sync-run-deduplicated fallback notice. Persistent or per-user
+acknowledgement remains deferred until staff auth/RBAC exists.
+
+Safety: The receiver is disabled until explicitly configured. The webhook
+secret stays in backend environment variables and is never returned or logged.
+The ledger stores safe metadata and a hash, not a second raw customer payload.
+Webhook import may use the existing audited local auto-allocation path, but it
+does not reduce In Stock, create stock movements, write WooCommerce, or send
+outbound/customer notifications. Staff notices are local UI feedback only.

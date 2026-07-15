@@ -29,11 +29,10 @@
 - Orders includes scanner-style Pick Orders controls for SKU/barcode entry.
 - Orders now follows a Zenventory-style sidebar sub-navigation pattern instead
   of showing all workflows on one page. The Orders children are Open Orders,
-  Allocate Orders, Pick Orders, Fulfillment, Completed Orders, and Order
-  History.
-- Open Orders owns the queue, filters, table, order detail, and allocation row
+  Allocate, Pick Orders, Completed Orders, and Order History.
+- Open Orders owns the queue, filters, table, order detail, and local completion
   actions only. Pick Scanner is only shown in Pick Orders. Allocation, pick, and
-  fulfillment history sections are shown in Order History.
+  legacy fulfillment/completion history sections are shown in Order History.
 - Reports includes SKU Orders Report with summary, filters, table, and CSV
   export.
 - Routes includes metadata editing, stop reordering, stop notes/coordinates,
@@ -286,8 +285,12 @@ Current Pongo Inventory page:
 - Export CSV calls the backend inventory-by-location export.
 - Location Stock table lists item-location rows with SKU, description,
   warehouse, location, In Stock, Allocated, and Sellable.
-- Location Operations includes local Transfer and Adjustment panels. These call
-  backend Pongo OS APIs only and never call WooCommerce.
+- Inventory now uses sidebar subpages instead of top tabs: All Inventory,
+  Inventory by Location, Low Stock, Expiring Stock, Par Level, and Stock
+  Movements. Transfer UI is hidden and is not part of the active frontend
+  workflow.
+- Location inventory rows expose metadata edit, stock adjustment, and movement
+  actions. These call backend Pongo OS APIs only and never call WooCommerce.
 
 ## Locations
 
@@ -295,8 +298,8 @@ Pongo Locations screen:
 - Page title: Locations.
 - Tabs: Add Location, All Locations, Location Stock.
 - All Locations is real for MVP; Add Location opens the location form. Location
-  Stock now maps to the Inventory page stock-location rows and local
-  transfer/adjustment operations.
+  Stock now maps to the Inventory by Location subpage and local stock
+  adjustment operations.
 - Filters: search, warehouse, zone, aisle, active/inactive.
 - Actions: Add Location, Import, Export, Clear.
 - Import opens a CSV modal that previews and commits the canonical location CSV
@@ -451,85 +454,103 @@ Reference table columns:
 
 Pongo Open Orders:
 - Order source is WooCommerce.
-- Pull eligible WooCommerce orders through backend read-only order sync.
-- Show order number, customer, placed on, WooCommerce status, line count,
-  match status, availability status, order total, and line-level SKU/barcode
-  detail.
-- Show allocation, picking, and fulfillment controls only for local Pongo OS
-  workflow steps.
-- Do not show route, shipping label, PO, supplier, notification, or WooCommerce
-  writeback actions.
+- Import new orders through the signed backend `order.created` webhook, with
+  manual and 10-second REST quick sync retained for recovery/reconciliation.
+- Show active orders whose latest stored WooCommerce status is `processing`.
+- Show active order review and completion controls only.
+- Do not show route, shipping label, PO, supplier, outbound/customer
+  notification, or WooCommerce writeback actions.
 
 Current Pongo Open Orders page:
-- Summary cards: Open Orders, Available, Partial, Unavailable, Unknown.
-- Filters: search, Woo status, availability, matched status.
-- Actions: Refresh local open orders, Export filtered CSV, Preview Allocation,
-  Commit Allocation, Preview Pick, Commit Pick, Preview Fulfillment, Commit
-  Fulfillment, Clear, Apply.
-- Dense operational table with order number, Woo status, customer, email,
-  local status, total, availability, matched status, lines, created date, and
-  last sync.
-- Detail panel shows selected order customer/contact/address summary and order
-  lines with SKU, barcode, name, ordered quantity, allocated quantity, picked
-  quantity, fulfilled quantity, remaining to pick, remaining to fulfill,
-  remaining to allocate, match status, availability, pick status, fulfillment
-  status, shortage, local sellable, Woo Product ID, and Woo Variation ID.
-- Safety copy states that fulfillment reduces local Pongo OS In Stock and
-  Allocated quantities and does not update WooCommerce order status,
-  WooCommerce stock, routes, shipping labels, or notifications.
+- Dedicated order-number, customer, containing-item, and warehouse filters.
+- The table contains Actions, Order Number, Placed On, Customer, City, Ship Via,
+  Order Total, SKU, Ordered, Picked, and row selection.
+- Orders render directly in the page flow without a nested table scroller or
+  card/modal wrapper. Narrow viewports convert rows to inline order cards.
+- The first-column icon menu is portaled above page overflow and contains View
+  order, Edit order, Print order, Complete order, Unpick, and View timeline.
+  Complete warns when the order has not been fully picked.
+- View order opens the accessible printable customer-order detail dialog.
+- Safety copy states that Open Orders is for review and completion. Picking
+  happens in Pick Orders; completion also marks the linked WooCommerce order
+  completed through the backend writeback queue.
+
+Global internal new-order notice:
+- Reads the backend webhook event cursor and does not call WooCommerce.
+- Uses `initialize=true` to establish the initial cursor without a stale notice,
+  then polls globally every 2 seconds while visible.
+- Advances through `next_after_id` and drains pages while `has_more=true`; the
+  global `latest_event_id` is informational and is not used to skip pages.
+- Shows one polite, atomic, dismissible staff notice for later new-order events.
+- Provides View Open Orders and Dismiss actions without moving keyboard focus.
+- Keeps a session-only header Bell history and unread badge. Opening the history
+  marks current alerts read; Escape, Close, and View Open Orders close it.
+- Uses a nonzero quick-sync `created_count` as a fallback alert and deduplicates
+  repeated results by sync-run identity.
+- Replayed/duplicate deliveries do not display another notice.
+- This is local staff UI feedback, not email, SMS, browser push, or customer
+  notification.
 
 Current Allocation UI:
-- Preview Allocation runs a local backend preview for the selected order.
-- Preview summary cards: Orders, Lines, Allocatable, Partial, Skipped, Qty
-  Allocate, Shortage.
-- Preview table columns: Order, SKU, Barcode, Description, Ordered, Previously
-  Allocated, Remaining, In Stock, Allocated, Sellable, Recommended, Shortage,
-  Status, Warnings, Errors.
-- Commit Allocation posts a local allocation, refreshes Open Orders, Items, and
-  Inventory summary.
-- Allocation History appears below the Open Orders table with allocation
-  number, status, Woo order number, total lines, total quantity allocated,
-  created by, created at, and posted at.
-- Selecting an allocation shows detail lines and allows allocation CSV export.
+- Allocate is a processing-order exception workflow for unresolved quantities,
+  shortages, unmatched lines, conflicts, unavailable location stock, and
+  failed/partial auto-allocation.
+- FIFO priority is oldest WooCommerce `date_created` first, then local order ID;
+  missing order dates sort last. Partial available stock is reserved before a
+  newer order can use it.
+- Fully allocated lines are hidden by default and can be included with the
+  `Include 100% allocated items in list` checkbox.
+- Summary cards show Orders Waiting, Exception Lines, Units Unallocated, Stock
+  Available, and Out of Stock. A failed-allocation alert links staff back to the
+  shortage workspace.
+- Orders and Items tabs present the same unresolved lines by order or aggregated
+  item. The Items view shows SKU/barcode, description, affected orders,
+  ordered, allocated, unallocated, picked, available, and reason. The Orders
+  view adds order number, placed date, and customer.
+- Filters support item/order/SKU/barcode, ordered date range, and Ship From.
+- The row action menu contains View affected orders, Update stock levels, and
+  Allocate available stock. Update Stock Levels creates an audited stock
+  adjustment and automatically reruns FIFO allocation.
+- Refresh, Export Results, and Run FIFO Allocation are working actions.
+- Allocation History remains in Order History.
 
 Current Picking UI:
+- Pick Orders lists processing orders only after every required inventory line
+  is fully allocated. Partially allocated orders remain in Allocate. The
+  scanner appears only after staff selects an order.
 - Preview Pick runs a local backend preview for the selected order.
 - Preview summary cards: Orders, Lines, Pickable, Partial, Skipped, Qty Pick.
 - Preview table columns: Order, SKU, Barcode, Description, Warehouse, Location,
   Ordered, Allocated, Previously Picked, Remaining To Pick, Recommended,
   Picked After, Status, Warnings, Errors.
-- Commit Pick posts a local pick, refreshes Open Orders, and refreshes Pick
-  History.
-- Pick History appears below Allocation History with pick number, status, Woo
-  order number, total lines, total quantity picked, created by, created at, and
-  posted at.
-- Selecting a pick shows detail lines and allows pick CSV export.
-- Pick UI does not reduce In Stock, reduce Allocated, write WooCommerce, route,
-  fulfill, create shipping labels, create purchase orders, or notify customers.
+- Commit Pick posts a local pick, reduces local In Stock and Allocated at the
+  allocated item-location rows, creates `pick_stock_reduction` stock movements,
+  refreshes Open Orders, Items, Inventory summary, and Pick History.
+- Pick History moved to Order History.
+- Pick UI does not write WooCommerce, route, create shipping labels, create
+  purchase orders, or notify customers.
 
-Current Fulfillment UI:
-- Preview Fulfillment runs a local backend preview for the selected picked
-  order.
-- Preview summary cards: Orders, Lines, Fulfillable, Partial, Skipped, Qty
-  Fulfill.
-- Preview table columns: Order, SKU, Barcode, Description, Ordered, Allocated,
-  Picked, Previously Fulfilled, Remaining To Fulfill, Recommended, Status, In
-  Stock, Allocated Stock, Sellable, Warehouse, Location, Warnings, Errors.
-- Commit Fulfillment posts a local fulfillment, refreshes Open Orders, Items,
-  Inventory summary, and Fulfillment History.
-- Fulfillment History appears below Pick History with fulfillment number,
-  status, Woo order number, total lines, total quantity fulfilled, created by,
-  created at, and posted at.
-- Selecting a fulfillment shows detail lines and allows fulfillment CSV export.
-- Fulfillment UI reduces local In Stock and Allocated only through the backend
-  commit endpoint. It does not write WooCommerce, route, create shipping
-  labels, create purchase orders, or notify customers.
+Current Fulfillment/Completion UI:
+- Fulfillment is no longer a primary Orders sidebar page.
+- Open Orders exposes Complete and Complete Without Picking actions.
+- Completed Orders shows locally closed orders, including picked completions
+  and completed-without-picking exceptions.
+- Order History shows allocation history, pick history, and legacy
+  fulfillment/completion history.
+- Legacy fulfillment endpoints remain for compatibility and do not
+  double-reduce stock after picking.
 
 Current Settings WooCommerce Order Sync section:
-- Shows default statuses `processing, on-hold`.
+- Shows default REST sync statuses `processing, on-hold, pending`.
 - Provides Preview Order Sync and Commit Order Sync controls.
 - Preview displays order and line-level match/availability rows.
-- Commit creates/updates local order snapshots only.
+- Commit creates/updates local order snapshots and attempts safe local
+  FIFO auto-allocation for active processing orders. It never writes
+  WooCommerce.
+- Shows webhook enabled/configured state and the last safe delivery summary, but
+  never shows or edits `WOOCOMMERCE_WEBHOOK_SECRET`.
+- Explains that the webhook is the phase-1 new-order path and 10-second quick
+  sync remains the recovery path.
 
 ## Allocate Orders
 
@@ -553,11 +574,17 @@ Reference Items table columns:
 - Available
 
 Pongo Allocate Orders:
-- Allocation only needs to check sellable stock and allocate when available.
+- Allocation is exception handling. Active processing orders are auto-allocated
+  oldest `date_created` first during order sync and whenever stock becomes
+  available through receiving, adjustment, cycle count, or an allocation
+  release.
+- Available quantities are reserved partially. Only unresolved quantities stay
+  in Allocate, and only fully allocated orders enter the default Pick queue.
 - Match order items by Woo product ID, Woo variation ID, SKU, or barcode.
 - Show shortages clearly.
 - Do not build complex allocation rules or delivery stages.
-- Every allocation must eventually create audit/stock movement records.
+- Every allocation must create allocation records and audit rows. Allocation
+  does not reduce In Stock or create stock movement rows.
 
 ## Pick Orders
 
@@ -591,29 +618,34 @@ Reference table columns:
 - Location
 
 Pongo Pick Orders:
+- Only active `processing` orders with all required inventory lines fully
+  allocated enter the default pick queue.
 - Must support barcode/SKU scan.
 - Staff opens an allocated order, scans SKU/barcode, and the system matches to an order line.
 - Show ordered, allocated, picked, and remaining quantity.
 - Prevent overpicking.
-- Current foundation supports backend pick preview/commit for selected allocated
-  orders and tracks Remaining To Pick.
-- Future scanner work should build on the same allocated-quantity guardrails.
-- Fulfillment/completion now exists as a backend-only local workflow after
-  picking. WooCommerce writeback, shipping, and routing remain future work.
+- Current foundation supports backend pick preview/commit and scanner commit
+  for selected allocated orders.
+- Picking reduces local In Stock and Allocated, recalculates Sellable, creates
+  stock movement/audit rows, and tracks Remaining To Pick.
+- Completion happens after picking from Open Orders. WooCommerce writeback,
+  shipping, and routing remain separate future work.
 
 ## Fulfillment / Completion
 
 Pongo Fulfillment:
-- Complete picked local orders after staff verifies picked quantities.
-- Reduce local item In Stock and Allocated by the fulfilled quantity.
-- Recalculate Sellable and Under Par.
-- Show ordered, allocated, picked, fulfilled, and remaining-to-fulfill
-  quantities.
-- Prevent fulfillment beyond picked, allocated, or available local In Stock.
-- Fulfillment is local-only and does not update WooCommerce order status or
-  stock.
-- Route planning, shipping labels, notifications, purchase orders, and supplier
-  workflows remain separate future phases.
+- Fulfillment is legacy compatibility/history, not the normal stock reduction
+  step.
+- Complete picked local orders from Open Orders after picking reduces stock.
+- Complete unpicked local orders only with explicit confirmation that stock is
+  not reduced.
+- Show ordered, allocated, picked, stock reduced, fulfilled, and completion
+  state.
+- Prevent double stock reduction after picking.
+- Completion updates only the linked WooCommerce order status to `completed`
+  through the audited backend queue; it does not update WooCommerce stock.
+- Route planning, shipping labels, outbound/customer notifications, purchase
+  orders, and supplier workflows remain separate future phases.
 
 ## Order Search
 
@@ -657,7 +689,8 @@ Reference structure:
 
 Pongo:
 - Build a Settings > Integrations page later for WooCommerce connection status.
-- Show WooCommerce integration row with last product sync, last order sync, enabled/disabled, and error status.
+- Show WooCommerce integration row with last product sync, last order sync,
+  webhook enabled/configured state, last webhook delivery, and error status.
 - Do not expose credentials in the frontend.
 - Credential editing, if ever needed, should be handled with backend environment variables or secure deployment settings, not plain frontend forms.
 
@@ -726,7 +759,7 @@ Current Fulfillment Report:
 - Completed Orders section on Orders shows fulfilled and partially fulfilled
   local orders with summary cards, filters, and CSV export.
 - Report endpoints do not modify inventory, allocated quantities, orders,
-  WooCommerce, routes, shipping labels, or notifications.
+  WooCommerce, routes, shipping labels, or customer notifications.
 
 ## Routes
 
@@ -750,7 +783,8 @@ Safety / not yet built:
 - Do not call map, geocoding, or route optimization APIs.
 - Do not update WooCommerce.
 - Do not change local inventory quantities.
-- Do not add shipping labels, delivery tracking, or notifications.
+- Do not add shipping labels, delivery tracking, or outbound/customer
+  notifications.
 
 ## Frontend Build Priority
 
@@ -796,7 +830,7 @@ Item Detail Control Center tabs:
 - Edit
 
 Stock quantities are visible in item detail but not directly editable there.
-Quantity changes must use receiving, cycle count, transfer, or adjustment.
+Quantity changes must use receiving, cycle count, or adjustment.
 
 ## Current Receiving Page
 
@@ -824,7 +858,6 @@ Scanner modes:
 - Receiving
 - Cycle Count
 - Picking link/support
-- Transfer
 - Adjustment
 
 Scanner inputs keep a keyboard-first workflow. No hardware-specific
@@ -847,3 +880,34 @@ Reports page now includes an Expanded Reports section with:
 
 Each report provides filters, summary cards, table rows, refresh, CSV export,
 empty states, and error states.
+
+## Current Insights Page
+
+Insights is a separate sidebar page titled `Pongo Insights`; it does not replace
+the Command Center.
+
+Insights uses:
+- horizontally scrollable dashboard tabs;
+- compact filters for date, brand, category, SKU, customer, city, and payment;
+- white KPI cards on soft peach panels;
+- lightweight trend bars instead of a heavy chart dependency;
+- table cards with contained horizontal scrolling;
+- small data quality warning cards;
+- CSV export buttons only on tabs with implemented export endpoints.
+
+Dashboard tabs load on demand and cache loaded responses during the session.
+
+## Current Dashboard And Inventory Overview
+
+`Dashboard` is the default home page and contains the business snapshot:
+- KPI cards for today's orders, revenue, new customers, returning customers,
+  subscription orders, and AOV.
+- Open Orders customer table.
+- Upcoming Subscriptions list or a soft missing-data empty state.
+- Today's Orders Map with city-level markers and city count cards.
+- Revenue comparison bars for current period versus previous month.
+- Data quality warnings when local snapshots are incomplete.
+
+`Inventory Overview` is the renamed operational command center. It keeps the
+existing inventory health, order operations, route cards, warnings, recent
+activity, and quick actions.

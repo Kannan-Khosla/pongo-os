@@ -53,6 +53,10 @@ class PickLine(TimestampMixin, Base):
     quantity_to_pick: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
     quantity_picked_after: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
     remaining_to_pick: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+    quantity_stock_reduced: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
+    stock_movement_id: Mapped[int | None] = mapped_column(ForeignKey("stock_movements.id"), index=True)
+    stock_reduced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(120), index=True)
     status: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
 

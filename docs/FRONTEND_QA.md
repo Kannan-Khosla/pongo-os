@@ -24,6 +24,14 @@ Use this checklist before calling a Pongo Inventory OS frontend pass complete.
   `.filter-actions`, `.help-text`, and `.error-text`.
 - Tables may scroll inside their table card; the page itself should not
   horizontally scroll.
+- Settings must show WooCommerce staging status, the dry-run/live badge, the
+  staging-only writeback warning, and `Dry Run Send` or `Send to Staging`
+  labels without displaying secrets.
+- Settings may show whether the WooCommerce webhook receiver is enabled,
+  configured, and its last safe delivery status, but must never show the
+  webhook secret.
+- The internal new-order notice fits within the viewport at laptop and mobile
+  widths and does not cause horizontal page overflow.
 
 ## Interaction Rules
 
@@ -35,14 +43,58 @@ Use this checklist before calling a Pongo Inventory OS frontend pass complete.
   filter text fields that have Apply/Search/Refresh actions should submit on
   Enter so staff can scan a SKU/barcode directly into the current page.
 - Reports render only the selected report, not all report tables at once.
-- Items detail keeps stock-changing actions routed to receiving, transfer,
-  adjustment, or cycle count workflows.
-- Orders uses Zenventory-style sidebar sub-navigation. Open Orders, Allocate
-  Orders, Pick Orders, Fulfillment, Completed Orders, and Order History are
-  separate views, not one dumped screen.
-- Pick Scanner belongs only inside Pick Orders.
-- Allocation, pick, and fulfillment history sections belong inside Order
-  History, not Open Orders.
+- Insights renders only the selected dashboard tab, loads tab data on demand,
+  shows data quality warnings, and does not show fake export buttons.
+- Dashboard is the business home page. Inventory Overview is the renamed
+  operational command center and must remain reachable from the sidebar.
+- Items detail keeps stock-changing actions routed to receiving, adjustment,
+  or cycle count workflows. Transfer UI is hidden from active frontend
+  workflows.
+- Inventory uses sidebar subpages, not top tabs: All Inventory, Inventory by
+  Location, Low Stock, Expiring Stock, Par Level, and Stock Movements.
+- Orders uses Zenventory-style sidebar sub-navigation. Open Orders, Allocate,
+  Pick Orders, Completed Orders, and Order History are separate views, not one
+  dumped screen.
+- Pick Orders uses an arrow-driven order queue and a focused manual quantity
+  sheet. It must not require barcode scanning or show a claim control.
+- Pick Orders is an inline page rather than a modal/card overlay. Its queue
+  omits order source, state, SKU, and allocated columns, and fully picked orders
+  disappear from the queue.
+- Pick Orders rows are selectable and the bulk Actions menu contains only Pick
+  Selected and Unpick Selected. Open Orders rows are selectable and its bulk
+  menu contains Mark as completed, Print, and Unpick all.
+- Orders sidebar subpage links update the route and active state immediately on
+  one click. Each subpage loads only its own required data, and stale Open
+  Orders responses must not overwrite the Pick Orders queue.
+- Open Orders uses the Zenventory-style Open Customer Orders composition:
+  dedicated order/customer/item/warehouse filters, Search/Clear, record and
+  page-size rails, a dark Filters/Actions band, a table rendered directly in
+  the page flow, a body-level row action menu, and an accessible printable
+  customer-order dialog. The table has no nested scrollbar; narrow viewports
+  render each order as an inline responsive card. The grid
+  omits Order Source, Company, State, ZIP, Ship From, and Shipped columns.
+- Allocation, pick, and legacy fulfillment/completion history sections belong
+  inside Order History, not Open Orders.
+- The first event request uses `initialize=true` and establishes the current
+  cursor without showing stale notifications. Later polling uses
+  `after_id=next_after_id`, drains while `has_more=true`, and never skips a
+  paginated event by jumping directly to `latest_event_id`.
+- The event feed is polled globally every 2 seconds while the document is
+  visible and on focus/visibility changes. A later newly created order shows
+  one internal staff notice; replayed deliveries and repeated feed reads must
+  not show it again.
+- The new-order notice uses a polite, atomic live region, has visible Dismiss
+  and View Open Orders actions, does not auto-dismiss, and does not move focus
+  away from a scanner or text input.
+- Multiple unseen order events may be grouped into one notice. Dismissing a
+  notice must not move the webhook cursor backward or make it reappear.
+- The header Bell shows the unread order count and session-only notification
+  history. Opening it marks current alerts read, Escape/Close dismisses the
+  popover, and its View Open Orders action closes the popover.
+- A quick-sync result with nonzero `created_count` produces a fallback notice;
+  repeating the same `sync_run_id` must not announce it twice.
+- The notice is local Pongo UI feedback only. It must not call WooCommerce,
+  request browser-notification permission, or send customer email/SMS/push.
 
 ## Commands
 
@@ -62,6 +114,7 @@ frontend QA pass complete.
 ## Pages To Inspect
 
 - Dashboard
+- Inventory Overview
 - Items
 - Inventory
 - Locations
@@ -72,6 +125,7 @@ frontend QA pass complete.
 - Reports
 - Settings
 - Routes
+- Insights
 
 For each page, confirm consistent buttons, polished inputs/selects, table
 overflow contained inside cards, visible empty/loading/error states, no default

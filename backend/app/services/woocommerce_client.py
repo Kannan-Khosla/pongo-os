@@ -1,9 +1,18 @@
 from dataclasses import dataclass
+import logging
+import time
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from app.core.config import Settings
+
+logger = logging.getLogger(__name__)
+ALLOWED_WRITE_OPERATIONS = {"update_product_stock", "update_variation_stock", "update_order_status"}
+ALLOWED_WRITE_METHODS = {"PUT", "PATCH"}
+ALLOWED_STOCK_PAYLOAD_FIELDS = {"stock_quantity", "stock_status", "manage_stock"}
+ALLOWED_ORDER_STATUS_PAYLOAD_FIELDS = {"status"}
 
 
 @dataclass
@@ -14,9 +23,20 @@ class WooCommerceClientError(Exception):
 
 class WooCommerceClient:
     def __init__(self, settings: Settings):
+        self.settings = settings
         self.base_url = settings.woocommerce_base_url.rstrip("/")
         self.consumer_key = settings.woocommerce_consumer_key
         self.consumer_secret = settings.woocommerce_consumer_secret
+        self.environment = getattr(settings, "woocommerce_environment", "development")
+        self.read_only = getattr(settings, "woocommerce_read_only", True)
+        self.read_enabled = getattr(settings, "woocommerce_read_enabled", True)
+        self.writeback_enabled = getattr(settings, "woocommerce_writeback_enabled", False)
+        self.writeback_dry_run = getattr(settings, "woocommerce_writeback_dry_run", True)
+        self.staging_live_test_mode = getattr(settings, "woocommerce_staging_live_test_mode", False)
+        self.allow_stock_write = getattr(settings, "woocommerce_allow_stock_write", False)
+        self.allow_order_status_write = getattr(settings, "woocommerce_allow_order_status_write", False)
+        self.allow_delete = getattr(settings, "woocommerce_allow_delete", False)
+        self.allowed_host = getattr(settings, "woocommerce_allowed_host", "").strip().lower()
         self.timeout_seconds = settings.woocommerce_timeout_seconds
         self.page_size = settings.woocommerce_page_size
         self.order_page_size = settings.woocommerce_order_sync_page_size
@@ -24,6 +44,17 @@ class WooCommerceClient:
     @property
     def configured(self) -> bool:
         return bool(self.base_url and self.consumer_key and self.consumer_secret)
+
+    @property
+    def base_url_host(self) -> str | None:
+        return urlparse(self.base_url).hostname
+
+    def validate_host(self, require_allowed_host: bool = False) -> None:
+        host = (self.base_url_host or "").lower()
+        if require_allowed_host and not self.allowed_host:
+            raise WooCommerceClientError("WooCommerce allowed host is not configured.")
+        if self.allowed_host and host != self.allowed_host:
+            raise WooCommerceClientError("WooCommerce base URL host does not match the allowed host.")
 
     def list_products(self, page: int = 1, per_page: int | None = None, statuses: list[str] | None = None) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"page": page, "per_page": per_page or self.page_size}
@@ -34,33 +65,32 @@ class WooCommerceClient:
     def list_product_variations(self, product_id: int, page: int = 1, per_page: int | None = None) -> list[dict[str, Any]]:
         return self._get(f"/wp-json/wc/v3/products/{product_id}/variations", {"page": page, "per_page": per_page or self.page_size})
 
+    def fetch_sellable_product_batch(self, page: int, per_page: int, statuses: list[str] | None = None) -> tuple[list[dict[str, Any]], bool]:
+        products = self.list_products(page=page, per_page=per_page, statuses=statuses)
+        records: list[dict[str, Any]] = []
+        for product in products:
+            if product.get("type") != "variable":
+                records.append({"product": product, "variation": None})
+                continue
+            variation_page = 1
+            while True:
+                variations = self.list_product_variations(product["id"], page=variation_page, per_page=self.page_size)
+                records.extend({"product": product, "variation": variation} for variation in variations)
+                if len(variations) < self.page_size:
+                    break
+                variation_page += 1
+        return records, len(products) == per_page
+
     def fetch_all_sellable_products_and_variations(self, statuses: list[str] | None = None, limit: int | None = None) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
         page = 1
         per_page = self.page_size
         while True:
-            products = self.list_products(page=page, per_page=per_page, statuses=statuses)
-            if not products:
-                break
-            for product in products:
-                if product.get("type") == "variable":
-                    variation_page = 1
-                    while True:
-                        variations = self.list_product_variations(product["id"], page=variation_page, per_page=per_page)
-                        if not variations:
-                            break
-                        for variation in variations:
-                            records.append({"product": product, "variation": variation})
-                            if limit and len(records) >= limit:
-                                return records
-                        if len(variations) < per_page:
-                            break
-                        variation_page += 1
-                else:
-                    records.append({"product": product, "variation": None})
-                    if limit and len(records) >= limit:
-                        return records
-            if len(products) < per_page:
+            batch, has_more = self.fetch_sellable_product_batch(page, per_page, statuses)
+            records.extend(batch[: max(limit - len(records), 0)] if limit else batch)
+            if limit and len(records) >= limit:
+                return records
+            if not has_more:
                 break
             page += 1
         return records
@@ -75,7 +105,7 @@ class WooCommerceClient:
         modified_after: str | None = None,
         modified_before: str | None = None,
     ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"page": page, "per_page": per_page or self.order_page_size}
+        params: dict[str, Any] = {"page": page, "per_page": per_page or self.order_page_size, "orderby": "date", "order": "desc"}
         if status:
             params["status"] = status
         if after:
@@ -116,23 +146,172 @@ class WooCommerceClient:
     def check_connection(self) -> None:
         self.list_products(page=1, per_page=1)
 
+    def guarded_write(self, operation_type: str, method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        method = method.upper()
+        self.assert_woo_write_allowed(operation_type, method, path, payload, validate_payload=False)
+        payload = sanitized_write_payload(operation_type, payload)
+        self.assert_woo_write_allowed(operation_type, method, path, payload)
+        data = self._request(method, path, payload=payload)
+        if not isinstance(data, dict):
+            raise WooCommerceClientError("WooCommerce write returned an unexpected response shape.")
+        return data
+
+    def validate_write_guard(self, operation_type: str, method: str, path: str) -> None:
+        self.assert_woo_write_allowed(operation_type, method, path, {}, validate_payload=False)
+
+    def assert_woo_write_allowed(self, operation_type: str, method: str, path: str, payload: dict[str, Any], validate_payload: bool = True) -> None:
+        if method == "DELETE":
+            raise WooCommerceClientError("WooCommerce DELETE is blocked.")
+        if self.allow_delete:
+            raise WooCommerceClientError("WooCommerce DELETE remains blocked even if allow-delete is configured.")
+        if method not in ALLOWED_WRITE_METHODS:
+            raise WooCommerceClientError("WooCommerce write method is not allowlisted.")
+        if operation_type not in ALLOWED_WRITE_OPERATIONS:
+            raise WooCommerceClientError("WooCommerce write operation is not allowlisted.")
+        if self.environment not in {"staging", "production"}:
+            raise WooCommerceClientError("WooCommerce writeback is blocked outside staging and production.")
+        if self.environment == "production" and (operation_type != "update_order_status" or method != "PUT"):
+            raise WooCommerceClientError("Production WooCommerce writes are limited to allowlisted order completion updates.")
+        if self.environment == "staging" and not self.staging_live_test_mode:
+            raise WooCommerceClientError("WooCommerce live staging test mode is disabled.")
+        if self.read_only:
+            raise WooCommerceClientError("WooCommerce read-only mode is enabled; writeback is blocked.")
+        if not self.writeback_enabled:
+            raise WooCommerceClientError("WooCommerce writeback is disabled.")
+        if self.writeback_dry_run:
+            raise WooCommerceClientError("WooCommerce writeback dry-run is enabled; live send is blocked.")
+        self.validate_host(require_allowed_host=True)
+        if operation_type == "update_product_stock" and (not self.allow_stock_write or not is_simple_product_stock_write_path(path)):
+            raise WooCommerceClientError("WooCommerce product stock write path is not allowlisted.")
+        if operation_type == "update_variation_stock" and (not self.allow_stock_write or not is_variation_stock_write_path(path)):
+            raise WooCommerceClientError("WooCommerce variation stock write path is not allowlisted.")
+        if operation_type == "update_order_status" and (not self.allow_order_status_write or not is_order_status_write_path(path)):
+            raise WooCommerceClientError("WooCommerce order status write path is not allowlisted.")
+        if validate_payload:
+            validate_payload_fields(operation_type, payload)
+            if self.environment == "production" and operation_type == "update_order_status" and payload.get("status") != "completed":
+                raise WooCommerceClientError("Production WooCommerce order writeback may only set status to completed.")
+
     def _get(self, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
-        if not self.configured:
-            raise WooCommerceClientError("WooCommerce credentials are not configured.")
-        url = f"{self.base_url}{path}"
-        safe_params = {**params, "consumer_key": self.consumer_key, "consumer_secret": self.consumer_secret}
-        try:
-            response = httpx.get(url, params=safe_params, timeout=self.timeout_seconds)
-            response.raise_for_status()
-            data = response.json()
-        except httpx.TimeoutException as exc:
-            raise WooCommerceClientError("WooCommerce request timed out.") from exc
-        except httpx.HTTPStatusError as exc:
-            raise WooCommerceClientError("WooCommerce API returned an error.", status_code=exc.response.status_code) from exc
-        except httpx.HTTPError as exc:
-            raise WooCommerceClientError("WooCommerce API request failed.") from exc
-        except ValueError as exc:
-            raise WooCommerceClientError("WooCommerce API returned invalid JSON.") from exc
+        data = self._request("GET", path, params=params)
         if not isinstance(data, list):
             raise WooCommerceClientError("WooCommerce API returned an unexpected response shape.")
         return data
+
+    def _get_one(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        data = self._request("GET", path, params=params or {})
+        if not isinstance(data, dict):
+            raise WooCommerceClientError("WooCommerce API returned an unexpected response shape.")
+        return data
+
+    def get_product(self, product_id: int) -> dict[str, Any]:
+        return self._get_one(f"/wp-json/wc/v3/products/{product_id}")
+
+    def get_product_variation(self, product_id: int, variation_id: int) -> dict[str, Any]:
+        return self._get_one(f"/wp-json/wc/v3/products/{product_id}/variations/{variation_id}")
+
+    def get_order(self, order_id: int) -> dict[str, Any]:
+        return self._get_one(f"/wp-json/wc/v3/orders/{order_id}")
+
+    def _request(self, method: str, path: str, params: dict[str, Any] | None = None, payload: dict[str, Any] | None = None) -> Any:
+        if not self.configured:
+            raise WooCommerceClientError("WooCommerce credentials are not configured.")
+        method = method.upper()
+        if method == "DELETE":
+            raise WooCommerceClientError("WooCommerce DELETE is blocked.")
+        if method == "GET" and not self.read_enabled:
+            raise WooCommerceClientError("WooCommerce read access is disabled.")
+        self.validate_host()
+        url = f"{self.base_url}{path}"
+        safe_params = {**(params or {}), "consumer_key": self.consumer_key, "consumer_secret": self.consumer_secret}
+        retry_statuses = {429, 500, 502, 503, 504}
+        last_status_code = None
+        for attempt in range(1, 4):
+            started_at = time.perf_counter()
+            response = None
+            try:
+                response = httpx.request(method, url, params=safe_params, json=payload, timeout=self.timeout_seconds)
+                last_status_code = response.status_code
+                if response.status_code in retry_statuses and attempt < 3:
+                    time.sleep(0.2 * attempt)
+                    continue
+                response.raise_for_status()
+                data = response.json()
+                return data
+            except httpx.TimeoutException as exc:
+                if attempt < 3:
+                    time.sleep(0.2 * attempt)
+                    continue
+                raise WooCommerceClientError("WooCommerce request timed out.") from exc
+            except httpx.HTTPStatusError as exc:
+                raise WooCommerceClientError(safe_woocommerce_error_message(exc.response), status_code=exc.response.status_code) from exc
+            except httpx.HTTPError as exc:
+                if attempt < 3:
+                    time.sleep(0.2 * attempt)
+                    continue
+                raise WooCommerceClientError("WooCommerce API request failed.") from exc
+            except ValueError as exc:
+                raise WooCommerceClientError("WooCommerce API returned invalid JSON.") from exc
+            finally:
+                duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+                status_code = response.status_code if response is not None else last_status_code
+                record_count = None
+                if response is not None and response.headers.get("content-type", "").startswith("application/json"):
+                    try:
+                        response_data = response.json()
+                        record_count = len(response_data) if isinstance(response_data, list) else None
+                    except ValueError:
+                        record_count = None
+                logger.info("WooCommerce API %s %s status=%s duration_ms=%s record_count=%s", method, path, status_code, duration_ms, record_count)
+        raise WooCommerceClientError("WooCommerce API request failed.")
+
+
+def safe_woocommerce_error_message(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return "WooCommerce API returned an error."
+    code = str(payload.get("code") or "").strip()
+    message = str(payload.get("message") or "").strip()
+    if code == "woocommerce_rest_authentication_error" and "write permissions" in message.lower():
+        return "WooCommerce API key does not have write permissions. Change the key permission to Read/Write in WooCommerce."
+    if message:
+        return f"WooCommerce API error: {message[:300]}"
+    return "WooCommerce API returned an error."
+
+
+def is_simple_product_stock_write_path(path: str) -> bool:
+    parts = [part for part in path.strip("/").split("/") if part]
+    return len(parts) == 5 and parts[:4] == ["wp-json", "wc", "v3", "products"] and parts[4].isdigit()
+
+
+def is_variation_stock_write_path(path: str) -> bool:
+    parts = [part for part in path.strip("/").split("/") if part]
+    return len(parts) == 7 and parts[:4] == ["wp-json", "wc", "v3", "products"] and parts[4].isdigit() and parts[5] == "variations" and parts[6].isdigit()
+
+
+def is_order_status_write_path(path: str) -> bool:
+    parts = [part for part in path.strip("/").split("/") if part]
+    return len(parts) == 5 and parts[:4] == ["wp-json", "wc", "v3", "orders"] and parts[4].isdigit()
+
+
+def sanitized_write_payload(operation_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    validate_payload_fields(operation_type, payload)
+    if operation_type in {"update_product_stock", "update_variation_stock"}:
+        return {key: payload[key] for key in ALLOWED_STOCK_PAYLOAD_FIELDS if key in payload}
+    if operation_type == "update_order_status":
+        return {"status": payload["status"]}
+    return {}
+
+
+def validate_payload_fields(operation_type: str, payload: dict[str, Any]) -> None:
+    fields = set(payload)
+    if operation_type in {"update_product_stock", "update_variation_stock"}:
+        if not fields or not fields.issubset(ALLOWED_STOCK_PAYLOAD_FIELDS):
+            raise WooCommerceClientError("WooCommerce stock write payload contains non-allowlisted fields.")
+        return
+    if operation_type == "update_order_status":
+        if fields != ALLOWED_ORDER_STATUS_PAYLOAD_FIELDS:
+            raise WooCommerceClientError("WooCommerce order status payload must contain only status.")
+        return
+    raise WooCommerceClientError("WooCommerce write operation is not allowlisted.")

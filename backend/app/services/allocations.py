@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from io import StringIO
 from typing import Iterable
@@ -15,6 +15,8 @@ from app.models.orders import Order, OrderItem
 from app.schemas.allocations import (
     AllocationCommitResponse,
     AllocationDetail,
+    AllocationExceptionLineRead,
+    AllocationExceptionListResponse,
     AllocationLineRead,
     AllocationPreviewLine,
     AllocationPreviewOrder,
@@ -23,8 +25,101 @@ from app.schemas.allocations import (
     AllocationRequest,
 )
 from app.services.location_inventory import allocate_from_location, choose_allocation_location
+from app.services.order_workflow import acquire_fifo_allocation_lock, is_active_order, sync_order_workflow_statuses
 
 ALLOCATABLE_ORDER_STATUSES = {"open", "partially_allocated"}
+
+
+def list_allocation_exception_lines(
+    db: Session,
+    search: str | None = None,
+    warehouse: str | None = None,
+    ordered_from: date | None = None,
+    ordered_to: date | None = None,
+    include_fully_allocated: bool = False,
+) -> AllocationExceptionListResponse:
+    statement = (
+        select(OrderItem)
+        .join(Order)
+        .where(Order.woo_status == "processing")
+        .options(selectinload(OrderItem.order), selectinload(OrderItem.inventory_item))
+        .order_by(Order.date_created.asc().nulls_last(), Order.id.asc(), OrderItem.line_number.asc().nulls_last(), OrderItem.id.asc())
+    )
+    rows: list[AllocationExceptionLineRead] = []
+    needle = (search or "").strip().casefold()
+    for line in db.scalars(statement).all():
+        order = line.order
+        item = line.inventory_item
+        if not is_active_order(order) or (item is not None and item.non_inventory):
+            continue
+        if ordered_from and (order.date_created is None or order.date_created.date() < ordered_from):
+            continue
+        if ordered_to and (order.date_created is None or order.date_created.date() > ordered_to):
+            continue
+        line_warehouse = item.warehouse if item else None
+        if warehouse and (line_warehouse or "").casefold() != warehouse.casefold():
+            continue
+        ordered = to_decimal(line.quantity_ordered)
+        allocated = to_decimal(line.quantity_allocated)
+        unallocated = max(ordered - allocated, Decimal("0"))
+        if not include_fully_allocated and unallocated <= 0 and line.matched_status == "matched":
+            continue
+        sku = line.sku or (item.sku if item else None)
+        barcode = line.barcode or (item.barcode if item else None)
+        description = line.name or line.description or (item.description if item else None)
+        searchable = " ".join(
+            str(value or "")
+            for value in [order.woo_order_number, order.customer_name, order.customer_email, sku, barcode, description]
+        ).casefold()
+        if needle and needle not in searchable:
+            continue
+        available = max(current_sellable(item), Decimal("0")) if item else Decimal("0")
+        reason = allocation_line_exception_reason(line, item, unallocated, available)
+        rows.append(
+            AllocationExceptionLineRead(
+                order_id=order.id,
+                order_line_id=line.id,
+                woo_order_id=order.woo_order_id,
+                woo_order_number=order.woo_order_number,
+                ordered_at=order.date_created,
+                customer_name=order.customer_name,
+                item_id=item.id if item else None,
+                sku=sku,
+                barcode=barcode,
+                description=description,
+                warehouse=line_warehouse,
+                inventory_location=item.inventory_location if item else None,
+                quantity_ordered=decimal_to_float(ordered),
+                quantity_allocated=decimal_to_float(allocated),
+                quantity_unallocated=decimal_to_float(unallocated),
+                quantity_picked=decimal_to_float(line.quantity_picked),
+                quantity_available=decimal_to_float(available),
+                allocation_status=line.allocation_status or "unallocated",
+                exception_reason=reason,
+            )
+        )
+    return AllocationExceptionListResponse(
+        lines=rows,
+        total_orders=len({row.order_id for row in rows}),
+        total_lines=len(rows),
+        total_quantity_unallocated=decimal_to_float(sum((to_decimal(row.quantity_unallocated) for row in rows), Decimal("0"))),
+        lines_with_available_stock=sum(1 for row in rows if row.quantity_available > 0),
+        lines_out_of_stock=sum(1 for row in rows if row.quantity_available <= 0),
+    )
+
+
+def allocation_line_exception_reason(line: OrderItem, item: InventoryItem | None, unallocated: Decimal, available: Decimal) -> str:
+    if line.matched_status == "conflict":
+        return "conflicting_item_match"
+    if line.matched_status != "matched" or item is None:
+        return "unmatched_item"
+    if unallocated <= 0:
+        return "fully_allocated"
+    if available <= 0:
+        return "out_of_stock"
+    if available < unallocated:
+        return "insufficient_stock"
+    return "available_to_allocate"
 
 
 def preview_allocation(db: Session, payload: AllocationRequest) -> AllocationPreviewResponse:
@@ -32,6 +127,7 @@ def preview_allocation(db: Session, payload: AllocationRequest) -> AllocationPre
 
 
 def commit_allocation(db: Session, payload: AllocationRequest) -> AllocationCommitResponse:
+    acquire_fifo_allocation_lock(db)
     preview = preview_allocation(db, payload)
     blocking_errors = list(preview.errors)
     if not payload.allow_partial:
@@ -122,6 +218,7 @@ def commit_allocation(db: Session, payload: AllocationRequest) -> AllocationComm
             order_line.sellable_snapshot = sellable_after
             order_line.shortage_quantity = line_shortage_after
             order_line.availability_status = "allocated" if line_remaining_after == 0 else ("partial" if line_allocated_after > 0 else "unavailable")
+            order_line.allocation_status = "allocated" if line_remaining_after == 0 else ("partially_allocated" if line_allocated_after > 0 else "unallocated")
             order_line.status = order_line.availability_status
             allocation_line = AllocationLine(
                 allocation_id=allocation.id,
@@ -372,18 +469,7 @@ def build_preview_response(orders: list[AllocationPreviewOrder]) -> AllocationPr
 
 
 def update_order_allocation_status(order: Order) -> None:
-    lines = list(order.items)
-    matched_lines = [line for line in lines if line.matched_status == "matched"]
-    blocked = any(line.matched_status in {"unmatched", "conflict"} for line in lines)
-    any_allocated = any((line.quantity_allocated or Decimal("0")) > 0 for line in matched_lines)
-    all_matched_allocated = bool(matched_lines) and all((line.quantity_allocated or Decimal("0")) >= (line.quantity_ordered or Decimal("0")) for line in matched_lines)
-    if all_matched_allocated and not blocked:
-        order.local_status = "allocated"
-    elif any_allocated:
-        order.local_status = "partially_allocated"
-    else:
-        order.local_status = "open"
-    order.allocation_status = order.local_status
+    sync_order_workflow_statuses(order)
 
 
 def list_allocations(
@@ -501,6 +587,8 @@ def allocation_to_read(allocation: Allocation) -> AllocationRead:
         total_lines=len(allocation.lines),
         total_quantity_allocated=decimal_to_float(sum((line.quantity_to_allocate for line in allocation.lines), Decimal("0"))),
         created_by=allocation.created_by,
+        auto_allocated=bool(allocation.auto_allocated),
+        allocation_source=allocation.allocation_source,
         created_at=allocation.created_at,
         posted_at=allocation.posted_at,
     )
@@ -529,6 +617,8 @@ def allocation_line_to_read(line: AllocationLine) -> AllocationLineRead:
         sellable_after=decimal_to_float(line.sellable_after),
         shortage_quantity=decimal_to_float(line.shortage_quantity),
         status=line.status,
+        auto_allocated=bool(line.auto_allocated),
+        allocation_source=line.allocation_source,
         notes=line.notes,
         created_at=line.created_at,
         updated_at=line.updated_at,

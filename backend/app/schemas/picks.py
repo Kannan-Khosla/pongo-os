@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class PickLineRequest(BaseModel):
     order_line_id: int
     quantity_to_pick: float
+    idempotency_key: str | None = None
 
 
 class PickRequest(BaseModel):
@@ -77,6 +78,7 @@ class PickCommitResponse(BaseModel):
     partial_lines: int
     skipped_lines: int
     total_quantity_picked: float
+    created_stock_movements: int = 0
     created_audit_events: int
     warnings: list[str] = []
     errors: list[str] = []
@@ -99,6 +101,10 @@ class PickLineRead(BaseModel):
     quantity_to_pick: float
     quantity_picked_after: float
     remaining_to_pick: float
+    quantity_stock_reduced: float = 0
+    stock_movement_id: int | None = None
+    stock_reduced_at: datetime | None = None
+    idempotency_key: str | None = None
     status: str
     notes: str | None = None
     created_at: datetime
@@ -167,6 +173,7 @@ class PickScanRequest(BaseModel):
     quantity: float = 1
     note: str | None = None
     created_by: str | None = "system"
+    idempotency_key: str | None = None
 
 
 class PickScanResponse(BaseModel):

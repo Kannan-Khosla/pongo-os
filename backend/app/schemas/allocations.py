@@ -106,6 +106,8 @@ class AllocationLineRead(BaseModel):
     sellable_after: float
     shortage_quantity: float
     status: str
+    auto_allocated: bool = False
+    allocation_source: str | None = None
     notes: str | None = None
     created_at: datetime
     updated_at: datetime
@@ -122,6 +124,8 @@ class AllocationRead(BaseModel):
     total_lines: int
     total_quantity_allocated: float
     created_by: str | None = None
+    auto_allocated: bool = False
+    allocation_source: str | None = None
     created_at: datetime
     posted_at: datetime | None = None
 
@@ -135,3 +139,45 @@ class AllocationDetail(AllocationRead):
 class AllocationListResponse(BaseModel):
     allocations: list[AllocationRead]
     total: int
+
+
+class AllocationExceptionLineRead(BaseModel):
+    order_id: int
+    order_line_id: int
+    woo_order_id: int | None = None
+    woo_order_number: str | None = None
+    ordered_at: datetime | None = None
+    customer_name: str | None = None
+    item_id: int | None = None
+    sku: str | None = None
+    barcode: str | None = None
+    description: str | None = None
+    warehouse: str | None = None
+    inventory_location: str | None = None
+    quantity_ordered: float
+    quantity_allocated: float
+    quantity_unallocated: float
+    quantity_picked: float
+    quantity_available: float
+    allocation_status: str
+    exception_reason: str
+
+
+class AllocationExceptionListResponse(BaseModel):
+    lines: list[AllocationExceptionLineRead] = []
+    total_orders: int
+    total_lines: int
+    total_quantity_unallocated: float
+    lines_with_available_stock: int
+    lines_out_of_stock: int
+
+
+class AutoAllocationQueueResponse(BaseModel):
+    status: str
+    attempted_orders: int
+    allocated_orders: int
+    partially_allocated_orders: int
+    exception_orders: int
+    total_quantity_allocated: float
+    allocation_ids: list[int] = []
+    errors: list[str] = []

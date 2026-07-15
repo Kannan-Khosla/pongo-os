@@ -14,6 +14,7 @@ from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.receipts import Receipt, ReceiptItem
 from app.services.calculations import calculate_inventory_value
 from app.services.location_inventory import find_item_location, get_or_create_item_location, receive_to_location, to_decimal
+from app.services.order_workflow import auto_allocate_processing_orders_fifo
 from app.services.receiving import receipt_to_detail
 
 
@@ -204,6 +205,7 @@ def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
         total_quantity += quantity
         total_cost += line_cost
         movement_count += 1
+    auto_allocate_processing_orders_fifo(db, source=f"bulk-receipt:{receipt.receipt_number}")
     db.commit()
     receipt = db.scalars(select(Receipt).where(Receipt.id == receipt.id).options(selectinload(Receipt.items).selectinload(ReceiptItem.inventory_item))).one()
     detail = receipt_to_detail(receipt).model_dump()

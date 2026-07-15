@@ -254,10 +254,10 @@ Calculated fields:
 
 Rules:
 - A SKU may exist in multiple physical locations.
-- Receiving, cycle count, allocation, picking, and fulfillment resolve a
+- Receiving, cycle count, allocation, picking, and fulfillment compatibility resolve a
   specific item-location row.
-- Picking records the source location without reducing stock.
-- Fulfillment reduces stock and allocated quantity from the resolved row.
+- Picking reduces stock and allocated quantity from the resolved row.
+- Fulfillment compatibility does not double-reduce stock after picking.
 - Transfers move stock between item-location rows.
 - Adjustments require an explicit type and reason.
 - Active row totals must reconcile to `inventory_items` aggregate fields.
@@ -323,6 +323,7 @@ Movement type values:
 - manual_adjustment
 - order_allocation
 - order_pick
+- pick_stock_reduction
 - order_completion
 - import_update
 - woocommerce_sync
@@ -621,10 +622,11 @@ Current limitation:
 
 ## orders
 
-Purpose: Local read-only snapshot of eligible WooCommerce open orders. Order
-sync imports WooCommerce `processing` and `on-hold` orders by default into local
-rows for review. It does not allocate, pick, route, fulfill, change local stock,
-or write back to WooCommerce.
+Purpose: Local snapshot of eligible WooCommerce orders. Order sync imports
+WooCommerce `processing`, `on-hold`, and `pending` orders by default into local
+rows for review and workflow. Active open orders can be auto-allocated locally
+when enough location-level sellable stock exists. Order sync does not pick,
+route, fulfill, reduce In Stock, or write back to WooCommerce.
 
 Fields:
 - id
@@ -660,6 +662,15 @@ Fields:
 - completed_on
 - status
 - allocation_status
+- pick_status
+- completion_status
+- auto_allocation_status
+- completed_without_picking
+- completed_at
+- closed_at
+- picked_at
+- allocation_exception_reason
+- workflow_notes
 - shipping_address_1
 - shipping_address_2
 - shipping_address_3
@@ -690,7 +701,9 @@ Index/uniqueness suggestions:
 - Unique `woo_order_id`.
 - Index `woo_order_number`, `woo_status`, `local_status`, `customer_id`,
   `date_created`, `date_modified`, `sync_status`, `last_synced_at`, legacy
-  `order_number`, `status`, `allocation_status`, and `placed_on`.
+  `order_number`, `status`, `allocation_status`, `pick_status`,
+  `completion_status`, `auto_allocation_status`, completion timestamps, and
+  `placed_on`.
 
 ## order_items
 
@@ -712,6 +725,8 @@ Fields:
 - quantity_ordered
 - quantity_allocated
 - quantity_picked
+- quantity_stock_reduced
+- stock_reduced_at
 - quantity_fulfilled
 - ordered_qty
 - ordered_uom
@@ -724,6 +739,9 @@ Fields:
 - line_total
 - line_tax
 - matched_status
+- allocation_status
+- pick_status
+- allocation_exception_reason
 - availability_status
 - sellable_snapshot
 - shortage_quantity
@@ -745,14 +763,15 @@ Read-only order sync rules:
 - Conflicts are stored as `matched_status = conflict`.
 - Missing local matches are stored as `matched_status = unmatched`; order sync
   does not create inventory items.
-- `quantity_allocated`, `quantity_picked`, `quantity_fulfilled`, legacy
-  `allocated_qty`, legacy `picked_qty`, and legacy `fulfilled_qty` are
-  preserved during order sync.
+- `quantity_allocated`, `quantity_picked`, `quantity_stock_reduced`,
+  `quantity_fulfilled`, legacy `allocated_qty`, legacy `picked_qty`, and legacy
+  `fulfilled_qty` are preserved during order sync.
 - `sellable_snapshot = inventory_items.in_stock - inventory_items.allocated`
   at sync time.
 - `shortage_quantity = max(quantity_ordered - sellable_snapshot, 0)`.
-- Order sync does not update `inventory_items.in_stock`,
-  `inventory_items.allocated`, or `stock_movements`.
+- Order sync can auto-allocate active orders by increasing local Allocated and
+  creating allocation/audit rows. It does not update `inventory_items.in_stock`
+  or create stock movements.
 
 ## allocations
 
@@ -767,6 +786,8 @@ Fields:
 - order_id
 - woo_order_id
 - woo_order_number
+- auto_allocated
+- allocation_source
 - notes
 - created_by
 - posted_at
@@ -786,6 +807,8 @@ Allocation type values:
 Rules:
 - `allocation_number` format is `AL-YYYYMMDD-NNNN`.
 - Current commit creates posted allocations directly.
+- Auto-allocation creates the same records with `auto_allocated = true` and
+  `allocation_source = auto`.
 - Allocation does not write WooCommerce and does not reduce In Stock.
 
 ## allocation_lines
@@ -813,6 +836,8 @@ Fields:
 - allocated_after
 - sellable_after
 - shortage_quantity
+- auto_allocated
+- allocation_source
 - status
 - notes
 - created_at
@@ -834,8 +859,8 @@ Line status values:
 ## picks
 
 Purpose: Local pick header for recording operational picking progress against
-already allocated order lines. Picking is between Allocation and future
-Fulfillment/Ship completion.
+already allocated order lines. Picking is the local stock reduction step before
+local completion.
 
 Fields:
 - id
@@ -864,9 +889,9 @@ Rules:
 - `pick_number` format is `PK-YYYYMMDD-NNNN`.
 - Current commit creates posted picks directly.
 - Picking does not write WooCommerce.
-- Picking does not reduce item In Stock.
-- Picking does not reduce item Allocated.
-- Picking does not create stock movement rows.
+- Picking reduces item-location and aggregate In Stock.
+- Picking reduces item-location and aggregate Allocated.
+- Picking creates `pick_stock_reduction` stock movement rows.
 
 ## pick_lines
 
@@ -887,6 +912,10 @@ Fields:
 - quantity_allocated
 - quantity_previously_picked
 - quantity_to_pick
+- quantity_stock_reduced
+- stock_movement_id
+- stock_reduced_at
+- idempotency_key
 - quantity_picked_after
 - remaining_to_pick
 - status
@@ -898,8 +927,11 @@ Rules:
 - `quantity_to_pick` must be greater than zero.
 - `quantity_to_pick` cannot exceed `quantity_allocated`.
 - `quantity_to_pick` cannot exceed `quantity_allocated - quantity_picked`.
+- `quantity_stock_reduced` cannot exceed picked or allocated quantity.
 - `quantity_picked_after = quantity_previously_picked + quantity_to_pick`.
 - `remaining_to_pick = quantity_allocated - quantity_picked_after`.
+- `idempotency_key` prevents replayed scanner commits from reducing stock a
+  second time.
 
 Line status values:
 - picked
@@ -910,9 +942,9 @@ Line status values:
 
 ## fulfillments
 
-Purpose: Local fulfillment/completion header for removing picked quantities from
-local physical inventory. Fulfillment is between Picking and any future
-WooCommerce write-back, routing, or shipping workflow.
+Purpose: Local legacy fulfillment/completion header for compatibility and
+history. Picking now removes stock from local physical inventory; fulfillment
+does not double-reduce stock after picking.
 
 Fields:
 - id
@@ -940,13 +972,17 @@ Fulfillment type values:
 Rules:
 - `fulfillment_number` format is `FL-YYYYMMDD-NNNN`.
 - Current commit creates posted fulfillments directly.
+- Normal picked-order fulfillment creates compatibility records only because
+  stock was already reduced during picking.
+- Unpicked fulfillment is blocked by the service rather than silently reducing
+  stock through the old path.
 - Fulfillment does not write WooCommerce.
 - Fulfillment does not create routes, shipping labels, purchase orders, supplier
   records, or customer notifications.
 
 ## fulfillment_lines
 
-Purpose: Line-level fulfillment audit and stock reduction snapshot.
+Purpose: Line-level legacy fulfillment/completion audit snapshot.
 Fulfillment Report uses this table as its primary source and enriches rows from
 `fulfillments`, local `orders`, local `order_items`, and `inventory_items`.
 Completed Orders export uses local `orders` and `order_items`. No additional
@@ -986,10 +1022,8 @@ Rules:
 - `quantity_to_fulfill` cannot exceed `quantity_picked - quantity_fulfilled`.
 - `quantity_to_fulfill` cannot exceed current item In Stock.
 - `quantity_to_fulfill` cannot exceed current item Allocated.
-- Fulfillment reduces item In Stock and Allocated by the same quantity.
-- Sellable is recalculated as In Stock minus Allocated.
-- Fulfillment cannot make In Stock or Allocated negative.
-- Fulfillment cannot leave Allocated greater than In Stock.
+- Fulfillment does not double-reduce stock already reduced by picking.
+- Normal picked-order fulfillment creates no stock movement rows.
 
 Line status values:
 - fulfilled
@@ -1000,12 +1034,11 @@ Line status values:
 
 ## inventory_audit_events
 
-Purpose: Audit local inventory state changes that are not physical stock
-movements. Allocation uses this table because it changes Allocated and Sellable
-while leaving In Stock unchanged. Picking also uses this table to record
-operational pick activity while leaving In Stock, Allocated, and Sellable
-unchanged. Fulfillment uses this table alongside stock movements to capture the
-before/after allocated and sellable values that stock movements do not model.
+Purpose: Audit local inventory and order workflow state changes. Allocation uses
+this table because it changes Allocated and Sellable while leaving In Stock
+unchanged. Picking uses it alongside `pick_stock_reduction` stock movements to
+capture before/after allocated and sellable values. Completion and fulfillment
+compatibility use it for local close/history events.
 
 Fields:
 - id
@@ -1062,7 +1095,8 @@ Fulfillment audit rules:
 Current limitation:
 - Allocation, pick, and fulfillment cancellation/reversal are documented as
   future work.
-- WooCommerce write-back, routing, shipping labels, notifications, purchase
+- WooCommerce write-back, routing, shipping labels, outbound/customer
+  notifications, purchase
   orders, and supplier workflows are not implemented yet.
 
 ## routes
@@ -1073,7 +1107,8 @@ Current behavior:
 - Routes are created from local orders with `local_status = fulfilled` or
   `partially_fulfilled`.
 - Routes are local-only and do not call WooCommerce, maps, geocoding,
-  optimization, shipping label, notification, or inventory stock services.
+  optimization, shipping label, outbound/customer notification, or inventory
+  stock services.
 - Route cancellation keeps route stops for review/audit and makes the order
   eligible for future route planning.
 
@@ -1218,8 +1253,9 @@ Index suggestions:
 
 ## woocommerce_sync_runs
 
-Purpose: Track read-only WooCommerce product/variation and order sync commits
-to the local Pongo OS database.
+Purpose: Track WooCommerce product/variation REST sync, order REST sync, and
+signed webhook order-import commits to the local Pongo OS database. These are
+local database operations and do not imply a WooCommerce write.
 
 Fields:
 - id
@@ -1240,11 +1276,14 @@ Fields:
 Current usage:
 - Product/variation commit creates one run with `sync_type = products`.
 - Order commit creates one run with `sync_type = orders`.
+- A processed phase-1 `order.created` webhook creates one order sync run and
+  links it from `woocommerce_webhook_deliveries.sync_run_id`.
 - Sync runs represent local database sync only; they do not represent writes to
   WooCommerce.
 
 Relationships:
 - Has many `woocommerce_sync_errors`.
+- Can be referenced by `woocommerce_webhook_deliveries`.
 
 ## woocommerce_sync_errors
 
@@ -1270,6 +1309,126 @@ Relationships:
 Safety:
 - Raw payloads must not contain credentials. The sync service stores normalized
   preview row details, not request URLs or secrets.
+
+## woocommerce_webhook_deliveries
+
+Purpose: Durable receipt, idempotency, audit, and internal staff-event source
+for signed WooCommerce webhook deliveries. Added by Alembic revision
+`20260710_0018_woocommerce_order_webhooks.py`, which follows
+`20260709_0017_order_workflow_zenventory.py`.
+
+Fields:
+- id
+- delivery_id
+- webhook_id
+- payload_sha256
+- topic
+- resource
+- event
+- source_host
+- woo_order_id
+- local_order_id
+- sync_run_id
+- processing_status
+- created_order
+- attempt_count
+- error_message
+- received_at
+- processed_at
+- updated_at
+
+Relationships:
+- `local_order_id` optionally references `orders.id` after a delivery imports or
+  finds the local order.
+- `sync_run_id` optionally references `woocommerce_sync_runs.id` for the local
+  order import performed by that delivery.
+
+Identity and replay rules:
+- Unique `(webhook_id, delivery_id, payload_sha256)` through
+  `uq_woo_webhook_delivery_identity`.
+- `payload_sha256` is the lowercase SHA-256 digest of the exact raw body.
+- A replay of a terminal row increments `attempt_count` and does not repeat
+  order import, allocation, or the staff new-order event.
+- The same delivery ID with a different payload hash is a distinct auditable
+  row rather than being silently deduplicated.
+
+Processing status values:
+- `received`
+- `processed`
+- `processed_with_errors`
+- `ignored`
+- `failed`
+
+Phase-1 behavior:
+- Only authenticated `order.created` can import an order and set
+  `created_order = true` when a new local `orders` row was created.
+- A delayed `order.created` payload older than or equal to the matching local
+  `orders.date_modified` snapshot is stored as `ignored`; it cannot regress the
+  order or produce a staff event.
+- Other authenticated topics are stored with `processing_status = ignored` and
+  do not mutate orders.
+- Setup pings do not create a row.
+- A successful delivery that creates a new local order also creates one
+  immutable `woocommerce_order_events` row in the same transaction.
+- Failed, ignored, stale, duplicate, and already-local deliveries create no
+  event outbox row. A failed delivery that later succeeds gets its event ID only
+  at the successful commit.
+
+Safety:
+- The table does not store the webhook secret, REST API credentials, request
+  headers, or a second copy of the raw customer payload.
+- `error_message` is a bounded safe processing summary, not a credential or raw
+  payload log.
+- A webhook may trigger the existing audited local auto-allocation path but
+  does not write WooCommerce, reduce local In Stock, or create a stock movement.
+- Staff feed rows are local UI notification data only; no outbound/customer
+  notification is sent.
+
+Indexes:
+- Index `delivery_id`, `webhook_id`, `payload_sha256`, `topic`, `resource`,
+  `event`, `source_host`, `woo_order_id`, `local_order_id`, `sync_run_id`,
+  `processing_status`, `created_order`, `received_at`, `processed_at`, and
+  `updated_at`.
+
+## woocommerce_order_events
+
+Purpose: Immutable staff-notification outbox for successfully committed new
+orders from the signed webhook. Added by Alembic revision
+`20260710_0019_woocommerce_order_event_outbox.py` after the delivery ledger.
+
+Fields:
+- id
+- webhook_delivery_id
+- local_order_id
+- woo_order_id
+- event_type
+- created_at
+
+Relationships and identity:
+- `webhook_delivery_id` uniquely references
+  `woocommerce_webhook_deliveries.id`.
+- `local_order_id` references `orders.id`.
+- One successful new-order delivery can publish at most one event.
+
+Cursor rules:
+- `GET /api/integrations/woocommerce/webhooks/events` pages by this table's
+  immutable `id`, not by the mutable delivery processing row.
+- `latest_event_id` is the informational maximum event ID.
+- `next_after_id` is the safe exclusive consumer cursor.
+- `initialize = true` returns no events and seeds the cursor at the current
+  event high-water mark.
+- `has_more = true` requires another page request.
+- PostgreSQL import and feed high-water reads share a transaction advisory lock
+  so event IDs become visible in commit order.
+
+Safety:
+- This table stores no customer payload, signature, secret, or request headers.
+- Order/customer display fields are read from the linked local order only when
+  the internal staff feed is requested.
+
+Indexes:
+- Unique `webhook_delivery_id`.
+- Index `local_order_id`, `woo_order_id`, `event_type`, and `created_at`.
 
 ## woo_item_mappings
 
@@ -1384,3 +1543,55 @@ Receipt items now include:
 
 Bulk receiving uses `receipt_type = bulk` and `status = committed`.
 Direct receiving remains compatible with existing direct receipt behavior.
+
+## Pongo Insights Schema Impact
+
+Pongo Insights adds no new tables or columns in the current implementation.
+It reads existing local `orders`, `order_items`, and `inventory_items` records
+and returns empty states or data quality warnings when optional WooCommerce
+snapshot fields such as refunds, coupon lines, subscriptions, or address fields
+are not available.
+
+## woo_writeback_queue
+
+Purpose: Local staging-only queue for explicit WooCommerce writeback testing.
+Rows are created from previewed payloads and do not imply a WooCommerce request
+was sent.
+
+Fields:
+- id
+- operation_type
+- entity_type
+- entity_id
+- woo_entity_id
+- woo_product_id
+- woo_variation_id
+- woo_order_id
+- payload_json
+- status
+- environment
+- dry_run
+- allowed_host
+- requested_by
+- approved_by
+- preview_json
+- response_json
+- error_message
+- created_at
+- approved_at
+- sent_at
+- updated_at
+
+Allowed operation types:
+- `update_product_stock`
+- `update_variation_stock`
+- `update_order_status`
+
+Safety:
+- live sends require staging live-test mode, dry-run off, approval, exact host
+  match, and allowlisted operation/path/payload guards
+- production writeback is not enabled
+- DELETE is not supported
+- arbitrary endpoint writes are not supported
+- customer, coupon, refund, and product metadata writes are not supported
+- credentials remain backend environment variables only

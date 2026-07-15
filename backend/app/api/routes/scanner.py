@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.cycle_counts import CycleCount, CycleCountLine
 from app.models.inventory import InventoryItem, InventoryItemLocation, InventoryLocation
@@ -20,6 +21,9 @@ from app.services.location_inventory import (
     next_adjustment_number,
     to_decimal,
 )
+from app.services.order_workflow import auto_allocate_processing_orders_fifo
+from app.services.woocommerce_client import WooCommerceClient
+from app.services.woocommerce_writeback import sync_inventory_stock
 
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 
@@ -137,6 +141,7 @@ def cycle_count_scan_commit(payload: dict, db: Session = Depends(get_db)) -> dic
     db.flush()
     change = cycle_count_location(db, item, warehouse, inventory_location, payload.get("counted_quantity"), reference_number=count.count_number, reference_id=count.id, notes=payload.get("reason") or payload.get("notes"), created_by=payload.get("created_by") or "system")
     db.add(CycleCountLine(cycle_count_id=count.id, item_id=item.id, inventory_item_location_id=change.item_location.id, sku=item.sku, barcode=item.barcode, description=item.description, warehouse=warehouse, inventory_location=inventory_location, system_quantity=change.old_location_stock, counted_quantity=change.new_location_stock, variance_quantity=change.new_location_stock - change.old_location_stock, unit_cost=item.unit_cost, variance_value=(change.new_location_stock - change.old_location_stock) * (item.unit_cost or Decimal("0")), notes=payload.get("reason") or payload.get("notes")))
+    auto_allocate_processing_orders_fifo(db, source=f"scanner-cycle-count:{count.count_number}")
     db.commit()
     return {"count_id": count.id, "count_number": count.count_number, "status": "posted", "variance_quantity": preview["variance_quantity"]}
 
@@ -203,5 +208,14 @@ def adjustment_scan_commit(payload: dict, db: Session = Depends(get_db)) -> dict
     item = db.get(InventoryItem, preview["item"]["id"])
     row = db.get(InventoryItemLocation, preview["inventory_item_location_id"]) if preview.get("inventory_item_location_id") else get_or_create_item_location(db, item, payload.get("warehouse") or item.warehouse, payload.get("inventory_location") or item.inventory_location or item.default_location)
     adjustment = create_committed_adjustment(db, item=item, row=row, quantity_change=preview["quantity_change"], adjustment_type=payload.get("adjustment_type") or "correction", reason=payload.get("reason"), notes=payload.get("notes"), created_by=payload.get("created_by") or "system")
+    auto_allocate_processing_orders_fifo(db, source=f"scanner-adjustment:{adjustment.adjustment_number}")
     db.commit()
+    settings = get_settings()
+    sync_inventory_stock(
+        db,
+        settings,
+        WooCommerceClient(settings),
+        item_ids={item.id},
+        requested_by=payload.get("created_by") or "scanner-adjustment",
+    )
     return {"adjustment_id": adjustment.id, "adjustment_number": adjustment.adjustment_number, "status": adjustment.status, "quantity_change": preview["quantity_change"]}

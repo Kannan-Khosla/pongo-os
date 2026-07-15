@@ -22,6 +22,8 @@ class StockMovementRead(BaseModel):
     reference_type: str | None = None
     reference_id: int | None = None
     reference_number: str | None = None
+    description: str | None = None
+    reason: str | None = None
     unit_cost: float | None = None
     notes: str | None = None
     created_by: str | None = None

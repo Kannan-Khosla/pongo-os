@@ -381,6 +381,103 @@ def pick_from_location_audit_only(
     return row
 
 
+def reduce_pick_from_location(
+    db: Session,
+    item: InventoryItem,
+    row: InventoryItemLocation,
+    quantity: Decimal,
+    *,
+    reference_number: str | None = None,
+    reference_type: str = "pick",
+    reference_id: int | None = None,
+    notes: str | None = None,
+    created_by: str | None = "system",
+) -> tuple[LocationStockChange, StockMovement]:
+    quantity = to_decimal(quantity)
+    if quantity <= 0:
+        raise ValueError("Pick quantity must be greater than zero.")
+    if row.inventory_item_id != item.id:
+        raise ValueError("Pick location does not belong to the item.")
+    old_location_stock, old_item_stock = row.in_stock or Decimal("0"), item.in_stock or Decimal("0")
+    old_location_allocated, old_item_allocated = row.allocated or Decimal("0"), item.allocated or Decimal("0")
+    if old_location_stock < quantity:
+        raise ValueError("Pick quantity exceeds location In Stock.")
+    if old_location_allocated < quantity:
+        raise ValueError("Pick quantity exceeds location Allocated.")
+    row.in_stock = old_location_stock - quantity
+    row.allocated = old_location_allocated - quantity
+    recalculate_item_location(row, item)
+    assert_location_invariants(row)
+    item = recalculate_item_totals(db, item.id)
+    assert_item_invariants(item)
+    movement = create_stock_movement(
+        db,
+        item,
+        MovementType.pick_stock_reduction,
+        -quantity,
+        row,
+        old_location_stock,
+        row.in_stock,
+        old_item_stock,
+        item.in_stock,
+        unit_cost=item.unit_cost,
+        reason="Pick stock reduction",
+        reference_number=reference_number,
+        reference_type=reference_type,
+        reference_id=reference_id,
+        notes=notes,
+        created_by=created_by,
+    )
+    change = LocationStockChange(item, row, old_location_stock, row.in_stock, old_item_stock, item.in_stock, old_location_allocated, row.allocated, old_item_allocated, item.allocated)
+    return change, movement
+
+
+def restore_unpick_to_location(
+    db: Session,
+    item: InventoryItem,
+    row: InventoryItemLocation,
+    quantity: Decimal,
+    *,
+    reference_number: str | None = None,
+    reference_id: int | None = None,
+    notes: str | None = None,
+    created_by: str | None = "system",
+) -> tuple[LocationStockChange, StockMovement]:
+    quantity = to_decimal(quantity)
+    if quantity <= 0:
+        raise ValueError("Unpick quantity must be greater than zero.")
+    if row.inventory_item_id != item.id:
+        raise ValueError("Original pick location does not belong to the item.")
+    old_location_stock, old_item_stock = row.in_stock or Decimal("0"), item.in_stock or Decimal("0")
+    old_location_allocated, old_item_allocated = row.allocated or Decimal("0"), item.allocated or Decimal("0")
+    row.in_stock = old_location_stock + quantity
+    row.allocated = old_location_allocated + quantity
+    recalculate_item_location(row, item)
+    assert_location_invariants(row)
+    item = recalculate_item_totals(db, item.id)
+    assert_item_invariants(item)
+    movement = create_stock_movement(
+        db,
+        item,
+        MovementType.unpick_stock_restoration,
+        quantity,
+        row,
+        old_location_stock,
+        row.in_stock,
+        old_item_stock,
+        item.in_stock,
+        unit_cost=item.unit_cost,
+        reason="Unpick stock restoration",
+        reference_number=reference_number,
+        reference_type="unpick",
+        reference_id=reference_id,
+        notes=notes,
+        created_by=created_by,
+    )
+    change = LocationStockChange(item, row, old_location_stock, row.in_stock, old_item_stock, item.in_stock, old_location_allocated, row.allocated, old_item_allocated, item.allocated)
+    return change, movement
+
+
 def fulfill_from_location(
     db: Session,
     item: InventoryItem,

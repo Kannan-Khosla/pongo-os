@@ -60,7 +60,10 @@ def test_pick_scanner_match_no_match_and_overpick(client, monkeypatch):
     assert overpick.json()["status"] == "rejected"
     assert commit.json()["status"] == "posted"
     item = client.get("/api/items", params={"sku": "SCAN-SKU"}).json()["items"][0]
-    assert item["In Stock"] == 6
+    assert item["In Stock"] == 5
+    assert item["Allocated"] == 2
+    movements = client.get("/api/stock-movements", params={"movement_type": "pick_stock_reduction"}).json()
+    assert movements["total"] == 1
 
 
 def test_sku_orders_report_rows_summary_export(client, monkeypatch):

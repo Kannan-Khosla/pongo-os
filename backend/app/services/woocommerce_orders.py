@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from io import StringIO
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
@@ -22,9 +22,14 @@ from app.schemas.woocommerce import (
     WooCommerceOrderSyncRequest,
 )
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
+from app.services.order_workflow import auto_allocate_processing_orders_fifo, release_unpicked_allocations, sync_order_workflow_statuses, workflow_flags
 
-OPEN_WOO_STATUSES = {"processing", "on-hold"}
+OPEN_WOO_STATUSES = {"processing", "on-hold", "pending"}
 BARCODE_META_KEYS = {"barcode", "_barcode", "_ywbc_barcode", "upc", "gtin"}
+LOCAL_TERMINAL_STATUSES = {"completed", "closed", "fulfilled", "partially_fulfilled", "archived"}
+LOCAL_TERMINAL_COMPLETION_STATUSES = {"completed", "completed_without_picking"}
+WOO_QUANTITY_BELOW_ALLOCATED_REASON = "woo_quantity_below_allocated"
+POSTGRES_ORDER_IMPORT_LOCK_KEY = int.from_bytes(b"PONGOORD", byteorder="big")
 
 
 @dataclass
@@ -76,6 +81,12 @@ class NormalizedWooOrder:
         return " ".join(part for part in [self.customer_first_name, self.customer_last_name] if part).strip()
 
 
+@dataclass
+class OrderLineSyncIssue:
+    preview_line: WooCommerceOrderPreviewLine | None
+    message: str
+
+
 def preview_order_sync(db: Session, client: WooCommerceClient, payload: WooCommerceOrderSyncRequest) -> WooCommerceOrderPreviewResponse:
     if not client.configured:
         return WooCommerceOrderPreviewResponse(
@@ -123,7 +134,6 @@ def preview_order_sync(db: Session, client: WooCommerceClient, payload: WooComme
 
 
 def commit_order_sync(db: Session, client: WooCommerceClient, payload: WooCommerceOrderSyncRequest) -> tuple[WooCommerceSyncRun | None, WooCommerceOrderPreviewResponse]:
-    started_at = datetime.now(timezone.utc)
     if not client.configured:
         return None, preview_order_sync(db, client, payload)
     try:
@@ -136,55 +146,117 @@ def commit_order_sync(db: Session, client: WooCommerceClient, payload: WooCommer
             modified_before=payload.modified_before,
         )
     except WooCommerceClientError as error:
-        return None, WooCommerceOrderPreviewResponse(
-            configured=True,
-            total_remote_records=0,
-            create_count=0,
-            update_count=0,
-            matched_count=0,
-            skipped_count=0,
-            conflict_count=0,
-            error_count=1,
-            available_count=0,
-            partial_count=0,
-            unavailable_count=0,
-            unknown_count=0,
-            errors=[error.message],
-        )
+        return None, order_sync_error_response(error.message)
+    return commit_remote_order_records(db, remote_orders, order_statuses(payload), payload.created_by or "system")
+
+
+def commit_recent_order_sync(db: Session, client: WooCommerceClient, payload: WooCommerceOrderSyncRequest, per_status_limit: int = 10) -> tuple[WooCommerceSyncRun | None, WooCommerceOrderPreviewResponse]:
+    if not client.configured:
+        return None, preview_order_sync(db, client, payload)
+    statuses = order_statuses(payload)
+    seen: set[int] = set()
+    remote_orders: list[dict[str, Any]] = []
+    try:
+        for status in statuses:
+            for order in client.list_orders(page=1, per_page=per_status_limit, status=status, after=payload.after, before=payload.before, modified_after=payload.modified_after, modified_before=payload.modified_before):
+                order_id = to_int_or_none(order.get("id"))
+                if order_id is None or order_id in seen:
+                    continue
+                seen.add(order_id)
+                remote_orders.append(order)
+    except WooCommerceClientError as error:
+        return None, order_sync_error_response(error.message)
+    remote_orders.sort(key=order_recency_sort_key, reverse=True)
+    if payload.limit:
+        remote_orders = remote_orders[: payload.limit]
+    return commit_remote_order_records(db, remote_orders, statuses, payload.created_by or "auto-order-poll")
+
+
+def commit_remote_order_records(
+    db: Session,
+    remote_orders: list[dict[str, Any]],
+    requested_statuses: list[str],
+    created_by: str,
+    *,
+    commit: bool = True,
+) -> tuple[WooCommerceSyncRun, WooCommerceOrderPreviewResponse]:
+    acquire_order_import_transaction_lock(db)
+    started_at = datetime.now(timezone.utc)
     normalized_orders = [normalize_order(order) for order in remote_orders]
-    preview_rows = [build_order_preview(db, order, order_statuses(payload)) for order in normalized_orders]
+    preview_rows = [build_order_preview(db, order, requested_statuses) for order in normalized_orders]
     preview = build_order_preview_response(True, preview_rows)
-    sync_run = WooCommerceSyncRun(sync_type="orders", status="completed", started_at=started_at, created_by=payload.created_by or "system", total_remote_records=preview.total_remote_records)
+    sync_run = WooCommerceSyncRun(sync_type="orders", status="completed", started_at=started_at, created_by=created_by, total_remote_records=preview.total_remote_records)
     db.add(sync_run)
     db.flush()
     created_count = updated_count = matched_count = skipped_count = conflict_count = error_count = 0
+    auto_allocated_count = allocation_exception_count = pick_ready_count = 0
+    commit_errors: list[str] = []
     now = datetime.now(timezone.utc)
 
     for record, preview_order in zip(normalized_orders, preview_rows, strict=False):
         if preview_order.action == "skip":
             skipped_count += 1
-            store_order_sync_error(db, sync_run.id, preview_order, None, preview_order.warnings or preview_order.errors or ["Order status is not open for this sync."])
+            store_order_sync_error(db, sync_run.id, preview_order, None, preview_order.warnings or preview_order.errors or ["Order status was not requested for this sync."])
             continue
         try:
             order = db.scalars(select(Order).where(Order.woo_order_id == record.woo_order_id).options(selectinload(Order.items))).one_or_none()
+            preserve_local_workflow = order is not None and is_locally_terminal_order(order)
             if order is None:
                 order = Order(woo_order_id=record.woo_order_id)
                 db.add(order)
                 created_count += 1
             else:
                 updated_count += 1
-            update_local_order(order, record, preview_order, now)
+            update_local_order(order, record, preview_order, now, preserve_local_workflow=preserve_local_workflow)
             db.flush()
             matched_count += sum(1 for line in preview_order.lines if line.matched_status == "matched")
             conflict_count += sum(1 for line in preview_order.lines if line.matched_status == "conflict")
             error_count += sum(1 for line in preview_order.lines if line.matched_status in {"unmatched", "conflict"})
-            upsert_order_lines(db, order, record, preview_order)
+            line_sync_issues = upsert_order_lines(db, order, record, preview_order)
+            if line_sync_issues:
+                issue_messages = [issue.message for issue in line_sync_issues]
+                error_count += len(line_sync_issues)
+                allocation_exception_count += 1
+                commit_errors.extend(issue_messages)
+                order.sync_status = "needs_review"
+                order.sync_error = " ".join(issue_messages)
+                order.allocation_status = "exception"
+                order.allocation_exception_reason = WOO_QUANTITY_BELOW_ALLOCATED_REASON
+                for issue in line_sync_issues:
+                    store_order_sync_error(db, sync_run.id, preview_order, issue.preview_line, [issue.message])
+            db.flush()
+            db.expire(order, ["items"])
+            if record.woo_status != "processing" and not preserve_local_workflow:
+                release_unpicked_allocations(
+                    db,
+                    order,
+                    f"WooCommerce status changed to {record.woo_status}; released unpicked allocation.",
+                    "woocommerce_status_change",
+                )
+                order.local_status = record.local_status
+                order.completion_status = record.local_status
+            sync_order_workflow_statuses(order)
             for line in preview_order.lines:
                 if line.matched_status in {"unmatched", "conflict"}:
                     store_order_sync_error(db, sync_run.id, preview_order, line, line.errors or line.warnings or [f"Order line is {line.matched_status}."])
         except Exception as exc:
             error_count += 1
             store_order_sync_error(db, sync_run.id, preview_order, None, [str(exc)])
+
+    fifo_summary = auto_allocate_processing_orders_fifo(db, source=created_by or "order-sync")
+    auto_allocated_count = fifo_summary["allocated_orders"]
+    allocation_exception_count = max(
+        allocation_exception_count,
+        fifo_summary["partially_allocated_orders"] + fifo_summary["exception_orders"],
+    )
+    pick_ready_count = sum(
+        1
+        for order in db.scalars(select(Order).where(Order.woo_status == "processing").options(selectinload(Order.items))).all()
+        if order.pick_status in {"ready_to_pick", "partially_picked", "picked"}
+    )
+    if fifo_summary["errors"]:
+        error_count += len(fifo_summary["errors"])
+        commit_errors.extend(fifo_summary["errors"])
 
     sync_run.created_count = created_count
     sync_run.updated_count = updated_count
@@ -194,8 +266,11 @@ def commit_order_sync(db: Session, client: WooCommerceClient, payload: WooCommer
     sync_run.error_count = error_count
     sync_run.completed_at = datetime.now(timezone.utc)
     sync_run.status = "completed_with_errors" if conflict_count or error_count else "completed"
-    db.commit()
-    db.refresh(sync_run)
+    if commit:
+        db.commit()
+        db.refresh(sync_run)
+    else:
+        db.flush()
     response = WooCommerceOrderPreviewResponse(
         configured=True,
         total_remote_records=preview.total_remote_records,
@@ -209,11 +284,49 @@ def commit_order_sync(db: Session, client: WooCommerceClient, payload: WooCommer
         partial_count=preview.partial_count,
         unavailable_count=preview.unavailable_count,
         unknown_count=preview.unknown_count,
+        auto_allocated_count=auto_allocated_count,
+        allocation_exception_count=allocation_exception_count,
+        unmatched_line_count=sum(1 for row in preview_rows for line in row.lines if line.matched_status == "unmatched"),
+        conflict_line_count=conflict_count,
+        pick_ready_count=pick_ready_count,
         warnings=preview.warnings,
-        errors=preview.errors,
+        errors=[*preview.errors, *commit_errors],
         preview_orders=[],
     )
     return sync_run, response
+
+
+def order_sync_error_response(message: str) -> WooCommerceOrderPreviewResponse:
+    return WooCommerceOrderPreviewResponse(
+        configured=True,
+        total_remote_records=0,
+        create_count=0,
+        update_count=0,
+        matched_count=0,
+        skipped_count=0,
+        conflict_count=0,
+        error_count=1,
+        available_count=0,
+        partial_count=0,
+        unavailable_count=0,
+        unknown_count=0,
+        errors=[message],
+    )
+
+
+def acquire_order_import_transaction_lock(db: Session) -> None:
+    """Serialize order imports on PostgreSQL for the life of the current transaction."""
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": POSTGRES_ORDER_IMPORT_LOCK_KEY})
+
+
+def is_locally_terminal_order(order: Order) -> bool:
+    return order.local_status in LOCAL_TERMINAL_STATUSES or order.completion_status in LOCAL_TERMINAL_COMPLETION_STATUSES
+
+
+def order_recency_sort_key(order: dict[str, Any]) -> datetime:
+    return parse_datetime(order.get("date_modified_gmt") or order.get("date_created_gmt")) or datetime.min.replace(tzinfo=timezone.utc)
 
 
 def build_order_preview(db: Session, record: NormalizedWooOrder, requested_statuses: list[str]) -> WooCommerceOrderPreviewOrder:
@@ -221,9 +334,11 @@ def build_order_preview(db: Session, record: NormalizedWooOrder, requested_statu
     action = "update" if local_order else "create"
     warnings: list[str] = []
     errors: list[str] = []
-    if record.woo_status not in requested_statuses or record.woo_status not in OPEN_WOO_STATUSES:
+    if record.woo_status not in requested_statuses:
         action = "skip"
-        warnings.append(f"WooCommerce status {record.woo_status or 'unknown'} is not treated as an open order.")
+        warnings.append(f"WooCommerce status {record.woo_status or 'unknown'} was not requested for this sync.")
+    elif record.woo_status not in OPEN_WOO_STATUSES:
+        warnings.append(f"WooCommerce status {record.woo_status or 'unknown'} will be stored as a read-only local snapshot, not an open operational order.")
     lines = [build_line_preview(db, line) for line in record.lines]
     matched_status = aggregate_matched_status(lines)
     availability_status = aggregate_availability_status(lines)
@@ -323,7 +438,7 @@ def normalize_order(order: dict[str, Any]) -> NormalizedWooOrder:
         woo_order_id=int(order.get("id")),
         woo_order_number=str(order.get("number") or order.get("id") or ""),
         woo_status=woo_status,
-        local_status="open" if woo_status in OPEN_WOO_STATUSES else "skipped",
+        local_status="open" if woo_status in OPEN_WOO_STATUSES else (woo_status or "synced"),
         currency=str(order.get("currency") or ""),
         customer_id=to_int_or_none(order.get("customer_id")),
         customer_email=str(billing.get("email") or order.get("billing_email") or ""),
@@ -387,10 +502,18 @@ def find_matching_item_for_line(db: Session, line: NormalizedWooOrderLine, error
     return candidates[0] if candidates else None
 
 
-def update_local_order(order: Order, record: NormalizedWooOrder, preview: WooCommerceOrderPreviewOrder, synced_at: datetime) -> None:
+def update_local_order(
+    order: Order,
+    record: NormalizedWooOrder,
+    preview: WooCommerceOrderPreviewOrder,
+    synced_at: datetime,
+    *,
+    preserve_local_workflow: bool = False,
+) -> None:
     order.woo_order_number = record.woo_order_number
     order.woo_status = record.woo_status
-    order.local_status = record.local_status
+    if not preserve_local_workflow:
+        order.local_status = record.local_status
     order.currency = record.currency
     order.customer_id = record.customer_id
     order.customer_email = record.customer_email
@@ -418,7 +541,10 @@ def update_local_order(order: Order, record: NormalizedWooOrder, preview: WooCom
     order.placed_on = record.date_created
     order.completed_on = record.date_completed
     order.status = record.woo_status
-    order.allocation_status = preview.availability_status
+    if not preserve_local_workflow:
+        order.allocation_status = preview.availability_status
+        order.pick_status = order.pick_status or "not_ready"
+        order.completion_status = "open" if record.local_status == "open" else record.local_status
     order.shipping_address_1 = record.shipping_summary.get("address_1")
     order.shipping_address_2 = record.shipping_summary.get("address_2")
     order.shipping_city = record.shipping_summary.get("city")
@@ -437,9 +563,10 @@ def update_local_order(order: Order, record: NormalizedWooOrder, preview: WooCom
     order.raw_woo_payload = record.raw_payload
 
 
-def upsert_order_lines(db: Session, order: Order, record: NormalizedWooOrder, preview: WooCommerceOrderPreviewOrder) -> None:
+def upsert_order_lines(db: Session, order: Order, record: NormalizedWooOrder, preview: WooCommerceOrderPreviewOrder) -> list[OrderLineSyncIssue]:
     existing_by_line_id = {line.woo_order_item_id: line for line in order.items if line.woo_order_item_id is not None}
     preview_by_line_id = {line.woo_line_item_id: line for line in preview.lines}
+    issues: list[OrderLineSyncIssue] = []
     for index, record_line in enumerate(record.lines, start=1):
         preview_line = preview_by_line_id.get(record_line.woo_line_item_id)
         local_line = existing_by_line_id.get(record_line.woo_line_item_id)
@@ -457,10 +584,13 @@ def upsert_order_lines(db: Session, order: Order, record: NormalizedWooOrder, pr
         existing_allocated = local_line.quantity_allocated or Decimal("0")
         existing_picked = local_line.quantity_picked or Decimal("0")
         existing_fulfilled = local_line.quantity_fulfilled or Decimal("0")
+        existing_stock_reduced = local_line.quantity_stock_reduced or Decimal("0")
+        quantity_below_allocated = existing_allocated > record_line.quantity_ordered
         local_line.quantity_ordered = record_line.quantity_ordered
         local_line.quantity_allocated = existing_allocated
         local_line.quantity_picked = existing_picked
         local_line.quantity_fulfilled = existing_fulfilled
+        local_line.quantity_stock_reduced = existing_stock_reduced
         local_line.ordered_qty = record_line.quantity_ordered
         local_line.allocated_qty = existing_allocated
         local_line.picked_qty = existing_picked
@@ -472,12 +602,27 @@ def upsert_order_lines(db: Session, order: Order, record: NormalizedWooOrder, pr
         local_line.total_price = record_line.line_total
         local_line.matched_status = preview_line.matched_status if preview_line else "unknown"
         local_line.availability_status = "allocated" if existing_allocated >= record_line.quantity_ordered else (preview_line.availability_status if preview_line else "unknown")
+        local_line.allocation_status = "allocated" if existing_allocated >= record_line.quantity_ordered else (preview_line.availability_status if preview_line else "unknown")
+        local_line.pick_status = "picked" if existing_allocated > 0 and existing_picked >= existing_allocated else ("partially_picked" if existing_picked > 0 else "not_ready")
         local_line.sellable_snapshot = Decimal(str(preview_line.sellable_snapshot)) if preview_line else Decimal("0")
         remaining_after_allocation = max(record_line.quantity_ordered - existing_allocated, Decimal("0"))
         local_line.shortage_quantity = max(remaining_after_allocation - local_line.sellable_snapshot, Decimal("0")) if preview_line else remaining_after_allocation
         local_line.sync_status = "synced" if preview_line and preview_line.matched_status == "matched" else "needs_review"
         local_line.sync_error = " ".join((preview_line.errors or preview_line.warnings) if preview_line else ["Preview line missing."])
-        local_line.status = "open"
+        if quantity_below_allocated:
+            message = (
+                f"WooCommerce quantity decreased to {record_line.quantity_ordered} while {existing_allocated} "
+                "is already allocated; allocation was preserved and requires review."
+            )
+            local_line.allocation_status = "exception"
+            local_line.allocation_exception_reason = WOO_QUANTITY_BELOW_ALLOCATED_REASON
+            local_line.sync_status = "needs_review"
+            local_line.sync_error = message
+            issues.append(OrderLineSyncIssue(preview_line=preview_line, message=message))
+        elif local_line.allocation_exception_reason == WOO_QUANTITY_BELOW_ALLOCATED_REASON:
+            local_line.allocation_exception_reason = None
+        local_line.status = record.local_status
+    return issues
 
 
 def list_open_orders(
@@ -486,17 +631,27 @@ def list_open_orders(
     woo_status: str | None = None,
     availability_status: str | None = None,
     matched_status: str | None = None,
+    workflow_view: str = "open",
 ) -> OpenOrderListResponse:
-    orders = list(db.scalars(select(Order).where(Order.local_status.in_(["open", "partially_allocated", "allocated", "partially_picked", "picked", "partially_fulfilled", "fulfilled"])).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.date_created.desc().nullslast(), Order.id.desc())).all())
-    rows = [order_to_read(order) for order in orders]
+    orders = list(db.scalars(select(Order).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.date_created.desc().nullslast(), Order.id.desc())).all())
+    for order in orders:
+        sync_order_workflow_statuses(order)
+    if workflow_view == "allocate":
+        orders = [order for order in orders if workflow_flags(order)["shows_in_allocate"]]
+    elif workflow_view == "pick":
+        orders = [order for order in orders if workflow_flags(order)["shows_in_pick_orders"]]
+    elif workflow_view == "completed":
+        orders = [order for order in orders if workflow_flags(order)["shows_in_completed_orders"]]
+    else:
+        orders = [
+            order
+            for order in orders
+            if workflow_flags(order)["shows_in_open_orders"] and (order.woo_status or "").casefold() == "processing"
+        ]
     if search:
         needle = search.casefold()
-        rows = [
-            row
-            for row in rows
-            if needle in " ".join(str(value or "") for value in [row.woo_order_number, row.customer_name, row.customer_email]).casefold()
-            or any(needle in " ".join(str(value or "") for value in [line.sku, line.barcode, line.name]).casefold() for line in order_line_reads(db, row.id))
-        ]
+        orders = [order for order in orders if order_matches_search(order, needle)]
+    rows = [order_to_read(order) for order in orders]
     if woo_status:
         rows = [row for row in rows if row.woo_status == woo_status]
     if availability_status:
@@ -517,6 +672,7 @@ def get_open_order_detail(db: Session, order_id: int) -> OpenOrderDetail | None:
     order = db.scalars(select(Order).where(Order.id == order_id).options(selectinload(Order.items).selectinload(OrderItem.inventory_item))).one_or_none()
     if order is None:
         return None
+    sync_order_workflow_statuses(order)
     base = order_to_read(order).model_dump()
     base.update(
         {
@@ -547,22 +703,57 @@ def export_open_orders_csv(db: Session, **filters) -> str:
 
 def order_to_read(order: Order) -> OpenOrderRead:
     line_reads = [line_to_read(line) for line in order.items]
+    flags = workflow_flags(order)
+    raw_shipping_lines = (order.raw_woo_payload or {}).get("shipping_lines") or []
+    shipping_methods = [
+        str(line.get("method_title") or line.get("method_id") or "").strip()
+        for line in raw_shipping_lines
+        if isinstance(line, dict)
+    ]
     return OpenOrderRead(
         id=order.id,
         woo_order_id=order.woo_order_id,
         woo_order_number=order.woo_order_number,
         woo_status=order.woo_status,
         local_status=order.local_status,
+        allocation_status=order.allocation_status,
+        pick_status=order.pick_status,
+        completion_status=order.completion_status,
+        auto_allocation_status=order.auto_allocation_status,
+        completed_without_picking=bool(order.completed_without_picking),
+        completed_at=order.completed_at,
+        closed_at=order.closed_at,
+        picked_at=order.picked_at,
+        allocation_exception_reason=order.allocation_exception_reason,
         currency=order.currency,
         customer_name=order.customer_name,
         customer_email=order.customer_email,
         customer_phone=order.customer_phone,
+        order_source="WooCommerce",
+        shipping_city=order.shipping_city or (order.shipping_summary or {}).get("city"),
+        shipping_state=order.shipping_state or (order.shipping_summary or {}).get("state"),
+        shipping_zip=order.shipping_zip or (order.shipping_summary or {}).get("postcode"),
+        shipping_via=", ".join(method for method in shipping_methods if method) or None,
+        company=order.company or (order.shipping_summary or {}).get("company") or (order.billing_summary or {}).get("company"),
+        ship_from="Main Warehouse",
+        skus=list(dict.fromkeys(line.sku for line in line_reads if line.sku)),
+        item_names=list(dict.fromkeys(line.name for line in line_reads if line.name)),
+        total_quantity_ordered=sum(line.quantity_ordered for line in line_reads),
+        total_quantity_allocated=sum(line.quantity_allocated for line in line_reads),
+        total_quantity_picked=sum(line.quantity_picked for line in line_reads),
+        total_quantity_fulfilled=sum(line.quantity_fulfilled for line in line_reads),
         total=decimal_to_float(order.total),
         date_created=order.date_created,
         date_modified=order.date_modified,
         line_count=len(line_reads),
         availability_status=aggregate_availability_status(line_reads),
         matched_status=aggregate_matched_status(line_reads),
+        can_pick=flags["can_pick"],
+        can_complete=flags["can_complete"],
+        shows_in_open_orders=flags["shows_in_open_orders"],
+        shows_in_allocate=flags["shows_in_allocate"],
+        shows_in_pick_orders=flags["shows_in_pick_orders"],
+        shows_in_completed_orders=flags["shows_in_completed_orders"],
         last_synced_at=order.last_synced_at,
     )
 
@@ -572,11 +763,38 @@ def order_line_reads(db: Session, order_id: int) -> list[OpenOrderLineRead]:
     return [line_to_read(line) for line in order.items] if order else []
 
 
+def order_matches_search(order: Order, needle: str) -> bool:
+    order_values = [
+        order.woo_order_number,
+        order.woo_order_id,
+        order.customer_name,
+        order.customer_email,
+        order.customer_phone,
+    ]
+    if needle in " ".join(str(value or "") for value in order_values).casefold():
+        return True
+    for line in order.items:
+        item = line.inventory_item
+        line_values = [
+            line.sku,
+            line.barcode,
+            line.name,
+            line.description,
+            item.sku if item else None,
+            item.barcode if item else None,
+            item.description if item else None,
+        ]
+        if needle in " ".join(str(value or "") for value in line_values).casefold():
+            return True
+    return False
+
+
 def line_to_read(line: OrderItem) -> OpenOrderLineRead:
     quantity_ordered = line.quantity_ordered or Decimal("0")
     quantity_allocated = line.quantity_allocated or Decimal("0")
     quantity_picked = line.quantity_picked or Decimal("0")
     quantity_fulfilled = line.quantity_fulfilled or Decimal("0")
+    quantity_stock_reduced = line.quantity_stock_reduced or Decimal("0")
     item_sellable = ((line.inventory_item.in_stock or Decimal("0")) - (line.inventory_item.allocated or Decimal("0"))) if line.inventory_item else Decimal("0")
     return OpenOrderLineRead(
         id=line.id,
@@ -584,16 +802,21 @@ def line_to_read(line: OrderItem) -> OpenOrderLineRead:
         woo_product_id=line.woo_product_id,
         woo_variation_id=line.woo_variation_id,
         item_id=line.inventory_item_id,
-        sku=line.sku,
-        barcode=line.barcode,
-        name=line.name or line.description,
+        sku=line.sku or (line.inventory_item.sku if line.inventory_item else None),
+        barcode=line.barcode or (line.inventory_item.barcode if line.inventory_item else None),
+        name=line.name or line.description or (line.inventory_item.description if line.inventory_item else None),
         quantity_ordered=decimal_to_float(quantity_ordered) or 0,
         quantity_allocated=decimal_to_float(quantity_allocated) or 0,
         quantity_picked=decimal_to_float(quantity_picked) or 0,
         quantity_fulfilled=decimal_to_float(quantity_fulfilled) or 0,
+        quantity_stock_reduced=decimal_to_float(quantity_stock_reduced) or 0,
         remaining_to_allocate=decimal_to_float(max(quantity_ordered - quantity_allocated, Decimal("0"))) or 0,
         remaining_to_pick=decimal_to_float(max(quantity_allocated - quantity_picked, Decimal("0"))) or 0,
         remaining_to_fulfill=decimal_to_float(max(quantity_picked - quantity_fulfilled, Decimal("0"))) or 0,
+        stock_reduced_at=line.stock_reduced_at,
+        allocation_status=line.allocation_status,
+        pick_status=line.pick_status,
+        allocation_exception_reason=line.allocation_exception_reason,
         picking_status="picked" if quantity_allocated > 0 and quantity_picked >= quantity_allocated else ("partial" if quantity_picked > 0 else "unpicked"),
         fulfillment_status="fulfilled" if quantity_picked > 0 and quantity_fulfilled >= quantity_picked else ("partial" if quantity_fulfilled > 0 else "unfulfilled"),
         unit_price=decimal_to_float(line.unit_price),

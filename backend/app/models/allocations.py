@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -26,6 +26,8 @@ class Allocation(TimestampMixin, Base):
     woo_order_number: Mapped[str | None] = mapped_column(String(120), index=True)
     notes: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str | None] = mapped_column(String(120), index=True)
+    auto_allocated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    allocation_source: Mapped[str] = mapped_column(String(40), default="manual", nullable=False, index=True)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
@@ -59,6 +61,8 @@ class AllocationLine(TimestampMixin, Base):
     shortage_quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
+    auto_allocated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    allocation_source: Mapped[str] = mapped_column(String(40), default="manual", nullable=False, index=True)
 
     allocation: Mapped[Allocation] = relationship(back_populates="lines")
     order: Mapped["Order"] = relationship()

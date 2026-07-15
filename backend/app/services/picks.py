@@ -8,7 +8,7 @@ from io import StringIO
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, object_session, selectinload
 
-from app.models.inventory import InventoryAuditEvent, InventoryItem
+from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation
 from app.models.orders import Order, OrderItem
 from app.models.picks import Pick, PickLine
 from app.schemas.picks import (
@@ -25,8 +25,13 @@ from app.schemas.picks import (
     PickScannerLine,
     PickScannerOrder,
 )
-
-PICKABLE_ORDER_STATUSES = {"allocated", "partially_picked", "picked"}
+from app.services.location_inventory import reduce_pick_from_location, restore_unpick_to_location
+from app.services.order_workflow import (
+    add_audit_event,
+    allocation_remaining_by_location,
+    is_pickable as workflow_order_is_pickable,
+    sync_order_workflow_statuses,
+)
 
 
 def preview_pick(db: Session, payload: PickRequest) -> PickPreviewResponse:
@@ -70,10 +75,21 @@ def preview_scan(db: Session, order_id: int, payload: PickScanRequest) -> PickSc
 
 
 def commit_scan(db: Session, order_id: int, payload: PickScanRequest) -> PickScanResponse | None:
+    if payload.idempotency_key:
+        existing = db.scalars(select(PickLine).where(PickLine.order_id == order_id, PickLine.idempotency_key == payload.idempotency_key)).first()
+        if existing is not None:
+            refreshed = db.get(OrderItem, existing.order_line_id)
+            return PickScanResponse(
+                status="posted",
+                matched_line=scanner_line(refreshed) if refreshed else None,
+                proposed_picked_quantity=decimal_to_float(existing.quantity_picked_after),
+                warnings=["Duplicate scan ignored; stock was already reduced for this idempotency key."],
+                errors=[],
+            )
     preview = preview_scan(db, order_id, payload)
     if preview is None or preview.status != "valid" or preview.matched_line is None:
         return preview
-    commit = commit_pick(db, PickRequest(lines=[{"order_line_id": preview.matched_line.order_line_id, "quantity_to_pick": payload.quantity}], allow_partial=True, created_by=payload.created_by, notes=payload.note))
+    commit = commit_pick(db, PickRequest(lines=[{"order_line_id": preview.matched_line.order_line_id, "quantity_to_pick": payload.quantity, "idempotency_key": payload.idempotency_key}], allow_partial=True, created_by=payload.created_by, notes=payload.note))
     refreshed = db.get(OrderItem, preview.matched_line.order_line_id)
     return PickScanResponse(
         status=commit.status,
@@ -139,6 +155,7 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
         db.add(pick)
         db.flush()
         audit_count = 0
+        movement_count = 0
         picked_lines = 0
         partial_lines = 0
         touched_order_ids: set[int] = set()
@@ -153,42 +170,82 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
             remaining = remaining_to_pick(order_line)
             if quantity_to_pick <= 0 or quantity_to_pick > allocated or quantity_to_pick > remaining:
                 raise ValueError(f"Order line {order_line.id} is no longer valid for picking.")
-            location_row = pick_from_location_audit_only(
-                db,
-                item,
-                quantity_to_pick,
-                reference_number=pick.pick_number,
-                reference_id=pick.id,
-                notes=payload.notes,
-                created_by=payload.created_by or "system",
-            )
-            picked_after = previously_picked + quantity_to_pick
+            location_plan = allocate_pick_locations(db, order_line, quantity_to_pick)
+            line_idempotency_key = explicit_idempotency_key(payload, order_line.id)
+            picked_after = previously_picked
+            stock_reduced_after = to_decimal(order_line.quantity_stock_reduced)
+            for location_row, segment_quantity in location_plan:
+                item = db.get(InventoryItem, order_line.inventory_item_id)
+                if item is None:
+                    raise ValueError(f"Order line {order_line.id} has no matched item.")
+                segment_previously_picked = picked_after
+                change, movement = reduce_pick_from_location(
+                    db,
+                    item,
+                    location_row,
+                    segment_quantity,
+                    reference_number=pick.pick_number,
+                    reference_type="pick",
+                    reference_id=pick.id,
+                    notes=payload.notes,
+                    created_by=payload.created_by or "system",
+                )
+                db.flush()
+                picked_after += segment_quantity
+                stock_reduced_after += segment_quantity
+                remaining_after = max(allocated - picked_after, Decimal("0"))
+                pick_line = PickLine(
+                    pick_id=pick.id,
+                    order_id=order_line.order_id,
+                    order_line_id=order_line.id,
+                    item_id=item.id,
+                    inventory_item_location_id=location_row.id,
+                    sku=order_line.sku or item.sku,
+                    barcode=order_line.barcode or item.barcode,
+                    description=order_line.name or order_line.description or item.description,
+                    warehouse=location_row.warehouse,
+                    inventory_location=location_row.inventory_location,
+                    quantity_ordered=order_line.quantity_ordered or Decimal("0"),
+                    quantity_allocated=allocated,
+                    quantity_previously_picked=segment_previously_picked,
+                    quantity_to_pick=segment_quantity,
+                    quantity_picked_after=picked_after,
+                    remaining_to_pick=remaining_after,
+                    quantity_stock_reduced=segment_quantity,
+                    stock_movement_id=movement.id,
+                    stock_reduced_at=now,
+                    idempotency_key=line_idempotency_key,
+                    status="picked" if remaining_after == 0 else "partial",
+                    notes=payload.notes,
+                )
+                db.add(pick_line)
+                add_audit_event(
+                    db,
+                    change.item,
+                    change.item_location,
+                    "pick_stock_reduction",
+                    -segment_quantity,
+                    previous_in_stock=change.old_item_stock,
+                    new_in_stock=change.new_item_stock,
+                    previous_allocated=change.old_item_allocated,
+                    new_allocated=change.new_item_allocated,
+                    previous_sellable=change.old_item_stock - change.old_item_allocated,
+                    new_sellable=(change.item.sellable or Decimal("0")),
+                    reference_type="pick",
+                    reference_id=pick.id,
+                    reference_number=pick.pick_number,
+                    notes=payload.notes,
+                    created_by=payload.created_by or "system",
+                )
+                audit_count += 1
+                movement_count += 1
             remaining_after = max(allocated - picked_after, Decimal("0"))
             order_line.quantity_picked = picked_after
             order_line.picked_qty = picked_after
+            order_line.quantity_stock_reduced = stock_reduced_after
+            order_line.stock_reduced_at = now
+            order_line.pick_status = "picked" if remaining_after == 0 else "partially_picked"
             order_line.status = "picked" if remaining_after == 0 else "partial"
-            pick_line = PickLine(
-                pick_id=pick.id,
-                order_id=order_line.order_id,
-                order_line_id=order_line.id,
-                item_id=item.id,
-                inventory_item_location_id=location_row.id,
-                sku=order_line.sku or item.sku,
-                barcode=order_line.barcode or item.barcode,
-                description=order_line.name or order_line.description or item.description,
-                warehouse=location_row.warehouse,
-                inventory_location=location_row.inventory_location,
-                quantity_ordered=order_line.quantity_ordered or Decimal("0"),
-                quantity_allocated=allocated,
-                quantity_previously_picked=previously_picked,
-                quantity_to_pick=quantity_to_pick,
-                quantity_picked_after=picked_after,
-                remaining_to_pick=remaining_after,
-                status="picked" if remaining_after == 0 else "partial",
-                notes=payload.notes,
-            )
-            db.add(pick_line)
-            audit_count += 1
             picked_lines += 1
             partial_lines += 1 if remaining_after > 0 else 0
             touched_order_ids.add(order_line.order_id)
@@ -209,6 +266,7 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
             partial_lines=partial_lines,
             skipped_lines=preview.skipped_lines,
             total_quantity_picked=decimal_to_float(sum((line.quantity_to_pick for line in pick.lines), Decimal("0"))),
+            created_stock_movements=movement_count,
             created_audit_events=audit_count,
             warnings=preview.warnings,
             errors=[],
@@ -229,6 +287,140 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
         )
 
 
+def unpick_orders(db: Session, order_ids: list[int], *, created_by: str | None = "system", reason: str | None = None) -> dict:
+    selected_ids = list(dict.fromkeys(order_ids))
+    notes = (reason or "Bulk unpick from order workflow.").strip()
+    orders = list(db.scalars(select(Order).where(Order.id.in_(selected_ids)).options(selectinload(Order.items))).all())
+    orders_by_id = {order.id: order for order in orders}
+    errors = [f"Order {order_id} was not found." for order_id in selected_ids if order_id not in orders_by_id]
+    for order in orders:
+        if (order.woo_status or "").casefold() != "processing":
+            errors.append(f"Order {order.woo_order_number or order.id} is not an active processing order and cannot be unpicked.")
+        if order.completed_at or order.closed_at or order.completion_status in {"completed", "closed"}:
+            errors.append(f"Order {order.woo_order_number or order.id} is completed and cannot be unpicked.")
+        if any(to_decimal(line.quantity_fulfilled) > 0 for line in order.items):
+            errors.append(f"Order {order.woo_order_number or order.id} has fulfilled quantities and cannot be unpicked.")
+
+    pick_lines = list(
+        db.scalars(
+            select(PickLine)
+            .where(PickLine.order_id.in_(selected_ids), PickLine.status != "reversed", PickLine.quantity_stock_reduced > 0)
+            .options(selectinload(PickLine.pick))
+            .order_by(PickLine.id.desc())
+        ).all()
+    )
+    lines_by_order: dict[int, list[PickLine]] = {}
+    for pick_line in pick_lines:
+        lines_by_order.setdefault(pick_line.order_id, []).append(pick_line)
+    for order_id in selected_ids:
+        if order_id in orders_by_id and not lines_by_order.get(order_id):
+            errors.append(f"Order {orders_by_id[order_id].woo_order_number or order_id} has no reversible picked quantity.")
+
+    reversal_plan: list[tuple[PickLine, OrderItem, InventoryItem, InventoryItemLocation, Decimal]] = []
+    for pick_line in pick_lines:
+        order_line = db.get(OrderItem, pick_line.order_line_id)
+        item = db.get(InventoryItem, pick_line.item_id)
+        location_row = db.get(InventoryItemLocation, pick_line.inventory_item_location_id) if pick_line.inventory_item_location_id else None
+        quantity = to_decimal(pick_line.quantity_stock_reduced)
+        if order_line is None or item is None or location_row is None:
+            errors.append(f"Pick line {pick_line.id} is missing its original item or location and cannot be reversed.")
+            continue
+        if to_decimal(order_line.quantity_picked) < quantity or to_decimal(order_line.quantity_stock_reduced) < quantity:
+            errors.append(f"Pick line {pick_line.id} exceeds the order line's current picked quantity.")
+            continue
+        reversal_plan.append((pick_line, order_line, item, location_row, quantity))
+
+    if errors:
+        return {
+            "status": "rejected",
+            "requested_count": len(selected_ids),
+            "succeeded_count": 0,
+            "failed_count": len(selected_ids),
+            "results": [],
+            "errors": errors,
+        }
+
+    now = datetime.now(timezone.utc)
+    restored_by_order = {order_id: Decimal("0") for order_id in selected_ids}
+    touched_picks: dict[int, Pick] = {}
+    movement_count = 0
+    audit_count = 0
+    try:
+        for pick_line, order_line, item, location_row, quantity in reversal_plan:
+            change, _ = restore_unpick_to_location(
+                db,
+                item,
+                location_row,
+                quantity,
+                reference_number=pick_line.pick.pick_number,
+                reference_id=pick_line.pick_id,
+                notes=notes,
+                created_by=created_by,
+            )
+            add_audit_event(
+                db,
+                change.item,
+                change.item_location,
+                "unpick_stock_restoration",
+                quantity,
+                previous_in_stock=change.old_item_stock,
+                new_in_stock=change.new_item_stock,
+                previous_allocated=change.old_item_allocated,
+                new_allocated=change.new_item_allocated,
+                previous_sellable=change.old_item_stock - change.old_item_allocated,
+                new_sellable=change.item.sellable or Decimal("0"),
+                reference_type="unpick",
+                reference_id=pick_line.pick_id,
+                reference_number=pick_line.pick.pick_number,
+                notes=notes,
+                created_by=created_by or "system",
+            )
+            order_line.quantity_picked = to_decimal(order_line.quantity_picked) - quantity
+            order_line.picked_qty = order_line.quantity_picked
+            order_line.quantity_stock_reduced = to_decimal(order_line.quantity_stock_reduced) - quantity
+            if order_line.quantity_stock_reduced == 0:
+                order_line.stock_reduced_at = None
+            pick_line.status = "reversed"
+            pick_line.notes = f"{pick_line.notes + ' ' if pick_line.notes else ''}Reversed: {notes}".strip()
+            restored_by_order[pick_line.order_id] += quantity
+            touched_picks[pick_line.pick_id] = pick_line.pick
+            movement_count += 1
+            audit_count += 1
+
+        db.flush()
+        for pick in touched_picks.values():
+            remaining_lines = db.scalars(select(PickLine).where(PickLine.pick_id == pick.id, PickLine.status != "reversed")).first()
+            if remaining_lines is None:
+                pick.status = "reversed"
+                pick.cancelled_at = now
+        for order in orders:
+            sync_order_workflow_statuses(order)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    results = [
+        {
+            "order_id": order_id,
+            "status": "unpicked",
+            "message": f"Restored {decimal_to_float(restored_by_order[order_id])} unit(s) to stock and allocation.",
+        }
+        for order_id in selected_ids
+    ]
+    return {
+        "status": "completed",
+        "requested_count": len(selected_ids),
+        "succeeded_count": len(selected_ids),
+        "failed_count": 0,
+        "total_quantity_restored": decimal_to_float(sum(restored_by_order.values(), Decimal("0"))),
+        "created_stock_movements": movement_count,
+        "created_audit_events": audit_count,
+        "results": results,
+        "errors": [],
+    }
+
+
 def build_preview_orders(db: Session, payload: PickRequest) -> list[PickPreviewOrder]:
     order_lines = selected_order_lines(db, payload)
     orders_by_id: dict[int, list[OrderItem]] = {}
@@ -239,7 +431,7 @@ def build_preview_orders(db: Session, payload: PickRequest) -> list[PickPreviewO
         order = lines[0].order
         preview_lines = [build_preview_line(line, explicit_quantity(payload, line.id)) for line in lines]
         errors = []
-        if order.local_status not in PICKABLE_ORDER_STATUSES:
+        if not order_is_pickable(order):
             errors.append(f"Order status {order.local_status or 'unknown'} is not eligible for picking.")
         line_count = len(preview_lines)
         pickable_lines = sum(1 for line in preview_lines if line.pick_status == "picked")
@@ -308,6 +500,8 @@ def find_scan_line(db: Session, order_id: int, payload: PickScanRequest) -> tupl
         return line, PickScanResponse(status="rejected", matched_line=scanner_line(line), warnings=["This item is already fully picked."])
     if to_decimal(payload.quantity) > remaining:
         return line, PickScanResponse(status="rejected", matched_line=scanner_line(line), errors=["Scanned quantity exceeds remaining quantity to pick."])
+    if to_decimal(payload.quantity) > total_allocated_location_remaining(db, line):
+        return line, PickScanResponse(status="rejected", matched_line=scanner_line(line), errors=["Scanned quantity exceeds remaining allocated location stock."])
     return line, None
 
 
@@ -328,10 +522,12 @@ def scanner_line(line: OrderItem) -> PickScannerLine:
         try:
             db = object_session(line)
             if db is not None:
-                location_row = choose_allocated_location(db, item, remaining)
-                item_location_id = location_row.id
-                warehouse = location_row.warehouse
-                inventory_location = location_row.inventory_location
+                location_rows = allocation_remaining_by_location(db, line)
+                if location_rows:
+                    location_row = location_rows[0][0]
+                    item_location_id = location_row.id
+                    warehouse = location_row.warehouse
+                    inventory_location = location_row.inventory_location
         except Exception as exc:
             warnings.append(str(exc))
     return PickScannerLine(
@@ -375,7 +571,7 @@ def build_preview_line(line: OrderItem, requested_quantity: Decimal | None = Non
     if line.matched_status != "matched":
         status = "conflict" if line.matched_status == "conflict" else "skipped"
         errors.append(f"Order line matched status is {line.matched_status or 'unknown'}.")
-    elif line.order.local_status not in PICKABLE_ORDER_STATUSES:
+    elif not order_is_pickable(line.order):
         errors.append(f"Order status {line.order.local_status or 'unknown'} is not eligible.")
     elif item is None:
         errors.append("Order line has no matched local item.")
@@ -391,7 +587,13 @@ def build_preview_line(line: OrderItem, requested_quantity: Decimal | None = Non
             db = object_session(line)
             if db is None:
                 raise ValueError("Order line is not attached to a database session.")
-            location_row = choose_allocated_location(db, item, requested_quantity or remaining)
+            location_rows = allocation_remaining_by_location(db, line)
+            if not location_rows:
+                raise ValueError("Order line has no remaining allocated location stock.")
+            available_by_location = sum((quantity for _, quantity in location_rows), Decimal("0"))
+            if (requested_quantity or remaining) > available_by_location:
+                raise ValueError("Requested pick quantity exceeds remaining allocated location stock.")
+            location_row = location_rows[0][0]
             item_location_id = location_row.id
             warehouse = location_row.warehouse
             inventory_location = location_row.inventory_location
@@ -452,16 +654,7 @@ def build_preview_response(orders: list[PickPreviewOrder]) -> PickPreviewRespons
 
 
 def update_order_picking_status(order: Order) -> None:
-    lines = list(order.items)
-    matched_allocated_lines = [line for line in lines if line.matched_status == "matched" and (line.quantity_allocated or Decimal("0")) > 0]
-    blocked = any(line.matched_status in {"unmatched", "conflict"} for line in lines)
-    any_picked = any((line.quantity_picked or Decimal("0")) > 0 for line in matched_allocated_lines)
-    all_picked = bool(matched_allocated_lines) and all((line.quantity_picked or Decimal("0")) >= (line.quantity_allocated or Decimal("0")) for line in matched_allocated_lines)
-    if all_picked and not blocked:
-        order.local_status = "picked"
-    elif any_picked:
-        order.local_status = "partially_picked"
-    order.allocation_status = order.local_status
+    sync_order_workflow_statuses(order)
 
 
 def list_picks(
@@ -598,6 +791,10 @@ def pick_line_to_read(line: PickLine) -> PickLineRead:
         quantity_to_pick=decimal_to_float(line.quantity_to_pick),
         quantity_picked_after=decimal_to_float(line.quantity_picked_after),
         remaining_to_pick=decimal_to_float(line.remaining_to_pick),
+        quantity_stock_reduced=decimal_to_float(line.quantity_stock_reduced),
+        stock_movement_id=line.stock_movement_id,
+        stock_reduced_at=line.stock_reduced_at,
+        idempotency_key=line.idempotency_key,
         status=line.status,
         notes=line.notes,
         created_at=line.created_at,
@@ -619,6 +816,36 @@ def current_sellable(item: InventoryItem) -> Decimal:
     return (item.in_stock or Decimal("0")) - (item.allocated or Decimal("0"))
 
 
+def order_is_pickable(order: Order) -> bool:
+    return workflow_order_is_pickable(order)
+
+
+def allocate_pick_locations(db: Session, line: OrderItem, quantity: Decimal) -> list[tuple]:
+    remaining = to_decimal(quantity)
+    plan: list[tuple] = []
+    for row, available in allocation_remaining_by_location(db, line):
+        if remaining <= 0:
+            break
+        segment = min(available, remaining)
+        if segment > 0:
+            plan.append((row, segment))
+            remaining -= segment
+    if remaining > 0:
+        raise ValueError("Order line does not have enough remaining allocated location stock.")
+    return plan
+
+
+def total_allocated_location_remaining(db: Session, line: OrderItem) -> Decimal:
+    return sum((quantity for _, quantity in allocation_remaining_by_location(db, line)), Decimal("0"))
+
+
+def explicit_idempotency_key(payload: PickRequest, order_line_id: int) -> str | None:
+    for line in payload.lines:
+        if line.order_line_id == order_line_id:
+            return line.idempotency_key
+    return None
+
+
 def to_decimal(value) -> Decimal:
     if value in (None, ""):
         return Decimal("0")
@@ -630,4 +857,3 @@ def to_decimal(value) -> Decimal:
 
 def decimal_to_float(value: Decimal | int | float | None) -> float:
     return float(value or 0)
-from app.services.location_inventory import choose_allocated_location, pick_from_location_audit_only

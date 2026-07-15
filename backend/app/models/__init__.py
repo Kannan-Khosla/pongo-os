@@ -22,7 +22,7 @@ from app.models.receipts import Receipt, ReceiptItem
 from app.models.routes import Route, RouteStop
 from app.models.scanner import ScannerEvent, ScannerSession
 from app.models.ui import UISavedView
-from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun, WooItemMapping
+from app.models.woocommerce import WooCommerceOrderEvent, WooCommerceSyncError, WooCommerceSyncRun, WooCommerceWebhookDelivery, WooItemMapping, WooWritebackQueue
 
 __all__ = [
     "Base",
@@ -58,5 +58,8 @@ __all__ = [
     "UISavedView",
     "WooCommerceSyncError",
     "WooCommerceSyncRun",
+    "WooCommerceWebhookDelivery",
+    "WooCommerceOrderEvent",
     "WooItemMapping",
+    "WooWritebackQueue",
 ]
