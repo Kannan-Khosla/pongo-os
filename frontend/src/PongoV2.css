@@ -1,0 +1,1642 @@
+/*
+ * Pongo OS v2 — Command Nexus
+ *
+ * This file is intentionally an additive presentation layer. App.css remains the
+ * functional baseline for every existing workflow; these rules only restyle the
+ * existing DOM and the new application-shell markup.
+ */
+
+:root {
+  color-scheme: light;
+  font-family: "IBM Plex Sans", Aptos, "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+html {
+  background: #f4f5f9;
+  scroll-behavior: smooth;
+}
+
+body {
+  overflow-x: hidden;
+  background: #f4f5f9;
+  color: #17182b;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid #5964ff;
+  outline-offset: 2px;
+}
+
+.skip-link {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  z-index: 200;
+  min-height: 40px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #080a3d;
+  box-shadow: 0 10px 30px rgba(8, 10, 61, 0.24);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  transform: translate(-50%, -160%);
+  transition: transform 160ms ease-out;
+}
+
+.skip-link:focus {
+  transform: translate(-50%, 0);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.app-shell {
+  --pongo-950: #080a3d;
+  --pongo-900: #0b0e68;
+  --pongo-800: #0f149a;
+  --pongo-650: #3038cf;
+  --pongo-100: #e8eaff;
+  --pongo-50: #f3f4ff;
+  --live-700: #a83d12;
+  --live-500: #e86732;
+  --live-100: #ffe4d5;
+  --live-50: #fff6f0;
+  --cyan-600: #087da4;
+  --violet-600: #6e4bc6;
+  --canvas-0: #f4f5f9;
+  --surface-0: #ffffff;
+  --surface-warm: #fdfaf7;
+  --ink-900: #17182b;
+  --ink-650: #51546d;
+  --ink-500: #70738a;
+  --line-200: #dfe1ea;
+  --line-100: #eceef4;
+  --success-700: #08654d;
+  --success-100: #d8f3e9;
+  --warning-700: #8a5200;
+  --warning-100: #fff0c2;
+  --danger-700: #a52a22;
+  --danger-100: #fee4e2;
+  --info-700: #1757a6;
+  --info-100: #ddebff;
+  --focus: #5964ff;
+
+  /* Compatibility bridge for the established component vocabulary. */
+  --pongo-blue: var(--pongo-800);
+  --pongo-blue-hover: var(--pongo-900);
+  --pongo-blue-active: var(--pongo-950);
+  --pongo-blue-soft: var(--pongo-50);
+  --pongo-peach: var(--live-100);
+  --pongo-peach-strong: var(--live-500);
+  --pongo-peach-soft: var(--live-50);
+  --pongo-peach-accent: var(--live-500);
+  --pongo-coral: var(--live-500);
+  --coral: var(--live-500);
+  --coral-dark: var(--live-700);
+  --surface: var(--surface-0);
+  --surface-muted: var(--canvas-0);
+  --off-white: var(--canvas-0);
+  --white: var(--surface-0);
+  --text: var(--ink-900);
+  --text-primary: var(--ink-900);
+  --text-muted: var(--ink-650);
+  --text-secondary: var(--ink-650);
+  --muted: var(--ink-650);
+  --ink: var(--ink-900);
+  --border: var(--line-200);
+  --border-strong: #c9ccd8;
+  --line: var(--line-200);
+  --soft: var(--live-50);
+  --filter: #f8f8fb;
+  --muted-bg: var(--canvas-0);
+  --success: var(--success-700);
+  --warning: var(--warning-700);
+  --danger: var(--danger-700);
+  --info: var(--info-700);
+  --teal-950: var(--pongo-950);
+  --teal-900: var(--pongo-800);
+  --teal-800: var(--pongo-650);
+  --teal-700: #5964e4;
+  --shadow-sm: 0 1px 2px rgba(14, 16, 50, 0.06);
+  --shadow-md: 0 8px 24px rgba(14, 16, 50, 0.08);
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  display: grid;
+  grid-template-columns: 304px minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--canvas-0);
+  color: var(--ink-900);
+  font-family: "IBM Plex Sans", Aptos, "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.app-shell .mono,
+.app-shell code,
+.app-shell kbd,
+.app-shell .sku,
+.app-shell [data-numeric="true"] {
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Application frame */
+
+.app-shell .sidebar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 228px);
+  width: 304px;
+  height: 100vh;
+  height: 100dvh;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--pongo-900);
+  color: rgba(255, 255, 255, 0.78);
+  box-shadow: 8px 0 24px rgba(8, 10, 61, 0.12);
+}
+
+.app-shell .module-rail {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  background: linear-gradient(180deg, var(--pongo-950), #0a0d55 68%, #070936);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.app-shell .module-brand {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+  place-items: center;
+  margin: 8px auto 18px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 14px;
+  background: var(--live-500);
+  color: #ffffff;
+  box-shadow: 0 8px 20px rgba(232, 103, 50, 0.24);
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.app-shell .module-brand:hover {
+  background: #d95825;
+}
+
+.app-shell .module-links {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  padding: 0 8px 14px;
+  scrollbar-width: none;
+}
+
+.app-shell .module-links::-webkit-scrollbar {
+  display: none;
+}
+
+.app-shell .module-link {
+  position: relative;
+  display: flex;
+  min-height: 62px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 10px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+  text-align: center;
+  text-decoration: none;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.app-shell .module-link::before {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: -8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: transparent;
+  content: "";
+}
+
+.app-shell .module-link:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #ffffff;
+}
+
+.app-shell .module-link.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.app-shell .module-link.active::before {
+  background: var(--live-500);
+}
+
+.app-shell .context-rail {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: linear-gradient(180deg, var(--pongo-900), #101572);
+}
+
+.app-shell .context-rail-header {
+  display: flex;
+  min-height: 64px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.app-shell .context-rail-header span,
+.app-shell .context-rail-header strong {
+  display: block;
+}
+
+.app-shell .context-rail-header span {
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.app-shell .context-rail-header strong {
+  margin-top: 2px;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.app-shell .navigation-close {
+  display: none;
+}
+
+.app-shell .nav-list {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 18px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 18px 10px 22px;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+  scrollbar-width: thin;
+}
+
+.app-shell .context-nav-group {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.app-shell .context-nav-group h2 {
+  margin: 0 10px 5px;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.app-shell .nav-link {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  text-decoration: none;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.app-shell .nav-link::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: -10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: transparent;
+  content: "";
+}
+
+.app-shell .nav-link svg {
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.app-shell .nav-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell .nav-link:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #ffffff;
+}
+
+.app-shell .nav-link.active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+.app-shell .nav-link.active::before {
+  background: var(--live-500);
+}
+
+.app-shell .nav-link.active svg {
+  color: var(--live-100);
+}
+
+.app-shell .nav-parent {
+  width: 100%;
+  font: inherit;
+}
+
+.app-shell .nav-caret {
+  margin-left: auto;
+}
+
+.app-shell .subnav-list {
+  display: grid;
+  gap: 2px;
+  padding: 3px 4px 5px 30px;
+}
+
+.app-shell .subnav-link {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  padding: 0 9px;
+  border-left: 2px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0 7px 7px 0;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.app-shell .subnav-link:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+.app-shell .subnav-link.active {
+  border-left-color: var(--live-500);
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.app-shell .sidebar-footer {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  min-height: 64px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.1);
+  color: rgba(255, 255, 255, 0.74);
+}
+
+.app-shell .sidebar-footer strong,
+.app-shell .sidebar-footer small {
+  display: block;
+  min-width: 0;
+}
+
+.app-shell .sidebar-footer strong {
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.app-shell .sidebar-footer small {
+  margin-top: 1px;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 9px;
+}
+
+.app-shell .system-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #68d8af;
+  box-shadow: 0 0 0 4px rgba(104, 216, 175, 0.1);
+}
+
+.app-shell .navigation-scrim {
+  display: none;
+}
+
+.app-shell .workspace {
+  display: flex;
+  min-width: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  flex-direction: column;
+  background: var(--canvas-0);
+}
+
+/* Command bar */
+
+.app-shell .top-header {
+  position: sticky;
+  top: 0;
+  z-index: 35;
+  display: flex;
+  min-width: 0;
+  min-height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--line-200);
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--ink-900);
+  box-shadow: 0 1px 2px rgba(14, 16, 50, 0.05);
+  backdrop-filter: blur(12px);
+}
+
+.app-shell .header-primary,
+.app-shell .header-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.app-shell .header-primary {
+  flex: 1;
+  gap: 14px;
+}
+
+.app-shell .header-actions {
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.app-shell .navigation-toggle {
+  display: none;
+}
+
+.app-shell .command-jump {
+  position: relative;
+  display: flex;
+  width: min(360px, 36vw);
+  min-width: 180px;
+  height: 40px;
+  align-items: center;
+  border: 1px solid var(--line-200);
+  border-radius: 9px;
+  background: #f8f8fb;
+  color: var(--ink-500);
+  transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
+}
+
+.app-shell .command-jump:focus-within {
+  border-color: var(--pongo-650);
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(89, 100, 255, 0.14);
+}
+
+.app-shell .command-jump > svg {
+  position: absolute;
+  left: 12px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.app-shell .command-jump select {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: inherit;
+  outline: 0;
+  background: transparent;
+  color: var(--ink-650);
+  cursor: pointer;
+  padding: 0 34px 0 38px;
+  font-size: 13px;
+  font-weight: 550;
+  appearance: auto;
+}
+
+.app-shell .header-page-context {
+  display: none;
+  min-width: 0;
+}
+
+.app-shell .header-page-context span,
+.app-shell .header-page-context strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell .header-page-context span {
+  color: var(--ink-500);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.app-shell .header-page-context strong {
+  color: var(--ink-900);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.app-shell .warehouse-control {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--line-200);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink-650);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.app-shell .top-header .icon-button {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  border: 1px solid var(--line-200);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink-650);
+}
+
+.app-shell .top-header .icon-button:hover,
+.app-shell .top-header .icon-button[aria-expanded="true"] {
+  border-color: #c7cae7;
+  background: var(--pongo-50);
+  color: var(--pongo-800);
+}
+
+.app-shell .notification-badge {
+  top: -6px;
+  right: -6px;
+  min-width: 20px;
+  height: 20px;
+  border: 2px solid #ffffff;
+  background: var(--live-500);
+  color: #ffffff;
+  font-size: 9px;
+}
+
+.app-shell .user-chip {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  padding-left: 4px;
+  color: var(--ink-650);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.app-shell .avatar {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--pongo-100);
+  color: var(--pongo-800);
+  font-size: 11px;
+}
+
+.app-shell .notification-popover {
+  border-color: var(--line-200);
+  border-radius: 14px;
+  box-shadow: 0 20px 48px rgba(14, 16, 50, 0.18);
+}
+
+.app-shell .notification-popover::before {
+  height: 3px;
+  background: linear-gradient(90deg, var(--pongo-800) 0 78%, var(--live-500) 78% 100%);
+}
+
+/* Page canvas */
+
+.app-shell .main-content {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1;
+  padding: 0 28px 48px;
+  background: var(--canvas-0);
+}
+
+.app-shell .page-heading {
+  display: flex;
+  min-height: 112px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  border-bottom: 1px solid var(--line-200);
+  background: transparent;
+}
+
+.app-shell .page-heading-copy {
+  min-width: 0;
+  padding: 18px 0 20px;
+}
+
+.app-shell .page-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 7px;
+  color: var(--ink-500);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.app-shell .page-breadcrumbs span:first-child {
+  color: var(--pongo-650);
+}
+
+.app-shell .page-heading p {
+  display: none;
+}
+
+.app-shell .page-heading h1 {
+  margin: 0;
+  color: var(--ink-900);
+  font-size: clamp(24px, 2.2vw, 28px);
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.app-shell .page-tabs {
+  display: flex;
+  min-width: 0;
+  align-self: stretch;
+  overflow-x: auto;
+  border: 0;
+  scrollbar-width: thin;
+}
+
+.app-shell .page-tabs:empty {
+  display: none;
+}
+
+.app-shell .tab {
+  display: inline-flex;
+  min-width: max-content;
+  min-height: 44px;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 14px 19px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--ink-650);
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.app-shell .tab:hover {
+  background: transparent;
+  color: var(--pongo-800);
+}
+
+.app-shell .tab.active,
+.app-shell .tab.active:hover {
+  border-bottom-color: var(--live-500);
+  background: transparent;
+  color: var(--pongo-800);
+}
+
+.app-shell .tab.is-static {
+  color: var(--ink-500);
+  cursor: default;
+}
+
+.app-shell .content-panel {
+  padding-top: 24px;
+}
+
+/* Shared component grammar */
+
+.app-shell .btn,
+.app-shell .primary-button,
+.app-shell .muted-button,
+.app-shell .action-button,
+.app-shell .tab-button {
+  min-height: 40px;
+  gap: 7px;
+  padding: 0 13px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1;
+  box-shadow: none;
+  transform: none;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.app-shell .btn:hover,
+.app-shell .primary-button:hover,
+.app-shell .muted-button:hover,
+.app-shell .action-button:hover,
+.app-shell .tab-button:hover {
+  transform: none;
+}
+
+.app-shell .btn-primary,
+.app-shell .primary-button {
+  border-color: var(--pongo-800);
+  background: var(--pongo-800);
+  color: #ffffff;
+}
+
+.app-shell .btn-primary:hover,
+.app-shell .primary-button:hover {
+  border-color: var(--pongo-900);
+  background: var(--pongo-900);
+}
+
+.app-shell .btn-secondary,
+.app-shell .muted-button,
+.app-shell .action-button {
+  border-color: var(--line-200);
+  background: #ffffff;
+  color: var(--pongo-800);
+}
+
+.app-shell .btn-secondary:hover,
+.app-shell .muted-button:hover,
+.app-shell .action-button:hover {
+  border-color: #c9ccef;
+  background: var(--pongo-50);
+  color: var(--pongo-900);
+}
+
+.app-shell .btn-danger,
+.app-shell .danger-button {
+  border-color: var(--danger-700);
+  background: var(--danger-700);
+  color: #ffffff;
+}
+
+.app-shell .btn-danger:hover,
+.app-shell .danger-button:hover {
+  background: #872119;
+}
+
+.app-shell .btn-sm,
+.app-shell .inline-action,
+.app-shell .button-row.compact > button {
+  min-height: 34px;
+  padding-inline: 10px;
+  font-size: 11px;
+}
+
+.app-shell .icon-button,
+.app-shell .pager-button,
+.app-shell .btn-icon {
+  border-radius: 8px;
+}
+
+.app-shell .field input,
+.app-shell .field select,
+.app-shell .field textarea,
+.app-shell .input,
+.app-shell .select,
+.app-shell .textarea,
+.app-shell .table-scroll input,
+.app-shell .table-scroll select,
+.app-shell .receiving-header-fields input,
+.app-shell .receiving-header-fields select,
+.app-shell .receiving-line-table input,
+.app-shell .receiving-line-table select,
+.app-shell .mapping-card input,
+.app-shell .form-field input,
+.app-shell .scanner-input-row input,
+.app-shell .scanner-input-row select,
+.app-shell .operation-panel input,
+.app-shell .operation-panel select,
+.app-shell .filter-card input,
+.app-shell .filter-card select {
+  min-height: 40px;
+  border-color: var(--line-200);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink-900);
+  box-shadow: 0 1px 2px rgba(14, 16, 50, 0.03);
+  font-size: 13px;
+}
+
+.app-shell .field input:hover,
+.app-shell .field select:hover,
+.app-shell .field textarea:hover,
+.app-shell .input:hover,
+.app-shell .select:hover,
+.app-shell .textarea:hover {
+  border-color: #c5c8d6;
+}
+
+.app-shell .field input:focus,
+.app-shell .field select:focus,
+.app-shell .field textarea:focus,
+.app-shell .input:focus,
+.app-shell .select:focus,
+.app-shell .textarea:focus,
+.app-shell .scanner-input-row input:focus,
+.app-shell .scanner-input-row select:focus,
+.app-shell .operation-panel input:focus,
+.app-shell .operation-panel select:focus {
+  border-color: var(--pongo-650);
+  outline: 0;
+  box-shadow: 0 0 0 3px rgba(89, 100, 255, 0.14);
+}
+
+.app-shell .field-label,
+.app-shell .field > span,
+.app-shell .form-field > span,
+.app-shell label > span:first-child {
+  color: var(--ink-650);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.app-shell .form-card,
+.app-shell .filter-card,
+.app-shell .table-card,
+.app-shell .wide-panel,
+.app-shell .operation-panel,
+.app-shell .content-card,
+.app-shell .settings-card,
+.app-shell .report-card,
+.app-shell .dashboard-card,
+.app-shell .widget,
+.app-shell .panel,
+.app-shell .summary-card {
+  border-color: var(--line-200);
+  border-radius: 14px;
+  background: var(--surface-0);
+  box-shadow: var(--shadow-sm);
+}
+
+.app-shell .filter-panel,
+.app-shell .toolbar,
+.app-shell .items-command-surface,
+.app-shell .orders-toolbar,
+.app-shell .zen-orders-toolbar {
+  border-color: var(--line-200);
+  border-radius: 12px;
+  background: var(--surface-0);
+  box-shadow: var(--shadow-sm);
+}
+
+.app-shell .toolbar {
+  gap: 12px;
+  padding: 14px;
+}
+
+.app-shell .panel-title h2,
+.app-shell .panel-title h3,
+.app-shell .section-title,
+.app-shell .card-title,
+.app-shell .wide-panel h2,
+.app-shell .wide-panel h3 {
+  color: var(--ink-900);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.app-shell .metric-card,
+.app-shell .summary-item,
+.app-shell .dashboard-stat-card,
+.app-shell .business-kpi-card,
+.app-shell .allocation-metric,
+.app-shell .pick-metric {
+  position: relative;
+  overflow: hidden;
+  border-color: var(--line-200);
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: var(--shadow-sm);
+}
+
+.app-shell .metric-card::before,
+.app-shell .summary-item::before,
+.app-shell .dashboard-stat-card::before,
+.app-shell .business-kpi-card::before,
+.app-shell .allocation-metric::before,
+.app-shell .pick-metric::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--pongo-800), var(--pongo-650) 72%, var(--live-500) 72%);
+  content: "";
+}
+
+.app-shell .metric-card strong,
+.app-shell .summary-item strong,
+.app-shell .dashboard-stat-card strong,
+.app-shell .business-kpi-card strong,
+.app-shell .metric-value,
+.app-shell .stat-value {
+  color: var(--ink-900);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+/* Dense data surfaces */
+
+.app-shell .table-card,
+.app-shell .table-shell,
+.app-shell .zen-orders-table-card,
+.app-shell .items-table-card {
+  overflow: hidden;
+  border: 1px solid var(--line-200);
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: var(--shadow-sm);
+}
+
+.app-shell .table-scroll {
+  max-width: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #c5c8d6 transparent;
+  scrollbar-width: thin;
+}
+
+.app-shell .data-table,
+.app-shell table {
+  color: var(--ink-900);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-shell .data-table caption,
+.app-shell table caption {
+  background: #ffffff;
+  color: var(--ink-650);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.app-shell .data-table thead,
+.app-shell table thead {
+  background: #f8f8fb;
+}
+
+.app-shell .data-table th,
+.app-shell table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom-color: var(--line-200);
+  background: #f8f8fb;
+  color: var(--ink-650);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  line-height: 1.35;
+  text-transform: none;
+}
+
+.app-shell .data-table td,
+.app-shell table td {
+  border-bottom-color: var(--line-100);
+  color: var(--ink-900);
+  line-height: 1.45;
+}
+
+.app-shell .data-table tbody tr,
+.app-shell table tbody tr {
+  transition: background 130ms ease;
+}
+
+.app-shell .data-table tbody tr:hover,
+.app-shell table tbody tr:hover {
+  background: #fafaff;
+}
+
+.app-shell .data-table tbody tr[aria-selected="true"],
+.app-shell table tbody tr.selected,
+.app-shell .row-selected {
+  box-shadow: inset 3px 0 var(--pongo-650);
+  background: var(--pongo-50);
+}
+
+.app-shell .table-pager {
+  border-top-color: var(--line-200);
+  background: #ffffff;
+  color: var(--ink-650);
+  font-size: 12px;
+}
+
+.app-shell .status-pill,
+.app-shell [class*="status-badge"],
+.app-shell [class*="status-tag"],
+.app-shell .badge,
+.app-shell .chip,
+.app-shell .filter-chip {
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+}
+
+.app-shell .status-success,
+.app-shell .status-complete,
+.app-shell .status-completed,
+.app-shell .badge-success,
+.app-shell .success-pill,
+.app-shell .order-status-completed,
+.app-shell .order-status-fulfilled,
+.app-shell .order-status-picked {
+  border-color: #a8ddca;
+  background: var(--success-100);
+  color: var(--success-700);
+}
+
+.app-shell .status-warning,
+.app-shell .status-pending,
+.app-shell .status-partial,
+.app-shell .badge-warning,
+.app-shell .order-status-processing,
+.app-shell .order-status-allocated {
+  border-color: #ead28c;
+  background: var(--warning-100);
+  color: var(--warning-700);
+}
+
+.app-shell .status-error,
+.app-shell .status-failed,
+.app-shell .status-blocked,
+.app-shell .badge-danger,
+.app-shell .order-status-cancelled,
+.app-shell .order-status-failed {
+  border-color: #efb7b2;
+  background: var(--danger-100);
+  color: var(--danger-700);
+}
+
+.app-shell .status-info,
+.app-shell .badge-info,
+.app-shell .order-status-open,
+.app-shell .order-status-on-hold {
+  border-color: #b5cef0;
+  background: var(--info-100);
+  color: var(--info-700);
+}
+
+/* Alerts, overlays and operational states */
+
+.app-shell .api-error,
+.app-shell .error-strip,
+.app-shell .danger-strip,
+.app-shell .validation-error {
+  border-color: #efb7b2;
+  border-left: 3px solid var(--danger-700);
+  border-radius: 9px;
+  background: var(--danger-100);
+  color: var(--danger-700);
+}
+
+.app-shell .success-strip,
+.app-shell .api-success {
+  border-color: #a8ddca;
+  border-left: 3px solid var(--success-700);
+  border-radius: 9px;
+  background: var(--success-100);
+  color: var(--success-700);
+}
+
+.app-shell .warning-strip,
+.app-shell .csv-note,
+.app-shell .allocation-alert {
+  border-color: #ead28c;
+  border-left: 3px solid var(--live-500);
+  border-radius: 9px;
+  background: var(--live-50);
+  color: var(--warning-700);
+}
+
+.app-shell .empty-state,
+.app-shell .empty-panel,
+.app-shell .loading-state,
+.app-shell .loading-panel {
+  border-color: var(--line-200);
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--ink-650);
+}
+
+.app-shell .modal-backdrop,
+.app-shell .dialog-backdrop,
+.app-shell .drawer-backdrop {
+  background: rgba(8, 10, 61, 0.48);
+  backdrop-filter: blur(2px);
+}
+
+.app-shell .modal,
+.app-shell .dialog,
+.app-shell .modal-panel,
+.app-shell .order-dialog,
+.app-shell .import-modal {
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  border: 1px solid var(--line-200);
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 24px 64px rgba(8, 10, 61, 0.22);
+}
+
+.app-shell .drawer,
+.app-shell .details-drawer,
+.app-shell .items-drawer {
+  border-left: 1px solid var(--line-200);
+  background: #ffffff;
+  box-shadow: -16px 0 40px rgba(14, 16, 50, 0.14);
+}
+
+.app-shell .new-order-toast {
+  border-color: #c9ccef;
+  border-left-color: var(--live-500);
+  border-radius: 14px;
+  box-shadow: 0 18px 42px rgba(14, 16, 50, 0.18);
+}
+
+.app-shell .new-order-toast-icon,
+.app-shell .notification-history-icon {
+  background: var(--pongo-50);
+  color: var(--pongo-800);
+}
+
+/* Workflow accents: no controls or flow state are hidden. */
+
+.app-shell .scanner-page,
+.app-shell .scanner-panel,
+.app-shell .receiving-form,
+.app-shell .pick-session,
+.app-shell .cycle-count-session {
+  --surface: var(--surface-warm);
+}
+
+.app-shell .scanner-hero,
+.app-shell .scanner-input-card,
+.app-shell .pick-order-header,
+.app-shell .receiving-strip,
+.app-shell .cycle-count-header {
+  border-color: var(--live-100);
+  border-left: 3px solid var(--live-500);
+  background: var(--surface-warm);
+}
+
+.app-shell .scanner-input-row input,
+.app-shell .pick-scan-input,
+.app-shell .receiving-scan-input {
+  border-color: #e8b89e;
+  box-shadow: inset 3px 0 var(--live-500);
+}
+
+.app-shell .scanner-input-row input:focus,
+.app-shell .pick-scan-input:focus,
+.app-shell .receiving-scan-input:focus {
+  border-color: var(--live-500);
+  box-shadow: inset 3px 0 var(--live-500), 0 0 0 3px rgba(232, 103, 50, 0.14);
+}
+
+.app-shell .bulk-actions-bar,
+.app-shell .bulk-action-bar,
+.app-shell .bulk-actions-panel,
+.app-shell .items-bulk-actions {
+  border-color: #c9ccef;
+  border-radius: 10px;
+  background: var(--pongo-50);
+  color: var(--pongo-900);
+  box-shadow: var(--shadow-sm);
+}
+
+.app-shell .zen-orders-page,
+.app-shell .open-orders-page,
+.app-shell .items-page-pro,
+.app-shell .business-dashboard,
+.app-shell .insights-page,
+.app-shell .settings-page,
+.app-shell .report-page {
+  min-width: 0;
+}
+
+.app-shell .zen-orders-hero,
+.app-shell .items-hero,
+.app-shell .dashboard-hero,
+.app-shell .business-hero {
+  border-color: var(--line-200);
+  border-radius: 16px;
+  background: linear-gradient(135deg, #ffffff 0 74%, var(--pongo-50) 74% 90%, var(--live-50) 90%);
+  box-shadow: var(--shadow-sm);
+}
+
+.app-shell .chart-bar,
+.app-shell .bar-fill,
+.app-shell .progress-fill {
+  background: linear-gradient(90deg, var(--pongo-800), var(--pongo-650));
+}
+
+.app-shell .progress-track,
+.app-shell .chart-track {
+  background: var(--line-100);
+}
+
+/* Responsive shell */
+
+@media (max-width: 1260px) {
+  .app-shell {
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+
+  .app-shell .sidebar {
+    grid-template-columns: 76px minmax(0, 204px);
+    width: 280px;
+  }
+
+  .app-shell .main-content {
+    padding-inline: 22px;
+  }
+
+  .app-shell .command-jump {
+    width: min(300px, 31vw);
+  }
+
+  .app-shell .warehouse-control span {
+    display: none;
+  }
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    display: block;
+    min-height: 100dvh;
+  }
+
+  .app-shell .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 90;
+    grid-template-columns: 76px minmax(0, 228px);
+    width: min(304px, calc(100vw - 44px));
+    max-width: 100%;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateX(-105%);
+    transition: transform 240ms ease-out, visibility 240ms ease-out;
+  }
+
+  .app-shell .sidebar.is-open {
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateX(0);
+  }
+
+  .app-shell .navigation-close {
+    display: grid;
+    width: 36px;
+    height: 36px;
+    min-height: 36px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06);
+    color: #ffffff;
+  }
+
+  .app-shell .navigation-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: block;
+    visibility: hidden;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: rgba(8, 10, 61, 0.5);
+    opacity: 0;
+    cursor: default;
+    transition: opacity 200ms ease, visibility 200ms ease;
+  }
+
+  .app-shell .navigation-scrim.is-visible {
+    visibility: visible;
+    opacity: 1;
+  }
+
+  .app-shell .navigation-toggle {
+    display: grid;
+    flex: 0 0 auto;
+  }
+
+  .app-shell .header-page-context {
+    display: block;
+  }
+
+  .app-shell .top-header {
+    padding-inline: 16px;
+  }
+
+  .app-shell .command-jump {
+    width: min(280px, 37vw);
+    min-width: 150px;
+  }
+
+  .app-shell .page-heading {
+    min-height: 104px;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-shell .top-header {
+    min-height: 60px;
+    gap: 8px;
+    padding-inline: 12px;
+  }
+
+  .app-shell .header-primary {
+    gap: 8px;
+  }
+
+  .app-shell .command-jump {
+    width: 40px;
+    min-width: 40px;
+    flex: 0 0 40px;
+    overflow: hidden;
+  }
+
+  .app-shell .command-jump > svg {
+    left: 10px;
+  }
+
+  .app-shell .command-jump select {
+    width: 40px;
+    padding: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .app-shell .warehouse-control,
+  .app-shell .user-chip > span,
+  .app-shell .header-actions .chevron {
+    display: none;
+  }
+
+  .app-shell .user-chip {
+    padding: 0;
+  }
+
+  .app-shell .avatar {
+    width: 38px;
+    height: 38px;
+  }
+
+  .app-shell .main-content {
+    padding: 0 14px 36px;
+  }
+
+  .app-shell .page-heading {
+    display: block;
+    min-height: auto;
+    border-bottom: 0;
+  }
+
+  .app-shell .page-heading-copy {
+    padding: 18px 0 13px;
+  }
+
+  .app-shell .page-heading h1 {
+    font-size: 23px;
+  }
+
+  .app-shell .page-tabs {
+    min-height: 44px;
+    margin: 0 -14px;
+    padding: 0 14px;
+    border-top: 1px solid var(--line-200);
+    border-bottom: 1px solid var(--line-200);
+  }
+
+  .app-shell .tab {
+    min-height: 44px;
+    align-items: center;
+    padding: 0 12px;
+  }
+
+  .app-shell .content-panel {
+    padding-top: 16px;
+  }
+
+  .app-shell .btn,
+  .app-shell .primary-button,
+  .app-shell .muted-button,
+  .app-shell .action-button,
+  .app-shell .tab-button,
+  .app-shell .field input,
+  .app-shell .field select,
+  .app-shell .input,
+  .app-shell .select,
+  .app-shell .icon-button,
+  .app-shell .pager-button {
+    min-height: 44px;
+  }
+
+  .app-shell .toolbar,
+  .app-shell .table-toolbar,
+  .app-shell .filter-actions,
+  .app-shell .action-row,
+  .app-shell .table-actions,
+  .app-shell .button-row {
+    align-items: stretch;
+  }
+
+  .app-shell .new-order-notification-region {
+    top: 72px;
+    right: 12px;
+    width: calc(100vw - 24px);
+  }
+
+  .app-shell .modal,
+  .app-shell .dialog,
+  .app-shell .modal-panel,
+  .app-shell .order-dialog,
+  .app-shell .import-modal {
+    max-height: calc(100dvh - 16px);
+    border-radius: 14px;
+  }
+
+  .app-shell .drawer,
+  .app-shell .details-drawer,
+  .app-shell .items-drawer {
+    width: 100vw;
+    max-width: 100vw;
+  }
+}
+
+@media (max-width: 390px) {
+  .app-shell .sidebar {
+    grid-template-columns: 68px minmax(0, 1fr);
+    width: calc(100vw - 20px);
+  }
+
+  .app-shell .module-brand {
+    width: 44px;
+    height: 44px;
+  }
+
+  .app-shell .module-link {
+    min-height: 58px;
+    font-size: 8px;
+  }
+
+  .app-shell .header-page-context span {
+    display: none;
+  }
+
+  .app-shell .header-page-context strong {
+    max-width: 116px;
+  }
+
+  .app-shell .user-chip {
+    display: none;
+  }
+
+  .app-shell .main-content {
+    padding-inline: 10px;
+  }
+
+  .app-shell .page-tabs {
+    margin-inline: -10px;
+    padding-inline: 10px;
+  }
+
+  .app-shell .notification-popover {
+    right: -44px;
+    width: calc(100vw - 20px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media print {
+  .skip-link,
+  .app-shell .sidebar,
+  .app-shell .navigation-scrim,
+  .app-shell .top-header,
+  .app-shell .page-heading {
+    display: none !important;
+  }
+
+  .app-shell {
+    display: block;
+    background: #ffffff;
+  }
+
+  .app-shell .workspace,
+  .app-shell .main-content {
+    display: block;
+    width: 100%;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  .app-shell .table-scroll {
+    overflow: visible;
+  }
+}

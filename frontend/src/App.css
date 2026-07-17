@@ -3664,6 +3664,79 @@ tbody tr:nth-child(even) .sticky-col {
   padding: 20px;
 }
 
+.mapping-import-modal {
+  width: min(1480px, calc(100vw - 40px));
+}
+
+.mapping-workflow-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-left: 4px solid var(--pongo-peach-accent, #ed8a66);
+}
+
+.mapping-workflow-intro p {
+  margin-top: 5px;
+}
+
+.mapping-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
+
+.mapping-preview-table {
+  min-width: 1480px;
+}
+
+.import-mode-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.opening-stock-control {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 680px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #e2b8a8;
+  background: #fff5f0;
+}
+
+.opening-stock-control input {
+  margin-top: 3px;
+}
+
+.opening-stock-control span,
+.opening-stock-control small {
+  display: block;
+}
+
+.opening-stock-control small {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+@media (max-width: 760px) {
+  .modal-backdrop {
+    padding: 10px;
+  }
+
+  .import-modal,
+  .mapping-import-modal {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
+  }
+
+  .mapping-workflow-intro {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .import-step {
   border: 1px solid var(--line);
   background: var(--filter);

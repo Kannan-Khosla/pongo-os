@@ -150,6 +150,10 @@ function json(body) {
   return Promise.resolve({ ok: true, json: () => Promise.resolve(body), text: () => Promise.resolve(JSON.stringify(body)) });
 }
 
+function csvResponse(text) {
+  return Promise.resolve({ ok: true, blob: () => Promise.resolve(new Blob([text], { type: 'text/csv' })), text: () => Promise.resolve(text) });
+}
+
 function mockFetch(url) {
   const target = String(url);
   if (target.includes('/api/integrations/woocommerce/webhooks/events')) return json(typeof mockWebhookFeed === 'function' ? mockWebhookFeed(target) : mockWebhookFeed);
@@ -170,6 +174,8 @@ function mockFetch(url) {
   if (target.includes('/api/insights/overview')) return json({ dashboard: 'overview', summary: { total_revenue: 90, total_orders: 2, total_customers: 1, stockout_risk_count: 1 }, trends: { daily_revenue: [{ date: '2026-06-20', order_count: 2, net_sales: 90 }] }, tables: { stockout_risk: [{ sku: 'DOG-FOOD', description: 'Dog Food', risk_level: 'low', current_sellable: 10, daily_velocity: 1, days_of_stock_left: 10 }] }, data_quality: [{ code: 'missing_refund_data', severity: 'info', message: 'Refund detail is not synced yet.' }] });
   if (target.includes('/api/insights/')) return json({ dashboard: 'generic', summary: { total: 0 }, rows: [], data_quality: [] });
   if (target.includes('/api/dashboard')) return json({ inventory_health: {}, order_operations: {}, routes: {}, warnings: [], activity: [] });
+  if (target.includes('/api/items/enrichment/export')) return csvResponse('Pongo Item ID,Woo Product ID,Woo Variation ID,Woo Mapping Type,Woo Mapping Status,SKU\n1,101,,simple,synced,SMOKE-001\n');
+  if (target.includes('/api/items/enrichment/preview')) return json({ total_rows: 1, valid_rows: 1, invalid_rows: 0, create_count: 0, update_count: 1, unchanged_count: 0, conflict_count: 0, unmatched_count: 0, warnings: [], errors: [], preview_rows: [{ row_number: 2, action: 'update', sku: 'SMOKE-001', barcode: 'SMOKE001', match_method: 'pongo_item_id', fields_changing: ['Brand'], warnings: [], errors: [], raw_row: { SKU: 'SMOKE-001' } }] });
   if (target.match(/\/api\/items\/1$/)) return json({ item, stock_by_location: [], recent_activity: [] });
   if (target.includes('/api/items')) return json({ items: [item], total: 1 });
   if (target.includes('/api/locations')) return json({ locations: [{ id: 1, warehouse: 'Main Warehouse', code: 'Smoke Rack', name: 'Smoke Rack', isActive: true }] });
@@ -261,6 +267,30 @@ function mockFetch(url) {
     last_product_sync: { status: 'completed', total_remote_records: 12 },
     last_order_sync: { status: 'completed', total_remote_records: 8 },
     last_error: null,
+  });
+  if (target.includes('/api/integrations/woocommerce/products/preview')) return json({
+    configured: true,
+    total_remote_records: 4,
+    create_count: 3,
+    update_count: 0,
+    unchanged_count: 0,
+    matched_count: 0,
+    skipped_count: 1,
+    conflict_count: 0,
+    error_count: 0,
+    simple_products_examined: 0,
+    variable_parents_examined: 1,
+    purchasable_variations_examined: 3,
+    new_simple_count: 0,
+    new_variation_count: 3,
+    skipped_parent_count: 1,
+    warnings: [],
+    errors: [],
+    has_more: false,
+    preview_rows: [
+      { remote_type: 'variable', product_name: 'Nutram Dog Food', parent_product_name: null, variation_attributes: [], sku: '', woo_product_id: 7000, woo_variation_id: null, action: 'skip', status: 'skipped', warnings: ['Variable parent container is informational and will not become a stock item.'], errors: [] },
+      ...['2 kg', '5 kg', '11.4 kg'].map((size, index) => ({ remote_type: 'variation', product_name: `Nutram Dog Food - ${size}`, parent_product_name: 'Nutram Dog Food', variation_attributes: [{ name: 'Size', option: size }], sku: `NUTRAM-${index}`, woo_product_id: 7000, woo_variation_id: 7001 + index, proposed_item: { description: `Nutram Dog Food - ${size}` }, action: 'create', status: 'valid', warnings: [], errors: [] })),
+    ],
   });
   if (target.includes('/api/integrations/woocommerce/sync-runs')) return json({ sync_runs: [] });
   if (target.includes('/api/integrations/woocommerce/writeback/queue')) return json({
@@ -356,6 +386,27 @@ describe('App shell and workflows', () => {
     expect(document.querySelectorAll('.nav-link.active')).toHaveLength(1);
   });
 
+  it('exposes the production shell landmarks and closes mobile navigation with Escape', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.getByRole('link', { name: 'Skip to workspace' })).toHaveAttribute('href', '#main-content');
+    expect(screen.getByRole('main')).toHaveAttribute('id', 'main-content');
+    expect(screen.getByRole('navigation', { name: 'Module navigation' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeInTheDocument();
+
+    const navigationToggle = screen.getByRole('button', { name: 'Open navigation' });
+    await user.click(navigationToggle);
+    expect(navigationToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(document.getElementById('application-navigation')).toHaveClass('is-open');
+    expect(document.querySelector('.navigation-close')).toHaveFocus();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(navigationToggle).toHaveFocus());
+    expect(navigationToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(document.getElementById('application-navigation')).not.toHaveClass('is-open');
+  });
+
   it('renders items table and opens item detail from the SKU cell', async () => {
     const user = userEvent.setup();
     window.location.hash = '#items';
@@ -373,7 +424,7 @@ describe('App shell and workflows', () => {
     render(<App />);
 
     await screen.findByText('Smoke Test Item');
-    const searchInput = screen.getByPlaceholderText('Search SKU, barcode, description, brand');
+    const searchInput = screen.getByPlaceholderText('Search SKU, barcode, product title, or brand');
 
     await user.type(searchInput, 'SMOKE001');
     expect(searchInput).toHaveValue('SMOKE001');
@@ -384,6 +435,74 @@ describe('App shell and workflows', () => {
     await waitFor(() => {
       expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/items') && String(url).includes('search=SMOKE001'))).toBe(true);
     });
+  });
+
+  it('shows the Items mapping and enrichment workflow actions', async () => {
+    window.location.hash = '#items';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    expect(screen.getByRole('button', { name: 'Import Mappings' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Export Enrichment Template' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import CSV' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remap Exceptions' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh Items' })).toBeInTheDocument();
+  });
+
+  it('shows product titles without a long-description column', async () => {
+    window.location.hash = '#items';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    expect(screen.getByRole('columnheader', { name: 'Product Title' })).toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Description' })).not.toBeInTheDocument();
+  });
+
+  it('previews variable parents as skipped and three variations as separate proposed items', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#items';
+    render(<App />);
+    await screen.findByText('Smoke Test Item');
+
+    await user.click(screen.getByRole('button', { name: 'Import Mappings' }));
+    const dialog = screen.getByRole('dialog', { name: 'Import WooCommerce mappings' });
+    await user.click(within(dialog).getByRole('button', { name: /Start Import Preview/i }));
+
+    expect(await within(dialog).findByText('Catalog mapping preview')).toBeInTheDocument();
+    expect(within(dialog).getByText('Parents skipped')).toBeInTheDocument();
+    expect(within(dialog).getAllByText('Nutram Dog Food - 2 kg').length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText('Nutram Dog Food - 5 kg').length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText('Nutram Dog Food - 11.4 kg').length).toBeGreaterThan(0);
+    expect(within(dialog).getByText('Variable parent container is informational and will not become a stock item.')).toBeInTheDocument();
+  });
+
+  it('offers enrichment mode with protected fields and opening stock off by default', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#items';
+    render(<App />);
+    await screen.findByText('Smoke Test Item');
+
+    await user.click(screen.getByRole('button', { name: 'Import CSV' }));
+    const dialog = screen.getByRole('dialog', { name: 'Import CSV' });
+    await user.click(within(dialog).getByRole('button', { name: 'Enrich Woo-Mapped Items' }));
+
+    expect(within(dialog).getByText(/Protected Pongo\/Woo IDs/i)).toBeInTheDocument();
+    expect(within(dialog).getByRole('checkbox', { name: /Import opening stock/i })).not.toBeChecked();
+    expect(within(dialog).getByRole('button', { name: 'Export Enrichment Template' })).toBeInTheDocument();
+    expect(within(dialog).queryByPlaceholderText(/Scan/i)).not.toBeInTheDocument();
+  });
+
+  it('opens searchable remap selection without raw local database ID inputs', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#items';
+    render(<App />);
+    await screen.findByText('Smoke Test Item');
+
+    await user.click(screen.getByRole('button', { name: 'Remap Exceptions' }));
+    const dialog = screen.getByRole('dialog', { name: 'Remap WooCommerce exceptions' });
+    expect(within(dialog).getByPlaceholderText('Search product, variation, SKU, or Woo ID')).toBeInTheDocument();
+    expect(within(dialog).getByPlaceholderText('Search SKU, barcode, product name, or brand')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Local Item ID')).not.toBeInTheDocument();
   });
 
   it('switches scanner modes and shows a no-match result cleanly', async () => {
@@ -827,6 +946,15 @@ describe('App shell and workflows', () => {
     expect(await screen.findByRole('heading', { name: 'Allocate Orders', level: 2 })).toBeInTheDocument();
     expect(screen.getByText('1 order(s) could not be fully auto-allocated')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Items/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('button', { name: /preview allocation|commit allocation|allocate selected/i })).not.toBeInTheDocument();
+
+    fetch.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Run FIFO Allocation' }));
+    await waitFor(() => {
+      const allocationCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/allocations/auto/commit'));
+      expect(allocationCall?.[1]).toMatchObject({ method: 'POST', body: '{}' });
+    });
+    expect(await screen.findByText('0 unit(s) reserved in first-come-first-served order. 0 order(s) became fully allocated.')).toBeInTheDocument();
 
     const itemTable = screen.getByText('SMOKE-001').closest('table');
     expect(within(itemTable).getByRole('columnheader', { name: 'Ordered' })).toBeInTheDocument();
