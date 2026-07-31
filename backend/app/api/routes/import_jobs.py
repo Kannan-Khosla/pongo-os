@@ -10,6 +10,7 @@ from app.db.session import get_db
 from app.models.imports import ImportJob
 from app.schemas.imports import ImportJobDetail, ImportJobRead
 from app.services.items import CANONICAL_ITEM_COLUMNS
+from app.services.item_enrichment import ENRICHMENT_COLUMNS
 from app.services.locations import CANONICAL_LOCATION_COLUMNS
 
 router = APIRouter(prefix="/import-jobs", tags=["import-jobs"])
@@ -34,7 +35,7 @@ def download_failed_rows(job_id: int, db: Session = Depends(get_db)) -> Response
     if job is None:
         raise HTTPException(status_code=404, detail="Import job not found")
 
-    canonical_columns = CANONICAL_LOCATION_COLUMNS if job.import_type == "locations" else CANONICAL_ITEM_COLUMNS
+    canonical_columns = ENRICHMENT_COLUMNS if str(job.import_type or "").startswith("items_enrichment") else (CANONICAL_LOCATION_COLUMNS if job.import_type == "locations" else CANONICAL_ITEM_COLUMNS)
     fieldnames = [*canonical_columns, "Error Message"]
     buffer = StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fieldnames)
@@ -43,7 +44,7 @@ def download_failed_rows(job_id: int, db: Session = Depends(get_db)) -> Response
         row = {column: (error.raw_row or {}).get(column, "") for column in canonical_columns}
         row["Error Message"] = error.error_message or ""
         writer.writerow(row)
-    file_prefix = "locations-import" if job.import_type == "locations" else "items-import"
+    file_prefix = "items-enrichment" if str(job.import_type or "").startswith("items_enrichment") else ("locations-import" if job.import_type == "locations" else "items-import")
 
     return Response(
         content=buffer.getvalue(),

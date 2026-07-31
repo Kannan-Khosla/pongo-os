@@ -29,9 +29,9 @@ Implemented locally:
 - Read-only WooCommerce product/variation sync
 - Local WooCommerce remap metadata
 - Read-only WooCommerce order sync and open orders
-- Signed phase-1 WooCommerce `order.created` webhook import with a durable
-  delivery ledger, immutable order-event outbox, cursor feed, and
-  session-scoped staff notification center
+- Signed WooCommerce `order.created` and `order.updated` webhook import with a
+  durable delivery ledger, immutable order-event audit, new-order-only cursor
+  feed, and session-scoped staff notification center
 - Staging-only WooCommerce writeback queue foundation with optional live test mode
 - Automatic guarded staging stock writeback when picked orders are completed
   and after manual adjustments, plus changed-only and full-catalog controls
@@ -49,10 +49,11 @@ Implemented locally:
 - Completed orders export
 - SKU Orders report
 - Local-only route creation, metadata edit, stop reorder, map payload, disabled geocode/optimization architecture
+- Cookie-based staff login and registration with production registration access-code protection; no RBAC
+- Immutable, hash-verified report runs with interactive dashboards, CSV/PDF, Google Sheets, and audited email sharing
+- Resumable background full-catalog WooCommerce stock-sync jobs with progress, retry, resume, and cancel controls
 
 Not implemented yet:
-- Staff auth/login
-- Production WooCommerce stock or order-status writeback
 - Real map/geocoding/routing provider calls
 - Heroku production deployment files
 - Supplier management, purchase orders, delivery issue logs, customer notifications, and shipping labels
@@ -65,16 +66,16 @@ Not implemented yet:
   least 32 bytes and must never be committed, logged, or returned by the API.
 - Frontend code must never call WooCommerce directly.
 - WooCommerce sync reads staging/production data through backend env vars only.
-- WooCommerce writeback is allowlisted, queued, and audited. Product/stock
-  writes remain staging-only; production permits only the explicitly enabled
-  order-status completion path.
+- WooCommerce writeback is allowlisted, queued, and audited. Production stock
+  writes require the explicit `WOOCOMMERCE_PRODUCTION_STOCK_AUTHORITY=pongo`
+  policy plus the normal host, operation, payload, dry-run, and permission guards.
 - WooCommerce DELETE is always blocked.
 - WooCommerce stock is stored only as a read-only snapshot.
 - Completing an order sends a guarded, audited `completed` status update through
   the backend writeback queue. The frontend never calls WooCommerce directly.
-- Phase 1 imports only authenticated `order.created` webhook deliveries. Other
-  authenticated topics are audited and ignored, and the 10-second quick sync
-  remains the recovery/reconciliation fallback.
+- Authenticated `order.created` and `order.updated` webhook deliveries reconcile
+  statuses and line quantities. Other topics are audited and ignored; periodic
+  backend reconciliation covers missed deliveries.
 - The frontend seeds the durable event cursor without replaying old alerts,
   polls it every 2 seconds while visible, and uses quick-sync creation counts as
   a deduplicated fallback alert.
@@ -156,7 +157,7 @@ Use placeholders only in `.env.example`. Real values belong in local or deployme
 
 WooCommerce credentials belong only in `backend/.env` or deployment secret
 configuration. Do not commit keys, print keys, put keys in docs, or expose keys
-to the frontend. Production WooCommerce writeback stays blocked.
+to the frontend. Production credentials cannot be changed through the browser.
 
 The inbound order webhook is a separate, read-only integration and does not
 require writeback to be enabled. Its safe defaults are:
@@ -217,7 +218,7 @@ Current local build now includes:
 - A new default `Dashboard` home page for business metrics, customer/order activity, subscription empty states, revenue comparison, and city-level order geography. See `docs/BUSINESS_DASHBOARD.md`.
 - The former operational dashboard is now `Inventory Overview`.
 - Frontend Vitest/Testing Library coverage for design-system primitives, app shell navigation, Items, Scanner mode switching, and Reports single-panel switching.
-- Production-grade Items page controls: rich filters, image-aware table rows, column visibility, saved item views, safe metadata-only bulk edit, local item search, and an Item Detail Control Center.
+- Production-grade Items page controls: rich filters, image-aware table rows, column visibility, saved item views, safe metadata-only bulk edit, debounced keyword search with live item/SKU suggestions, and an Item Detail Control Center.
 - Item Detail Control Center tabs for overview, stock by location, activity, history, and metadata edit. Stock quantity edits remain routed through receiving, cycle count, or adjustment workflows.
 - Bulk Receiving Session under Receiving. It previews multi-row receiving carts, commits valid rows into one local receipt, updates `inventory_item_locations`, recalculates item aggregate stock fields, and creates stock movements.
 - Scanner page for inventory lookup, location lookup, receiving, cycle count,
@@ -225,21 +226,49 @@ Current local build now includes:
   require barcode scanning.
 - Inventory is organized into sidebar subpages: All Inventory, Inventory by Location, Low Stock, Expiring Stock, Par Level, and Stock Movements. Transfer UI is hidden and is not part of the active frontend workflow.
 - Expanded read-only reports: inventory valuation, low stock/reorder, stock movement ledger, item activity, location utilization, margin by SKU, receiving cost, and adjustment/damage/loss.
+- Verified reporting workspace with 17 immutable, hash-audited report types,
+  interactive charts, CSV/PDF downloads, Google Sheets publishing, and direct
+  email delivery. Calculation and accounting boundaries are documented in
+  `docs/REPORTING.md`.
 - Pongo Insights: a separate read-only BI page with tabbed dashboards for executive overview, revenue, customers, segmentation, SKU demand, subscriptions empty states, forecasting, coupons, payment health, geography, affinity, and reorder forecast. See `docs/INSIGHTS.md`.
 - Zenventory-style Orders workflow: Woo order sync runs processing-only FIFO
   auto-allocation, Open Orders is review/completion, Allocate shows unresolved
   Orders/Items shortages, fully allocated orders enter Pick Orders, and Order
   History holds allocation/pick/legacy fulfillment records. See
   `docs/ORDER_WORKFLOW.md`.
-- Event-driven phase-1 Woo order creation: signed `order.created` deliveries are
-  imported through the backend, recorded in a durable idempotency ledger, and
-  published to an immutable local event outbox for the internal staff
-  new-order alert. The
-  10-second REST quick sync remains enabled as recovery fallback.
+- Event-driven Woo order reconciliation: signed `order.created` and
+  `order.updated` deliveries are imported through the backend, recorded in a
+  durable idempotency ledger, and published to an immutable local event outbox
+  for the internal staff new-order alert. A backend scheduler reconciles missed
+  and terminal changes; browser refreshes are display-only.
 
 Still intentionally delayed:
-- Auth/RBAC.
-- Production WooCommerce stock or order-status writeback.
+- RBAC; every authenticated staff account currently has the same access.
+- Production deployment and the live WooCommerce credential/webhook contract check.
 - Purchase orders and supplier management.
 - Shipping labels, customer notifications, delivery issue logs, return-to-inventory workflows, and real map/geocode/route optimization provider calls.
+
+## Woo Mapping And Enrichment Workflow
+
+The Items page supports **Import Mappings → Export Enrichment Template → Enrich
+Woo-Mapped Items**. Import Mappings previews and imports every Woo simple product
+and purchasable variation through the existing backend-only integration. A
+variable parent is reference metadata, not a stock item. Repeated imports refresh
+Woo-owned fields without overwriting barcodes, unit cost, brand, locations,
+operational stock, or history.
+
+The enrichment template begins with protected Pongo/Woo identity columns. Empty
+editable cells preserve values; `__CLEAR__` clears only approved local metadata.
+Optional opening stock is off by default and writes location-level balances plus
+audited movements when deliberately enabled for a fresh migration. Expiry is
+intentionally excluded.
+
+Development reset commands are guarded and never call WooCommerce:
+
+```bash
+make reset-local-db
+make seed-local-locations
+```
+
+Back up the local database first. See `docs/FIRST_TIME_WOO_MIGRATION.md`.
 # pathwright

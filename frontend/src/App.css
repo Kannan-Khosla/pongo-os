@@ -282,6 +282,7 @@ textarea:focus-visible {
 }
 
 .page-content {
+  width: 100%;
   min-width: 0;
   max-width: 100%;
 }
@@ -521,6 +522,7 @@ textarea:focus-visible {
 }
 
 .warehouse-control,
+.warehouse-context,
 .header-actions,
 .user-chip,
 .button-row,
@@ -535,7 +537,8 @@ textarea:focus-visible {
   align-items: center;
 }
 
-.warehouse-control {
+.warehouse-control,
+.warehouse-context {
   gap: 16px;
   font-size: 17px;
   font-weight: 800;
@@ -895,13 +898,21 @@ textarea:focus-visible {
 .items-command-bar,
 .items-command-header,
 .items-view-card,
+.inventory-page,
+.report-page,
+.report-section,
 .reports-workspace,
 .report-main-panel,
 .wide-panel,
+.insights-page,
+.insight-dashboard-panel,
+.insight-report-layout,
 .dashboard-card-section,
 .orders-grid,
 .operation-grid,
+.receiving-page,
 .receiving-form,
+.receiving-line-scroll,
 .route-form,
 .scanner-layout,
 .scanner-console-card,
@@ -1099,11 +1110,20 @@ input[type="checkbox"] {
 }
 
 .table-scroll {
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
-  overflow-x: auto;
+  overflow: auto;
   border-top: 1px solid var(--border);
   border-bottom: 0;
-  overscroll-behavior-x: contain;
+  overscroll-behavior: contain;
+}
+
+.inventory-page .table-scroll,
+.report-main-panel .table-scroll,
+.insight-dashboard-panel .table-scroll,
+.receiving-form .table-scroll {
+  max-height: min(70vh, 720px);
 }
 
 .items-table-scroll {
@@ -1143,6 +1163,8 @@ thead th {
   position: sticky;
   top: 0;
   z-index: 1;
+  background: #eef1f8;
+  box-shadow: inset 0 -1px var(--line);
 }
 
 tbody tr:nth-child(even) {
@@ -1254,6 +1276,106 @@ tbody tr:hover {
   display: grid;
   gap: 4px;
   min-width: 0;
+}
+
+.keyword-item-search {
+  position: relative;
+  min-width: 0;
+}
+
+.keyword-search-input {
+  position: relative;
+}
+
+.keyword-search-input svg {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  color: #829198;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.keyword-item-search .keyword-search-input input {
+  padding-right: 38px;
+}
+
+.keyword-suggestions {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 8px);
+  left: 0;
+  width: min(560px, calc(100vw - 48px));
+  max-height: 420px;
+  overflow-y: auto;
+  border: 1px solid #dbe2e5;
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgba(20, 39, 48, 0.18);
+}
+
+.keyword-suggestion,
+.keyword-suggestion-status {
+  width: 100%;
+  min-height: 58px;
+  border: 0;
+  border-bottom: 1px solid #edf1f2;
+  background: transparent;
+  color: var(--text);
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.keyword-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  cursor: pointer;
+}
+
+.keyword-suggestion:hover,
+.keyword-suggestion.is-active {
+  background: #f1f7f8;
+}
+
+.keyword-suggestion:last-child {
+  border-bottom: 0;
+}
+
+.keyword-suggestion-copy,
+.keyword-suggestion-identifiers {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.keyword-suggestion-copy strong,
+.keyword-suggestion-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.keyword-suggestion-copy strong {
+  font-size: 14px;
+}
+
+.keyword-suggestion-copy small,
+.keyword-suggestion-identifiers small,
+.keyword-suggestion-status {
+  color: #728188;
+  font-size: 12px;
+}
+
+.keyword-suggestion-identifiers {
+  flex: 0 0 auto;
+  justify-items: end;
+}
+
+.keyword-suggestion-identifiers b {
+  color: #325c68;
+  font-size: 12px;
 }
 
 .zenventory-filter-field span,
@@ -1445,9 +1567,11 @@ tbody tr:nth-child(even) .sticky-col {
 }
 
 .description-cell {
+  min-width: 0;
   max-width: 360px;
   white-space: normal;
-  line-height: 1.25;
+  line-height: 1.35;
+  vertical-align: top;
 }
 
 .boolean-badge {
@@ -1854,7 +1978,7 @@ tbody tr:nth-child(even) .sticky-col {
   display: grid;
   gap: 20px;
   min-width: 0;
-  overflow: hidden;
+  max-width: 100%;
 }
 
 .reports-workspace {
@@ -1926,7 +2050,9 @@ tbody tr:nth-child(even) .sticky-col {
 }
 
 .report-main-panel {
+  width: 100%;
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   padding: 18px;
 }
@@ -2898,6 +3024,9 @@ tbody tr:nth-child(even) .sticky-col {
 }
 
 .receiving-form {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--white);
@@ -2907,10 +3036,16 @@ tbody tr:nth-child(even) .sticky-col {
 
 .receiving-header-fields {
   display: grid;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(240px, 1fr) minmax(320px, 1.4fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   gap: 16px;
   padding: 18px;
   background: var(--surface-muted);
+}
+
+.receiving-header-fields > *,
+.receiving-form .scanner-input-row > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .route-filter-grid {
@@ -2942,7 +3077,12 @@ tbody tr:nth-child(even) .sticky-col {
 }
 
 .receiving-line-scroll {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: auto;
   border-top: 1px solid var(--border);
+  overscroll-behavior: contain;
 }
 
 .receiving-line-table {
@@ -2953,6 +3093,27 @@ tbody tr:nth-child(even) .sticky-col {
 .receiving-line-table td {
   height: 54px;
   font-size: 12px;
+}
+
+.receiving-line-table th:last-child,
+.receiving-line-table td:last-child,
+.receiving-line-table .receiving-action-cell {
+  position: sticky;
+  right: 0;
+  min-width: 70px;
+  background: var(--white);
+  box-shadow: -8px 0 12px rgba(17, 24, 39, 0.08);
+  text-align: center;
+}
+
+.receiving-line-table th:last-child {
+  z-index: 4;
+  background: #eef1f8;
+}
+
+.receiving-line-table td:last-child,
+.receiving-line-table .receiving-action-cell {
+  z-index: 2;
 }
 
 .scan-field {
@@ -2972,9 +3133,11 @@ tbody tr:nth-child(even) .sticky-col {
 }
 
 .footer-actions {
+  flex-wrap: wrap;
   justify-content: center;
-  gap: 70px;
+  gap: 18px 36px;
   min-height: 86px;
+  padding: 14px 18px;
   color: var(--ink);
   font-weight: 800;
 }
@@ -3493,10 +3656,61 @@ tbody tr:nth-child(even) .sticky-col {
 
 .insights-tabs {
   display: flex;
+  min-width: 0;
   gap: 8px;
   overflow-x: auto;
   padding: 4px 0 8px;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: inline proximity;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
+}
+
+.insights-tabs-shell {
+  display: grid;
+  min-width: 0;
+  max-width: 100%;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.insights-tab-scroll-button {
+  display: grid;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  min-height: 38px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--pongo-blue);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+
+.insights-tab-scroll-button:hover,
+.insights-tab-scroll-button:focus-visible {
+  border-color: var(--pongo-blue);
+  background: var(--pongo-blue-soft);
+}
+
+.insights-tab-scroll-button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.insights-tabs::-webkit-scrollbar {
+  height: 8px;
+}
+
+.insights-tabs::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--border-strong);
+  background-clip: padding-box;
 }
 
 .insight-tab {
@@ -3509,6 +3723,7 @@ tbody tr:nth-child(even) .sticky-col {
   cursor: pointer;
   font-weight: 800;
   padding: 0 13px;
+  scroll-snap-align: start;
   white-space: nowrap;
 }
 
@@ -3907,8 +4122,44 @@ tbody tr:nth-child(even) .sticky-col {
 }
 
 @media (max-width: 760px) {
+  .inventory-filter-grid,
+  .report-filter-grid,
+  .receiving-header-fields,
+  .cycle-count-header-fields,
+  .route-header-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .inventory-search-row {
     grid-template-columns: 1fr;
+  }
+
+  .insights-hero {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .insights-tabs-shell {
+    gap: 6px;
+  }
+
+  .insights-tab-scroll-button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .receiving-form .section-heading,
+  .receiving-form .detail-actions,
+  .receiving-form .footer-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .receiving-form .detail-actions > button,
+  .receiving-form .footer-actions > button {
+    width: 100%;
   }
 
   .allocation-failure-alert {
@@ -4014,6 +4265,7 @@ tbody tr:nth-child(even) .sticky-col {
   }
 
   .print-order-panel .table-scroll {
+    max-height: none;
     overflow: visible;
   }
 

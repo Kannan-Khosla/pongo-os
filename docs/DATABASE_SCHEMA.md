@@ -34,6 +34,26 @@ Implementation notes:
   operational stock source, extends workflow lines with item-location
   references, extends stock movements with location before/after fields, and
   adds inventory transfer and stock adjustment tables.
+- Revision `20260726_0021` adds the `stock_mutation_requests` retry ledger and
+  database checks that prevent negative In Stock/Allocated/Sellable values or
+  Allocated greater than In Stock on both item aggregates and item-location
+  rows.
+- Revision `20260730_0022` adds immutable report runs and delivery audit rows.
+- Revision `20260731_0023` adds staff users and revocable login sessions.
+- Revision `20260731_0024` adds resumable WooCommerce full-stock-sync jobs.
+- Revision `20260731_0025` freezes unit cost on fulfillment lines and enforces
+  one committed opening-stock enrichment import per file hash.
+- Revision `20260731_0026` persists terminal Woo stock-sync item failures so a
+  manual resume retries the failed items instead of silently finishing again.
+- Revision `20260731_0027` persists registration throttling so access-code
+  guesses are serialized and rate-limited across application processes.
+
+## stock_mutation_requests
+
+One row identifies one retry-safe stock command by `(operation,
+idempotency_key)`. It stores a canonical request hash and the completed JSON
+response. The unique constraint resolves concurrent duplicate submissions;
+the hash makes a reused key with different data fail closed.
 
 ## Canonical CSV Mapping
 
@@ -1359,20 +1379,21 @@ Processing status values:
 - `ignored`
 - `failed`
 
-Phase-1 behavior:
-- Only authenticated `order.created` can import an order and set
-  `created_order = true` when a new local `orders` row was created.
-- A delayed `order.created` payload older than or equal to the matching local
+Webhook behavior:
+- Authenticated `order.created` and `order.updated` deliveries can import or
+  reconcile an order. `created_order = true` only when a new local `orders` row
+  was created.
+- A delayed supported payload older than or equal to the matching local
   `orders.date_modified` snapshot is stored as `ignored`; it cannot regress the
-  order or produce a staff event.
+  order.
 - Other authenticated topics are stored with `processing_status = ignored` and
   do not mutate orders.
 - Setup pings do not create a row.
-- A successful delivery that creates a new local order also creates one
-  immutable `woocommerce_order_events` row in the same transaction.
-- Failed, ignored, stale, duplicate, and already-local deliveries create no
-  event outbox row. A failed delivery that later succeeds gets its event ID only
-  at the successful commit.
+- Every successful supported delivery creates one immutable
+  `woocommerce_order_events` audit row in the same transaction. Only
+  `order_created` rows are exposed by the staff new-order cursor.
+- Failed, ignored, stale, and duplicate deliveries create no event audit row. A
+  failed delivery that later succeeds gets its event ID only at commit.
 
 Safety:
 - The table does not store the webhook secret, REST API credentials, request
@@ -1392,8 +1413,9 @@ Indexes:
 
 ## woocommerce_order_events
 
-Purpose: Immutable staff-notification outbox for successfully committed new
-orders from the signed webhook. Added by Alembic revision
+Purpose: Immutable audit rows for successfully committed created and updated
+orders from the signed webhook, with created rows also serving the staff
+new-order notification outbox. Added by Alembic revision
 `20260710_0019_woocommerce_order_event_outbox.py` after the delivery ledger.
 
 Fields:
@@ -1408,11 +1430,12 @@ Relationships and identity:
 - `webhook_delivery_id` uniquely references
   `woocommerce_webhook_deliveries.id`.
 - `local_order_id` references `orders.id`.
-- One successful new-order delivery can publish at most one event.
+- One successful supported delivery can publish at most one event.
 
 Cursor rules:
-- `GET /api/integrations/woocommerce/webhooks/events` pages by this table's
-  immutable `id`, not by the mutable delivery processing row.
+- `GET /api/integrations/woocommerce/webhooks/events` pages only
+  `event_type = order_created` by this table's immutable `id`, not by the
+  mutable delivery processing row. Update rows remain audit-only.
 - `latest_event_id` is the informational maximum event ID.
 - `next_after_id` is the safe exclusive consumer cursor.
 - `initialize = true` returns no events and seeds the cursor at the current
@@ -1552,9 +1575,28 @@ and returns empty states or data quality warnings when optional WooCommerce
 snapshot fields such as refunds, coupon lines, subscriptions, or address fields
 are not available.
 
+## Verified reporting tables
+
+Migration `20260730_0022_report_runs` adds:
+
+### `report_runs`
+
+An immutable report-generation snapshot. It stores the report key and title,
+definition version, reporting timezone, normalized filters, complete report
+payload, row count, SHA-256 data hash, generating actor, and generation time.
+The hash is indexed but not unique because two separately generated runs may
+contain identical evidence.
+
+### `report_deliveries`
+
+An audit record for Google Sheets creation/sharing and SMTP email delivery. It
+stores the report run, channel, optional recipient, status, external URL,
+error, and creation time. It never stores OAuth, SMTP, or WooCommerce
+credentials.
+
 ## woo_writeback_queue
 
-Purpose: Local staging-only queue for explicit WooCommerce writeback testing.
+Purpose: Local guarded queue for explicit WooCommerce writeback operations.
 Rows are created from previewed payloads and do not imply a WooCommerce request
 was sent.
 
@@ -1595,3 +1637,21 @@ Safety:
 - arbitrary endpoint writes are not supported
 - customer, coupon, refund, and product metadata writes are not supported
 - credentials remain backend environment variables only
+
+## Woo Mapping Enrichment Additions
+
+Migration `20260715_0020_item_enrichment` adds nullable Woo reference columns
+`woo_name`, `woo_parent_name`, and `woo_variation_attributes` (JSON) to
+`inventory_items`. Operational stock remains the sum of active
+`inventory_item_locations`; `woo_stock_quantity_snapshot` is comparison
+metadata only.
+
+The migration adds `file_sha256` and `options_json` to `import_jobs` and
+indexes the hash. Enrichment jobs record their options and use the hash to block
+duplicate opening-balance application. `opening_balance_import` is an allowed
+stock movement type and every imported opening quantity creates that audit row.
+
+Existing mapping storage stays authoritative: a simple item has
+`woo_product_id` and null `woo_variation_id`; a variation stores its parent in
+`woo_product_id` and exact child in `woo_variation_id`. The existing
+`woo_item_mappings` and `woo_writeback_queue` tables are reused.

@@ -84,6 +84,7 @@ class InventoryTransferLineInput(BaseModel):
 
 
 class InventoryTransferRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
     created_by: str | None = "system"
     notes: str | None = None
     lines: list[InventoryTransferLineInput] = Field(default_factory=list)
@@ -138,6 +139,7 @@ class StockAdjustmentLineInput(BaseModel):
 
 
 class StockAdjustmentRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
     adjustment_type: str
     reason: str
     notes: str | None = None

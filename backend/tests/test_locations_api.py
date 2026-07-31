@@ -2,8 +2,11 @@ import csv
 from io import StringIO
 from pathlib import Path
 
+from app.db.session import get_db
+from app.main import app
+from app.models.inventory import InventoryItemLocation, InventoryLocation
 from app.services.locations import CANONICAL_LOCATION_COLUMNS
-from tests.test_items_api import client  # noqa: F401
+from tests.test_items_api import client, seed_item  # noqa: F401
 
 
 def location_payload(code="LOC-001", **overrides):
@@ -25,9 +28,24 @@ def location_payload(code="LOC-001", **overrides):
 
 
 def seed_location(client, code="LOC-001", **overrides):
-    response = client.post("/api/locations", json=location_payload(code=code, **overrides))
-    assert response.status_code == 201, response.text
+    payload = location_payload(code=code, **overrides)
+    response = client.post("/api/locations", json=payload)
+    if response.status_code == 409:
+        rows = client.get("/api/locations", params={"search": code}).json()["locations"]
+        existing = next(row for row in rows if row["code"] == code and row["warehouse"] == payload["warehouse"])
+        response = client.patch(f"/api/locations/{existing['id']}", json=payload)
+    assert response.status_code in {200, 201}, response.text
     return response.json()
+
+
+def force_location_active_for_legacy_test(location_id, active):
+    db_override = app.dependency_overrides[get_db]()
+    db = next(db_override)
+    try:
+        db.get(InventoryLocation, location_id).active = active
+        db.commit()
+    finally:
+        db_override.close()
 
 
 def csv_text(rows, header=None):
@@ -139,6 +157,7 @@ def test_commit_creates_new_locations(client):
     assert response.status_code == 200
     body = response.json()
     assert body["created_count"] == 1
+    assert client.get(f"/api/import-jobs/{body['import_job_id']}").json()["created_by"] == "pytest@example.com"
     list_response = client.get("/api/locations", params={"code": "IMP-001"})
     assert list_response.json()["locations"][0]["code"] == "IMP-001"
 
@@ -177,6 +196,30 @@ def test_inactive_location_is_handled(client):
     assert delete_response.json()["isActive"] is False
     active_response = client.get("/api/locations", params={"active": True})
     assert "INACTIVE-API" not in [location["code"] for location in active_response.json()["locations"]]
+
+
+def test_stocked_location_cannot_be_deactivated(client):
+    item = seed_item(client, sku="LOCATION-GUARD", **{"Inventory Location": "GUARDED", "Default Location": "GUARDED", "In Stock": 4})
+    location = next(row for row in client.get("/api/locations").json()["locations"] if row["name"] == "GUARDED")
+
+    response = client.delete(f"/api/locations/{location['id']}")
+
+    assert response.status_code == 409
+    assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 4
+
+
+def test_inactive_legacy_item_location_with_stock_still_blocks_deactivation(client):
+    item = seed_item(client, sku="LOCATION-LEGACY-GUARD", **{"Inventory Location": "LEGACY-GUARDED", "Default Location": "LEGACY-GUARDED", "In Stock": 2, "Allocated": 0})
+    location = next(row for row in client.get("/api/locations").json()["locations"] if row["name"] == "LEGACY-GUARDED")
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        row = db.query(InventoryItemLocation).filter(InventoryItemLocation.inventory_item_id == item["id"]).one()
+        row.active = False
+        db.commit()
+    finally:
+        db.close()
+
+    assert client.delete(f"/api/locations/{location['id']}").status_code == 409
 
 
 def test_location_sample_csv_can_be_previewed_and_committed(client):

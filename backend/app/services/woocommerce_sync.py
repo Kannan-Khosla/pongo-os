@@ -9,7 +9,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.models.inventory import InventoryItem
-from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun
+from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun, WooItemMapping
 from app.schemas.woocommerce import WooCommerceProductPreviewResponse, WooCommerceProductPreviewRow, WooCommerceSyncRequest
 from app.services.items import apply_calculated_fields
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
@@ -23,6 +23,10 @@ class NormalizedWooRecord:
     sku: str
     barcode: str
     name: str
+    parent_name: str
+    variation_attributes: list[dict]
+    parent_container: bool
+    purchasable: bool
     description: str
     category: str
     brand: str
@@ -91,14 +95,14 @@ def commit_product_sync(db: Session, client: WooCommerceClient, payload: WooComm
             error_count=1,
             errors=[error.message],
         )
-    normalized_records = [normalize_remote_record(remote["product"], remote.get("variation")) for remote in remote_records]
+    normalized_records = [normalize_remote_record(remote["product"], remote.get("variation"), parent_container=bool(remote.get("parent_container"))) for remote in remote_records]
     rows = build_preview_rows(db, remote_records, payload.blocked_skus)
     row_records = list(zip(rows, normalized_records))
     preview = build_preview_response(True, rows, payload.page, has_more)
     sync_run = WooCommerceSyncRun(sync_type="products", status="completed", started_at=started_at, created_by=payload.created_by or "system", total_remote_records=preview.total_remote_records)
     db.add(sync_run)
     db.flush()
-    created_count = updated_count = matched_count = skipped_count = conflict_count = error_count = 0
+    created_count = updated_count = matched_count = skipped_count = conflict_count = error_count = unchanged_count = 0
     now = datetime.now(timezone.utc)
 
     for row, record in row_records:
@@ -108,10 +112,13 @@ def commit_product_sync(db: Session, client: WooCommerceClient, payload: WooComm
             error_count += 1 if row.action == "error" else 0
             store_sync_error(db, sync_run.id, row, row.errors or row.warnings)
             continue
+        savepoint = db.begin_nested()
         try:
             if row.action == "create":
                 item = create_item_from_woo(record, now)
                 db.add(item)
+                db.flush()
+                ensure_mapping_record(db, item, record)
                 created_count += 1
             elif row.local_item_id is not None:
                 item = db.get(InventoryItem, row.local_item_id)
@@ -119,11 +126,15 @@ def commit_product_sync(db: Session, client: WooCommerceClient, payload: WooComm
                     error_count += 1
                     store_sync_error(db, sync_run.id, row, ["Matched local item no longer exists."])
                     continue
-                attach_woo_mapping(item, record, now)
+                update_item_from_woo(item, record, now)
+                ensure_mapping_record(db, item, record)
                 db.add(item)
-                updated_count += 1
+                updated_count += 1 if row.action == "update" else 0
+                unchanged_count += 1 if row.action == "unchanged" else 0
                 matched_count += 1
+            savepoint.commit()
         except Exception as exc:
+            savepoint.rollback()
             error_count += 1
             store_sync_error(db, sync_run.id, row, [str(exc)])
 
@@ -155,6 +166,18 @@ def commit_product_sync(db: Session, client: WooCommerceClient, payload: WooComm
         has_more=has_more,
         unmatched_local_count=unmatched_count,
         unmatched_local_skus=unmatched_skus,
+        simple_products_examined=preview.simple_products_examined,
+        variable_parents_examined=preview.variable_parents_examined,
+        purchasable_variations_examined=preview.purchasable_variations_examined,
+        new_simple_count=sum(1 for row in rows if row.action == "create" and row.remote_type == "simple"),
+        new_variation_count=sum(1 for row in rows if row.action == "create" and row.remote_type == "variation"),
+        unchanged_count=unchanged_count,
+        skipped_parent_count=preview.skipped_parent_count,
+        missing_sku_count=preview.missing_sku_count,
+        duplicate_sku_conflict_count=preview.duplicate_sku_conflict_count,
+        duplicate_mapping_conflict_count=preview.duplicate_mapping_conflict_count,
+        unmapped_count=preview.unmapped_count,
+        invalid_count=preview.invalid_count,
     )
     return sync_run, response
 
@@ -166,13 +189,13 @@ def fetch_product_records(client: WooCommerceClient, payload: WooCommerceSyncReq
 
 
 def build_preview_rows(db: Session, remote_records: list[dict[str, Any]], blocked_skus: list[str] | None = None) -> list[WooCommerceProductPreviewRow]:
-    records = [normalize_remote_record(remote["product"], remote.get("variation")) for remote in remote_records]
+    records = [normalize_remote_record(remote["product"], remote.get("variation"), parent_container=bool(remote.get("parent_container"))) for remote in remote_records]
     sku_counts = Counter(normalize_key(record.sku) for record in records if record.sku)
     duplicate_skus = {sku for sku, count in sku_counts.items() if count > 1} | {normalize_key(sku) for sku in (blocked_skus or []) if sku}
     rows = []
     for record in records:
         row = build_preview_row(db, record)
-        if normalize_key(record.sku) in duplicate_skus:
+        if not record.parent_container and normalize_key(record.sku) in duplicate_skus:
             row.action = "conflict"
             row.status = "conflict"
             row.errors.append("Duplicate WooCommerce SKU; this product was not changed.")
@@ -180,7 +203,7 @@ def build_preview_rows(db: Session, remote_records: list[dict[str, Any]], blocke
     return rows
 
 
-def normalize_remote_record(product: dict[str, Any], variation: dict[str, Any] | None = None) -> NormalizedWooRecord:
+def normalize_remote_record(product: dict[str, Any], variation: dict[str, Any] | None = None, *, parent_container: bool = False) -> NormalizedWooRecord:
     source = variation or product
     remote_type = "variation" if variation else product.get("type", "simple")
     parent_name = product.get("name") or ""
@@ -198,6 +221,10 @@ def normalize_remote_record(product: dict[str, Any], variation: dict[str, Any] |
         sku=(source.get("sku") or "").strip(),
         barcode=extract_barcode(source) or extract_barcode(product) or "",
         name=name,
+        parent_name=parent_name,
+        variation_attributes=list(variation.get("attributes") or []) if variation else [],
+        parent_container=parent_container,
+        purchasable=bool(source.get("purchasable", True)) and bool(source.get("status", product.get("status")) == "publish"),
         description=description or name,
         category=first_category(product),
         brand=extract_brand(product),
@@ -221,22 +248,37 @@ def normalize_remote_record(product: dict[str, Any], variation: dict[str, Any] |
 def build_preview_row(db: Session, record: NormalizedWooRecord) -> WooCommerceProductPreviewRow:
     warnings: list[str] = []
     errors: list[str] = []
-    local_item = find_matching_item(db, record, errors)
+    local_item = None if record.parent_container else find_matching_item(db, record, errors)
     action = "create"
     status = "valid"
-    if not record.sku:
+    if record.parent_container:
         action = "skip"
         status = "skipped"
-        warnings.append("SKU is required for WooCommerce product sync.")
+        warnings.append("Variable parent container is informational and will not become a stock item.")
+        if record.sku and record.manage_stock and record.stock_quantity is not None:
+            action = "conflict"
+            status = "manual_review"
+            errors.append("Variable parent appears independently stock-managed; manual review is required.")
+    elif not record.purchasable and record.remote_type == "variation":
+        action = "skip"
+        status = "skipped"
+        warnings.append("Variation is not currently purchasable.")
+    elif not record.sku and local_item is None:
+        action = "skip"
+        status = "skipped"
+        warnings.append("Missing SKU: no existing Woo identity was found, so no item was created.")
     elif errors:
         action = "conflict"
         status = "conflict"
     elif local_item is not None:
-        action = "update"
+        action = "update" if woo_owned_values_changed(local_item, record) else "unchanged"
     if record.status and record.status != "publish":
         warnings.append(f"WooCommerce status is {record.status}; local item will be inactive when created.")
     return WooCommerceProductPreviewRow(
         remote_type=record.remote_type,
+        product_name=record.name,
+        parent_product_name=record.parent_name if record.woo_variation_id is not None else None,
+        variation_attributes=record.variation_attributes,
         woo_product_id=record.woo_product_id,
         woo_variation_id=record.woo_variation_id,
         sku=record.sku,
@@ -249,6 +291,8 @@ def build_preview_row(db: Session, record: NormalizedWooRecord) -> WooCommercePr
         stock_status=record.stock_status,
         stock_quantity_snapshot=float(record.stock_quantity) if record.stock_quantity is not None else None,
         local_item_id=local_item.id if local_item else None,
+        current_mapping=mapping_summary(db, local_item) if local_item else None,
+        proposed_item={"sku": record.sku, "description": record.description, "mapping_type": record.remote_type},
         action=action,
         status=status,
         warnings=warnings,
@@ -257,25 +301,28 @@ def build_preview_row(db: Session, record: NormalizedWooRecord) -> WooCommercePr
 
 
 def find_matching_item(db: Session, record: NormalizedWooRecord, errors: list[str]) -> InventoryItem | None:
-    woo_matches = list(db.scalars(
-        select(InventoryItem).where(
-            InventoryItem.woo_product_id == record.woo_product_id,
-            InventoryItem.woo_variation_id.is_(None) if record.woo_variation_id is None else InventoryItem.woo_variation_id == record.woo_variation_id,
-        )
-    ).all())
+    if record.woo_variation_id is not None:
+        woo_matches = list(db.scalars(select(InventoryItem).where(InventoryItem.woo_variation_id == record.woo_variation_id)).all())
+        if len(woo_matches) == 1 and woo_matches[0].woo_product_id != record.woo_product_id:
+            errors.append("Woo variation ID is already attached to a different parent product.")
+            return None
+    else:
+        woo_matches = list(db.scalars(select(InventoryItem).where(InventoryItem.woo_product_id == record.woo_product_id, InventoryItem.woo_variation_id.is_(None))).all())
     if len(woo_matches) > 1:
         errors.append("WooCommerce product and variation IDs are mapped to multiple local items.")
         return None
     woo_match = woo_matches[0] if woo_matches else None
-    sku_match = unique_text_match(db, InventoryItem.sku, record.sku, "SKU", errors)
-    if errors:
+    mapping_matches = active_mapping_matches(db, record)
+    if len(mapping_matches) > 1:
+        errors.append("Duplicate active Woo mapping records exist for this target.")
         return None
-    if woo_match and sku_match and woo_match.id != sku_match.id:
-        errors.append("WooCommerce IDs and SKU match different local items.")
+    mapped_item = db.get(InventoryItem, mapping_matches[0].item_id) if mapping_matches else None
+    if woo_match and mapped_item and woo_match.id != mapped_item.id:
+        errors.append("Woo identity fields and explicit mapping record point to different local items.")
         return None
-    match = woo_match or sku_match
+    match = woo_match or mapped_item
     if match is None:
-        match = unique_text_match(db, InventoryItem.barcode, record.barcode, "Barcode", errors)
+        match = unique_text_match(db, InventoryItem.sku, record.sku, "SKU", errors)
     if errors or match is None:
         return None
     remote_ids = (record.woo_product_id, record.woo_variation_id)
@@ -312,6 +359,18 @@ def build_preview_response(configured: bool, rows: list[WooCommerceProductPrevie
         page=page,
         next_page=(page + 1) if page is not None and has_more else None,
         has_more=has_more,
+        simple_products_examined=sum(1 for row in rows if row.remote_type == "simple"),
+        variable_parents_examined=sum(1 for row in rows if row.remote_type == "variable"),
+        purchasable_variations_examined=sum(1 for row in rows if row.remote_type == "variation" and row.action != "skip"),
+        new_simple_count=sum(1 for row in rows if row.action == "create" and row.remote_type == "simple"),
+        new_variation_count=sum(1 for row in rows if row.action == "create" and row.remote_type == "variation"),
+        unchanged_count=sum(1 for row in rows if row.action == "unchanged"),
+        skipped_parent_count=sum(1 for row in rows if row.remote_type == "variable" and row.action == "skip"),
+        missing_sku_count=sum(1 for row in rows if not row.sku and row.remote_type != "variable"),
+        duplicate_sku_conflict_count=sum(1 for row in rows if any("Duplicate WooCommerce SKU" in error or "Duplicate local SKU" in error for error in row.errors)),
+        duplicate_mapping_conflict_count=sum(1 for row in rows if any("mapping" in error.casefold() or "multiple local" in error.casefold() for error in row.errors)),
+        unmapped_count=sum(1 for row in rows if row.action == "skip" and row.remote_type != "variable"),
+        invalid_count=sum(1 for row in rows if row.action in {"conflict", "error"}),
     )
 
 
@@ -335,7 +394,6 @@ def update_item_from_woo(item: InventoryItem, record: NormalizedWooRecord, synce
     item.sku = record.sku or item.sku
     item.description = record.description or item.description
     item.category = record.category or item.category
-    item.brand = record.brand or item.brand
     item.recommended_retail_price = record.regular_price
     item.sales_price = record.price
     item.weight = record.weight
@@ -343,8 +401,6 @@ def update_item_from_woo(item: InventoryItem, record: NormalizedWooRecord, synce
     item.storage_width = record.width
     item.storage_height = record.height
     item.image_url = record.image_url or item.image_url
-    if record.barcode and not item.barcode:
-        item.barcode = record.barcode
     attach_woo_mapping(item, record, synced_at)
     apply_calculated_fields(item)
 
@@ -353,6 +409,9 @@ def attach_woo_mapping(item: InventoryItem, record: NormalizedWooRecord, synced_
     item.woo_product_id = record.woo_product_id
     item.woo_variation_id = record.woo_variation_id
     item.woo_product_type = record.remote_type
+    item.woo_name = record.name
+    item.woo_parent_name = record.parent_name if record.woo_variation_id is not None else None
+    item.woo_variation_attributes = record.variation_attributes or None
     item.woo_permalink = record.permalink
     item.woo_status = record.status
     item.woo_manage_stock = record.manage_stock
@@ -361,6 +420,72 @@ def attach_woo_mapping(item: InventoryItem, record: NormalizedWooRecord, synced_
     item.woo_last_synced_at = synced_at
     item.woo_sync_status = "synced"
     item.woo_sync_error = None
+
+
+def active_mapping_matches(db: Session, record: NormalizedWooRecord) -> list[WooItemMapping]:
+    return list(db.scalars(select(WooItemMapping).where(
+        WooItemMapping.woo_product_id == record.woo_product_id,
+        WooItemMapping.woo_variation_id.is_(None) if record.woo_variation_id is None else WooItemMapping.woo_variation_id == record.woo_variation_id,
+        WooItemMapping.active.is_(True),
+    )).all())
+
+
+def ensure_mapping_record(db: Session, item: InventoryItem, record: NormalizedWooRecord) -> None:
+    remote_mappings = active_mapping_matches(db, record)
+    if any(mapping.item_id != item.id for mapping in remote_mappings):
+        raise ValueError("Woo target is already assigned to another active local item.")
+    item_mappings = list(db.scalars(select(WooItemMapping).where(WooItemMapping.item_id == item.id, WooItemMapping.active.is_(True))).all())
+    if any((mapping.woo_product_id, mapping.woo_variation_id) != (record.woo_product_id, record.woo_variation_id) for mapping in item_mappings):
+        raise ValueError("Local item already has a different active Woo mapping.")
+    mapping = remote_mappings[0] if remote_mappings else (item_mappings[0] if item_mappings else None)
+    if mapping is None:
+        mapping = WooItemMapping(item_id=item.id, woo_product_id=record.woo_product_id, woo_variation_id=record.woo_variation_id, mapping_source="sync", confidence=100, active=True)
+        db.add(mapping)
+    mapping.woo_sku = record.sku or None
+    mapping.woo_name = record.name or None
+
+
+def mapping_summary(db: Session, item: InventoryItem) -> dict:
+    mappings = list(db.scalars(select(WooItemMapping).where(WooItemMapping.item_id == item.id, WooItemMapping.active.is_(True))).all())
+    return {
+        "item_id": item.id,
+        "woo_product_id": item.woo_product_id,
+        "woo_variation_id": item.woo_variation_id,
+        "explicit_mapping_ids": [mapping.id for mapping in mappings],
+    }
+
+
+def woo_owned_values_changed(item: InventoryItem, record: NormalizedWooRecord) -> bool:
+    expected = {
+        "sku": record.sku or item.sku,
+        "description": record.description or item.description,
+        "category": record.category or item.category,
+        "recommended_retail_price": record.regular_price,
+        "sales_price": record.price,
+        "weight": record.weight,
+        "storage_length": record.length,
+        "storage_width": record.width,
+        "storage_height": record.height,
+        "image_url": record.image_url or item.image_url,
+        "woo_product_id": record.woo_product_id,
+        "woo_variation_id": record.woo_variation_id,
+        "woo_product_type": record.remote_type,
+        "woo_name": record.name,
+        "woo_parent_name": record.parent_name if record.woo_variation_id is not None else None,
+        "woo_variation_attributes": record.variation_attributes or None,
+        "woo_permalink": record.permalink,
+        "woo_status": record.status,
+        "woo_manage_stock": record.manage_stock,
+        "woo_stock_status": record.stock_status,
+        "woo_stock_quantity_snapshot": record.stock_quantity,
+    }
+    return any(comparable_value(getattr(item, field, None)) != comparable_value(value) for field, value in expected.items())
+
+
+def comparable_value(value):
+    if isinstance(value, Decimal):
+        return value.normalize()
+    return value
 
 
 def unmatched_local_items(db: Session) -> tuple[int, list[str]]:

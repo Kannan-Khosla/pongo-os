@@ -1,10 +1,19 @@
 from decimal import Decimal
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.inventory import InventoryItem
 from app.services.calculations import calculate_inventory_value, calculate_sellable, calculate_storage_volume, calculate_under_par
+
+INVENTORY_DATA_QUALITY_FILTERS = {
+    "missing_barcode",
+    "missing_brand",
+    "missing_cost",
+    "unmapped",
+    "receiving",
+    "missing_location",
+}
 
 INVENTORY_BY_LOCATION_COLUMNS = [
     "Warehouse",
@@ -53,7 +62,7 @@ def build_inventory_items_query(
     under_par: bool | None = None,
     non_inventory: bool | None = None,
 ):
-    statement = select(InventoryItem)
+    statement = select(InventoryItem).options(selectinload(InventoryItem.locations))
     if warehouse:
         statement = statement.where(InventoryItem.warehouse == warehouse)
     if inventory_location:
@@ -70,9 +79,60 @@ def build_inventory_items_query(
     return statement, under_par
 
 
+def parse_inventory_data_quality_filters(value: str | None) -> set[str]:
+    if not value or not value.strip():
+        return set()
+    parsed = {part.strip().lower() for part in value.split(",") if part.strip()}
+    invalid = parsed - INVENTORY_DATA_QUALITY_FILTERS
+    if invalid:
+        raise ValueError(f"Unsupported data_quality filter: {', '.join(sorted(invalid))}")
+    return parsed
+
+
+def item_matches_inventory_search(item: InventoryItem, search: str) -> bool:
+    query = search.casefold()
+    values = (
+        item.sku,
+        item.barcode,
+        item.woo_name,
+        item.description,
+        item.category,
+        item.brand,
+        item.manufacturer,
+        item.warehouse,
+        item.inventory_location,
+    )
+    return any(query in str(value).casefold() for value in values if value is not None)
+
+
+def item_matches_data_quality(item: InventoryItem, filters: set[str]) -> bool:
+    locations = list(item.locations or [])
+    usable_locations = [
+        location
+        for location in locations
+        if location.active and str(location.warehouse or "").strip() and str(location.inventory_location or "").strip()
+    ]
+    checks = {
+        "missing_barcode": not str(item.barcode or "").strip(),
+        "missing_brand": not str(item.brand or "").strip(),
+        "missing_cost": item.unit_cost is None,
+        "unmapped": item.woo_product_id is None,
+        "receiving": str(item.inventory_location or "").strip().casefold() == "receiving"
+        or any(str(location.inventory_location or "").strip().casefold() == "receiving" for location in usable_locations),
+        "missing_location": not usable_locations,
+    }
+    return any(checks[name] for name in filters)
+
+
 def get_inventory_items(db: Session, **filters) -> list[InventoryItem]:
+    search = str(filters.pop("search", "") or "").strip()
+    quality_filters = parse_inventory_data_quality_filters(filters.pop("data_quality", None))
     statement, under_par = build_inventory_items_query(**filters)
     items = list(db.scalars(statement).all())
+    if search:
+        items = [item for item in items if item_matches_inventory_search(item, search)]
+    if quality_filters:
+        items = [item for item in items if item_matches_data_quality(item, quality_filters)]
     if under_par is not None:
         items = [item for item in items if calculate_under_par(item.in_stock, item.par_level) is under_par]
     return items
@@ -108,8 +168,8 @@ def item_to_inventory_by_location_row(item: InventoryItem) -> dict[str, object]:
         "Under Par": calculated["under_par"],
         "On Order": item.on_order or Decimal("0"),
         "Par Level": item.par_level or Decimal("0"),
-        "Unit Cost": item.unit_cost or Decimal("0"),
-        "Inventory Value": calculated["inventory_value"],
+        "Unit Cost": item.unit_cost if item.unit_cost is not None else "",
+        "Inventory Value": calculated["inventory_value"] if item.unit_cost is not None else "",
         "Weight": item.weight or Decimal("0"),
         "Storage Length": item.storage_length or Decimal("0"),
         "Storage Width": item.storage_width or Decimal("0"),

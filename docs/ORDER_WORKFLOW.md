@@ -2,8 +2,9 @@
 
 Pongo Inventory OS now follows a Zenventory-style local order workflow:
 
-1. A signed WooCommerce `order.created` webhook imports a new local order;
-   manual sync and the 10-second quick sync remain reconciliation fallbacks.
+1. Signed WooCommerce `order.created` and `order.updated` webhooks import and
+   reconcile local orders; server-side periodic reconciliation remains the
+   recovery path for missed deliveries.
 2. Only active orders whose latest stored WooCommerce status is `processing`
    enter the operational allocation queues.
 3. Processing orders are auto-allocated oldest first by WooCommerce
@@ -27,8 +28,8 @@ written by this workflow.
 Phase 1 accepts `POST /api/integrations/woocommerce/webhooks/orders` only when
 the receiver is enabled, its separate secret is at least 32 bytes, the exact raw
 body has a valid base64 HMAC-SHA256 signature, and the source host matches the
-configured WooCommerce host allowlist. Only `order.created` is imported. Other
-authenticated topics are recorded as ignored for audit purposes.
+configured WooCommerce host allowlist. `order.created` and `order.updated` are
+imported. Other authenticated topics are recorded as ignored for audit purposes.
 
 Each authenticated delivery is recorded in
 `woocommerce_webhook_deliveries`. The unique webhook ID, delivery ID, and raw
@@ -36,18 +37,29 @@ payload SHA-256 tuple makes retries idempotent. The ledger stores safe metadata
 and the payload hash, not a second copy of the customer payload.
 
 `GET /api/integrations/woocommerce/webhooks/events` is a cursor feed of
-immutable local order-event outbox rows created by successful new-order webhook
-transactions. The frontend
+immutable new-order notification rows created by successful `order.created`
+transactions. Successful updates also retain an immutable order-event audit row
+but are excluded from this staff new-order cursor. The frontend
 starts with `initialize=true`, then polls every 2 seconds while visible and
 advances through `next_after_id`, draining all pages while `has_more` is true.
-It uses later events for a dismissible toast and session-only Bell history. The
-10-second quick sync's `created_count` provides a sync-run-deduplicated fallback
-alert. This is not customer messaging and does not send email, SMS, browser
+It uses later new-order events for a dismissible toast and session-only Bell
+history. Update events reconcile the local order immediately but are not
+announced as new orders; the browser's local GET refresh then displays the
+change. This is not customer messaging and does not send email, SMS, browser
 push, or a WooCommerce request.
 
-A signed `order.created` payload older than or equal to the matching local order's
+The backend also runs a periodic, paginated reconciliation across every active
+order and recently changed terminal orders. Terminal changes use a
+modified-time overlap so a boundary update is safely seen again, and an
+advisory lease prevents concurrent workers from running the same pass. The
+frontend may refresh local views, but it does not trigger the ingestion job.
+Scheduler health and the last durable success/failure are exposed through the
+WooCommerce status endpoint and shown globally when operator attention is
+required.
+
+A signed `order.created` or `order.updated` payload older than or equal to the matching local order's
 `date_modified` snapshot is audited as ignored. It cannot overwrite newer order
-data or emit a new-order event.
+data.
 
 ## Views
 
@@ -135,7 +147,21 @@ and cannot reserve new stock.
 When a previously allocated order is synchronized to a non-processing status,
 Pongo OS releases its remaining unpicked allocation with deallocation audit
 events, preserves any quantity already picked, and reruns FIFO allocation so
-the released stock can move to the next eligible processing order.
+the released stock can move to the next eligible processing order. Release
+follows the historical allocation location even when that location was later
+made inactive; inactive locations remain excluded from new allocation and
+picking.
+
+Order updates also reconcile line quantities. Decreases release only unpicked
+excess allocation. Lines removed in WooCommerce are retained locally as retired
+history with ordered quantity zero. An unpicked product change releases the old
+reservation before FIFO allocates the replacement item. If WooCommerce changes
+a product or drops a quantity below what was already picked, fulfilled, or
+stock-reduced, Pongo preserves the original item history and blocks further
+picking with a reconciliation exception. Every decision is
+written to the order workflow notes and affected releases create inventory
+audit events. Each order is reconciled inside a database savepoint so a failed
+line update cannot partially change that order.
 
 ## Picking
 
@@ -185,7 +211,16 @@ Manual pick commit and the retained scanner API:
 - store stock reduction metadata on pick lines when possible.
 - keep WooCommerce stock unchanged until the picked order is completed.
 
-Scanner commit supports an idempotency key. Replaying the same key returns the existing posted result instead of reducing stock again.
+Manual, bulk, and scanner pick commits, plus bulk unpick, support a
+request-level idempotency key. Replaying the same key and payload returns the
+stored result instead of changing stock again; changing the payload returns
+HTTP `409`.
+
+Stock mutations share one PostgreSQL transaction gate and then lock affected
+item aggregates and item-location rows in deterministic ID order. Pick and
+unpick also lock the associated order rows. This prevents simultaneous
+receiving, allocation reconciliation, picking, unpick, transfer, or adjustment
+requests from calculating against the same stale quantities.
 
 ## Completion
 

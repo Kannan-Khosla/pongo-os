@@ -1,0 +1,107 @@
+name: Release gate
+
+on:
+  pull_request:
+  push:
+    branches: [main, "codex/**"]
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pongo_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pongo_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/pongo_test
+      PONGO_TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/pongo_test
+      APP_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt pip-audit
+      - name: Python vulnerability scan
+        run: python -m pip_audit -r backend/requirements.txt
+      - name: Validate migrations and recovery path
+        working-directory: backend
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+      - name: Validate PostgreSQL backup and restore
+        working-directory: backend
+        env:
+          RESTORE_VERIFY_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/pongo_test_restore_verify
+        run: |
+          python scripts/postgres_backup_restore.py backup /tmp/pongo-test.dump --overwrite
+          python scripts/postgres_backup_restore.py verify /tmp/pongo-test.dump
+      - name: Backend tests including PostgreSQL concurrency
+        run: python -m pytest backend/tests -q
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Frontend vulnerability scan
+        working-directory: frontend
+        run: npm audit
+      - name: Frontend unit tests and production build
+        working-directory: frontend
+        run: |
+          npm test -- --run
+          npm run build
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run browser contract chain
+        env:
+          APP_ENV: e2e
+          AUTH_REQUIRED: "true"
+          BACKEND_CORS_ORIGINS: http://127.0.0.1:5173
+          WOOCOMMERCE_BASE_URL: http://127.0.0.1:9000
+          WOOCOMMERCE_CONSUMER_KEY: ck_e2e
+          WOOCOMMERCE_CONSUMER_SECRET: cs_e2e
+          WOOCOMMERCE_ENVIRONMENT: staging
+          WOOCOMMERCE_ALLOWED_HOST: 127.0.0.1
+          WOOCOMMERCE_READ_ONLY: "false"
+          WOOCOMMERCE_WRITEBACK_ENABLED: "true"
+          WOOCOMMERCE_WRITEBACK_DRY_RUN: "false"
+          WOOCOMMERCE_STAGING_LIVE_TEST_MODE: "true"
+          WOOCOMMERCE_ALLOW_STOCK_WRITE: "true"
+          WOOCOMMERCE_ALLOW_ORDER_STATUS_WRITE: "true"
+          WOOCOMMERCE_WEBHOOK_ENABLED: "true"
+          WOOCOMMERCE_WEBHOOK_SECRET: pongo-e2e-webhook-secret-at-least-32-characters
+          WOOCOMMERCE_ORDER_RECONCILIATION_ENABLED: "false"
+          WOOCOMMERCE_STOCK_SYNC_JOBS_ENABLED: "false"
+        run: |
+          (cd backend && python -m uvicorn tests.woo_contract_server:app --host 127.0.0.1 --port 9000 > /tmp/pongo-woo-e2e.log 2>&1) &
+          (cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/pongo-api-e2e.log 2>&1) &
+          (cd frontend && npm run dev -- --host 127.0.0.1 > /tmp/pongo-web-e2e.log 2>&1) &
+          for url in http://127.0.0.1:5173/ http://127.0.0.1:8000/health http://127.0.0.1:9000/writes; do for attempt in {1..60}; do curl --fail --silent "$url" >/dev/null 2>&1 && break; sleep 1; done; done
+          curl --fail --silent http://127.0.0.1:8000/health
+          curl --fail --silent http://127.0.0.1:9000/writes
+          cd frontend && npm run test:e2e
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          if-no-files-found: ignore

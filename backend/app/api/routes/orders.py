@@ -7,12 +7,14 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.orders import OrderItem
-from app.schemas.orders import BulkOrderActionRequest, BulkOrderActionResponse, CompletedOrderListResponse, OpenOrderDetail, OpenOrderListResponse, OrderCompletionRequest, OrderCompletionResponse, OrderWorkflowPreviewResponse
+from app.schemas.orders import BulkOrderActionRequest, BulkOrderActionResponse, BulkUnpickRequest, CompletedOrderListResponse, OpenOrderDetail, OpenOrderListResponse, OrderCompletionRequest, OrderCompletionResponse, OrderWorkflowPreviewResponse
 from app.services.allocations import allocation_to_read, list_allocations
+from app.services.auth import authenticated_actor
 from app.services.completed_orders import CompletedOrderFilters, export_completed_orders_csv, list_completed_orders
 from app.services.fulfillments import fulfillment_to_read, list_fulfillments
 from app.services.order_workflow import auto_allocate_order_if_possible, complete_order_without_stock_reduction, complete_picked_order, determine_order_workflow_flags, evaluate_order_allocation
 from app.services.picks import list_picks, pick_to_read, unpick_orders
+from app.services.stock_mutation_guard import IdempotencyConflict
 from app.services.woocommerce_orders import export_open_orders_csv, get_open_order_detail, list_open_orders
 from app.services.woocommerce_client import WooCommerceClient
 from app.services.woocommerce_writeback import sync_completed_order_status, sync_inventory_stock
@@ -118,7 +120,7 @@ def list_order_history(db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/bulk/complete", response_model=BulkOrderActionResponse)
-def bulk_complete_orders(payload: BulkOrderActionRequest, db: Session = Depends(get_db)) -> BulkOrderActionResponse:
+def bulk_complete_orders(payload: BulkOrderActionRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> BulkOrderActionResponse:
     selected_ids = list(dict.fromkeys(payload.order_ids))
     results = []
     errors = []
@@ -131,11 +133,11 @@ def bulk_complete_orders(payload: BulkOrderActionRequest, db: Session = Depends(
                 raise ValueError("Order not found.")
             was_picked = detail.pick_status == "picked"
             if was_picked:
-                result = complete_picked_order(db, order_id)
+                result = complete_picked_order(db, order_id, created_by=actor)
             else:
-                result = complete_order_without_stock_reduction(db, order_id, payload.reason or "Bulk completed from Open Orders.")
-            stock_sync = sync_completed_picked_stock(db, settings, woo_client, order_id, payload.created_by or "bulk-order-completion") if was_picked else None
-            writeback = sync_completed_order_status(db, settings, woo_client, order_id, payload.created_by)
+                result = complete_order_without_stock_reduction(db, order_id, payload.reason or "Bulk completed from Open Orders.", created_by=actor)
+            stock_sync = sync_completed_picked_stock(db, settings, woo_client, order_id, actor) if was_picked else None
+            writeback = sync_completed_order_status(db, settings, woo_client, order_id, actor)
             results.append({
                 "order_id": order_id,
                 "status": result["status"],
@@ -161,9 +163,20 @@ def bulk_complete_orders(payload: BulkOrderActionRequest, db: Session = Depends(
 
 
 @router.post("/bulk/unpick", response_model=BulkOrderActionResponse)
-def bulk_unpick_orders(payload: BulkOrderActionRequest, db: Session = Depends(get_db)) -> BulkOrderActionResponse:
+def bulk_unpick_orders(payload: BulkUnpickRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> BulkOrderActionResponse:
     try:
-        return BulkOrderActionResponse(**unpick_orders(db, payload.order_ids, created_by=payload.created_by, reason=payload.reason))
+        return BulkOrderActionResponse(
+            **unpick_orders(
+                db,
+                payload.order_ids,
+                created_by=actor,
+                reason=payload.reason,
+                idempotency_key=payload.idempotency_key,
+            )
+        )
+    except IdempotencyConflict as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -224,7 +237,7 @@ def preview_order_completion(order_id: int, payload: OrderCompletionRequest, db:
 
 
 @router.post("/{order_id}/complete/commit", response_model=OrderCompletionResponse)
-def commit_order_completion(order_id: int, payload: OrderCompletionRequest, db: Session = Depends(get_db)) -> OrderCompletionResponse:
+def commit_order_completion(order_id: int, payload: OrderCompletionRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> OrderCompletionResponse:
     try:
         completion_mode = payload.completion_mode
         if completion_mode == "complete":
@@ -233,21 +246,21 @@ def commit_order_completion(order_id: int, payload: OrderCompletionRequest, db: 
                 raise HTTPException(status_code=404, detail="Order not found")
             completion_mode = "complete_picked" if detail.pick_status == "picked" else "complete_without_picking"
         if completion_mode == "complete_picked":
-            result = complete_picked_order(db, order_id)
+            result = complete_picked_order(db, order_id, created_by=actor)
         elif completion_mode == "complete_without_picking":
-            result = complete_order_without_stock_reduction(db, order_id, payload.reason or "Completed from Open Orders.")
+            result = complete_order_without_stock_reduction(db, order_id, payload.reason or "Completed from Open Orders.", created_by=actor)
         else:
             raise ValueError("Invalid completion mode.")
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     settings = get_settings()
     woo_client = WooCommerceClient(settings)
-    stock_sync = sync_completed_picked_stock(db, settings, woo_client, order_id, "order-completion") if completion_mode == "complete_picked" else None
+    stock_sync = sync_completed_picked_stock(db, settings, woo_client, order_id, actor) if completion_mode == "complete_picked" else None
     writeback = None
     writeback_error = None
     if payload.queue_woo_status_update:
         try:
-            writeback = sync_completed_order_status(db, settings, woo_client, order_id, "order-completion")
+            writeback = sync_completed_order_status(db, settings, woo_client, order_id, actor)
         except ValueError as error:
             writeback_error = str(error)
     return OrderCompletionResponse(

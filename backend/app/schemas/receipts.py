@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DirectReceiptLineInput(BaseModel):
@@ -17,11 +17,43 @@ class DirectReceiptLineInput(BaseModel):
 
 
 class DirectReceiptRequest(BaseModel):
+    idempotency_key: str | None = Field(default=None, max_length=120)
     warehouse: str | None = None
     reference_number: str | None = None
     notes: str | None = None
     created_by: str | None = "system"
     lines: list[DirectReceiptLineInput] = Field(default_factory=list)
+
+
+class DirectReceiptCommitRequest(DirectReceiptRequest):
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class BulkReceiptLineInput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    item_id: int | None = None
+    sku: str | None = None
+    barcode: str | None = None
+    scan_input: str | None = None
+    warehouse: str | None = None
+    inventory_location: str | None = None
+    quantity: float | None = None
+    quantity_received: float | None = None
+    unit_cost: float | None = None
+    notes: str | None = None
+
+
+class BulkReceiptRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    idempotency_key: str | None = Field(default=None, max_length=120)
+    warehouse: str | None = None
+    lines: list[BulkReceiptLineInput] = Field(default_factory=list)
+
+
+class BulkReceiptCommitRequest(BulkReceiptRequest):
+    idempotency_key: str = Field(min_length=1, max_length=120)
 
 
 class DirectReceiptLinePreview(BaseModel):

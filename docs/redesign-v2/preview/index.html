@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>Pongo OS v2 — Command Nexus concept</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to workspace</a>
+
+    <svg class="svg-sprite" aria-hidden="true">
+      <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8v9a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z" /></symbol>
+      <symbol id="i-orders" viewBox="0 0 24 24"><path d="M6 3h12l2 4-2 4H6L4 7zM6 11v10m12-10v10M8 16h8" /></symbol>
+      <symbol id="i-box" viewBox="0 0 24 24"><path d="m4 7 8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4m-8 4v10" /></symbol>
+      <symbol id="i-truck" viewBox="0 0 24 24"><path d="M3 6h11v10H3zM14 10h4l3 3v3h-7zM7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm10 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" /></symbol>
+      <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V9m6 11V4m6 16v-7m4 7H2" /></symbol>
+      <symbol id="i-plug" viewBox="0 0 24 24"><path d="m8 12 8-8m-5 1 8 8m-6 6 6-6M5 11l8 8-2 2-8-8z" /></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="m19 13.5 2 1.5-2 3.5-2.4-1a8 8 0 0 1-2.1 1.2L14 21h-4l-.5-2.3a8 8 0 0 1-2.1-1.2l-2.4 1L3 15l2-1.5a8 8 0 0 1 0-3L3 9l2-3.5 2.4 1a8 8 0 0 1 2.1-1.2L10 3h4l.5 2.3a8 8 0 0 1 2.1 1.2l2.4-1L21 9l-2 1.5a8 8 0 0 1 0 3Z" /></symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></symbol>
+      <symbol id="i-command" viewBox="0 0 24 24"><path d="M9 6V4a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v16a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z" /></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Zm-8 12h4" /></symbol>
+      <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" /></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m4 12 5 5L20 6" /></symbol>
+      <symbol id="i-warning" viewBox="0 0 24 24"><path d="M12 3 2 21h20zM12 9v5m0 3h.01" /></symbol>
+      <symbol id="i-error" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="m9 9 6 6m0-6-6 6" /></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v6l4 2" /></symbol>
+      <symbol id="i-scan" viewBox="0 0 24 24"><path d="M4 8V4h4m8 0h4v4M4 16v4h4m8 0h4v-4M7 12h10" /></symbol>
+      <symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4 2v-8z" /></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 4v16M4 12h16" /></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 21h16" /></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5m10-3a8 8 0 0 0-13-3L4 9m16 6-2 3a8 8 0 0 1-13-3" /></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19" /></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5" /></symbol>
+      <symbol id="i-map" viewBox="0 0 24 24"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3zM9 3v15m6-12v15" /></symbol>
+      <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5zM3 12l9 5 9-5M3 16l9 5 9-5" /></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="m4 20 4.5-1 10-10-3.5-3.5-10 10zM14 6l3.5 3.5" /></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 11v6m0-10h.01" /></symbol>
+    </svg>
+
+    <div class="app-shell" id="app-shell">
+      <div class="mobile-scrim" data-action="close-mobile-nav"></div>
+      <aside class="module-rail" aria-label="Pongo OS modules">
+        <button class="brand-button" data-screen="command" aria-label="Open Command Center">
+          <span class="brand-glyph" aria-hidden="true">P</span>
+          <span class="brand-word">Pongo</span>
+        </button>
+        <nav class="module-nav" aria-label="Global modules">
+          <button class="module-link is-active" data-screen="command" data-module="command"><svg><use href="#i-home" /></svg><span>Command</span></button>
+          <button class="module-link" data-screen="orders" data-module="orders"><svg><use href="#i-orders" /></svg><span>Orders</span><b>8</b></button>
+          <button class="module-link" data-screen="inventory" data-module="inventory"><svg><use href="#i-box" /></svg><span>Inventory</span><b>5</b></button>
+          <button class="module-link" data-screen="receiving" data-module="operations"><svg><use href="#i-truck" /></svg><span>Operations</span></button>
+          <button class="module-link" data-screen="insights" data-module="intelligence"><svg><use href="#i-chart" /></svg><span>Intelligence</span></button>
+          <button class="module-link" data-screen="integrations" data-module="system"><svg><use href="#i-plug" /></svg><span>System</span><b class="signal-count">1</b></button>
+        </nav>
+        <button class="module-link library-link" data-screen="components" data-module="library"><svg><use href="#i-grid" /></svg><span>Library</span></button>
+      </aside>
+
+      <aside class="context-rail" aria-label="Context navigation">
+        <div class="context-head">
+          <div><span id="context-eyebrow">Workspace</span><strong id="context-title">Command</strong></div>
+          <button class="icon-button context-collapse" data-action="collapse-context" aria-label="Collapse context navigation" aria-expanded="true"><svg><use href="#i-chevron" /></svg></button>
+        </div>
+        <nav class="context-nav" id="context-nav" aria-label="Current module"></nav>
+        <div class="context-status">
+          <div class="live-dot" aria-hidden="true"></div>
+          <div><strong>Systems operational</strong><span>Last sync 2 min ago</span></div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="command-bar">
+          <button class="icon-button mobile-menu" data-action="toggle-mobile-nav" aria-label="Open navigation" aria-expanded="false"><svg><use href="#i-menu" /></svg></button>
+          <button class="command-search" data-action="open-command" aria-haspopup="dialog">
+            <svg><use href="#i-search" /></svg>
+            <span>Search orders, SKUs, locations or actions</span>
+            <kbd>⌘ K</kbd>
+          </button>
+          <div class="command-actions">
+            <div class="warehouse-chip"><span>Warehouse</span><strong>Main</strong></div>
+            <button class="icon-button signal-button" data-action="toast" aria-label="Show notifications"><svg><use href="#i-bell" /></svg><b>3</b></button>
+            <button class="user-button" aria-label="User menu"><span>KK</span><div><strong>Ops Admin</strong><small>Internal staff</small></div></button>
+          </div>
+        </header>
+
+        <div class="preview-toolbar" aria-label="Prototype state controls">
+          <span>Preview state</span>
+          <div class="state-switcher" role="group" aria-label="Select screen state">
+            <button class="is-active" data-state="populated">Populated</button>
+            <button data-state="loading">Loading</button>
+            <button data-state="empty">Empty</button>
+            <button data-state="error">Error</button>
+          </div>
+          <button class="quiet-button" data-action="open-command"><svg><use href="#i-command" /></svg>Command menu</button>
+        </div>
+
+        <main id="main-content" tabindex="-1"></main>
+      </div>
+    </div>
+
+    <div class="drawer-layer" id="drawer-layer" hidden></div>
+    <div class="modal-layer" id="modal-layer" hidden></div>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <div class="sr-only" id="live-region" aria-live="polite"></div>
+    <script src="./preview.js"></script>
+  </body>
+</html>

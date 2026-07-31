@@ -27,6 +27,7 @@ class WooCommerceClient:
         self.base_url = settings.woocommerce_base_url.rstrip("/")
         self.consumer_key = settings.woocommerce_consumer_key
         self.consumer_secret = settings.woocommerce_consumer_secret
+        self.app_environment = getattr(settings, "app_env", "development").strip().casefold()
         self.environment = getattr(settings, "woocommerce_environment", "development")
         self.read_only = getattr(settings, "woocommerce_read_only", True)
         self.read_enabled = getattr(settings, "woocommerce_read_enabled", True)
@@ -34,6 +35,7 @@ class WooCommerceClient:
         self.writeback_dry_run = getattr(settings, "woocommerce_writeback_dry_run", True)
         self.staging_live_test_mode = getattr(settings, "woocommerce_staging_live_test_mode", False)
         self.allow_stock_write = getattr(settings, "woocommerce_allow_stock_write", False)
+        self.production_stock_authority = getattr(settings, "woocommerce_production_stock_authority", "disabled").strip().casefold()
         self.allow_order_status_write = getattr(settings, "woocommerce_allow_order_status_write", False)
         self.allow_delete = getattr(settings, "woocommerce_allow_delete", False)
         self.allowed_host = getattr(settings, "woocommerce_allowed_host", "").strip().lower()
@@ -50,7 +52,13 @@ class WooCommerceClient:
         return urlparse(self.base_url).hostname
 
     def validate_host(self, require_allowed_host: bool = False) -> None:
-        host = (self.base_url_host or "").lower()
+        parsed = urlparse(self.base_url)
+        host = (parsed.hostname or "").lower()
+        local_http = parsed.scheme == "http" and host in {"localhost", "127.0.0.1"} and self.app_environment in {"development", "test", "e2e"}
+        if parsed.scheme != "https" and not local_http:
+            raise WooCommerceClientError("WooCommerce connections must use HTTPS.")
+        if not host or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+            raise WooCommerceClientError("WooCommerce base URL must be a canonical store origin without credentials, a path, query, or fragment.")
         if require_allowed_host and not self.allowed_host:
             raise WooCommerceClientError("WooCommerce allowed host is not configured.")
         if self.allowed_host and host != self.allowed_host:
@@ -72,6 +80,7 @@ class WooCommerceClient:
             if product.get("type") != "variable":
                 records.append({"product": product, "variation": None})
                 continue
+            records.append({"product": product, "variation": None, "parent_container": True})
             variation_page = 1
             while True:
                 variations = self.list_product_variations(product["id"], page=variation_page, per_page=self.page_size)
@@ -170,9 +179,17 @@ class WooCommerceClient:
             raise WooCommerceClientError("WooCommerce write operation is not allowlisted.")
         if self.environment not in {"staging", "production"}:
             raise WooCommerceClientError("WooCommerce writeback is blocked outside staging and production.")
-        if self.environment == "production" and (operation_type != "update_order_status" or method != "PUT"):
-            raise WooCommerceClientError("Production WooCommerce writes are limited to allowlisted order completion updates.")
-        if self.environment == "staging" and not self.staging_live_test_mode:
+        if self.app_environment == "production" and self.environment != "production":
+            raise WooCommerceClientError("APP_ENV=production requires WOOCOMMERCE_ENVIRONMENT=production before any WooCommerce write.")
+        production_write = self.app_environment == "production" or self.environment == "production"
+        if production_write:
+            stock_write = operation_type in {"update_product_stock", "update_variation_stock"}
+            order_completion = operation_type == "update_order_status" and method == "PUT"
+            if stock_write and self.production_stock_authority != "pongo":
+                raise WooCommerceClientError("Production stock writeback requires WOOCOMMERCE_PRODUCTION_STOCK_AUTHORITY=pongo.")
+            if not stock_write and not order_completion:
+                raise WooCommerceClientError("Production WooCommerce writes are limited to explicit Pongo stock authority and completed order status updates.")
+        if not production_write and self.environment == "staging" and not self.staging_live_test_mode:
             raise WooCommerceClientError("WooCommerce live staging test mode is disabled.")
         if self.read_only:
             raise WooCommerceClientError("WooCommerce read-only mode is enabled; writeback is blocked.")
@@ -189,7 +206,7 @@ class WooCommerceClient:
             raise WooCommerceClientError("WooCommerce order status write path is not allowlisted.")
         if validate_payload:
             validate_payload_fields(operation_type, payload)
-            if self.environment == "production" and operation_type == "update_order_status" and payload.get("status") != "completed":
+            if production_write and operation_type == "update_order_status" and payload.get("status") != "completed":
                 raise WooCommerceClientError("Production WooCommerce order writeback may only set status to completed.")
 
     def _get(self, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -223,14 +240,15 @@ class WooCommerceClient:
             raise WooCommerceClientError("WooCommerce read access is disabled.")
         self.validate_host()
         url = f"{self.base_url}{path}"
-        safe_params = {**(params or {}), "consumer_key": self.consumer_key, "consumer_secret": self.consumer_secret}
+        safe_params = dict(params or {})
+        auth = httpx.BasicAuth(self.consumer_key, self.consumer_secret)
         retry_statuses = {429, 500, 502, 503, 504}
         last_status_code = None
         for attempt in range(1, 4):
             started_at = time.perf_counter()
             response = None
             try:
-                response = httpx.request(method, url, params=safe_params, json=payload, timeout=self.timeout_seconds)
+                response = httpx.request(method, url, params=safe_params, json=payload, auth=auth, timeout=self.timeout_seconds)
                 last_status_code = response.status_code
                 if response.status_code in retry_statuses and attempt < 3:
                     time.sleep(0.2 * attempt)

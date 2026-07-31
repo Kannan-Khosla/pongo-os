@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.models.inventory import InventoryItem
 from app.models.orders import Order, OrderItem
-from app.models.woocommerce import WooWritebackQueue
+from app.models.woocommerce import WooItemMapping, WooWritebackQueue
 from app.schemas.woocommerce import (
     WooWritebackOrderStatusPreviewRequest,
     WooWritebackPreviewResponse,
@@ -34,6 +34,7 @@ def sync_inventory_stock(
     item_ids: list[int] | set[int] | None = None,
     force: bool = False,
     requested_by: str = "inventory-page",
+    should_cancel: Callable[[], bool] | None = None,
 ) -> WooStockSyncResponse:
     statement = select(InventoryItem).where(InventoryItem.active.is_(True), InventoryItem.non_inventory.is_not(True)).order_by(InventoryItem.id)
     if item_ids is not None:
@@ -67,10 +68,15 @@ def sync_inventory_stock(
     sent_count = 0
     dry_run_count = 0
     failed_count = 0
+    failed_item_ids: list[int] = []
     queue_ids: list[int] = []
     errors: list[str] = []
+    cancelled = False
     # ponytail: Sequential sends preserve the existing per-item queue/audit trail; move this loop to a worker only if full-catalog requests exceed deployment limits.
     for item in targets:
+        if should_cancel and should_cancel():
+            cancelled = True
+            break
         try:
             preview = preview_stock_writeback(
                 db,
@@ -104,14 +110,18 @@ def sync_inventory_stock(
                 dry_run_count += 1
             else:
                 failed_count += 1
+                failed_item_ids.append(item.id)
                 if len(errors) < 20:
                     errors.append(f"{item.sku or item.id}: {(result.error_message if result else None) or 'WooCommerce stock update failed.'}")
         except Exception as error:
             failed_count += 1
+            failed_item_ids.append(item.id)
             if len(errors) < 20:
                 errors.append(f"{item.sku or item.id}: {error}")
 
-    if failed_count and (sent_count or dry_run_count):
+    if cancelled:
+        status = "cancelled"
+    elif failed_count and (sent_count or dry_run_count):
         status = "partial"
     elif failed_count:
         status = "failed"
@@ -131,6 +141,7 @@ def sync_inventory_stock(
         unchanged,
         queue_ids=queue_ids,
         errors=errors,
+        failed_item_ids=failed_item_ids,
     )
 
 
@@ -187,6 +198,7 @@ def stock_sync_response(
     *,
     queue_ids: list[int] | None = None,
     errors: list[str] | None = None,
+    failed_item_ids: list[int] | None = None,
 ) -> WooStockSyncResponse:
     return WooStockSyncResponse(
         status=status,
@@ -200,6 +212,7 @@ def stock_sync_response(
         unchanged_count=unchanged_count,
         queue_ids=queue_ids or [],
         errors=errors or [],
+        failed_item_ids=failed_item_ids or [],
     )
 
 
@@ -245,6 +258,7 @@ def preview_stock_writeback(db: Session, settings: Settings, client: WooCommerce
     item = find_item(db, item_id=payload.item_id, sku=payload.sku)
     if item is None:
         return None
+    validate_item_mapping(db, item)
     woo_entity_id = item.woo_variation_id or item.woo_product_id
     proposed = Decimal(str(payload.proposed_stock_quantity)) if payload.proposed_stock_quantity is not None else item.in_stock
     operation_type = "update_variation_stock" if item.woo_variation_id else "update_product_stock"
@@ -287,8 +301,6 @@ def preview_stock_writeback(db: Session, settings: Settings, client: WooCommerce
         "path": endpoint_path,
     }
     warnings = []
-    if not item.woo_product_id:
-        warnings.append("Local item is not linked to a WooCommerce product.")
     if live_error:
         warnings.append(f"Live Woo stock check failed: {live_error}")
     return WooWritebackPreviewResponse(
@@ -397,6 +409,7 @@ def approve_queue_item(db: Session, queue_id: int, approved_by: str | None = Non
     if row is None:
         return None
     if row.status in {"pending", "failed"}:
+        validate_queue_mapping(db, row)
         row.status = "approved"
         row.approved_by = approved_by
         row.approved_at = datetime.now(timezone.utc)
@@ -427,6 +440,14 @@ def send_queue_item(db: Session, client: WooCommerceClient, settings: Settings, 
             row.error_message = "Writeback must be approved before send."
             db.commit()
             db.refresh(row)
+        return row
+    try:
+        validate_queue_mapping(db, row)
+    except ValueError as error:
+        row.status = "failed"
+        row.error_message = str(error)
+        db.commit()
+        db.refresh(row)
         return row
     if settings.woocommerce_writeback_dry_run or row.dry_run:
         row.status = "dry_run"
@@ -470,11 +491,93 @@ def validate_queue_payload(payload: WooWritebackQueueCreateRequest) -> None:
         raise ValueError("Stock writeback payload must include stock_quantity.")
 
 
+def validate_item_mapping(db: Session, item: InventoryItem) -> WooItemMapping | None:
+    if item.woo_product_type == "variation" and (item.woo_product_id is None or item.woo_variation_id is None):
+        raise ValueError("woo_variation_mapping_incomplete: variation requires parent Product ID and Variation ID.")
+    if item.woo_variation_id is not None and item.woo_product_id is None:
+        raise ValueError("woo_variation_mapping_incomplete: variation requires parent Product ID and Variation ID.")
+    if item.woo_product_id is None:
+        raise ValueError("woo_mapping_missing: item has no Woo Product ID.")
+    if item.woo_variation_id is None and item.woo_product_type == "variable":
+        raise ValueError("woo_mapping_conflict: variable parent containers cannot receive stock writeback.")
+    if not item.active:
+        raise ValueError("woo_mapping_missing: item mapping is inactive.")
+
+    item_mappings = list(db.scalars(select(WooItemMapping).where(WooItemMapping.item_id == item.id, WooItemMapping.active.is_(True))).all())
+    exact = [mapping for mapping in item_mappings if (mapping.woo_product_id, mapping.woo_variation_id) == (item.woo_product_id, item.woo_variation_id)]
+    if item_mappings and (len(item_mappings) != 1 or len(exact) != 1):
+        raise ValueError("woo_mapping_conflict: item has ambiguous active mappings.")
+
+    remote_mappings = list(db.scalars(select(WooItemMapping).where(
+        WooItemMapping.woo_product_id == item.woo_product_id,
+        WooItemMapping.woo_variation_id.is_(None) if item.woo_variation_id is None else WooItemMapping.woo_variation_id == item.woo_variation_id,
+        WooItemMapping.active.is_(True),
+    )).all())
+    if remote_mappings and (len(remote_mappings) != 1 or remote_mappings[0].item_id != item.id):
+        raise ValueError("woo_mapping_conflict: Woo target is assigned to another or multiple active local items.")
+    field_matches = list(db.scalars(select(InventoryItem).where(
+        InventoryItem.woo_product_id == item.woo_product_id,
+        InventoryItem.woo_variation_id.is_(None) if item.woo_variation_id is None else InventoryItem.woo_variation_id == item.woo_variation_id,
+    )).all())
+    if len(field_matches) != 1 or field_matches[0].id != item.id:
+        raise ValueError("woo_mapping_conflict: Woo identity fields are duplicated locally.")
+    if item.in_stock is None:
+        raise ValueError("woo_mapping_conflict: local absolute stock quantity is unavailable.")
+    return exact[0] if exact else None
+
+
+def validate_queue_mapping(db: Session, row: WooWritebackQueue) -> None:
+    if row.operation_type not in {"update_product_stock", "update_variation_stock"}:
+        return
+    item = db.get(InventoryItem, row.entity_id)
+    if item is None:
+        raise ValueError("woo_mapping_missing: local item no longer exists.")
+    validate_item_mapping(db, item)
+    expected_operation = "update_variation_stock" if item.woo_variation_id is not None else "update_product_stock"
+    expected_path = product_stock_path(item)
+    actual_path = str((row.payload_json or {}).get("path") or "")
+    if row.operation_type != expected_operation or row.woo_product_id != item.woo_product_id or row.woo_variation_id != item.woo_variation_id or actual_path != expected_path:
+        raise ValueError("woo_writeback_target_stale: queue target does not agree with the current mapping; revalidate it before approval.")
+
+
+def revalidate_queue_item(db: Session, client: WooCommerceClient, settings: Settings, queue_id: int) -> WooWritebackQueue | None:
+    row = db.get(WooWritebackQueue, queue_id)
+    if row is None:
+        return None
+    if row.status not in {"pending", "failed"}:
+        raise ValueError("Only pending or failed writebacks can be revalidated; successful history is immutable.")
+    if row.operation_type not in {"update_product_stock", "update_variation_stock"}:
+        raise ValueError("Only stock writebacks can be mapping-revalidated.")
+    preview = preview_stock_writeback(db, settings, client, WooWritebackStockPreviewRequest(item_id=row.entity_id, fetch_live=False))
+    if preview is None:
+        raise ValueError("woo_mapping_missing: local item no longer exists.")
+    row.operation_type = preview.operation_type
+    row.woo_entity_id = preview.woo_entity_id
+    row.woo_product_id = preview.woo_product_id
+    row.woo_variation_id = preview.woo_variation_id
+    row.payload_json = preview.payload_json
+    row.preview_json = preview.preview_json
+    row.environment = settings.woocommerce_environment
+    row.dry_run = settings.woocommerce_writeback_dry_run
+    row.allowed_host = settings.woocommerce_allowed_host or None
+    row.status = "pending"
+    row.error_message = None
+    row.approved_by = None
+    row.approved_at = None
+    row.response_json = None
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def find_item(db: Session, item_id: int | None = None, sku: str | None = None) -> InventoryItem | None:
     if item_id:
         return db.get(InventoryItem, item_id)
     if sku:
-        return db.scalars(select(InventoryItem).where(InventoryItem.sku == sku)).first()
+        matches = list(db.scalars(select(InventoryItem).where(InventoryItem.sku == sku).order_by(InventoryItem.id).limit(2)).all())
+        if len(matches) > 1:
+            raise ValueError(f"duplicate_sku_conflict: multiple local items use SKU {sku!r}; writeback was blocked.")
+        return matches[0] if matches else None
     return None
 
 

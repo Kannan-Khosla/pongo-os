@@ -11,6 +11,7 @@ from app.models.cycle_counts import CycleCount, CycleCountLine
 from app.models.inventory import InventoryItem, InventoryItemLocation, InventoryLocation
 from app.models.scanner import ScannerEvent
 from app.services.bulk_receiving import commit_bulk_receipt, preview_bulk_receipt
+from app.services.auth import authenticated_actor
 from app.services.item_control import item_location_summary, item_summary
 from app.services.location_inventory import (
     create_committed_adjustment,
@@ -22,6 +23,7 @@ from app.services.location_inventory import (
     to_decimal,
 )
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
+from app.services.stock_mutation_guard import IdempotencyConflict
 from app.services.woocommerce_client import WooCommerceClient
 from app.services.woocommerce_writeback import sync_inventory_stock
 
@@ -49,11 +51,23 @@ def resolve_scan_item(db: Session, scan_input: str | None) -> InventoryItem | No
     value = (scan_input or "").strip()
     if not value:
         return None
-    if value.isdigit():
-        item = db.get(InventoryItem, int(value))
-        if item is not None:
-            return item
-    return db.scalars(select(InventoryItem).where(or_(InventoryItem.sku == value, InventoryItem.barcode == value, InventoryItem.description.ilike(f"%{value}%"))).order_by(InventoryItem.sku.asc().nullslast())).first()
+    exact_matches = list(
+        db.scalars(
+            select(InventoryItem)
+            .where(or_(InventoryItem.sku == value, InventoryItem.barcode == value))
+            .order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())
+        ).all()
+    )
+    if len(exact_matches) > 1:
+        raise HTTPException(status_code=409, detail="Scan matches multiple inventory items; use a unique SKU or barcode.")
+    if exact_matches:
+        return exact_matches[0]
+    if value.isdigit() and (item := db.get(InventoryItem, int(value))) is not None:
+        return item
+    description_matches = list(db.scalars(select(InventoryItem).where(InventoryItem.description.ilike(f"%{value}%"))).all())
+    if len(description_matches) > 1:
+        raise HTTPException(status_code=409, detail="Scan matches multiple inventory items; use a unique SKU or barcode.")
+    return description_matches[0] if description_matches else None
 
 
 @router.get("/inventory/lookup")
@@ -107,8 +121,22 @@ def receiving_scan_preview(payload: dict, db: Session = Depends(get_db)) -> dict
 
 
 @router.post("/receiving/scan/commit")
-def receiving_scan_commit(payload: dict, db: Session = Depends(get_db)) -> dict:
-    return commit_bulk_receipt({"warehouse": payload.get("warehouse"), "source": "scanner", "notes": payload.get("notes"), "lines": [{**payload, "quantity": payload.get("quantity", 1)}]}, db)
+def receiving_scan_commit(payload: dict, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
+    try:
+        return commit_bulk_receipt(
+            {
+                "idempotency_key": payload.get("idempotency_key"),
+                "warehouse": payload.get("warehouse"),
+                "source": "scanner",
+                "notes": payload.get("notes"),
+                "created_by": actor,
+                "lines": [{**payload, "quantity": payload.get("quantity", 1)}],
+            },
+            db,
+        )
+    except IdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/cycle-count/preview")
@@ -129,17 +157,17 @@ def cycle_count_scan_preview(payload: dict, db: Session = Depends(get_db)) -> di
 
 
 @router.post("/cycle-count/commit")
-def cycle_count_scan_commit(payload: dict, db: Session = Depends(get_db)) -> dict:
+def cycle_count_scan_commit(payload: dict, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
     preview = cycle_count_scan_preview(payload, db)
     if not preview["can_commit"]:
         raise HTTPException(status_code=400, detail=preview)
     item = db.get(InventoryItem, preview["item"]["id"])
     warehouse = payload.get("warehouse") or item.warehouse or "UNASSIGNED"
     inventory_location = payload.get("inventory_location") or item.inventory_location or item.default_location or "UNASSIGNED"
-    count = CycleCount(count_number=f"CC-SCAN-{datetime.now(timezone.utc):%Y%m%d%H%M%S%f}", status="posted", warehouse=warehouse, inventory_location=inventory_location, count_type="scanner", notes=payload.get("reason") or payload.get("notes"), created_by=payload.get("created_by") or "system", posted_at=datetime.now(timezone.utc))
+    count = CycleCount(count_number=f"CC-SCAN-{datetime.now(timezone.utc):%Y%m%d%H%M%S%f}", status="posted", warehouse=warehouse, inventory_location=inventory_location, count_type="scanner", notes=payload.get("reason") or payload.get("notes"), created_by=actor, posted_at=datetime.now(timezone.utc))
     db.add(count)
     db.flush()
-    change = cycle_count_location(db, item, warehouse, inventory_location, payload.get("counted_quantity"), reference_number=count.count_number, reference_id=count.id, notes=payload.get("reason") or payload.get("notes"), created_by=payload.get("created_by") or "system")
+    change = cycle_count_location(db, item, warehouse, inventory_location, payload.get("counted_quantity"), reference_number=count.count_number, reference_id=count.id, notes=payload.get("reason") or payload.get("notes"), created_by=actor)
     db.add(CycleCountLine(cycle_count_id=count.id, item_id=item.id, inventory_item_location_id=change.item_location.id, sku=item.sku, barcode=item.barcode, description=item.description, warehouse=warehouse, inventory_location=inventory_location, system_quantity=change.old_location_stock, counted_quantity=change.new_location_stock, variance_quantity=change.new_location_stock - change.old_location_stock, unit_cost=item.unit_cost, variance_value=(change.new_location_stock - change.old_location_stock) * (item.unit_cost or Decimal("0")), notes=payload.get("reason") or payload.get("notes")))
     auto_allocate_processing_orders_fifo(db, source=f"scanner-cycle-count:{count.count_number}")
     db.commit()
@@ -167,13 +195,27 @@ def transfer_scan_preview(payload: dict, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/transfers/commit")
-def transfer_scan_commit(payload: dict, db: Session = Depends(get_db)) -> dict:
+def transfer_scan_commit(payload: dict, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
     preview = transfer_scan_preview(payload, db)
     if not preview["can_commit"]:
         raise HTTPException(status_code=400, detail=preview)
     item = db.get(InventoryItem, preview["item"]["id"])
     from_row = db.get(InventoryItemLocation, preview["from_inventory_item_location_id"])
-    transfer = create_committed_transfer(db, item=item, from_row=from_row, to_warehouse=payload.get("to_warehouse") or from_row.warehouse, to_inventory_location=payload.get("to_inventory_location"), quantity=payload.get("quantity"), notes=payload.get("notes"), created_by=payload.get("created_by") or "system")
+    try:
+        transfer = create_committed_transfer(
+            db,
+            item=item,
+            from_row=from_row,
+            to_warehouse=payload.get("to_warehouse") or from_row.warehouse,
+            to_inventory_location=payload.get("to_inventory_location"),
+            quantity=payload.get("quantity"),
+            notes=payload.get("notes"),
+            created_by=actor,
+            idempotency_key=payload.get("idempotency_key"),
+        )
+    except IdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.commit()
     return {"transfer_id": transfer.id, "transfer_number": transfer.transfer_number, "status": transfer.status}
 
@@ -201,21 +243,38 @@ def adjustment_scan_preview(payload: dict, db: Session = Depends(get_db)) -> dic
 
 
 @router.post("/adjustments/commit")
-def adjustment_scan_commit(payload: dict, db: Session = Depends(get_db)) -> dict:
+def adjustment_scan_commit(payload: dict, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
     preview = adjustment_scan_preview(payload, db)
     if not preview["can_commit"]:
         raise HTTPException(status_code=400, detail=preview)
     item = db.get(InventoryItem, preview["item"]["id"])
     row = db.get(InventoryItemLocation, preview["inventory_item_location_id"]) if preview.get("inventory_item_location_id") else get_or_create_item_location(db, item, payload.get("warehouse") or item.warehouse, payload.get("inventory_location") or item.inventory_location or item.default_location)
-    adjustment = create_committed_adjustment(db, item=item, row=row, quantity_change=preview["quantity_change"], adjustment_type=payload.get("adjustment_type") or "correction", reason=payload.get("reason"), notes=payload.get("notes"), created_by=payload.get("created_by") or "system")
-    auto_allocate_processing_orders_fifo(db, source=f"scanner-adjustment:{adjustment.adjustment_number}")
+    try:
+        adjustment = create_committed_adjustment(
+            db,
+            item=item,
+            row=row,
+            quantity_change=preview["quantity_change"],
+            adjustment_type=payload.get("adjustment_type") or "correction",
+            reason=payload.get("reason"),
+            notes=payload.get("notes"),
+            created_by=actor,
+            idempotency_key=payload.get("idempotency_key"),
+        )
+    except IdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    replayed = bool(getattr(adjustment, "_idempotent_replay", False))
+    if not replayed:
+        auto_allocate_processing_orders_fifo(db, source=f"scanner-adjustment:{adjustment.adjustment_number}")
     db.commit()
-    settings = get_settings()
-    sync_inventory_stock(
-        db,
-        settings,
-        WooCommerceClient(settings),
-        item_ids={item.id},
-        requested_by=payload.get("created_by") or "scanner-adjustment",
-    )
+    if not replayed:
+        settings = get_settings()
+        sync_inventory_stock(
+            db,
+            settings,
+            WooCommerceClient(settings),
+            item_ids={item.id},
+            requested_by=actor,
+        )
     return {"adjustment_id": adjustment.id, "adjustment_number": adjustment.adjustment_number, "status": adjustment.status, "quantity_change": preview["quantity_change"]}

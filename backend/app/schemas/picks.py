@@ -10,12 +10,17 @@ class PickLineRequest(BaseModel):
 
 
 class PickRequest(BaseModel):
+    idempotency_key: str | None = Field(default=None, max_length=120)
     order_ids: list[int] = Field(default_factory=list)
     lines: list[PickLineRequest] = Field(default_factory=list)
     pick_strategy: str = "allocated_first"
     allow_partial: bool = False
     created_by: str | None = "system"
     notes: str | None = None
+
+
+class PickCommitRequest(PickRequest):
+    idempotency_key: str = Field(min_length=1, max_length=120)
 
 
 class PickPreviewLine(BaseModel):
@@ -174,6 +179,10 @@ class PickScanRequest(BaseModel):
     note: str | None = None
     created_by: str | None = "system"
     idempotency_key: str | None = None
+
+
+class PickScanCommitRequest(PickScanRequest):
+    idempotency_key: str = Field(min_length=1, max_length=120)
 
 
 class PickScanResponse(BaseModel):

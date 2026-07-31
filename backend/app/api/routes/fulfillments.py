@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.schemas.fulfillments import FulfillmentCommitResponse, FulfillmentDetail, FulfillmentListResponse, FulfillmentPreviewResponse, FulfillmentRequest
 from app.services.fulfillments import commit_fulfillment, export_fulfillment_csv, fulfillment_to_read, get_fulfillment_detail, list_fulfillments, preview_fulfillment
+from app.services.auth import authenticated_actor
 
 router = APIRouter(prefix="/fulfillments", tags=["fulfillments"])
 
@@ -16,8 +17,8 @@ def preview_fulfillment_request(payload: FulfillmentRequest, db: Session = Depen
 
 
 @router.post("/commit", response_model=FulfillmentCommitResponse)
-def commit_fulfillment_request(payload: FulfillmentRequest, db: Session = Depends(get_db)) -> FulfillmentCommitResponse:
-    return commit_fulfillment(db, payload)
+def commit_fulfillment_request(payload: FulfillmentRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> FulfillmentCommitResponse:
+    return commit_fulfillment(db, payload.model_copy(update={"created_by": actor}))
 
 
 @router.get("", response_model=FulfillmentListResponse)

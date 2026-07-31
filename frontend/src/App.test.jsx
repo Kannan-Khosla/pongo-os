@@ -1,7 +1,15 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import App from './App.jsx';
+import App, {
+  formatCurrency,
+  formatDateTime,
+  formatInsightValue,
+  formatNumber,
+  formatPercent,
+  resetMutationIdempotency,
+  withMutationIdempotency,
+} from './App.jsx';
 import './App.css';
 
 const item = {
@@ -19,6 +27,38 @@ const item = {
   'Unit Cost': 4.25,
   active: true,
 };
+
+describe('shared display formatters', () => {
+  it('distinguishes positive, negative, zero, and missing values', () => {
+    expect(formatCurrency(79047.64)).toBe('$79,047.64');
+    expect(formatCurrency(-12.5)).toBe('-$12.50');
+    expect(formatCurrency(0)).toBe('$0.00');
+    expect(formatCurrency(null)).toBe('—');
+    expect(formatNumber(1294)).toBe('1,294');
+    expect(formatNumber(null)).toBe('—');
+    expect(formatPercent(-12.5)).toBe('-12.5%');
+    expect(formatDateTime(null)).toBe('—');
+    expect(formatInsightValue('valued_sku_count', 1)).toBe('1');
+    expect(formatInsightValue('missing_cost_count', 0)).toBe('0');
+    expect(formatInsightValue('total_inventory_value', 40)).toBe('$40.00');
+  });
+});
+
+describe('stock mutation idempotency', () => {
+  it('reuses a key for an identical retry and replaces it for changed or completed work', () => {
+    const ref = { current: null };
+    const first = withMutationIdempotency(ref, 'receipt', { quantity: 2 });
+    const retry = withMutationIdempotency(ref, 'receipt', { quantity: 2 });
+    const changed = withMutationIdempotency(ref, 'receipt', { quantity: 3 });
+
+    expect(retry.idempotency_key).toBe(first.idempotency_key);
+    expect(changed.idempotency_key).not.toBe(first.idempotency_key);
+
+    resetMutationIdempotency(ref);
+    const nextAction = withMutationIdempotency(ref, 'receipt', { quantity: 3 });
+    expect(nextAction.idempotency_key).not.toBe(changed.idempotency_key);
+  });
+});
 
 const mockOrder = {
   id: 701,
@@ -105,6 +145,7 @@ const mockAllocationException = {
 const mockWebhookEvent = {
   id: 41,
   topic: 'order.created',
+  event_type: 'order_created',
   woo_order_id: 1601,
   local_order_id: 702,
   woo_order_number: '1601',
@@ -117,34 +158,24 @@ const mockWebhookEvent = {
   received_at: '2026-07-10T17:00:00Z',
 };
 
-function emptyQuickSyncResult(overrides = {}) {
-  return {
-    sync_run_id: 91,
-    status: 'completed',
-    total_remote_records: 0,
-    created_count: 0,
-    updated_count: 0,
-    matched_count: 0,
-    skipped_count: 0,
-    conflict_count: 0,
-    error_count: 0,
-    available_count: 0,
-    partial_count: 0,
-    unavailable_count: 0,
-    unknown_count: 0,
-    auto_allocated_count: 0,
-    allocation_exception_count: 0,
-    unmatched_line_count: 0,
-    conflict_line_count: 0,
-    pick_ready_count: 0,
-    warnings: [],
-    errors: [],
-    ...overrides,
+let mockWebhookFeed;
+let mockWooHealth;
+let mockWooLastError;
+let mockItemsFeed;
+let mockInsightOverview;
+
+function pagedItemsFeed(rows) {
+  return (target) => {
+    const url = new URL(target);
+    const search = (url.searchParams.get('search') || '').toLowerCase();
+    const filtered = search ? rows.filter((row) => [row.SKU, row.Barcode, row.Description].some((value) => String(value || '').toLowerCase().includes(search))) : rows;
+    const page = Math.max(1, Number(url.searchParams.get('page') || 1));
+    const pageSize = Math.max(1, Number(url.searchParams.get('page_size') || 20));
+    const start = (page - 1) * pageSize;
+    const items = filtered.slice(start, start + pageSize);
+    return { items, page, page_size: pageSize, total: filtered.length, total_pages: Math.max(1, Math.ceil(filtered.length / pageSize)), returned_count: items.length };
   };
 }
-
-let mockWebhookFeed;
-let mockQuickSyncResult;
 
 function json(body) {
   return Promise.resolve({ ok: true, json: () => Promise.resolve(body), text: () => Promise.resolve(JSON.stringify(body)) });
@@ -157,7 +188,6 @@ function csvResponse(text) {
 function mockFetch(url) {
   const target = String(url);
   if (target.includes('/api/integrations/woocommerce/webhooks/events')) return json(typeof mockWebhookFeed === 'function' ? mockWebhookFeed(target) : mockWebhookFeed);
-  if (target.includes('/api/integrations/woocommerce/orders/quick-sync')) return json(mockQuickSyncResult);
   if (target.includes('/api/business-dashboard')) return json({
     generated_at: '2026-07-08T16:30:00Z',
     today: { summary: { today_orders_count: 2, today_revenue: 90, today_new_customers: 1, today_returning_customers: 1, today_subscription_orders: 0, average_order_value_today: 45 }, data_quality: [] },
@@ -167,21 +197,28 @@ function mockFetch(url) {
     order_map: { summary: { total_orders_today: 2, total_orders_plotted: 2, total_orders_unplotted: 0 }, city_breakdown: [{ city: 'Edmonton', order_count: 1, revenue: 60, customer_count: 1 }, { city: 'Sherwood Park', order_count: 1, revenue: 30, customer_count: 1 }], markers: [{ marker_label: '0802', latitude: 53.5461, longitude: -113.4938, approximate: true }, { marker_label: '0803', latitude: 53.5412, longitude: -113.2957, approximate: true }], data_quality: [{ code: 'approximate_coordinates', severity: 'info', message: 'Map uses city-level approximate markers until address geocoding is configured.' }] },
     data_quality: [{ code: 'missing_subscription_data', severity: 'info', message: 'Subscription data is not synced yet. This section will populate after subscription sync is connected.' }],
   });
-  if (target.includes('/api/insights/subscriptions')) return json({ dashboard: 'subscriptions', summary: { active_subscriptions: 0 }, rows: [], data_quality: [{ code: 'missing_subscription_data', severity: 'info', message: 'No WooCommerce Subscriptions snapshots are synced locally yet.' }], empty_state: 'No subscription data synced yet' });
+  if (target.includes('/api/insights/subscriptions')) return json({ dashboard: 'subscriptions', summary: { data_available: false, active_subscriptions: null, subscription_revenue: null, monthly_recurring_revenue: null }, rows: [], data_quality: [{ code: 'missing_subscription_data', severity: 'info', message: 'No WooCommerce Subscriptions snapshots are synced locally yet.' }], empty_state: 'No subscription data synced yet' });
   if (target.includes('/api/insights/customer-metrics')) return json({ dashboard: 'customer-metrics', summary: { total_customers: 2, returning_customers: 1 }, rows: [{ customer_name: 'Avery Stone', email: 'avery@example.invalid', order_count: 2, lifetime_spend: 90, last_order_date: '2026-06-20T12:00:00Z' }], data_quality: [] });
   if (target.includes('/api/insights/product-sku')) return json({ dashboard: 'product-sku', summary: { sku_count: 1, units_sold: 4, revenue: 90 }, rows: [{ sku: 'DOG-FOOD', description: 'Dog Food', brand: 'Acana', category: 'Dog Food', units_sold: 4, revenue: 90, estimated_margin: 50, current_sellable: 10 }], data_quality: [] });
   if (target.includes('/api/insights/orders-revenue')) return json({ dashboard: 'orders-revenue', summary: { total_orders: 2, average_order_value: 45, net_sales: 90 }, trends: { daily_revenue: [{ date: '2026-06-20', order_count: 2, gross_sales: 90, net_sales: 90, units_sold: 4 }] }, rows: [{ date: '2026-06-20', order_count: 2, gross_sales: 90, net_sales: 90, units_sold: 4 }], data_quality: [] });
-  if (target.includes('/api/insights/overview')) return json({ dashboard: 'overview', summary: { total_revenue: 90, total_orders: 2, total_customers: 1, stockout_risk_count: 1 }, trends: { daily_revenue: [{ date: '2026-06-20', order_count: 2, net_sales: 90 }] }, tables: { stockout_risk: [{ sku: 'DOG-FOOD', description: 'Dog Food', risk_level: 'low', current_sellable: 10, daily_velocity: 1, days_of_stock_left: 10 }] }, data_quality: [{ code: 'missing_refund_data', severity: 'info', message: 'Refund detail is not synced yet.' }] });
+  if (target.includes('/api/insights/overview')) return json(mockInsightOverview);
   if (target.includes('/api/insights/')) return json({ dashboard: 'generic', summary: { total: 0 }, rows: [], data_quality: [] });
   if (target.includes('/api/dashboard')) return json({ inventory_health: {}, order_operations: {}, routes: {}, warnings: [], activity: [] });
   if (target.includes('/api/items/enrichment/export')) return csvResponse('Pongo Item ID,Woo Product ID,Woo Variation ID,Woo Mapping Type,Woo Mapping Status,SKU\n1,101,,simple,synced,SMOKE-001\n');
   if (target.includes('/api/items/enrichment/preview')) return json({ total_rows: 1, valid_rows: 1, invalid_rows: 0, create_count: 0, update_count: 1, unchanged_count: 0, conflict_count: 0, unmatched_count: 0, warnings: [], errors: [], preview_rows: [{ row_number: 2, action: 'update', sku: 'SMOKE-001', barcode: 'SMOKE001', match_method: 'pongo_item_id', fields_changing: ['Brand'], warnings: [], errors: [], raw_row: { SKU: 'SMOKE-001' } }] });
   if (target.match(/\/api\/items\/1$/)) return json({ item, stock_by_location: [], recent_activity: [] });
-  if (target.includes('/api/items')) return json({ items: [item], total: 1 });
+  if (target.includes('/api/items')) return json(typeof mockItemsFeed === 'function' ? mockItemsFeed(target) : mockItemsFeed);
   if (target.includes('/api/locations')) return json({ locations: [{ id: 1, warehouse: 'Main Warehouse', code: 'Smoke Rack', name: 'Smoke Rack', isActive: true }] });
   if (target.includes('/api/inventory/summary/by-location')) return json({ total_items: 1, total_in_stock: 9, total_sellable: 7, groups: [] });
+  if (target.includes('/api/inventory/adjustments')) return json({ status: 'committed', adjustment_number: 'ADJ-0001' });
   if (target.includes('/api/inventory/locations')) return json({ rows: [] });
   if (target.includes('/api/cycle-counts')) return json({ cycle_counts: [] });
+  if (target.includes('/api/receipts/direct/preview')) return json({ total_lines: 1, valid_lines: 1, invalid_lines: 0, total_quantity: 1, estimated_inventory_value: 4.25, errors: [], preview_lines: [{ line_number: 1, status: 'valid', sku: 'SMOKE-001', description: 'Smoke Test Item', inventory_location: 'Smoke Rack', quantity_received: 1, previous_in_stock: 9, new_in_stock: 10, line_value: 4.25 }] });
+  if (target.includes('/api/receipts/direct/commit')) return json({ status: 'committed', id: 11, receipt_number: 'REC-0011' });
+  if (target.includes('/api/receipts/bulk/preview')) return json({ can_commit: true, line_count: 1, valid_line_count: 1, error_line_count: 0, total_quantity: 1, total_cost: 4.25, lines: [{ line_number: 1, status: 'valid', item: { sku: 'SMOKE-001' }, inventory_location: 'Smoke Rack', quantity: 1, old_location_stock: 9, new_location_stock: 10, errors: [] }] });
+  if (target.includes('/api/receipts/bulk/commit')) return json({ status: 'committed', id: 12, receipt_number: 'REC-0012' });
+  if (target.includes('/api/receipts')) return json({ receipts: [] });
+  if (target.includes('/api/stock-movements')) return json({ movements: [] });
   if (target.includes('/api/orders/701/complete/commit')) return json({ status: 'completed_without_picking', message: 'Order completed without picking. Stock was not reduced.', woo_sync_status: 'sent', woo_writeback_queue_id: 41 });
   if (target.includes('/api/orders/bulk/complete')) return json({ status: 'completed', requested_count: 1, succeeded_count: 1, failed_count: 0, results: [{ order_id: 701, status: 'completed', message: 'Completed.', woo_sync_status: 'sent', woo_writeback_queue_id: 41 }], errors: [] });
   if (target.includes('/api/orders/bulk/unpick')) return json({ status: 'completed', requested_count: 1, succeeded_count: 1, failed_count: 0, total_quantity_restored: 1, results: [], errors: [] });
@@ -245,6 +282,7 @@ function mockFetch(url) {
     base_url_present: true,
     consumer_key_present: true,
     consumer_secret_present: true,
+    base_url: 'https://staging32.pongo.ca',
     base_url_host: 'staging32.pongo.ca',
     environment: 'staging',
     read_only: false,
@@ -266,7 +304,16 @@ function mockFetch(url) {
     last_webhook_delivery: { id: 41, topic: 'order.created', status: 'processed', woo_order_id: 1601, created_order: true, received_at: '2026-07-10T17:00:00Z' },
     last_product_sync: { status: 'completed', total_remote_records: 12 },
     last_order_sync: { status: 'completed', total_remote_records: 8 },
-    last_error: null,
+    order_reconciliation: mockWooHealth,
+    last_error: mockWooLastError,
+  });
+  if (target.includes('/api/integrations/woocommerce/configuration')) return json({
+    connected: true,
+    base_url: 'https://staging32.pongo.ca',
+    base_url_host: 'staging32.pongo.ca',
+    consumer_key_present: true,
+    consumer_secret_present: true,
+    message: 'WooCommerce credentials were verified and saved in the backend environment.',
   });
   if (target.includes('/api/integrations/woocommerce/products/preview')) return json({
     configured: true,
@@ -316,6 +363,8 @@ function mockFetch(url) {
   if (target.includes('/api/integrations/woocommerce/remap')) return json({ candidates: [], mappings: [] });
   if (target.includes('/api/reports/inventory-valuation/summary')) return json({ total_skus: 1, total_units: 9 });
   if (target.includes('/api/reports/inventory-valuation')) return json([{ sku: 'SMOKE-001', description: 'Smoke Test Item', in_stock: 9 }]);
+  if (target.includes('/api/reports/receiving-cost/summary')) return json({ total_receipts: 0, total_received_value: 0 });
+  if (target.includes('/api/reports/receiving-cost')) return json([]);
   if (target.includes('/api/reports/received-inventory/summary')) return json({ total_receipts: 0, total_lines: 0, by_location: [] });
   if (target.includes('/api/reports/received-inventory')) return json([]);
   if (target.includes('/api/reports/fulfillments/summary')) return json({ total_fulfillments: 0, by_location: [], by_sku: [] });
@@ -323,6 +372,8 @@ function mockFetch(url) {
   if (target.includes('/api/reports/sku-orders/summary')) return json({ total_skus: 0 });
   if (target.includes('/api/reports/sku-orders')) return json([]);
   if (target.includes('/api/scanner/inventory/lookup')) return json({ matched: false, message: 'No item matched that scan.' });
+  if (target.includes('/api/scanner/receiving/scan/commit')) return json({ matched: true, status: 'committed', message: 'Received.' });
+  if (target.includes('/api/scanner/adjustments/commit')) return json({ matched: true, status: 'committed', message: 'Adjusted.' });
   return json({});
 }
 
@@ -330,14 +381,14 @@ function webhookEventPollCalls() {
   return fetch.mock.calls.filter(([url]) => String(url).includes('/api/integrations/woocommerce/webhooks/events'));
 }
 
-function quickSyncCalls() {
-  return fetch.mock.calls.filter(([url]) => String(url).includes('/api/integrations/woocommerce/orders/quick-sync'));
+function wooStatusCalls() {
+  return fetch.mock.calls.filter(([url]) => String(url).includes('/api/integrations/woocommerce/status'));
 }
 
 async function settleInitialOrderPolling() {
   await waitFor(() => {
     expect(webhookEventPollCalls().some(([url]) => String(url).includes('initialize=true'))).toBe(true);
-    expect(quickSyncCalls().length).toBeGreaterThan(0);
+    expect(wooStatusCalls().length).toBeGreaterThan(0);
   });
   await act(async () => {
     await Promise.resolve();
@@ -356,7 +407,32 @@ describe('App shell and workflows', () => {
   beforeEach(() => {
     window.location.hash = '';
     mockWebhookFeed = { events: [], latest_event_id: 0, next_after_id: 0, has_more: false };
-    mockQuickSyncResult = emptyQuickSyncResult();
+    mockWooHealth = {
+      enabled: true,
+      running: true,
+      healthy: true,
+      degraded: false,
+      stale: false,
+      interval_seconds: 60,
+      stale_after_seconds: 300,
+      statuses: ['processing', 'completed', 'failed', 'cancelled', 'refunded'],
+      last_status: 'completed',
+      error_count: 0,
+      last_attempt_at: '2026-07-10T17:00:00Z',
+      last_success_at: '2026-07-10T17:00:00Z',
+      last_failure_at: null,
+      last_error: null,
+      message: 'Server order reconciliation is healthy.',
+    };
+    mockWooLastError = null;
+    mockItemsFeed = { items: [item], page: 1, page_size: 20, total: 1, total_pages: 1, returned_count: 1 };
+    mockInsightOverview = {
+      dashboard: 'overview',
+      summary: { gross_sales: 100, discount_amount: 10, refund_amount: null, net_sales: 90, total_orders: 2, units_sold: 4, average_order_value: 45 },
+      trends: { daily_revenue: [{ date: '2026-06-20', order_count: 2, net_sales: 90 }] },
+      tables: { stockout_risk: [{ sku: 'DOG-FOOD', product_name: 'Dog Food', risk_level: 'low', current_sellable: 10, daily_velocity: 1, days_of_stock_left: 10 }] },
+      data_quality: [{ code: 'missing_refund_data', severity: 'info', message: 'Refund detail is not synced yet.' }],
+    };
     vi.stubGlobal('fetch', vi.fn(mockFetch));
   });
 
@@ -394,6 +470,10 @@ describe('App shell and workflows', () => {
     expect(screen.getByRole('main')).toHaveAttribute('id', 'main-content');
     expect(screen.getByRole('navigation', { name: 'Module navigation' })).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeInTheDocument();
+    const warehouseContexts = screen.getAllByLabelText('Current warehouse: Main Warehouse');
+    expect(warehouseContexts).toHaveLength(1);
+    expect(warehouseContexts[0].tagName).toBe('DIV');
+    expect(document.querySelector('.warehouse-control')).not.toBeInTheDocument();
 
     const navigationToggle = screen.getByRole('button', { name: 'Open navigation' });
     await user.click(navigationToggle);
@@ -437,6 +517,39 @@ describe('App shell and workflows', () => {
     });
   });
 
+  it('shows live inventory suggestions and applies keyword searches while typing', async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation((url) => {
+      const target = String(url);
+      if (target.includes('/api/items/search')) {
+        const suggestions = [
+          { id: 11, sku: '70001', barcode: '11170001', product_name: 'Duck Food Adult', brand: 'North Paw', category: 'Dog Food' },
+          { id: 12, sku: '70002', barcode: '11170002', product_name: 'Duck Food Puppy', brand: 'South Paw', category: 'Dog Food' },
+        ];
+        return json({ items: suggestions, total: suggestions.length });
+      }
+      return mockFetch(url);
+    });
+    window.location.hash = '#/inventory/all';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    const searchInput = screen.getByRole('combobox', { name: 'Scan or search inventory' });
+    await user.type(searchInput, 'duck');
+
+    expect(await screen.findByRole('option', { name: /Duck Food Adult.*North Paw.*70001/i })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Duck Food Puppy.*South Paw.*70002/i })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toContain('search=duck'));
+
+    await user.clear(searchInput);
+    await user.type(searchInput, '700');
+    const skuSuggestion = await screen.findByRole('option', { name: /Duck Food Puppy.*70002/i });
+    await user.click(skuSuggestion);
+
+    await waitFor(() => expect(window.location.hash).toContain('search=70002'));
+    expect(searchInput).toHaveValue('70002');
+  });
+
   it('shows the Items mapping and enrichment workflow actions', async () => {
     window.location.hash = '#items';
     render(<App />);
@@ -449,6 +562,70 @@ describe('App shell and workflows', () => {
     expect(screen.getByRole('button', { name: 'Refresh Items' })).toBeInTheDocument();
   });
 
+  it('invalidates an item import preview when the selected CSV changes', async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation((url) => {
+      if (String(url).includes('/api/items/import/preview')) return json({ total_rows: 1, valid_rows: 1, invalid_rows: 0, create_count: 1, update_count: 0, warnings: [], errors: [], preview_rows: [] });
+      return mockFetch(url);
+    });
+    window.location.hash = '#items';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    await user.click(screen.getByRole('button', { name: 'Import CSV' }));
+    const dialog = screen.getByRole('dialog', { name: 'Import CSV' });
+    const input = dialog.querySelector('input[type="file"]');
+    await user.upload(input, new File(['SKU\nA'], 'a.csv', { type: 'text/csv' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Preview CSV' }));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Import Valid Rows' })).toBeEnabled());
+
+    await user.upload(input, new File(['SKU\nB'], 'b.csv', { type: 'text/csv' }));
+    expect(within(dialog).getByRole('button', { name: 'Import Valid Rows' })).toBeDisabled();
+  });
+
+  it('invalidates a location import preview when the selected CSV changes', async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation((url) => {
+      if (String(url).includes('/api/locations/import/preview')) return json({ total_rows: 1, valid_rows: 1, invalid_rows: 0, create_count: 1, update_count: 0, warnings: [], errors: [], preview_rows: [] });
+      return mockFetch(url);
+    });
+    window.location.hash = '#locations';
+    render(<App />);
+
+    await screen.findAllByText('Smoke Rack');
+    await user.click(screen.getByRole('button', { name: 'Import' }));
+    const dialog = screen.getByRole('dialog', { name: 'Import locations CSV' });
+    const input = dialog.querySelector('input[type="file"]');
+    await user.upload(input, new File(['Warehouse,Location Code,Location Name\nMain,A,A'], 'a.csv', { type: 'text/csv' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Preview CSV' }));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Import Valid Rows' })).toBeEnabled());
+
+    await user.upload(input, new File(['Warehouse,Location Code,Location Name\nMain,B,B'], 'b.csv', { type: 'text/csv' }));
+    expect(within(dialog).getByRole('button', { name: 'Import Valid Rows' })).toBeDisabled();
+  });
+
+  it('invalidates a bulk-edit preview when any field changes', async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation((url) => {
+      if (String(url).includes('/api/items/bulk/preview')) return json({ can_commit: true, affected_count: 1, fields_to_update: ['brand'], warnings: [] });
+      return mockFetch(url);
+    });
+    window.location.hash = '#items';
+    render(<App />);
+
+    const itemRow = (await screen.findByText('Smoke Test Item')).closest('tr');
+    await user.click(within(itemRow).getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Bulk Edit' }));
+    const dialog = screen.getByRole('dialog', { name: 'Bulk edit items' });
+    const brand = within(dialog).getByRole('textbox', { name: 'brand' });
+    await user.type(brand, 'Acana');
+    await user.click(within(dialog).getByRole('button', { name: 'Preview' }));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Commit Metadata' })).toBeEnabled());
+
+    await user.type(brand, ' Updated');
+    expect(within(dialog).getByRole('button', { name: 'Commit Metadata' })).toBeDisabled();
+  });
+
   it('shows product titles without a long-description column', async () => {
     window.location.hash = '#items';
     render(<App />);
@@ -456,6 +633,163 @@ describe('App shell and workflows', () => {
     await screen.findByText('Smoke Test Item');
     expect(screen.getByRole('columnheader', { name: 'Product Title' })).toBeInTheDocument();
     expect(screen.queryByRole('columnheader', { name: 'Description' })).not.toBeInTheDocument();
+  });
+
+  it('uses server pagination for Inventory and resets the page when size or search changes', async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 45 }, (_, index) => ({
+      ...item,
+      id: index + 1,
+      SKU: `PAGE-${String(index + 1).padStart(3, '0')}`,
+      Barcode: `PAGE${String(index + 1).padStart(3, '0')}`,
+      Description: `Paged item ${index + 1}`,
+    }));
+    mockItemsFeed = pagedItemsFeed(rows);
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    expect(await screen.findByText('PAGE-001')).toBeInTheDocument();
+    expect(screen.getByText('Showing 1–20 of 45 inventory records')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(window.location.hash).toContain('page=2'));
+    await waitFor(() => expect(screen.getByText('PAGE-021')).toBeInTheDocument());
+    expect(screen.getByText('Showing 21–40 of 45 inventory records')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Current page' }), '3');
+    await waitFor(() => expect(window.location.hash).toContain('page=3'));
+    await waitFor(() => expect(screen.getByText('PAGE-041')).toBeInTheDocument());
+    expect(screen.getByText('Showing 41–45 of 45 inventory records')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Rows per page' }), '50');
+    await waitFor(() => expect(window.location.hash).toContain('page=1&page_size=50'));
+    await waitFor(() => expect(screen.getByText('PAGE-001')).toBeInTheDocument());
+    expect(screen.getByText('Showing 1–45 of 45 inventory records')).toBeInTheDocument();
+
+    const search = screen.getByRole('combobox', { name: 'Scan or search inventory' });
+    await user.type(search, 'PAGE-045');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+    await waitFor(() => expect(window.location.hash).toContain('search=PAGE-045'));
+    expect(window.location.hash).toContain('page=1');
+    await waitFor(() => expect(screen.getByText('PAGE-045')).toBeInTheDocument());
+    expect(screen.getByText('Showing 1–1 of 1 inventory records')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Reset' }));
+    await waitFor(() => expect(window.location.hash).not.toContain('search='));
+    expect(window.location.hash).toContain('page=1');
+    await waitFor(() => expect(screen.getByText('PAGE-001')).toBeInTheDocument());
+    expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/items' && request.searchParams.get('page') === '1' && request.searchParams.get('page_size') === '50';
+    })).toBe(true);
+  });
+
+  it('uses full-catalog raw facets while presenting decoded filter labels', async () => {
+    const user = userEvent.setup();
+    const rows = [
+      { ...item, id: 1, SKU: 'FACET-1', Category: 'Dogs', Brand: 'Alpha' },
+      { ...item, id: 2, SKU: 'FACET-2', Category: 'Dog &amp; Cat', Brand: 'Zeta &amp; Co' },
+    ];
+    mockItemsFeed = (target) => {
+      const url = new URL(target);
+      const category = url.searchParams.get('category');
+      const filtered = category ? rows.filter((row) => row.Category === category) : rows;
+      return {
+        items: filtered.slice(0, 1),
+        page: 1,
+        page_size: 1,
+        total: filtered.length,
+        total_pages: filtered.length,
+        returned_count: Math.min(filtered.length, 1),
+        facets: { categories: ['Dog &amp; Cat', 'Dogs'], brands: ['Alpha', 'Zeta &amp; Co'] },
+      };
+    };
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    await screen.findByText('FACET-1');
+    const category = screen.getByRole('combobox', { name: 'Category' });
+    expect(within(category).getByRole('option', { name: 'Dog & Cat' })).toHaveValue('Dog &amp; Cat');
+    await user.selectOptions(category, 'Dog &amp; Cat');
+
+    await screen.findByText('FACET-2');
+    expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/items' && request.searchParams.get('category') === 'Dog &amp; Cat';
+    })).toBe(true);
+  });
+
+  it('keeps inventory KPI summary filters aligned with search and data quality', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    const search = await screen.findByRole('combobox', { name: 'Scan or search inventory' });
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Data Quality' }), 'missing_cost');
+    await user.type(search, 'needle');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/inventory/summary/by-location'
+        && request.searchParams.get('search') === 'needle'
+        && request.searchParams.get('data_quality') === 'missing_cost';
+    })).toBe(true));
+  });
+
+  it('shows zero-safe empty pagination metadata', async () => {
+    mockItemsFeed = { items: [], page: 1, page_size: 20, total: 0, total_pages: 1, returned_count: 0 };
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    const pager = await screen.findByLabelText('Inventory Records pagination');
+    expect(within(pager).getByText('Showing 0–0 of 0 inventory records')).toBeInTheDocument();
+    expect(within(pager).getByRole('button', { name: 'Previous page' })).toBeDisabled();
+    expect(within(pager).getByRole('button', { name: 'Next page' })).toBeDisabled();
+  });
+
+  it('decodes encoded product titles as clamped plain text without injecting markup', async () => {
+    const encodedTitle = `Dog &amp; Coat ${'long product title '.repeat(8)}&lt;img data-xss-probe=&quot;true&quot; src=x&gt;`;
+    const decodedTitle = `Dog & Coat ${'long product title '.repeat(8)}<img data-xss-probe="true" src=x>`;
+    mockItemsFeed = { items: [{ ...item, woo_name: encodedTitle }], page: 1, page_size: 20, total: 1, total_pages: 1, returned_count: 1 };
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    const title = await screen.findByTitle(decodedTitle);
+    expect(title).toHaveTextContent(decodedTitle);
+    expect(title).toHaveClass('clamped-text');
+    expect(title).toHaveAttribute('aria-label', decodedTitle);
+    expect(title).toHaveAttribute('tabindex', '0');
+    expect(title.closest('td')).toHaveClass('description-cell');
+    expect(document.querySelector('[data-xss-probe]')).not.toBeInTheDocument();
+  });
+
+  it('distinguishes missing inventory fields from real numeric zero', async () => {
+    mockItemsFeed = {
+      items: [
+        { ...item, id: 11, SKU: 'NULL-COST', Barcode: '', Brand: '', Category: '', 'Unit Cost': null, 'Default Location': 'RECEIVING', 'Inventory Location': 'RECEIVING' },
+        { ...item, id: 12, SKU: 'ZERO-COST', Barcode: 'ZERO12', Brand: 'Zero Brand', Category: 'Zero Category', 'Unit Cost': 0, 'In Stock': 0, Allocated: 0 },
+      ],
+      page: 1,
+      page_size: 20,
+      total: 2,
+      total_pages: 1,
+      returned_count: 2,
+    };
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    const missingRow = (await screen.findByText('NULL-COST')).closest('tr');
+    expect(within(missingRow).getByText('Barcode missing')).toBeInTheDocument();
+    expect(within(missingRow).getByText('Brand missing')).toBeInTheDocument();
+    expect(within(missingRow).getByText('Category missing')).toBeInTheDocument();
+    expect(within(missingRow).getByText('Cost missing')).toBeInTheDocument();
+    expect(within(missingRow).getByText('Receiving staging')).toBeInTheDocument();
+    expect(within(missingRow).getByText('Not available')).toBeInTheDocument();
+
+    const zeroRow = screen.getByText('ZERO-COST').closest('tr');
+    expect(within(zeroRow).queryByText('Cost missing')).not.toBeInTheDocument();
+    expect(within(zeroRow).getAllByText('$0.00')).toHaveLength(2);
   });
 
   it('previews variable parents as skipped and three variations as separate proposed items', async () => {
@@ -520,24 +854,173 @@ describe('App shell and workflows', () => {
     expect(await screen.findByText('No item matched that scan.')).toBeInTheDocument();
   });
 
-  it('renders only the selected report panel and switches reports', async () => {
+  it('adds idempotency keys to scanner receiving and adjustment commits', async () => {
     const user = userEvent.setup();
-    window.location.hash = '#reports';
+    window.location.hash = '#scanner';
     render(<App />);
 
-    await screen.findByRole('heading', { name: 'Inventory Valuation' });
+    await screen.findByRole('heading', { name: 'Scanner Console' });
+    await user.click(screen.getByRole('button', { name: 'Receiving' }));
+    await user.type(screen.getByPlaceholderText('Scan SKU, barcode, or item ID'), 'SMOKE-001');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Location' }), 'Smoke Rack');
+    await user.click(screen.getByRole('button', { name: 'Commit' }));
+
+    let receivingKey;
+    await waitFor(() => {
+      const commitCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/scanner/receiving/scan/commit'));
+      receivingKey = JSON.parse(commitCall[1].body).idempotency_key;
+      expect(receivingKey).toEqual(expect.any(String));
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Adjustment' }));
+    await user.type(screen.getByRole('textbox', { name: 'Qty Change' }), '1');
+    await user.type(screen.getByRole('textbox', { name: 'Reason' }), 'Count correction');
+    await user.click(screen.getByRole('button', { name: 'Commit' }));
+
+    await waitFor(() => {
+      const commitCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/scanner/adjustments/commit'));
+      const adjustmentKey = JSON.parse(commitCall[1].body).idempotency_key;
+      expect(adjustmentKey).toEqual(expect.any(String));
+      expect(adjustmentKey).not.toBe(receivingKey);
+    });
+  });
+
+  it('uses semantic receiving modes, an accessible stepper, disabled reasons, and named remove actions', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/receiving/direct';
+    render(<App />);
+
+    const modes = await screen.findByRole('navigation', { name: 'Receiving modes' });
+    expect(within(modes).getByRole('link', { name: 'Direct Receiving' })).toHaveAttribute('aria-current', 'page');
+    expect(within(modes).getByRole('link', { name: 'Bulk Receiving Session' })).not.toHaveAttribute('aria-current');
+    expect(within(modes).getByRole('link', { name: 'Receipt History' })).not.toHaveAttribute('aria-current');
+
+    const progress = screen.getByRole('list', { name: 'Direct receiving progress' });
+    const steps = within(progress).getAllByRole('listitem');
+    expect(steps).toHaveLength(3);
+    expect(steps[0]).toHaveAttribute('aria-current', 'step');
+    expect(steps[0]).toHaveAttribute('data-state', 'current');
+
+    const commit = screen.getByRole('button', { name: 'Commit Receiving' });
+    expect(commit).toBeDisabled();
+    expect(commit).toHaveAttribute('aria-describedby', 'receiving-commit-reason');
+    expect(screen.getByText('Commit unavailable: add at least one SKU or barcode.')).toHaveAttribute('role', 'status');
+
+    expect(screen.getByRole('button', { name: 'Remove receiving line 1' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Add Line' }));
+    const removeSecondLine = screen.getByRole('button', { name: 'Remove receiving line 2' });
+    expect(removeSecondLine).toBeEnabled();
+    await user.click(removeSecondLine);
+    expect(screen.queryByRole('button', { name: 'Remove receiving line 2' })).not.toBeInTheDocument();
+
+    await user.type(screen.getByRole('textbox', { name: 'Line 1 SKU or barcode' }), 'SMOKE-001');
+    expect(steps[1]).toHaveAttribute('aria-current', 'step');
+    expect(screen.getByText(/choose a destination location for every selected item/)).toHaveAttribute('role', 'status');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Line 1 inventory location' }), 'Smoke Rack');
+    expect(screen.getByText(/preview the receipt after completing the required fields/)).toHaveAttribute('role', 'status');
+
+    await user.click(screen.getByRole('button', { name: 'Preview Receiving' }));
+    await waitFor(() => expect(commit).toBeEnabled());
+    expect(steps[2]).toHaveAttribute('aria-current', 'step');
+    expect(steps[2]).toHaveAttribute('data-state', 'current');
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/receipts/direct/preview'))).toBe(true);
+
+    await user.click(commit);
+    await waitFor(() => {
+      const commitCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/receipts/direct/commit'));
+      expect(JSON.parse(commitCall[1].body)).toMatchObject({ idempotency_key: expect.any(String) });
+    });
+
+    await user.click(within(modes).getByRole('link', { name: 'Receipt History' }));
+    expect(await screen.findByRole('heading', { name: 'Receipt History', level: 2 })).toBeInTheDocument();
+    expect(window.location.hash).toBe('#/receiving/history');
+    expect(screen.getByRole('link', { name: 'Receipt History' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('heading', { name: 'Direct Receiving', level: 2 })).not.toBeInTheDocument();
+  });
+
+  it('adds an idempotency key to bulk receiving commits', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/receiving/bulk';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Bulk Receiving Session' });
+    await user.type(screen.getByPlaceholderText('Scan or type SKU/barcode'), 'SMOKE-001');
+    await user.selectOptions(document.querySelector('.bulk-session .scanner-input-row select'), 'Smoke Rack');
+    await user.click(screen.getByRole('button', { name: 'Add Line' }));
+    await user.click(screen.getByRole('button', { name: 'Preview Session' }));
+    const commit = screen.getByRole('button', { name: 'Commit Session' });
+    await waitFor(() => expect(commit).toBeEnabled());
+    await user.click(commit);
+
+    await waitFor(() => {
+      const commitCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/receipts/bulk/commit'));
+      expect(JSON.parse(commitCall[1].body)).toMatchObject({ idempotency_key: expect.any(String) });
+    });
+  });
+
+  it('uses route-backed report categories, scoped secondary navigation, and contextual filters', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/reports/inventory/inventory-valuation';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Inventory Valuation', level: 1 })).toBeInTheDocument();
+    expect(await screen.findByText('SMOKE-001')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Received Inventory Report' })).not.toBeInTheDocument();
 
-    const nav = screen.getByLabelText('Report list');
-    await user.click(within(nav).getByRole('button', { name: 'Received Inventory' }));
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Received Inventory Report' })).toBeInTheDocument());
-    expect(screen.queryByRole('heading', { name: 'Inventory Valuation' })).not.toBeInTheDocument();
+    const categoryNav = screen.getByRole('navigation', { name: 'Inventory Valuation sections' });
+    expect(within(categoryNav).getByRole('link', { name: 'Inventory' })).toHaveAttribute('aria-current', 'page');
+    const inventoryNav = screen.getByRole('navigation', { name: 'Inventory reports' });
+    expect(within(inventoryNav).getByRole('link', { name: 'Inventory Valuation' })).toHaveAttribute('aria-current', 'page');
+    expect(within(inventoryNav).queryByRole('link', { name: 'Received Inventory' })).not.toBeInTheDocument();
+
+    const inventoryFilters = document.querySelector('.report-filter-grid');
+    expect(within(inventoryFilters).getByLabelText('Warehouse')).toBeInTheDocument();
+    expect(within(inventoryFilters).getByLabelText('Inventory Location')).toBeInTheDocument();
+    expect(within(inventoryFilters).getByLabelText('Brand')).toBeInTheDocument();
+    expect(within(inventoryFilters).getByLabelText('Category')).toBeInTheDocument();
+    expect(within(inventoryFilters).getByLabelText(/sku/i)).toBeInTheDocument();
+    expect(within(inventoryFilters).queryByLabelText('Start Date')).not.toBeInTheDocument();
+    expect(within(inventoryFilters).queryByLabelText('Barcode')).not.toBeInTheDocument();
+
+    fetch.mockClear();
+    await user.type(within(inventoryFilters).getByLabelText('Brand'), 'Acana');
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => {
+      const reportCalls = fetch.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('/api/reports/inventory-valuation'));
+      expect(reportCalls).toHaveLength(2);
+      expect(reportCalls.every((url) => new URL(url).searchParams.get('brand') === 'Acana')).toBe(true);
+      expect(reportCalls.every((url) => !new URL(url).searchParams.has('start_date') && !new URL(url).searchParams.has('barcode'))).toBe(true);
+    });
+
+    await user.click(within(categoryNav).getByRole('link', { name: 'Receiving' }));
+    expect(await screen.findByRole('heading', { name: 'Receiving Cost', level: 1 })).toBeInTheDocument();
+    expect(window.location.hash).toBe('#/reports/receiving/receiving-cost');
+    const receivingNav = screen.getByRole('navigation', { name: 'Receiving reports' });
+    expect(within(receivingNav).getByRole('link', { name: 'Receiving Cost' })).toHaveAttribute('aria-current', 'page');
+    expect(within(receivingNav).getByRole('link', { name: 'Received Inventory' })).toBeInTheDocument();
+    expect(within(receivingNav).queryByRole('link', { name: 'Fulfillment' })).not.toBeInTheDocument();
+
+    const receivingFilters = document.querySelector('.report-filter-grid');
+    expect(within(receivingFilters).getByLabelText('Start Date')).toBeInTheDocument();
+    expect(within(receivingFilters).getByLabelText('End Date')).toBeInTheDocument();
+    expect(within(receivingFilters).getByLabelText('Warehouse')).toBeInTheDocument();
+    expect(within(receivingFilters).getByLabelText('Inventory Location')).toBeInTheDocument();
+    expect(within(receivingFilters).getByLabelText(/sku/i)).toBeInTheDocument();
+    expect(within(receivingFilters).queryByLabelText('Barcode')).not.toBeInTheDocument();
+    expect(within(receivingFilters).queryByLabelText('Brand')).not.toBeInTheDocument();
+    expect(within(receivingFilters).queryByLabelText('Category')).not.toBeInTheDocument();
+
+    await user.click(within(receivingNav).getByRole('link', { name: 'Received Inventory' }));
+    expect(await screen.findByRole('heading', { name: 'Received Inventory', level: 1 })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Received Inventory Report', level: 2 })).toBeInTheDocument();
+    expect(window.location.hash).toBe('#/reports/receiving/received-inventory');
+    expect(screen.queryByRole('heading', { name: 'Receiving Cost', level: 2 })).not.toBeInTheDocument();
   });
 
   it.each([
     ['#items', 'Items'],
     ['#inventory', 'All Inventory'],
-    ['#reports', 'Reports'],
+    ['#/reports/inventory/inventory-valuation', 'Inventory Valuation'],
     ['#scanner', 'Scanner'],
     ['#cycle-count', 'Cycle Count'],
   ])('renders the %s page', async (hash, heading) => {
@@ -578,6 +1061,7 @@ describe('App shell and workflows', () => {
   it('renders Orders parent navigation and expands Orders sub-navigation when active', async () => {
     window.location.hash = '#/orders/open';
     render(<App />);
+    await settleInitialOrderPolling();
 
     const nav = screen.getByRole('navigation', { name: 'Main navigation' });
     expect(within(nav).getByRole('button', { name: /Orders/i })).toHaveAttribute('aria-expanded', 'true');
@@ -591,6 +1075,7 @@ describe('App shell and workflows', () => {
 
   it('shows Dashboard and Inventory Overview in the sidebar', async () => {
     render(<App />);
+    await settleInitialOrderPolling();
 
     const nav = screen.getByRole('navigation', { name: 'Main navigation' });
     expect(within(nav).getByRole('link', { name: /^Dashboard$/i })).toBeInTheDocument();
@@ -707,21 +1192,47 @@ describe('App shell and workflows', () => {
     expect(screen.getByRole('button', { name: 'Order notifications, 2 unread' })).toBeInTheDocument();
   });
 
-  it('uses quick-sync creation counts as a deduplicated fallback notification', async () => {
-    const user = userEvent.setup();
+  it('refreshes local order views without posting the Woo quick-sync endpoint', async () => {
     render(<App />);
     await settleInitialOrderPolling();
-    mockQuickSyncResult = emptyQuickSyncResult({ sync_run_id: 92, total_remote_records: 2, created_count: 2, auto_allocated_count: 2 });
+    fetch.mockClear();
 
     await focusWindow();
 
-    const toast = await screen.findByLabelText('New order notification');
-    expect(within(toast).getByText('2 new WooCommerce orders imported')).toBeInTheDocument();
-    await user.click(within(toast).getByRole('button', { name: 'Dismiss new order notification' }));
-    const callsBeforeReplay = quickSyncCalls().length;
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/business-dashboard'))).toBe(true));
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/integrations/woocommerce/orders/quick-sync'))).toBe(false);
+  });
+
+  it('does not announce order update events as new customer orders', async () => {
+    render(<App />);
+    await settleInitialOrderPolling();
+    mockWebhookFeed = {
+      events: [{ ...mockWebhookEvent, id: 42, topic: 'order.updated', event_type: 'order_updated', created_order: false }],
+      latest_event_id: 42,
+      next_after_id: 42,
+      has_more: false,
+    };
+
     await focusWindow();
-    await waitFor(() => expect(quickSyncCalls().length).toBeGreaterThan(callsBeforeReplay));
+    await waitFor(() => expect(webhookEventPollCalls().some(([url]) => String(url).includes('after_id=0'))).toBe(true));
+
     expect(screen.queryByLabelText('New order notification')).not.toBeInTheDocument();
+  });
+
+  it('shows a global accessible warning when server reconciliation is stale', async () => {
+    mockWooHealth = {
+      ...mockWooHealth,
+      healthy: false,
+      stale: true,
+      last_error: 'WooCommerce credentials expired.',
+      message: 'Server order reconciliation is stale.',
+    };
+    render(<App />);
+
+    const warning = await screen.findByRole('alert', { name: 'WooCommerce order sync warning' });
+    expect(within(warning).getByText('Automatic order sync is not healthy')).toBeInTheDocument();
+    expect(within(warning).getByText('WooCommerce credentials expired.')).toBeInTheDocument();
+    expect(within(warning).getByRole('link', { name: 'Review WooCommerce Settings' })).toHaveAttribute('href', '#/settings/sync');
   });
 
   it('shows Insights in the sidebar and opens Pongo Insights', async () => {
@@ -737,18 +1248,87 @@ describe('App shell and workflows', () => {
     expect(await screen.findByText('Business intelligence, customer behavior, revenue, product demand, and forecasting.')).toBeInTheDocument();
   });
 
-  it('renders Insights tab navigation and Executive Overview by default', async () => {
-    window.location.hash = '#insights';
+  it('renders canonical overview metrics, unavailable refunds, and only contextual filters', async () => {
+    window.location.hash = '#/insights/overview';
     render(<App />);
 
     expect(await screen.findByRole('tab', { name: 'Executive Overview' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tab', { name: 'Orders & Revenue' })).toBeInTheDocument();
     expect(await screen.findByText('Refund detail is not synced yet.')).toBeInTheDocument();
+
+    const metricLabels = [...document.querySelectorAll('.insights-summary-strip .metric > span')].map((node) => node.textContent);
+    expect(metricLabels).toEqual(['Gross Sales', 'Discount Amount', 'Refund Amount', 'Net Sales', 'Total Orders', 'Units Sold', 'Average Order Value']);
+    const refundMetric = screen.getByText('Refund Amount').closest('.metric');
+    expect(within(refundMetric).getByText('Not available')).toBeInTheDocument();
+    expect(within(refundMetric).getByText('Refund value when refund detail is available locally.')).toBeInTheDocument();
+    expect(screen.getByText('Low risk')).toBeInTheDocument();
+    expect(screen.queryByText('Total Revenue')).not.toBeInTheDocument();
+
+    const filters = document.querySelector('.insights-filter-card');
+    for (const label of ['Start Date', 'End Date', 'Brand', 'Category', 'SKU']) {
+      expect(within(filters).getByLabelText(label)).toBeInTheDocument();
+    }
+    for (const label of ['Customer Email', 'Payment Method', 'Order Status', 'City']) {
+      expect(within(filters).queryByLabelText(label)).not.toBeInTheDocument();
+    }
+  });
+
+  it('gives data-quality warnings a real remediation route and affected scope', async () => {
+    mockInsightOverview = {
+      ...mockInsightOverview,
+      data_quality: [{ code: 'missing_unit_cost', severity: 'warning', count: 3, message: 'Some products have no unit cost.' }],
+    };
+    window.location.hash = '#/insights/overview';
+    render(<App />);
+
+    expect(await screen.findByText('Some products have no unit cost.')).toBeInTheDocument();
+    expect(screen.getByText('3 affected record(s)')).toBeInTheDocument();
+    expect(screen.getByText('Margin and inventory-value metrics exclude items without cost.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Review missing costs' })).toHaveAttribute('href', '#/inventory/all?data_quality=missing_cost');
+  });
+
+  it('deep-links Insights tabs, scopes filter requests, and supports arrow-key navigation', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/insights/orders-revenue';
+    render(<App />);
+
+    const ordersTab = await screen.findByRole('tab', { name: 'Orders & Revenue' });
+    expect(ordersTab).toHaveAttribute('aria-selected', 'true');
+    expect(ordersTab).toHaveAttribute('tabindex', '0');
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'insight-tab-orders-revenue');
+
+    let filters = document.querySelector('.insights-filter-card');
+    expect(within(filters).getByLabelText('Payment Method')).toBeInTheDocument();
+    expect(within(filters).getByLabelText('Order Status')).toBeInTheDocument();
+    expect(within(filters).queryByLabelText('Brand')).not.toBeInTheDocument();
+    expect(within(filters).queryByLabelText('SKU')).not.toBeInTheDocument();
+
+    await user.type(within(filters).getByLabelText('Payment Method'), 'stripe');
+    fetch.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Apply Filters' }));
+    await waitFor(() => {
+      const request = fetch.mock.calls.map(([url]) => String(url)).find((url) => url.includes('/api/insights/orders-revenue'));
+      expect(request).toBeDefined();
+      expect(new URL(request).searchParams.get('payment_method')).toBe('stripe');
+      expect(new URL(request).searchParams.has('brand')).toBe(false);
+      expect(new URL(request).searchParams.has('customer_email')).toBe(false);
+    });
+
+    ordersTab.focus();
+    await user.keyboard('{ArrowRight}');
+    const customerTab = await screen.findByRole('tab', { name: 'Customer Metrics', selected: true });
+    await waitFor(() => expect(customerTab).toHaveFocus());
+    expect(window.location.hash).toBe('#/insights/customer-metrics');
+    expect(customerTab).toHaveAttribute('tabindex', '0');
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'insight-tab-customer-metrics');
+    filters = document.querySelector('.insights-filter-card');
+    expect(within(filters).getByLabelText('Customer Email')).toBeInTheDocument();
+    expect(within(filters).queryByLabelText('Payment Method')).not.toBeInTheDocument();
   });
 
   it('loads selected Insights tabs on demand without rendering every dashboard table', async () => {
     const user = userEvent.setup();
-    window.location.hash = '#insights';
+    window.location.hash = '#/insights/overview';
     render(<App />);
 
     await screen.findByRole('tab', { name: 'Executive Overview' });
@@ -763,7 +1343,7 @@ describe('App shell and workflows', () => {
 
   it('renders Customer Metrics and Product & SKU Insights tabs', async () => {
     const user = userEvent.setup();
-    window.location.hash = '#insights';
+    window.location.hash = '#/insights/overview';
     render(<App />);
 
     await user.click(await screen.findByRole('tab', { name: 'Customer Metrics' }));
@@ -775,18 +1355,20 @@ describe('App shell and workflows', () => {
 
   it('shows subscription empty state and keeps export buttons real only', async () => {
     const user = userEvent.setup();
-    window.location.hash = '#insights';
+    window.location.hash = '#/insights/overview';
     render(<App />);
 
     await user.click(await screen.findByRole('tab', { name: 'Subscriptions' }));
 
     expect((await screen.findAllByText('No subscription data synced yet')).length).toBeGreaterThan(0);
+    const activeSubscriptions = screen.getByText('Active Subscriptions').closest('.metric');
+    expect(within(activeSubscriptions).getByText('Not available')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Export CSV/i })).not.toBeInTheDocument();
   });
 
   it('has a refresh button for Insights and reloads the selected dashboard', async () => {
     const user = userEvent.setup();
-    window.location.hash = '#insights';
+    window.location.hash = '#/insights/overview';
     render(<App />);
 
     await screen.findByRole('tab', { name: 'Executive Overview' });
@@ -798,34 +1380,217 @@ describe('App shell and workflows', () => {
     });
   });
 
-  it('shows staging WooCommerce Settings without exposing secrets', async () => {
-    window.location.hash = '#settings';
+  it('shows an Insights error without a contradictory empty table and retries successfully', async () => {
+    const user = userEvent.setup();
+    let overviewAttempts = 0;
+    fetch.mockImplementation((url, options) => {
+      if (String(url).includes('/api/insights/overview') && overviewAttempts++ === 0) {
+        return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}), text: () => Promise.resolve('Unavailable') });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/insights/overview';
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'WooCommerce Catalog Mapping & Import' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Preview Catalog Mapping/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Import & Map Catalog/i })).toBeInTheDocument();
-    expect(screen.getAllByText('staging').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('staging32.pongo.ca').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Credentials stay in backend environment variables/i)).toBeInTheDocument();
-    expect(screen.getByText('Webhook Receiver')).toBeInTheDocument();
-    expect(screen.getByText('Webhook Secret')).toBeInTheDocument();
-    expect(screen.getByText(/Last webhook delivery processed/i)).toBeInTheDocument();
-    expect(screen.getByText(/may safely auto-allocate active local orders/i)).toBeInTheDocument();
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText('Unable to load Pongo Insights from the backend.')).toBeInTheDocument();
+    expect(screen.queryByText('Not enough data yet for this dashboard.')).not.toBeInTheDocument();
+    await user.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('DOG-FOOD')).toBeInTheDocument();
+  });
+
+  it('shows staging WooCommerce Settings without exposing secrets', async () => {
+    window.location.hash = '#/settings/connection';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'WooCommerce Connection', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Store connection & operations' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Catalog import, orders, remapping/i })).toHaveAttribute('href', '#/settings/sync');
+    expect(screen.getByRole('link', { name: /Stock updates, order status/i })).toHaveAttribute('href', '#/settings/writeback');
+    expect(await screen.findByText(/staging environment/i)).toBeInTheDocument();
+    expect(await screen.findByText('staging32.pongo.ca')).toBeInTheDocument();
+    expect(screen.getByText(/Keys never return to the browser after saving/i)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'WooCommerce Catalog Mapping & Import' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'WooCommerce write policy' })).not.toBeInTheDocument();
     expect(screen.queryByText(/ck_test/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/cs_test/i)).not.toBeInTheDocument();
   });
 
-  it('renders dry-run staging writeback controls in Settings', async () => {
-    window.location.hash = '#settings';
+  it('does not present a historical sync error as a current connection failure', async () => {
+    mockWooLastError = 'Historical WooCommerce sync failed.';
+    window.location.hash = '#/settings/connection';
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Staging Writeback Testing' })).toBeInTheDocument();
-    expect(screen.getByText('Live Staging Writes On')).toBeInTheDocument();
-    expect(screen.getByText(/Live staging write testing is enabled/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Preview Stock Writeback/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Preview Order Status Writeback/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Send to Staging/i })).toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'Store connection & operations' });
+    expect(screen.getByText('Configured', { selector: '.integration-health strong' })).toBeInTheDocument();
+    expect(screen.queryByText('Historical WooCommerce sync failed.')).not.toBeInTheDocument();
+  });
+
+  it('keeps catalog, order, remap, and history workflows on Sync & Mapping only', async () => {
+    window.location.hash = '#/settings/sync';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Sync & Mapping', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'WooCommerce Catalog Mapping & Import' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'WooCommerce Order Sync' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'WooCommerce Remap' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Sync Run History' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Store connection & operations' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'WooCommerce write policy' })).not.toBeInTheDocument();
+  });
+
+  it('paginates long Settings history tables instead of rendering every row', async () => {
+    const user = userEvent.setup();
+    const runs = Array.from({ length: 25 }, (_, index) => ({
+      id: index + 1,
+      started_at: '2026-07-28T12:00:00Z',
+      completed_at: '2026-07-28T12:01:00Z',
+      sync_type: 'products',
+      status: 'completed',
+      total_remote_records: 1,
+      created_count: 0,
+      updated_count: 1,
+      matched_count: 1,
+      skipped_count: 0,
+      conflict_count: 0,
+      error_count: 0,
+      created_by: `Worker ${index + 1}`,
+    }));
+    fetch.mockImplementation((url, options) => (
+      String(url).includes('/api/integrations/woocommerce/sync-runs')
+        ? json({ sync_runs: runs })
+        : mockFetch(url, options)
+    ));
+    window.location.hash = '#/settings/sync';
+    render(<App />);
+
+    const history = (await screen.findByText('25 sync run(s)')).closest('.table-wrap');
+    expect(within(history).getAllByRole('row')).toHaveLength(21);
+    expect(within(history).getByText(/Showing 1–20 of 25 sync runs/)).toBeInTheDocument();
+
+    await user.click(within(history).getByRole('button', { name: 'Next page' }));
+
+    expect(within(history).getAllByRole('row')).toHaveLength(6);
+    expect(within(history).getByText(/Showing 21–25 of 25 sync runs/)).toBeInTheDocument();
+    expect(within(history).getByText('Worker 25')).toBeInTheDocument();
+  });
+
+  it('sends changed WooCommerce credentials only to the backend configuration endpoint', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/settings/connection';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Store connection & operations' });
+    await user.type(screen.getByLabelText('Consumer key'), 'ck_replacement');
+    await user.type(screen.getByLabelText('Consumer secret'), 'cs_replacement');
+    await user.click(screen.getByRole('button', { name: 'Save & verify connection' }));
+
+    await waitFor(() => {
+      const call = fetch.mock.calls.find(([url]) => String(url).includes('/api/integrations/woocommerce/configuration'));
+      expect(call).toBeTruthy();
+      expect(JSON.parse(call[1].body)).toEqual({
+        base_url: 'https://staging32.pongo.ca',
+        consumer_key: 'ck_replacement',
+        consumer_secret: 'cs_replacement',
+      });
+    });
+    expect(await screen.findByText(/verified and saved in the backend environment/i)).toBeInTheDocument();
+  });
+
+  it('blocks a WooCommerce host replacement until it is explicitly authorized', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/settings/connection';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Store connection & operations' });
+    const storeUrl = screen.getByLabelText('Store URL');
+    const saveButton = screen.getByRole('button', { name: 'Save & verify connection' });
+    await user.clear(storeUrl);
+    await user.type(storeUrl, 'https://staging23.pongo.ca/');
+
+    expect(screen.getByText('staging32.pongo.ca', { selector: '.integration-host-comparison strong' })).toBeInTheDocument();
+    expect(screen.getByText('staging23.pongo.ca', { selector: '.integration-host-comparison strong' })).toBeInTheDocument();
+    expect(screen.getByText('Host review required')).toBeInTheDocument();
+    expect(saveButton).toBeDisabled();
+    await user.keyboard('{Enter}');
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/integrations/woocommerce/configuration'))).toBe(false);
+
+    await user.click(screen.getByRole('checkbox', { name: /Authorize replacing the WooCommerce host/i }));
+    expect(saveButton).toBeEnabled();
+    await user.click(saveButton);
+
+    await waitFor(() => {
+      const call = fetch.mock.calls.find(([url]) => String(url).includes('/api/integrations/woocommerce/configuration'));
+      expect(JSON.parse(call[1].body)).toEqual({
+        base_url: 'https://staging23.pongo.ca/',
+        consumer_key: '',
+        consumer_secret: '',
+        allow_host_change: true,
+      });
+    });
+  });
+
+  it('renders a WooCommerce API detail string without JSON quotes', async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation((url, options) => (
+      String(url).includes('/api/integrations/woocommerce/configuration')
+        ? Promise.resolve({
+          ok: false,
+          status: 400,
+          json: () => Promise.resolve({ detail: 'WooCommerce connection failed: host replacement was not authorized.' }),
+          text: () => Promise.resolve(''),
+        })
+        : mockFetch(url, options)
+    ));
+    window.location.hash = '#/settings/connection';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Store connection & operations' });
+    await user.click(screen.getByRole('button', { name: 'Save & verify connection' }));
+
+    const message = await screen.findByText('WooCommerce connection failed: host replacement was not authorized.');
+    expect(message).toHaveTextContent(/^WooCommerce connection failed: host replacement was not authorized\.$/);
+  });
+
+  it('renders dry-run staging writeback controls in Settings', async () => {
+    window.location.hash = '#/settings/writeback';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Writeback Control', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'WooCommerce write policy' })).toBeInTheDocument();
+    expect(screen.getByText(/Live Staging Writes On/i)).toBeInTheDocument();
+    expect(screen.getByText('Hard-blocked operations')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Preview stock writeback/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Preview order writeback/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /Send to Staging/i })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Store connection & operations' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'WooCommerce Catalog Mapping & Import' })).not.toBeInTheDocument();
+  });
+
+  it('shows all Update All errors and wires resume and cancel actions after refresh', async () => {
+    const user = userEvent.setup();
+    const jobs = [
+      { id: 81, status: 'completed_with_errors', force: true, chunk_size: 20, total_items: 2, processed_items: 2, sent_count: 1, dry_run_count: 0, failed_count: 1, skipped_unmapped_count: 0, unchanged_count: 0, progress_percent: 100, errors: ['SKU-A: timeout', 'SKU-B: mapping failed'], last_error: 'SKU-B: mapping failed', created_at: '2026-07-31T12:00:00Z' },
+      { id: 82, status: 'running', force: true, chunk_size: 20, total_items: 10, processed_items: 2, sent_count: 2, dry_run_count: 0, failed_count: 0, skipped_unmapped_count: 0, unchanged_count: 0, progress_percent: 20, errors: [], last_error: null, created_at: '2026-07-31T12:01:00Z' },
+    ];
+    fetch.mockImplementation((url) => {
+      const target = String(url);
+      if (target.endsWith('/api/integrations/woocommerce/writeback/stock/jobs')) return json({ jobs, total: jobs.length });
+      if (target.includes('/api/integrations/woocommerce/writeback/stock/jobs/81/resume')) return json({ ...jobs[0], status: 'queued' });
+      if (target.includes('/api/integrations/woocommerce/writeback/stock/jobs/82/cancel')) return json({ ...jobs[1], status: 'cancelling' });
+      return mockFetch(url);
+    });
+    window.location.hash = '#/settings/writeback';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Update All history' });
+    await user.click(screen.getByText('SKU-B: mapping failed', { selector: 'summary' }));
+    expect(screen.getByText('SKU-A: timeout')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Download error report' })).toHaveAttribute('download', 'pongo-stock-sync-job-81-errors.txt');
+    await user.click(screen.getAllByRole('button', { name: 'Resume' }).find((button) => !button.disabled));
+    await user.click(screen.getAllByRole('button', { name: 'Cancel' }).find((button) => !button.disabled));
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/stock/jobs/81/resume'))).toBe(true);
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/stock/jobs/82/cancel'))).toBe(true);
   });
 
   it('shows Open Orders only and removes the old Orders header tabs', async () => {
@@ -969,7 +1734,57 @@ describe('App shell and workflows', () => {
 
     await user.click(screen.getByRole('menuitem', { name: 'Update stock levels' }));
     expect(await screen.findByRole('dialog', { name: 'Update stock levels' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Update and Auto-Allocate' })).toBeInTheDocument();
+    const newStock = screen.getByRole('spinbutton', { name: 'New Stock Quantity' });
+    await user.clear(newStock);
+    await user.type(newStock, '1');
+    await user.click(screen.getByRole('button', { name: 'Update and Auto-Allocate' }));
+    await waitFor(() => {
+      const commitCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/scanner/adjustments/commit'));
+      expect(JSON.parse(commitCall[1].body)).toMatchObject({ idempotency_key: expect.any(String) });
+    });
+  });
+
+  it('adds an idempotency key to the inventory stock adjustment modal', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fetch.mockImplementation((url) => {
+      if (String(url).includes('/api/inventory/locations')) {
+        return json({
+          rows: [{
+            id: 91,
+            item_id: 1,
+            sku: 'SMOKE-001',
+            barcode: 'SMOKE001',
+            description: 'Smoke Test Item',
+            warehouse: 'Main Warehouse',
+            inventory_location: 'Smoke Rack',
+            in_stock: 9,
+            allocated: 2,
+            sellable: 7,
+          }],
+        });
+      }
+      return mockFetch(url);
+    });
+    window.location.hash = '#/inventory/all';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    const inventoryTable = screen.getByText('SMOKE-001').closest('table');
+    await user.click(within(inventoryTable).getByRole('button', { name: 'Open inventory actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Edit Current Stock' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit current stock' });
+    const newQuantity = within(dialog).getByRole('spinbutton', { name: 'New Stock Quantity' });
+    await user.clear(newQuantity);
+    await user.type(newQuantity, '10');
+    await user.type(within(dialog).getByPlaceholderText('Required'), 'Physical count correction');
+    await user.click(within(dialog).getByRole('button', { name: 'Commit Adjustment' }));
+
+    await waitFor(() => {
+      const commitCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/inventory/adjustments'));
+      expect(JSON.parse(commitCall[1].body)).toMatchObject({ idempotency_key: expect.any(String) });
+    });
+    confirmSpy.mockRestore();
   });
 
   it('navigates between Orders subpages from the sidebar', async () => {
@@ -1013,6 +1828,7 @@ describe('App shell and workflows', () => {
         order_ids: [],
         lines: [{ order_line_id: 9001, quantity_to_pick: 1 }],
         allow_partial: true,
+        idempotency_key: expect.any(String),
       });
     });
     confirmSpy.mockRestore();
@@ -1032,7 +1848,7 @@ describe('App shell and workflows', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Pick Selected' }));
     await waitFor(() => {
       const commitCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/picks/commit'));
-      expect(JSON.parse(commitCall[1].body)).toMatchObject({ order_ids: [701], allow_partial: false });
+      expect(JSON.parse(commitCall[1].body)).toMatchObject({ order_ids: [701], allow_partial: false, idempotency_key: expect.any(String) });
     });
     confirmSpy.mockRestore();
   });
@@ -1053,6 +1869,26 @@ describe('App shell and workflows', () => {
     await waitFor(() => {
       const bulkCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/orders/bulk/complete'));
       expect(JSON.parse(bulkCall[1].body)).toMatchObject({ order_ids: [701] });
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it('adds an idempotency key to bulk unpick requests', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Select order 0802' }));
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Unpick all' }));
+
+    await waitFor(() => {
+      const unpickCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/orders/bulk/unpick'));
+      expect(JSON.parse(unpickCall[1].body)).toMatchObject({
+        order_ids: [701],
+        idempotency_key: expect.any(String),
+      });
     });
     confirmSpy.mockRestore();
   });

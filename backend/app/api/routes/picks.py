@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.picks import PickCommitResponse, PickDetail, PickListResponse, PickPreviewResponse, PickRequest, PickScanRequest, PickScanResponse, PickScannerOrder
+from app.schemas.picks import PickCommitRequest, PickCommitResponse, PickDetail, PickListResponse, PickPreviewResponse, PickRequest, PickScanCommitRequest, PickScanRequest, PickScanResponse, PickScannerOrder
 from app.services.picks import commit_pick, commit_scan, export_pick_csv, get_pick_detail, get_scanner_order, list_picks, pick_to_read, preview_pick, preview_scan
+from app.services.auth import authenticated_actor
+from app.services.stock_mutation_guard import IdempotencyConflict
 
 router = APIRouter(prefix="/picks", tags=["picks"])
 
@@ -16,8 +18,12 @@ def preview_pick_request(payload: PickRequest, db: Session = Depends(get_db)) ->
 
 
 @router.post("/commit", response_model=PickCommitResponse)
-def commit_pick_request(payload: PickRequest, db: Session = Depends(get_db)) -> PickCommitResponse:
-    return commit_pick(db, payload)
+def commit_pick_request(payload: PickCommitRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> PickCommitResponse:
+    try:
+        return commit_pick(db, payload.model_copy(update={"created_by": actor}))
+    except IdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/orders/{order_id}/scanner", response_model=PickScannerOrder)
@@ -37,8 +43,12 @@ def preview_pick_scan(order_id: int, payload: PickScanRequest, db: Session = Dep
 
 
 @router.post("/orders/{order_id}/scan/commit", response_model=PickScanResponse)
-def commit_pick_scan(order_id: int, payload: PickScanRequest, db: Session = Depends(get_db)) -> PickScanResponse:
-    result = commit_scan(db, order_id, payload)
+def commit_pick_scan(order_id: int, payload: PickScanCommitRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> PickScanResponse:
+    try:
+        result = commit_scan(db, order_id, payload.model_copy(update={"created_by": actor}))
+    except IdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return result

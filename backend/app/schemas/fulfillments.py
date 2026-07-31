@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class FulfillmentLineRequest(BaseModel):
     order_line_id: int
     quantity_to_fulfill: float
+    unit_cost: float | None = None
 
 
 class FulfillmentRequest(BaseModel):

@@ -1,10 +1,13 @@
+from uuid import uuid4
+
 from tests.test_items_api import client, seed_item  # noqa: F401
-from tests.test_locations_api import seed_location
+from tests.test_locations_api import force_location_active_for_legacy_test, seed_location
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
 
 
 def direct_payload(**overrides):
     payload = {
+        "idempotency_key": f"receipt-{uuid4()}",
         "warehouse": "Main Warehouse",
         "reference_number": "INV-12345",
         "notes": "Manual receiving without PO",
@@ -27,7 +30,10 @@ def direct_payload(**overrides):
 
 def setup_receiving_item_and_location(client, sku="RCV-001", barcode="RCV-001-BAR", in_stock=10, allocated=2, location_code="REC-01", active=True):
     item = seed_item(client, sku=sku, Barcode=barcode, **{"In Stock": in_stock, "Allocated": allocated, "Unit Cost": 4, "Inventory Location": location_code})
-    location = seed_location(client, code=location_code, name=location_code, isActive=active)
+    location = seed_location(client, code=location_code, name=location_code, isActive=True)
+    if not active:
+        force_location_active_for_legacy_test(location["id"], False)
+        location["isActive"] = False
     return item, location
 
 
@@ -76,13 +82,57 @@ def test_direct_receiving_commit_creates_receipt_line_stock_and_movement(client)
     assert detail.json()["lines"][0]["sku"] == "RCV-001"
     assert detail.json()["lines"][0]["quantity_received"] == 5
 
-    movements = client.get("/api/stock-movements", params={"sku": "RCV-001"}).json()["movements"]
+    movements = client.get("/api/stock-movements", params={"sku": "RCV-001", "movement_type": "receive_direct"}).json()["movements"]
     assert len(movements) == 1
     assert movements[0]["movement_type"] == "receive_direct"
     assert movements[0]["quantity_delta"] == 5
     assert movements[0]["previous_in_stock"] == 10
     assert movements[0]["new_in_stock"] == 15
     assert movements[0]["reference_type"] == "direct_receipt"
+
+
+def test_direct_receiving_idempotency_replays_and_rejects_changed_payload(client):
+    setup_receiving_item_and_location(client)
+    payload = direct_payload(idempotency_key="direct-receipt-1")
+
+    first = client.post("/api/receipts/direct/commit", json=payload)
+    replay = client.post("/api/receipts/direct/commit", json=payload)
+    changed = client.post(
+        "/api/receipts/direct/commit",
+        json={**payload, "lines": [{**payload["lines"][0], "quantity_received": 6}]},
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.json() == first.json()
+    assert changed.status_code == 409
+    assert client.get("/api/items", params={"sku": "RCV-001"}).json()["items"][0]["In Stock"] == 15
+    assert client.get("/api/stock-movements", params={"sku": "RCV-001", "movement_type": "receive_direct"}).json()["total"] == 1
+
+
+def test_direct_receiving_commit_requires_a_nonblank_idempotency_key(client):
+    setup_receiving_item_and_location(client)
+    missing = direct_payload()
+    missing.pop("idempotency_key")
+
+    missing_response = client.post("/api/receipts/direct/commit", json=missing)
+    blank_response = client.post("/api/receipts/direct/commit", json={**missing, "idempotency_key": " "})
+
+    assert missing_response.status_code == 422
+    assert blank_response.status_code == 409
+    assert client.get("/api/items", params={"sku": "RCV-001"}).json()["items"][0]["In Stock"] == 10
+
+
+def test_direct_receiving_fails_closed_for_duplicate_barcode(client):
+    setup_receiving_item_and_location(client, sku="DUP-RCV-A", barcode="DUP-RCV")
+    seed_item(client, sku="DUP-RCV-B", Barcode="DUP-RCV")
+
+    response = client.post(
+        "/api/receipts/direct/commit",
+        json=direct_payload(lines=[{"barcode": "DUP-RCV", "inventory_location": "REC-01", "quantity_received": 1}]),
+    )
+
+    assert response.status_code == 400
+    assert "multiple" in response.text
 
 
 def test_direct_receiving_auto_allocates_oldest_waiting_processing_order(client, monkeypatch):
@@ -202,7 +252,7 @@ def test_quantity_less_than_or_equal_to_zero_rejects_line(client):
 
 
 def test_multiple_valid_lines_commit_atomically(client):
-    setup_receiving_item_and_location(client, sku="RCV-A", barcode="BAR-A", in_stock=1)
+    setup_receiving_item_and_location(client, sku="RCV-A", barcode="BAR-A", in_stock=1, allocated=0)
     seed_item(client, sku="RCV-B", Barcode="BAR-B", **{"In Stock": 2, "Allocated": 0, "Unit Cost": 2})
     payload = direct_payload(
         lines=[
@@ -219,8 +269,8 @@ def test_multiple_valid_lines_commit_atomically(client):
 
 
 def test_invalid_line_prevents_all_stock_updates(client):
-    setup_receiving_item_and_location(client, sku="RCV-A", barcode="BAR-A", in_stock=1)
-    seed_item(client, sku="RCV-B", Barcode="BAR-B", **{"In Stock": 2})
+    setup_receiving_item_and_location(client, sku="RCV-A", barcode="BAR-A", in_stock=1, allocated=0)
+    seed_item(client, sku="RCV-B", Barcode="BAR-B", **{"In Stock": 2, "Allocated": 0})
     payload = direct_payload(
         lines=[
             {"sku": "RCV-A", "inventory_location": "REC-01", "quantity_received": 2},

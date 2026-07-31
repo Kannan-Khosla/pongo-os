@@ -13,30 +13,37 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.receipts import Receipt, ReceiptItem
 from app.services.calculations import calculate_inventory_value
-from app.services.location_inventory import find_item_location, get_or_create_item_location, receive_to_location, to_decimal
+from app.services.location_inventory import find_item_location, get_or_create_item_location, lock_inventory_stock, receive_to_location, to_decimal
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
 from app.services.receiving import receipt_to_detail
+from app.services.stock_mutation_guard import begin_stock_mutation, complete_stock_mutation
 
 
-def resolve_receiving_item(db: Session, line: dict[str, Any]) -> InventoryItem | None:
+def resolve_receiving_item(db: Session, line: dict[str, Any]) -> tuple[InventoryItem | None, str | None]:
+    resolved: dict[int, InventoryItem] = {}
     item_id = line.get("item_id")
     if item_id:
         item = db.get(InventoryItem, item_id)
-        if item is not None:
-            return item
+        if item is None:
+            return None, "Item ID does not match an existing item; receiving was blocked."
+        resolved[item.id] = item
     candidates = [value for value in [line.get("sku"), line.get("barcode"), line.get("scan_input")] if value]
     for value in candidates:
-        item = db.scalars(
+        matches = list(db.scalars(
             select(InventoryItem).where(
                 or_(
                     InventoryItem.sku == str(value),
                     InventoryItem.barcode == str(value),
                 )
             )
-        ).first()
-        if item is not None:
-            return item
-    return None
+        ).all())
+        if len(matches) > 1:
+            return None, "SKU or Barcode matches multiple existing items; receiving was blocked."
+        if matches:
+            resolved[matches[0].id] = matches[0]
+    if len(resolved) > 1:
+        return None, "Item ID, SKU, Barcode, or scan input identify different items; receiving was blocked."
+    return (next(iter(resolved.values())), None) if resolved else (None, None)
 
 
 def preview_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
@@ -47,7 +54,7 @@ def preview_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]
     default_warehouse = (payload.get("warehouse") or "Main Warehouse").strip() or "Main Warehouse"
     for index, raw_line in enumerate(lines, start=1):
         line = raw_line or {}
-        item = resolve_receiving_item(db, line)
+        item, match_error = resolve_receiving_item(db, line)
         quantity = to_decimal(line.get("quantity", line.get("quantity_received")))
         unit_cost = to_decimal(line.get("unit_cost"))
         warehouse = (line.get("warehouse") or default_warehouse).strip() or default_warehouse
@@ -55,7 +62,7 @@ def preview_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]
         errors = []
         warnings = []
         if item is None:
-            errors.append("No matching item was found.")
+            errors.append(match_error or "No matching item was found.")
         if quantity <= 0:
             errors.append("Quantity must be greater than zero.")
         if not inventory_location:
@@ -117,6 +124,10 @@ def next_bulk_receipt_number(db: Session, now: datetime | None = None) -> str:
 
 
 def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
+    mutation, replay = begin_stock_mutation(db, "bulk_receipt", payload.get("idempotency_key"), payload)
+    if replay is not None:
+        return replay
+
     preview = preview_bulk_receipt(payload, db)
     commit_valid_only = bool(payload.get("commit_valid_lines_only"))
     if preview["error_line_count"] and not commit_valid_only:
@@ -124,6 +135,15 @@ def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
     valid_line_numbers = {line["line_number"] for line in preview["lines"] if line["status"] == "valid"}
     if not valid_line_numbers:
         raise HTTPException(status_code=400, detail=preview)
+    item_ids = {
+        item.id
+        for index, raw_line in enumerate(payload.get("lines") or [], start=1)
+        if index in valid_line_numbers
+        and (item := resolve_receiving_item(db, raw_line or {})[0]) is not None
+    }
+    lock_inventory_stock(db, item_ids)
+    preview = preview_bulk_receipt(payload, db)
+    valid_line_numbers = {line["line_number"] for line in preview["lines"] if line["status"] == "valid"}
     now = datetime.now(timezone.utc)
     default_warehouse = (payload.get("warehouse") or "Main Warehouse").strip() or "Main Warehouse"
     receipt = Receipt(
@@ -149,7 +169,9 @@ def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
         if index not in valid_line_numbers:
             continue
         line = raw_line or {}
-        item = resolve_receiving_item(db, line)
+        item, match_error = resolve_receiving_item(db, line)
+        if item is None:
+            raise ValueError(match_error or "No matching item was found.")
         quantity = to_decimal(line.get("quantity", line.get("quantity_received")))
         unit_cost = to_decimal(line.get("unit_cost"))
         warehouse = (line.get("warehouse") or default_warehouse).strip() or default_warehouse
@@ -206,12 +228,14 @@ def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
         total_cost += line_cost
         movement_count += 1
     auto_allocate_processing_orders_fifo(db, source=f"bulk-receipt:{receipt.receipt_number}")
-    db.commit()
+    db.flush()
     receipt = db.scalars(select(Receipt).where(Receipt.id == receipt.id).options(selectinload(Receipt.items).selectinload(ReceiptItem.inventory_item))).one()
-    detail = receipt_to_detail(receipt).model_dump()
+    detail = receipt_to_detail(receipt).model_dump(mode="json")
     detail["total_inventory_value"] = float(total_cost)
     detail["created_movements"] = movement_count
     detail["total_quantity_received"] = float(total_quantity)
+    complete_stock_mutation(mutation, detail)
+    db.commit()
     return detail
 
 

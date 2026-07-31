@@ -93,6 +93,34 @@ class WooWritebackQueue(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False, index=True)
 
 
+class WooStockSyncJob(Base):
+    __tablename__ = "woo_stock_sync_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120), unique=True, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="queued", index=True, nullable=False)
+    force: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    requested_by: Mapped[str | None] = mapped_column(String(120), index=True)
+    chunk_size: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
+    total_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processed_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sent_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    dry_run_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    skipped_unmapped_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    unchanged_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_item_id: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    retry_item_ids: Mapped[list[int] | None] = mapped_column(JSON)
+    terminal_failed_item_ids: Mapped[list[int] | None] = mapped_column(JSON)
+    retry_attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    errors: Mapped[list[str] | None] = mapped_column(JSON)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False, index=True)
+
+
 class WooCommerceWebhookDelivery(Base):
     __tablename__ = "woocommerce_webhook_deliveries"
 

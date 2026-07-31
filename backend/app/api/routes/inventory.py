@@ -25,8 +25,10 @@ from app.schemas.inventory import (
     StockAdjustmentRequest,
 )
 from app.services.inventory_reports import INVENTORY_BY_LOCATION_COLUMNS, build_inventory_summary, get_inventory_items, item_to_inventory_by_location_row
+from app.services.auth import authenticated_actor
 from app.services.location_inventory import create_committed_adjustment_batch, create_committed_transfer_batch, recalculate_item_location
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
+from app.services.stock_mutation_guard import IdempotencyConflict
 from app.services.woocommerce_client import WooCommerceClient
 from app.services.woocommerce_writeback import sync_inventory_stock
 
@@ -62,6 +64,7 @@ def list_inventory_locations(
     sku: str | None = None,
     barcode: str | None = None,
     item_id: int | None = None,
+    item_ids: str | None = None,
     warehouse: str | None = None,
     inventory_location: str | None = None,
     brand: str | None = None,
@@ -75,7 +78,8 @@ def list_inventory_locations(
     offset: int = 0,
     db: Session = Depends(get_db),
 ) -> InventoryLocationInventoryListResponse:
-    rows = query_inventory_location_rows(db, search, sku, barcode, item_id, warehouse, inventory_location, brand, category, under_par, active, has_stock, negative_sellable, allocated_gt_stock, limit, offset)
+    parsed_item_ids = parse_item_ids(item_ids)
+    rows = query_inventory_location_rows(db, search, sku, barcode, item_id, parsed_item_ids, warehouse, inventory_location, brand, category, under_par, active, has_stock, negative_sellable, allocated_gt_stock, limit, offset)
     return InventoryLocationInventoryListResponse(rows=[item_location_to_read(row) for row in rows], total=len(rows))
 
 
@@ -96,14 +100,14 @@ def export_inventory_locations(
     allocated_gt_stock: bool | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
-    rows = query_inventory_location_rows(db, search, sku, barcode, item_id, warehouse, inventory_location, brand, category, under_par, active, has_stock, negative_sellable, allocated_gt_stock, None, 0)
+    rows = query_inventory_location_rows(db, search, sku, barcode, item_id, None, warehouse, inventory_location, brand, category, under_par, active, has_stock, negative_sellable, allocated_gt_stock, None, 0)
     buffer = StringIO()
     writer = csv.DictWriter(buffer, fieldnames=LOCATION_EXPORT_COLUMNS)
     writer.writeheader()
     for row in rows:
         item = row.inventory_item
         in_stock = row.in_stock or 0
-        unit_cost = item.unit_cost or 0
+        unit_cost = item.unit_cost
         writer.writerow(
             {
                 "Client": item.client or row.client or "",
@@ -122,8 +126,8 @@ def export_inventory_locations(
                 "Sellable": row.sellable or 0,
                 "Under Par": row.under_par,
                 "On Order": row.on_order or 0,
-                "Unit Cost": unit_cost,
-                "Inventory Value": in_stock * unit_cost,
+                "Unit Cost": unit_cost if unit_cost is not None else "",
+                "Inventory Value": in_stock * unit_cost if unit_cost is not None else "",
                 "Updated At": row.updated_at.isoformat() if row.updated_at else "",
             }
         )
@@ -131,12 +135,21 @@ def export_inventory_locations(
 
 
 @router.post("/transfers", response_model=InventoryTransferDetail, status_code=201)
-def commit_inventory_transfer(payload: InventoryTransferRequest, db: Session = Depends(get_db)) -> InventoryTransferDetail:
+def commit_inventory_transfer(payload: InventoryTransferRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> InventoryTransferDetail:
     try:
-        transfer = create_committed_transfer_batch(db, [line.model_dump() for line in payload.lines], notes=payload.notes, created_by=payload.created_by)
+        transfer = create_committed_transfer_batch(
+            db,
+            [line.model_dump() for line in payload.lines],
+            notes=payload.notes,
+            created_by=actor,
+            idempotency_key=payload.idempotency_key,
+        )
         db.commit()
         transfer = db.scalars(select(InventoryTransfer).where(InventoryTransfer.id == transfer.id).options(selectinload(InventoryTransfer.lines))).one()
         return transfer_to_detail(transfer)
+    except IdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -160,21 +173,35 @@ def get_inventory_transfer(transfer_id: int, db: Session = Depends(get_db)) -> I
 
 
 @router.post("/adjustments", response_model=StockAdjustmentDetail, status_code=201)
-def commit_stock_adjustment(payload: StockAdjustmentRequest, db: Session = Depends(get_db)) -> StockAdjustmentDetail:
+def commit_stock_adjustment(payload: StockAdjustmentRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> StockAdjustmentDetail:
     try:
-        adjustment = create_committed_adjustment_batch(db, [line.model_dump() for line in payload.lines], adjustment_type=payload.adjustment_type, reason=payload.reason, notes=payload.notes, created_by=payload.created_by)
-        auto_allocate_processing_orders_fifo(db, source=f"stock-adjustment:{adjustment.adjustment_number}")
+        adjustment = create_committed_adjustment_batch(
+            db,
+            [line.model_dump() for line in payload.lines],
+            adjustment_type=payload.adjustment_type,
+            reason=payload.reason,
+            notes=payload.notes,
+            created_by=actor,
+            idempotency_key=payload.idempotency_key,
+        )
+        replayed = bool(getattr(adjustment, "_idempotent_replay", False))
+        if not replayed:
+            auto_allocate_processing_orders_fifo(db, source=f"stock-adjustment:{adjustment.adjustment_number}")
         db.commit()
         adjustment = db.scalars(select(StockAdjustment).where(StockAdjustment.id == adjustment.id).options(selectinload(StockAdjustment.lines))).one()
-        settings = get_settings()
-        sync_inventory_stock(
-            db,
-            settings,
-            WooCommerceClient(settings),
-            item_ids={line.item_id for line in payload.lines},
-            requested_by=payload.created_by or "stock-adjustment",
-        )
+        if not replayed:
+            settings = get_settings()
+            sync_inventory_stock(
+                db,
+                settings,
+                WooCommerceClient(settings),
+                item_ids={line.item_id for line in payload.lines},
+                requested_by=actor,
+            )
         return adjustment_to_detail(adjustment)
+    except IdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -234,6 +261,7 @@ def export_inventory_by_location(
 
 @router.get("/summary/by-location", response_model=InventoryLocationSummaryResponse)
 def summarize_inventory_by_location(
+    search: str | None = None,
     warehouse: str | None = None,
     inventory_location: str | None = None,
     default_location: str | None = None,
@@ -241,18 +269,24 @@ def summarize_inventory_by_location(
     brand: str | None = None,
     under_par: bool | None = None,
     non_inventory: bool | None = None,
+    data_quality: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    items = get_inventory_items(
-        db,
-        warehouse=warehouse,
-        inventory_location=inventory_location,
-        default_location=default_location,
-        category=category,
-        brand=brand,
-        under_par=under_par,
-        non_inventory=non_inventory,
-    )
+    try:
+        items = get_inventory_items(
+            db,
+            search=search,
+            warehouse=warehouse,
+            inventory_location=inventory_location,
+            default_location=default_location,
+            category=category,
+            brand=brand,
+            under_par=under_par,
+            non_inventory=non_inventory,
+            data_quality=data_quality,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     return build_inventory_summary(items)
 
 
@@ -262,6 +296,7 @@ def query_inventory_location_rows(
     sku: str | None,
     barcode: str | None,
     item_id: int | None,
+    item_ids: list[int] | None,
     warehouse: str | None,
     inventory_location: str | None,
     brand: str | None,
@@ -296,6 +331,8 @@ def query_inventory_location_rows(
         statement = statement.where(InventoryItem.barcode == barcode)
     if item_id is not None:
         statement = statement.where(InventoryItemLocation.inventory_item_id == item_id)
+    if item_ids is not None:
+        statement = statement.where(InventoryItemLocation.inventory_item_id.in_(item_ids))
     if warehouse:
         statement = statement.where(InventoryItemLocation.warehouse == warehouse)
     if inventory_location:
@@ -322,6 +359,21 @@ def query_inventory_location_rows(
     if limit is not None:
         statement = statement.limit(max(1, min(limit, 1000)))
     return list(db.scalars(statement).all())
+
+
+def parse_item_ids(value: str | None) -> list[int] | None:
+    if value is None:
+        return None
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if not parts:
+        raise HTTPException(status_code=422, detail="item_ids must contain at least one positive integer")
+    try:
+        item_ids = [int(part) for part in parts]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="item_ids must be a comma-separated list of positive integers") from exc
+    if any(item_id <= 0 for item_id in item_ids):
+        raise HTTPException(status_code=422, detail="item_ids must be a comma-separated list of positive integers")
+    return list(dict.fromkeys(item_ids))
 
 
 def item_location_to_read(row: InventoryItemLocation) -> InventoryItemLocationRead:

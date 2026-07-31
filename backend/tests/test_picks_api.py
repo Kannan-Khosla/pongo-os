@@ -1,5 +1,6 @@
 import csv
 from io import StringIO
+from uuid import uuid4
 
 from app.core.config import get_settings
 from tests.test_allocations_api import synced_order
@@ -12,6 +13,14 @@ def allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantit
     detail = client.get(f"/api/orders/{order['id']}").json()
     assert detail["allocation_status"] in {"allocated", "auto_allocated"}
     return detail, detail["lines"][0]
+
+
+def commit_payload(**values):
+    return {"idempotency_key": f"pick-{uuid4()}", **values}
+
+
+def unpick_payload(**values):
+    return {"idempotency_key": f"unpick-{uuid4()}", **values}
 
 
 def test_pick_preview_valid_allocated_order_does_not_write(client, monkeypatch):
@@ -72,7 +81,7 @@ def test_pick_commit_creates_records_updates_picked_and_reduces_stock(client, mo
     order, _ = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2)
     before_item = client.get("/api/items", params={"sku": "PICK-SKU"}).json()["items"][0]
 
-    response = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": True, "created_by": "pytest", "notes": "Pick order"})
+    response = client.post("/api/picks/commit", json=commit_payload(order_ids=[order["id"]], allow_partial=True, created_by="pytest", notes="Pick order"))
 
     assert response.status_code == 200
     body = response.json()
@@ -100,6 +109,37 @@ def test_pick_commit_creates_records_updates_picked_and_reduces_stock(client, mo
     assert movements["movements"][0]["quantity_delta"] == -2
 
 
+def test_pick_commit_idempotency_replays_and_rejects_changed_payload(client, monkeypatch):
+    order, _ = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2)
+    payload = {
+        "idempotency_key": "pick-commit-1",
+        "order_ids": [order["id"]],
+        "allow_partial": True,
+        "created_by": "pytest",
+    }
+
+    first = client.post("/api/picks/commit", json=payload)
+    replay = client.post("/api/picks/commit", json=payload)
+    changed = client.post("/api/picks/commit", json={**payload, "notes": "different request"})
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.json() == first.json()
+    assert changed.status_code == 409
+    assert client.get("/api/items", params={"sku": "PICK-SKU"}).json()["items"][0]["In Stock"] == 4
+    assert client.get("/api/stock-movements", params={"movement_type": "pick_stock_reduction"}).json()["total"] == 1
+
+
+def test_pick_commit_requires_a_nonblank_idempotency_key(client, monkeypatch):
+    order, _ = allocated_order(client, monkeypatch)
+
+    missing = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": True})
+    blank = client.post("/api/picks/commit", json={"idempotency_key": "   ", "order_ids": [order["id"]], "allow_partial": True})
+
+    assert missing.status_code == 422
+    assert blank.status_code == 409
+    assert client.get("/api/stock-movements", params={"movement_type": "pick_stock_reduction"}).json()["total"] == 0
+
+
 def test_pick_waits_until_completion_to_write_reduced_stock_to_woo(client, monkeypatch):
     settings = get_settings().model_copy(
         update={
@@ -125,7 +165,7 @@ def test_pick_waits_until_completion_to_write_reduced_stock_to_woo(client, monke
     monkeypatch.setattr("app.api.routes.orders.WooCommerceClient.guarded_write", fake_write)
     order, _ = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2, sku="PICK-WRITEBACK", barcode="PICK-WRITEBACK-BAR")
 
-    response = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": True, "created_by": "pytest"})
+    response = client.post("/api/picks/commit", json=commit_payload(order_ids=[order["id"]], allow_partial=True, created_by="pytest"))
 
     assert response.status_code == 200
     assert response.json()["status"] == "posted"
@@ -142,7 +182,7 @@ def test_pick_waits_until_completion_to_write_reduced_stock_to_woo(client, monke
 
 def test_pick_preview_skips_fully_picked_line(client, monkeypatch):
     picked_order, _ = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=1, sku="FULL-PICK-SKU", barcode="FULL-PICK-BAR")
-    client.post("/api/picks/commit", json={"order_ids": [picked_order["id"]], "allow_partial": True})
+    client.post("/api/picks/commit", json=commit_payload(order_ids=[picked_order["id"]], allow_partial=True))
 
     fully_picked = client.post("/api/picks/preview", json={"order_ids": [picked_order["id"]], "allow_partial": True}).json()
 
@@ -153,7 +193,7 @@ def test_pick_preview_skips_fully_picked_line(client, monkeypatch):
 def test_pick_commit_partial_updates_order_status(client, monkeypatch):
     order, line = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2)
 
-    response = client.post("/api/picks/commit", json={"lines": [{"order_line_id": line["id"], "quantity_to_pick": 1}], "allow_partial": True})
+    response = client.post("/api/picks/commit", json=commit_payload(lines=[{"order_line_id": line["id"], "quantity_to_pick": 1}], allow_partial=True))
 
     assert response.json()["status"] == "posted"
     assert response.json()["partial_lines"] == 1
@@ -168,10 +208,10 @@ def test_pick_commit_partial_updates_order_status(client, monkeypatch):
 def test_bulk_unpick_restores_original_location_stock_and_allocation_with_audit_movement(client, monkeypatch):
     order, _ = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2, sku="UNPICK-SKU", barcode="UNPICK-BAR")
     before = client.get("/api/items", params={"sku": "UNPICK-SKU"}).json()["items"][0]
-    pick = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": True}).json()
+    pick = client.post("/api/picks/commit", json=commit_payload(order_ids=[order["id"]], allow_partial=True)).json()
     assert pick["status"] == "posted"
 
-    response = client.post("/api/orders/bulk/unpick", json={"order_ids": [order["id"]], "created_by": "pytest", "reason": "Packing correction"})
+    response = client.post("/api/orders/bulk/unpick", json=unpick_payload(order_ids=[order["id"]], created_by="pytest", reason="Packing correction"))
 
     assert response.status_code == 200
     body = response.json()
@@ -194,11 +234,11 @@ def test_bulk_unpick_restores_original_location_stock_and_allocation_with_audit_
     assert movements["total"] == 1
     assert movements["movements"][0]["quantity_delta"] == 2
 
-    duplicate = client.post("/api/orders/bulk/unpick", json={"order_ids": [order["id"]]})
+    duplicate = client.post("/api/orders/bulk/unpick", json=unpick_payload(order_ids=[order["id"]]))
     assert duplicate.json()["status"] == "rejected"
     assert client.get("/api/items", params={"sku": "UNPICK-SKU"}).json()["items"][0]["In Stock"] == before["In Stock"]
 
-    repick = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": False})
+    repick = client.post("/api/picks/commit", json=commit_payload(order_ids=[order["id"]], allow_partial=False))
     assert repick.status_code == 200
     assert repick.json()["status"] == "posted"
     repicked_detail = client.get(f"/api/orders/{order['id']}").json()
@@ -206,11 +246,42 @@ def test_bulk_unpick_restores_original_location_stock_and_allocation_with_audit_
     assert repicked_detail["lines"][0]["quantity_stock_reduced"] == 2
 
 
+def test_bulk_unpick_idempotency_replays_and_rejects_changed_payload(client, monkeypatch):
+    order, _ = allocated_order(
+        client,
+        monkeypatch,
+        item_stock=6,
+        item_allocated=0,
+        quantity=2,
+        sku="UNPICK-IDEMP",
+        barcode="UNPICK-IDEMP-BAR",
+    )
+    client.post("/api/picks/commit", json=commit_payload(order_ids=[order["id"]], allow_partial=False))
+    payload = {
+        "idempotency_key": "unpick-1",
+        "order_ids": [order["id"]],
+        "created_by": "pytest",
+        "reason": "Retry-safe correction",
+    }
+
+    first = client.post("/api/orders/bulk/unpick", json=payload)
+    replay = client.post("/api/orders/bulk/unpick", json=payload)
+    changed = client.post("/api/orders/bulk/unpick", json={**payload, "reason": "Changed correction"})
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.json() == first.json()
+    assert changed.status_code == 409
+    assert client.get(
+        "/api/stock-movements",
+        params={"movement_type": "unpick_stock_restoration"},
+    ).json()["total"] == 1
+
+
 def test_pick_commit_rejects_overpick_and_is_atomic(client, monkeypatch):
     order, line = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2)
     before_item = client.get("/api/items", params={"sku": "PICK-SKU"}).json()["items"][0]
 
-    response = client.post("/api/picks/commit", json={"lines": [{"order_line_id": line["id"], "quantity_to_pick": 99}], "allow_partial": True})
+    response = client.post("/api/picks/commit", json=commit_payload(lines=[{"order_line_id": line["id"], "quantity_to_pick": 99}], allow_partial=True))
 
     assert response.status_code == 200
     assert response.json()["status"] == "rejected"
@@ -226,7 +297,7 @@ def test_pick_commit_rejects_overpick_and_is_atomic(client, monkeypatch):
 def test_pick_commit_requires_full_pick_when_partial_not_allowed(client, monkeypatch):
     _, line = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2)
 
-    response = client.post("/api/picks/commit", json={"lines": [{"order_line_id": line["id"], "quantity_to_pick": 1}], "allow_partial": False})
+    response = client.post("/api/picks/commit", json=commit_payload(lines=[{"order_line_id": line["id"], "quantity_to_pick": 1}], allow_partial=False))
 
     assert response.json()["status"] == "rejected"
     assert client.get("/api/picks").json()["total"] == 0
@@ -234,7 +305,7 @@ def test_pick_commit_requires_full_pick_when_partial_not_allowed(client, monkeyp
 
 def test_pick_list_detail_export_and_open_orders_reflect_picked(client, monkeypatch):
     order, _ = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2)
-    commit = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": True, "created_by": "pytest"})
+    commit = client.post("/api/picks/commit", json=commit_payload(order_ids=[order["id"]], allow_partial=True, created_by="pytest"))
     pick_id = commit.json()["pick_id"]
 
     listing = client.get("/api/picks")
@@ -266,8 +337,13 @@ def test_pick_scan_commit_is_idempotent_with_key(client, monkeypatch):
     second = client.post(f"/api/picks/orders/{order['id']}/scan/commit", json={"sku_or_barcode": line["sku"], "quantity": 2, "idempotency_key": "scan-1"})
 
     assert first.json()["status"] == "posted"
-    assert second.json()["status"] == "posted"
-    assert "Duplicate scan ignored" in " ".join(second.json()["warnings"])
+    assert second.json() == first.json()
     item = client.get("/api/items", params={"sku": "IDEMP-PICK-SKU"}).json()["items"][0]
     assert item["In Stock"] == 4
     assert client.get("/api/stock-movements", params={"movement_type": "pick_stock_reduction"}).json()["total"] == 1
+
+    collision = client.post(
+        f"/api/picks/orders/{order['id']}/scan/commit",
+        json={"sku_or_barcode": line["sku"], "quantity": 1, "idempotency_key": "scan-1"},
+    )
+    assert collision.status_code == 409

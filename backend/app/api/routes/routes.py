@@ -24,6 +24,7 @@ from app.services.routes import (
     update_route_metadata,
     update_route_stop,
 )
+from app.services.auth import authenticated_actor
 
 router = APIRouter(prefix="/routes", tags=["routes"])
 
@@ -46,8 +47,8 @@ def preview_route_request(payload: RouteRequest, db: Session = Depends(get_db)) 
 
 
 @router.post("/commit", response_model=RouteCommitResponse)
-def commit_route_request(payload: RouteRequest, db: Session = Depends(get_db)) -> RouteCommitResponse:
-    return commit_route(db, payload)
+def commit_route_request(payload: RouteRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> RouteCommitResponse:
+    return commit_route(db, payload.model_copy(update={"created_by": actor}))
 
 
 @router.get("", response_model=RouteListResponse)

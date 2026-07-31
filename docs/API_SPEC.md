@@ -18,10 +18,14 @@ local-only route creation/management.
 - Frontend never calls WooCommerce directly.
 - WooCommerce credentials live only in backend environment variables.
 - Stock-changing endpoints must create stock movement/audit rows.
+- Pick, unpick, direct/bulk receipt, transfer, and adjustment commit requests
+  require a nonblank `idempotency_key` (maximum 120 characters). Reusing the
+  same key with the same payload replays the stored response; reusing it with
+  different data returns HTTP `409`.
 - WooCommerce credentials are never returned by API responses.
-- WooCommerce writeback is allowlisted, queued, and audited. Production permits
-  only an explicitly enabled order-status update; stock writes remain
-  staging-only.
+- WooCommerce writeback is allowlisted, queued, and audited. Production stock
+  writes require the explicit Pongo stock-authority policy and all normal
+  host, operation, payload, permission, and dry-run guards.
 - WooCommerce DELETE is always blocked.
 - Order completion sends the linked WooCommerce order a guarded `completed`
   status update through the backend writeback queue.
@@ -38,6 +42,8 @@ local-only route creation/management.
 ## Current API Groups
 
 - `GET /health`
+- Authentication: `/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`
+- Readiness: `GET /ready`
 - Dashboard: `/api/dashboard`, `/api/dashboard/summary`, `/api/dashboard/activity`, `/api/dashboard/warnings`
 - Items and item CSV import/export: `/api/items`, `/api/items/import/*`
 - Import jobs: `/api/import-jobs`
@@ -47,7 +53,7 @@ local-only route creation/management.
 - Inventory transfers: `/api/inventory/transfers`
 - Stock adjustments: `/api/inventory/adjustments`
 - Receipts/direct receiving: `/api/receipts`
-- Reports: `/api/reports/received-inventory`, `/api/reports/fulfillments`, `/api/reports/sku-orders`
+- Reports: immutable runs and delivery under `/api/reports/runs/*`, plus legacy received, fulfillment, and SKU-order report endpoints
 - Cycle counts: `/api/cycle-counts`
 - WooCommerce read-only product sync: `/api/integrations/woocommerce/products/*`
 - WooCommerce read-only order sync: `/api/integrations/woocommerce/orders/*`
@@ -79,7 +85,8 @@ Current response:
 
 ## Compatibility Note
 
-`GET /api/reports` remains a lightweight module index response. Workflow report
+`GET /api/reports` returns the verified report catalog, reporting timezone, and
+non-secret Google Sheets/email configuration status. Workflow report
 endpoints are implemented under specific report paths.
 
 ## Dashboard
@@ -143,6 +150,7 @@ Returns configuration state without exposing secrets:
 - `webhook_configured`
 - `webhook_secret_present`
 - `last_webhook_delivery`
+- `order_reconciliation`
 - `last_error`
 
 The status endpoint may show whether key/secret env vars are present, but it
@@ -152,6 +160,11 @@ never returns their values.
 secret is at least 32 UTF-8 bytes, and `WOOCOMMERCE_ALLOWED_HOST` is nonblank.
 `last_webhook_delivery`, when present, contains only `id`, `topic`, `status`,
 `woo_order_id`, `created_order`, and `received_at`.
+
+`order_reconciliation` reports `enabled`, `running`, `healthy`, `degraded`,
+`stale`, the configured interval/statuses, last attempt/success/failure,
+current error count, and a safe operator message. Scheduler state is derived
+from durable `woocommerce_sync_runs` records; secrets are never included.
 
 ### Staging writeback endpoints
 
@@ -254,10 +267,24 @@ Implemented query params:
 - `woo_sync_status`
 - `woo_product_id`
 - `woo_variation_id`
+- `data_quality`: one or more comma-separated values from `missing_barcode`,
+  `missing_brand`, `missing_cost`, `unmapped`, `receiving`, and
+  `missing_location`; multiple values use OR semantics
+- `page` and `page_size` (`page_size` is limited to 100)
+- `sort_by`: `sku`, `barcode`, `description`, `brand`, `category`, `in_stock`,
+  `allocated`, `sellable`, `unit_cost`, `sales_price`, or `updated_at`
+- `sort_direction`: `asc` or `desc`
 
 Returns canonical CSV-style field names plus internal display fields such as
 `id`, `active`, `nonInventory`, `imageUrl`, `wooProductId`, and
-`wooVariationId`.
+`wooVariationId`. The list envelope includes `page`, `page_size`, `total`,
+`total_pages`, `returned_count`, `has_previous`, `has_next`, and full-catalog
+`facets` for raw category and brand filter values. Facets are not limited to
+the current page; clients may decode entities for display but must send the raw
+facet value back to the API. For backward
+compatibility, omitting both pagination parameters still returns the complete
+filtered list. A requested page beyond the filtered result is clamped to the
+last valid page (or page 1 for an empty result).
 
 ### GET /api/items/{id}
 
@@ -293,6 +320,13 @@ level. This endpoint does not directly change stock.
 Transfers and adjustments are local-only. They create stock movements and keep
 item aggregate totals reconciled with active item-location rows. They do not
 write WooCommerce.
+
+Transfer and adjustment commit bodies may include `idempotency_key`.
+
+`GET /api/inventory/locations` optionally accepts `item_ids` as a
+comma-separated list of positive inventory item IDs. This allows a paginated
+catalog view to request location rows only for the current page; omitting it
+preserves the existing query behavior.
 
 ### POST /api/items
 
@@ -444,6 +478,11 @@ secret may remain blank while the receiver is disabled:
 - `WOOCOMMERCE_PAGE_SIZE`
 - `WOOCOMMERCE_ORDER_SYNC_PAGE_SIZE`
 - `WOOCOMMERCE_ORDER_SYNC_DEFAULT_STATUSES`
+- `WOOCOMMERCE_ORDER_RECONCILIATION_ENABLED`
+- `WOOCOMMERCE_ORDER_RECONCILIATION_INTERVAL_SECONDS`
+- `WOOCOMMERCE_ORDER_RECONCILIATION_STALE_AFTER_SECONDS`
+- `WOOCOMMERCE_ORDER_RECONCILIATION_LOOKBACK_HOURS`
+- `WOOCOMMERCE_ORDER_RECONCILIATION_STATUSES`
 - `WOOCOMMERCE_WEBHOOK_ENABLED`
 - `WOOCOMMERCE_WEBHOOK_SECRET`
 - `WOOCOMMERCE_WEBHOOK_MAX_BODY_BYTES`
@@ -461,6 +500,7 @@ Response:
 - `webhook_configured`
 - `webhook_secret_present`
 - `last_webhook_delivery`
+- `order_reconciliation`
 - `message`
 
 No secret values are returned.
@@ -472,6 +512,25 @@ booleans and safe last-delivery metadata.
 Optional query param:
 - `check=true`: performs a safe read-only product request to verify
   connectivity when credentials are configured.
+
+### POST /api/integrations/woocommerce/configuration
+
+Verify and save the WooCommerce REST connection in the backend environment.
+
+Request:
+- `base_url`: required HTTPS store URL (`http` is accepted only for localhost)
+- `consumer_key`: required when no key is already configured; blank preserves it
+- `consumer_secret`: required when no secret is already configured; blank preserves it
+- `allow_host_change`: defaults to `false`; must be explicitly `true` when the
+  requested store host differs from the current `WOOCOMMERCE_ALLOWED_HOST`
+
+The backend tests the supplied credentials with a read-only product request
+before atomically updating `backend/.env`. The response returns only the store
+URL, host, presence booleans, and a success message. It never returns either
+credential. A host mismatch fails before the connection request unless the
+operator explicitly authorizes replacement. An authorized replacement updates
+the base URL and exact allowed host together only after verification; it never
+changes writeback feature flags.
 
 ### POST /api/integrations/woocommerce/products/preview
 
@@ -633,29 +692,30 @@ Commit behavior:
 ### POST /api/integrations/woocommerce/orders/quick-sync
 
 Fetch the newest WooCommerce orders per requested status and upsert local order
-snapshots. This endpoint is used by the frontend for near-instant order pickup
-while Dashboard, Orders, or Settings is open. Retrieval remains newest first,
-but the subsequent local allocation pass evaluates all eligible processing
-orders oldest `date_created` first. It is still read-only against WooCommerce:
-it may increase local Allocated, but it does not pick, fulfill, reduce In Stock,
-or write back.
+snapshots when an operator explicitly requests an immediate import. The
+frontend does not call this endpoint on a timer. The backend scheduler owns
+normal reconciliation and uses the fully paginated order-sync path so a large
+backlog cannot be clipped. Retrieval remains newest first, but the subsequent
+local allocation pass evaluates all eligible processing orders oldest
+`date_created` first. It is still read-only against WooCommerce: it may
+increase local Allocated, but it does not pick, fulfill, reduce In Stock, or
+write back.
 
 Query parameters:
 - `per_status_limit`, default `10`, maximum `25`
 
-Typical frontend payload:
+Example operator payload:
 
 ```json
 {
   "include_statuses": ["processing", "on-hold", "pending"],
   "limit": 30,
-  "created_by": "auto-order-poll"
+  "created_by": "operator"
 }
 ```
 
-Quick sync remains enabled every 10 seconds on order-aware frontend pages as a
-recovery and reconciliation path. It is not the primary phase-1 new-order
-ingestion path once the signed webhook is enabled.
+Signed webhooks are the immediate ingestion path; the server reconciliation
+loop is the durable recovery path.
 
 ### POST /api/integrations/woocommerce/webhooks/orders
 
@@ -848,7 +908,8 @@ Reverse all reversible picked quantities for selected active orders. The
 operation restores In Stock and Allocated at original pick locations, updates
 order and pick records, and creates `unpick_stock_restoration` movement and
 audit rows. Completed or fulfilled orders are rejected, and reversed pick lines
-cannot be reversed again.
+cannot be reversed again. An optional `idempotency_key` makes a network retry
+return the first result without restoring stock twice.
 
 ### GET /api/orders/{id}/workflow
 
@@ -1013,6 +1074,7 @@ Preview allocation recommendations for one or more eligible local processing
 orders.
 
 Request:
+- `idempotency_key`: optional retry-safe request identity
 - `order_ids`: local order IDs
 - `lines`: optional explicit order line quantities
 - `allocation_strategy`: `available_first` for the current MVP
@@ -1052,6 +1114,8 @@ Commit behavior:
 - Never writes WooCommerce.
 
 Atomicity:
+- Item aggregates and all affected item-location rows are locked in a
+  deterministic order before quantity validation.
 - Commit revalidates current item sellable quantity and remaining order
   quantity.
 - Requested quantity cannot exceed remaining order quantity.
@@ -1424,7 +1488,9 @@ Calculated fields are recomputed at export time:
 
 Return inventory totals grouped by warehouse and inventory location.
 
-Implemented. Supports the same filters as the by-location CSV export.
+Implemented. Supports the by-location filters plus `search` and the same
+comma-separated `data_quality` values as `GET /api/items`, allowing inventory
+cards and catalog rows to describe the same filtered record set.
 
 Each group includes:
 - `warehouse`
@@ -1461,6 +1527,9 @@ Commit direct receiving without PO.
 
 Implemented. The commit is atomic: if any line is invalid, the full receipt is
 rejected and no stock is updated.
+
+The body may include `idempotency_key`; the bulk receipt commit supports the
+same field.
 
 On success:
 - Creates a `receipts` row with `receipt_type = direct` and `status = posted`.
@@ -1667,6 +1736,22 @@ lists locally closed orders. Picking reduces local stock and completion does not
 reduce stock again.
 
 ## Reports
+
+### Verified report runs
+
+- `GET /api/reports` lists the 17-report catalog.
+- `GET /api/reports/sharing/status` returns non-secret delivery readiness.
+- `POST /api/reports/runs/{report_key}` generates and freezes a report snapshot.
+- `GET /api/reports/runs/{run_id}` returns the frozen snapshot.
+- `GET /api/reports/runs/{run_id}/csv` exports that snapshot as UTF-8 CSV.
+- `GET /api/reports/runs/{run_id}/pdf` exports that snapshot as a paginated PDF.
+- `POST /api/reports/runs/{run_id}/google-sheets` creates and optionally shares
+  a Google Sheet from that snapshot.
+- `POST /api/reports/runs/{run_id}/email` emails PDF/CSV attachments and an
+  optional Google Sheet link.
+
+All output formats for one run use the same stored payload, run ID, definition
+version, generation time, and SHA-256 evidence hash. See `docs/REPORTING.md`.
 
 ### GET /api/reports/received-inventory
 
@@ -2040,6 +2125,26 @@ Implemented read-only row, summary, and CSV export endpoints:
 
 Each report also supports `/summary` and `/export`.
 
+The inventory valuation summary distinguishes inventory records, normalized
+unique SKUs, SKUs with matching location rows, and valued SKUs with both a
+matching location row and unit cost. It also returns counts for missing or
+duplicate SKUs, missing locations, missing cost, location-filter exclusions,
+and a structured `exclusion_summary` for user-facing explanations. Valuation
+rows require an active location row with populated warehouse and location.
+They preserve missing `unit_cost`, `inventory_value`, `sales_price`,
+`retail_value`, and `margin_estimate` as `null`; valid zero cost or price
+remains numeric zero, and summaries sum only available values. Inventory CSV
+exports likewise leave unavailable cost/value cells blank rather than writing
+a fabricated zero.
+
+Rows, summaries, and CSV exports accept identical filter sets for each report.
+In particular, item activity includes `start_date`, `end_date`, `sku`,
+`barcode`, and `movement_type`; margin by SKU includes `start_date`,
+`end_date`, `sku`, `brand`, and `category`; receiving cost includes
+`start_date`, `end_date`, `sku`, `warehouse`, and `inventory_location`; and
+adjustments includes `adjustment_type`, `sku`, `warehouse`, and
+`inventory_location`.
+
 ## Pongo Insights
 
 Implemented read-only dashboard endpoints:
@@ -2071,6 +2176,32 @@ Common query params include `start_date`, `end_date`, `brand`, `category`,
 Insights endpoints read local tables only and return `data_quality` warnings
 for missing source data instead of faking metrics.
 
+Revenue dashboards use one canonical metric set: `gross_sales` is the sum of
+pre-discount order subtotals, `discount_amount` is the synced WooCommerce order
+discount total, and `net_sales` is the sum of post-discount line totals before
+shipping, tax, and refunds. `average_order_value` uses net sales divided by the
+included sales-order count and is `null` when no orders match. Refund amount and rate are `null` until refund
+detail is synced; they are never represented as calculated zeroes. Product
+rows expose `product_title` and retain `description` as the same concise title
+for compatibility. Product profitability rows also expose `cost_available`;
+when required cost is missing, estimated cost, margin, and margin percentage
+remain `null`, while a legitimate zero cost remains numeric zero.
+
+Inventory forecasting uses only successful orders that match the selected date
+range and order filters. SKU, brand, and category filters also scope both the
+sales lines and inventory rows returned by the forecast; failed or cancelled
+orders never contribute demand. Each forecast row exposes `forecast_available`
+and `forecast_status`. Demand, velocity, days-left, and reorder quantities are
+`null` with `insufficient_history` status when usable sales history is absent;
+summary fields expose available and insufficient-history counts plus an overall
+forecast status.
+
+Subscription dashboards expose `data_available: false` and nullable KPI values
+until local subscription snapshots exist. Status and payment revenue
+breakdowns use the same post-discount product-line net sales definition as the
+canonical Net Sales KPI, excluding shipping and tax. Product filters scope the
+contributing lines of mixed-product orders instead of leaking unrelated lines.
+
 ## Business Dashboard
 
 Implemented read-only dashboard endpoints:
@@ -2087,3 +2218,28 @@ state, revenue comparison, order map/geography, and data quality warnings.
 The business dashboard reads local order snapshots and order lines only. It does
 not call WooCommerce, mutate orders, mutate stock, or geocode addresses through
 an external provider.
+
+## Woo Mapping And Item Enrichment
+
+- `POST /api/integrations/woocommerce/products/sync/preview` previews batched
+  simple-product, variable-parent, and variation actions without writes.
+- `POST /api/integrations/woocommerce/products/sync/commit` commits one item
+  per valid simple product or purchasable variation and returns result counts.
+- `GET /api/items/enrichment/export` downloads the protected-identity
+  enrichment template separately from the canonical item export.
+- `POST /api/items/enrichment/preview` accepts multipart `file` and
+  `import_opening_stock`, performs no writes, and reports row matching,
+  changes, warnings, conflicts, unmatched rows, and errors.
+- `POST /api/items/enrichment/commit` revalidates and commits the upload. It
+  never creates items or changes mapping identity. Reapplying an opening-balance
+  file returns HTTP 409.
+- `POST /api/integrations/woocommerce/remap/preview` validates an exception
+  mapping without writes.
+- `POST /api/integrations/woocommerce/remap/commit` updates local mapping
+  metadata, writes an audit event, and reprocesses eligible unmatched order
+  lines/allocation.
+- `POST /api/integrations/woocommerce/writeback/queue/{queue_id}/revalidate`
+  rebuilds only a pending/failed stock queue row from the current mapping and
+  quantity. Completed and dry-run history is immutable.
+
+Mapping import, enrichment, and remap never send a WooCommerce write.

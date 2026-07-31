@@ -16,6 +16,7 @@ from app.models.picks import PickLine
 from app.services.location_inventory import (
     assert_item_invariants,
     assert_location_invariants,
+    lock_inventory_stock,
     recalculate_item_location,
     recalculate_item_totals,
 )
@@ -97,6 +98,16 @@ def evaluate_order_allocation(db: Session, order_id: int) -> AllocationEvaluatio
         ordered = to_decimal(line.quantity_ordered)
         allocated = to_decimal(line.quantity_allocated)
         remaining = max(ordered - allocated, Decimal("0"))
+        if line.allocation_exception_reason in BLOCKING_ALLOCATION_EXCEPTION_REASONS:
+            conflict_lines.append(
+                line_reason(
+                    line,
+                    line.allocation_exception_reason,
+                    line.sync_error or "WooCommerce reconciliation requires staff review.",
+                )
+            )
+            line.allocation_status = "exception"
+            continue
         if allocated > ordered:
             reason = "woo_quantity_below_allocated"
             conflict_lines.append(
@@ -331,6 +342,15 @@ def auto_allocate_processing_orders_fifo(db: Session, source: str = "fifo-auto-a
             .order_by(Order.date_created.asc().nulls_last(), Order.id.asc())
         ).all()
     )
+    lock_inventory_stock(
+        db,
+        {
+            line.inventory_item_id
+            for order in orders
+            for line in order.items
+            if line.inventory_item_id is not None
+        },
+    )
     summary = {
         "status": "completed",
         "attempted_orders": 0,
@@ -398,15 +418,15 @@ def workflow_flags(order: Order) -> dict:
     }
 
 
-def complete_order_without_stock_reduction(db: Session, order_id: int, reason: str | None = None) -> dict:
-    order = load_order(db, order_id)
+def complete_order_without_stock_reduction(db: Session, order_id: int, reason: str | None = None, *, created_by: str = "system") -> dict:
+    order = lock_order_completion_scope(db, order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
     reason = (reason or "").strip()
     if not reason:
         raise ValueError("A reason is required when completing without picking.")
     now = datetime.now(timezone.utc)
-    released_quantity = release_unpicked_allocations(db, order, f"Order completed without picking. Stock was not reduced. {reason}", "complete_without_picking")
+    released_quantity = release_unpicked_allocations(db, order, f"Order completed without picking. Stock was not reduced. {reason}", "complete_without_picking", created_by=created_by)
     order.local_status = "completed"
     order.completion_status = "completed_without_picking"
     order.completed_without_picking = True
@@ -415,7 +435,7 @@ def complete_order_without_stock_reduction(db: Session, order_id: int, reason: s
     order.workflow_notes = append_note(order.workflow_notes, f"Order completed without picking. Stock was not reduced. {reason}")
     if not any((line.quantity_picked or Decimal("0")) > 0 for line in order.items):
         order.pick_status = "completed_without_picking"
-    add_order_audit_events(db, order, "completed_without_picking", f"Order completed without picking. Stock was not reduced. {reason}")
+    add_order_audit_events(db, order, "completed_without_picking", f"Order completed without picking. Stock was not reduced. {reason}", created_by=created_by)
     sync_order_workflow_statuses(order)
     auto_allocate_processing_orders_fifo(db, source="completion-release")
     db.commit()
@@ -423,18 +443,28 @@ def complete_order_without_stock_reduction(db: Session, order_id: int, reason: s
     return {"status": "completed_without_picking", "order_id": order.id, "released_quantity": decimal_to_float(released_quantity), "message": "Order completed without picking. Stock was not reduced."}
 
 
-def complete_picked_order(db: Session, order_id: int) -> dict:
-    order = load_order(db, order_id)
+def complete_picked_order(db: Session, order_id: int, *, created_by: str = "system") -> dict:
+    order = lock_order_completion_scope(db, order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
+    required_lines = [
+        line
+        for line in order.items
+        if not (line.inventory_item and line.inventory_item.non_inventory)
+    ]
+    if not required_lines:
+        raise ValueError("Picked completion requires at least one inventory line.")
+    incomplete_lines = [line for line in required_lines if not line_is_fully_picked_and_reduced(line)]
+    if incomplete_lines:
+        raise ValueError("Picked completion requires every inventory line to be fully picked.")
     now = datetime.now(timezone.utc)
-    released_quantity = release_unpicked_allocations(db, order, "Order completed after picking; unpicked allocations released.", "complete_picked_order")
+    released_quantity = release_unpicked_allocations(db, order, "Order completed after picking; unpicked allocations released.", "complete_picked_order", created_by=created_by)
     order.local_status = "completed"
     order.completion_status = "completed"
     order.completed_at = now
     order.closed_at = now
     order.workflow_notes = append_note(order.workflow_notes, "Order completed locally. Stock was already reduced during picking.")
-    add_order_audit_events(db, order, "complete_picked_order", "Order completed locally. Stock was already reduced during picking.")
+    add_order_audit_events(db, order, "complete_picked_order", "Order completed locally. Stock was already reduced during picking.", created_by=created_by)
     sync_order_workflow_statuses(order)
     auto_allocate_processing_orders_fifo(db, source="completion-release")
     db.commit()
@@ -442,70 +472,107 @@ def complete_picked_order(db: Session, order_id: int) -> dict:
     return {"status": "completed", "order_id": order.id, "released_quantity": decimal_to_float(released_quantity), "message": "Order completed locally. Stock was already reduced during picking."}
 
 
-def release_unpicked_allocations(db: Session, order: Order, notes: str, event_type: str) -> Decimal:
+def release_line_allocations(
+    db: Session,
+    order: Order,
+    line: OrderItem,
+    requested_quantity: Decimal,
+    notes: str,
+    event_type: str,
+    *,
+    created_by: str = "system",
+) -> Decimal:
+    if line.inventory_item_id is not None:
+        lock_inventory_stock(db, {line.inventory_item_id})
+    unpicked_allocated = max(to_decimal(line.quantity_allocated) - to_decimal(line.quantity_picked), Decimal("0"))
+    to_release = min(max(to_decimal(requested_quantity), Decimal("0")), unpicked_allocated)
+    requested_release = to_release
+    for row, available in allocation_remaining_by_location(db, line, include_inactive=True):
+        if to_release <= 0:
+            break
+        quantity = min(available, to_decimal(row.allocated), to_release)
+        if quantity <= 0:
+            continue
+        item = db.get(InventoryItem, row.inventory_item_id)
+        if item is None:
+            continue
+        previous_in_stock = to_decimal(item.in_stock)
+        previous_allocated = to_decimal(item.allocated)
+        previous_sellable = to_decimal(item.sellable)
+        row.allocated = to_decimal(row.allocated) - quantity
+        recalculate_item_location(row, item)
+        assert_location_invariants(row)
+        item = recalculate_item_totals(db, item.id)
+        assert_item_invariants(item)
+        add_audit_event(
+            db,
+            item,
+            row,
+            "deallocate",
+            -quantity,
+            previous_in_stock=previous_in_stock,
+            new_in_stock=to_decimal(item.in_stock),
+            previous_allocated=previous_allocated,
+            new_allocated=to_decimal(item.allocated),
+            previous_sellable=previous_sellable,
+            new_sellable=to_decimal(item.sellable),
+            reference_type=event_type,
+            reference_id=order.id,
+            reference_number=order.woo_order_number or order.order_number,
+            notes=notes,
+            created_by=created_by,
+        )
+        to_release -= quantity
+    released = requested_release - to_release
+    line.quantity_allocated = max(to_decimal(line.quantity_allocated) - released, Decimal("0"))
+    line.allocated_qty = line.quantity_allocated
+    ordered = to_decimal(line.quantity_ordered)
+    line.shortage_quantity = max(ordered - to_decimal(line.quantity_allocated), Decimal("0"))
+    line.availability_status = (
+        "allocated"
+        if ordered > 0 and to_decimal(line.quantity_allocated) >= ordered
+        else ("partial" if line.quantity_allocated else "unallocated")
+    )
+    line.allocation_status = line.availability_status
+    return released
+
+
+def release_unpicked_allocations(db: Session, order: Order, notes: str, event_type: str, *, created_by: str = "system") -> Decimal:
     released_total = Decimal("0")
     for line in order.items:
-        unpicked_allocated = max(to_decimal(line.quantity_allocated) - to_decimal(line.quantity_picked), Decimal("0"))
-        if unpicked_allocated <= 0:
-            continue
-        remaining_by_location = allocation_remaining_by_location(db, line)
-        to_release = unpicked_allocated
-        for row, available in remaining_by_location:
-            if to_release <= 0:
-                break
-            quantity = min(available, to_decimal(row.allocated), to_release)
-            if quantity <= 0:
-                continue
-            item = db.get(InventoryItem, row.inventory_item_id)
-            if item is None:
-                continue
-            previous_in_stock = to_decimal(item.in_stock)
-            previous_allocated = to_decimal(item.allocated)
-            previous_sellable = to_decimal(item.sellable)
-            row.allocated = to_decimal(row.allocated) - quantity
-            recalculate_item_location(row, item)
-            assert_location_invariants(row)
-            item = recalculate_item_totals(db, item.id)
-            assert_item_invariants(item)
-            add_audit_event(
-                db,
-                item,
-                row,
-                "deallocate",
-                -quantity,
-                previous_in_stock=previous_in_stock,
-                new_in_stock=to_decimal(item.in_stock),
-                previous_allocated=previous_allocated,
-                new_allocated=to_decimal(item.allocated),
-                previous_sellable=previous_sellable,
-                new_sellable=to_decimal(item.sellable),
-                reference_type=event_type,
-                reference_id=order.id,
-                reference_number=order.woo_order_number or order.order_number,
-                notes=notes,
-                created_by="system",
-            )
-            released_total += quantity
-            to_release -= quantity
-        line.quantity_allocated = max(to_decimal(line.quantity_allocated) - (unpicked_allocated - to_release), Decimal("0"))
-        line.allocated_qty = line.quantity_allocated
-        line.availability_status = "unallocated" if line.quantity_allocated == 0 else "partial"
-        line.allocation_status = line.availability_status
+        released_total += release_line_allocations(
+            db,
+            order,
+            line,
+            max(to_decimal(line.quantity_allocated) - to_decimal(line.quantity_picked), Decimal("0")),
+            notes,
+            event_type,
+            created_by=created_by,
+        )
     return released_total
 
 
-def allocation_remaining_by_location(db: Session, line: OrderItem) -> list[tuple[InventoryItemLocation, Decimal]]:
+def allocation_remaining_by_location(
+    db: Session,
+    line: OrderItem,
+    *,
+    include_inactive: bool = False,
+) -> list[tuple[InventoryItemLocation, Decimal]]:
     allocated_rows = db.execute(
-        select(AllocationLine.inventory_item_location_id, func.coalesce(func.sum(AllocationLine.quantity_to_allocate), 0))
+        select(
+            AllocationLine.id,
+            AllocationLine.inventory_item_location_id,
+            AllocationLine.quantity_to_allocate,
+        )
         .join(Allocation, Allocation.id == AllocationLine.allocation_id)
         .where(
             AllocationLine.order_line_id == line.id,
             AllocationLine.inventory_item_location_id.is_not(None),
             Allocation.status == "posted",
         )
-        .group_by(AllocationLine.inventory_item_location_id)
+        .order_by(AllocationLine.id.asc())
     ).all()
-    picked_rows = dict(
+    picked_by_location = dict(
         db.execute(
             select(PickLine.inventory_item_location_id, func.coalesce(func.sum(PickLine.quantity_stock_reduced), 0))
             .where(
@@ -516,14 +583,29 @@ def allocation_remaining_by_location(db: Session, line: OrderItem) -> list[tuple
             .group_by(PickLine.inventory_item_location_id)
         ).all()
     )
+    unpicked_segments: list[tuple[int, Decimal]] = []
+    for _, location_id, allocated_quantity in allocated_rows:
+        quantity = to_decimal(allocated_quantity)
+        picked = min(quantity, to_decimal(picked_by_location.get(location_id)))
+        picked_by_location[location_id] = max(to_decimal(picked_by_location.get(location_id)) - picked, Decimal("0"))
+        if quantity > picked:
+            unpicked_segments.append((location_id, quantity - picked))
+
+    active_unpicked = max(to_decimal(line.quantity_allocated) - to_decimal(line.quantity_picked), Decimal("0"))
+    active_by_location: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+    for location_id, quantity in reversed(unpicked_segments):
+        if active_unpicked <= 0:
+            break
+        active_quantity = min(quantity, active_unpicked)
+        active_by_location[location_id] += active_quantity
+        active_unpicked -= active_quantity
+
     remaining: list[tuple[InventoryItemLocation, Decimal]] = []
-    for location_id, allocated_quantity in allocated_rows:
+    for location_id, allocated_quantity in active_by_location.items():
         row = db.get(InventoryItemLocation, location_id)
-        if row is None or not row.active:
+        if row is None or (not include_inactive and not row.active):
             continue
-        reduced_quantity = to_decimal(picked_rows.get(location_id))
-        quantity = max(to_decimal(allocated_quantity) - reduced_quantity, Decimal("0"))
-        quantity = min(quantity, to_decimal(row.allocated), to_decimal(row.in_stock))
+        quantity = min(to_decimal(allocated_quantity), to_decimal(row.allocated), to_decimal(row.in_stock))
         if quantity > 0:
             remaining.append((row, quantity))
     remaining.sort(key=lambda pair: (not pair[0].is_default_location, -pair[1], pair[0].id))
@@ -541,7 +623,7 @@ def sync_order_workflow_statuses(order: Order) -> None:
     any_allocated = any(to_decimal(line.quantity_allocated) > 0 for line in matched_lines)
     all_allocated = bool(matched_lines) and all(to_decimal(line.quantity_allocated) >= to_decimal(line.quantity_ordered) for line in matched_lines)
     any_picked = any(to_decimal(line.quantity_picked) > 0 for line in matched_lines)
-    all_picked = bool(matched_lines) and all(to_decimal(line.quantity_allocated) > 0 and to_decimal(line.quantity_picked) >= to_decimal(line.quantity_allocated) for line in matched_lines)
+    all_picked = bool(matched_lines) and all(line_is_fully_picked_and_reduced(line) for line in matched_lines)
 
     if order.woo_status and order.woo_status != "processing" and order.completion_status not in {"completed", "completed_without_picking"}:
         order.local_status = order.woo_status
@@ -650,6 +732,45 @@ def load_order(db: Session, order_id: int) -> Order | None:
     return db.scalars(select(Order).where(Order.id == order_id).options(selectinload(Order.items).selectinload(OrderItem.inventory_item))).one_or_none()
 
 
+def lock_order_completion_scope(db: Session, order_id: int) -> Order | None:
+    item_ids = set(
+        db.scalars(
+            select(OrderItem.inventory_item_id).where(
+                OrderItem.order_id == order_id,
+                OrderItem.inventory_item_id.is_not(None),
+            )
+        ).all()
+    )
+    lock_inventory_stock(db, item_ids)
+    order = db.scalars(
+        select(Order)
+        .where(Order.id == order_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if order is None:
+        return None
+    db.scalars(
+        select(OrderItem)
+        .where(OrderItem.order_id == order_id)
+        .order_by(OrderItem.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    db.expire(order, ["items"])
+    return load_order(db, order_id)
+
+
+def line_is_fully_picked_and_reduced(line: OrderItem) -> bool:
+    ordered = to_decimal(line.quantity_ordered)
+    return bool(
+        line.matched_status == "matched"
+        and ordered > 0
+        and to_decimal(line.quantity_picked) >= ordered
+        and to_decimal(line.quantity_stock_reduced) >= ordered
+    )
+
+
 def is_active_order(order: Order) -> bool:
     if order.completion_status in {"completed", "completed_without_picking"}:
         return False
@@ -690,7 +811,7 @@ def allocation_exception_reason(evaluation: AllocationEvaluation) -> str:
     return ", ".join(reasons) or "allocation_exception"
 
 
-def add_order_audit_events(db: Session, order: Order, event_type: str, notes: str) -> None:
+def add_order_audit_events(db: Session, order: Order, event_type: str, notes: str, *, created_by: str = "system") -> None:
     seen_items: set[int] = set()
     for line in order.items:
         item = line.inventory_item
@@ -716,7 +837,7 @@ def add_order_audit_events(db: Session, order: Order, event_type: str, notes: st
             reference_id=order.id,
             reference_number=order.woo_order_number or order.order_number,
             notes=notes,
-            created_by="system",
+            created_by=created_by,
         )
 
 

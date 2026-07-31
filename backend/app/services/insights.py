@@ -62,11 +62,13 @@ def export_insight_csv(db: Session, dashboard: str, params: dict[str, Any] | Non
 
 
 def build_context(db: Session, params: dict[str, Any]) -> dict[str, Any]:
-    orders = list(db.scalars(select(Order).options(selectinload(Order.items))).all())
+    orders = list(db.scalars(select(Order).options(selectinload(Order.items).selectinload(OrderItem.inventory_item))).all())
     items = list(db.scalars(select(InventoryItem)).all())
+    item_by_id = {item.id: item for item in items}
+    item_by_sku = {clean_key(item.sku): item for item in items if clean_key(item.sku)}
     start = parse_date(params.get("start_date"))
     end = parse_date(params.get("end_date"), end_of_day=True)
-    filtered_orders = [order for order in orders if order_in_range(order, start, end) and order_matches(order, params)]
+    filtered_orders = [order for order in orders if order_in_range(order, start, end) and order_matches(order, params, item_by_sku)]
     successful_orders = [order for order in filtered_orders if is_success_order(order)]
     all_successful_orders = [order for order in orders if is_success_order(order)]
     return {
@@ -75,8 +77,8 @@ def build_context(db: Session, params: dict[str, Any]) -> dict[str, Any]:
         "all_orders": orders,
         "all_successful_orders": all_successful_orders,
         "items": items,
-        "item_by_id": {item.id: item for item in items},
-        "item_by_sku": {clean_key(item.sku): item for item in items if clean_key(item.sku)},
+        "item_by_id": item_by_id,
+        "item_by_sku": item_by_sku,
         "params": params,
         "start": start,
         "end": end,
@@ -86,12 +88,12 @@ def build_context(db: Session, params: dict[str, Any]) -> dict[str, Any]:
 
 def overview(ctx: dict[str, Any]) -> InsightResponse:
     sales_ctx = successful_context(ctx)
-    order_metrics = revenue_metrics(sales_ctx["orders"])
+    order_metrics = revenue_metrics(sales_ctx["orders"], sales_ctx)
     customers = customer_groups(sales_ctx["orders"])
     product_rows = product_rows_for_orders(sales_ctx)
     inventory_value = sum((money(item.in_stock) * money(item.unit_cost) for item in ctx["items"]), Decimal("0"))
-    stockout_rows = forecast_rows(ctx)
-    due_rows = reorder_rows(ctx)
+    stockout_rows = forecast_rows(sales_ctx)
+    due_rows = reorder_rows(sales_ctx)
     top_units = product_rows[0] if product_rows else None
     top_revenue = sorted(product_rows, key=lambda row: row["revenue"], reverse=True)[0] if product_rows else None
     summary = {
@@ -105,11 +107,9 @@ def overview(ctx: dict[str, Any]) -> InsightResponse:
         "inventory_value": dec(inventory_value),
         "stockout_risk_count": sum(1 for row in stockout_rows if row["risk_level"] in {"high", "medium"}),
         "customers_due_to_reorder": len(due_rows),
-        "refund_amount": 0,
-        "refund_rate": 0,
-        "coupon_discount_total": coupon_total(sales_ctx["orders"]),
+        "coupon_discount_total": coupon_total(sales_ctx["orders"], sales_ctx),
     }
-    trends = daily_trends(sales_ctx["orders"])
+    trends = daily_trends(sales_ctx["orders"], sales_ctx)
     trends.update(
         {
             "new_vs_returning_by_month": new_vs_returning_by_month(sales_ctx["orders"]),
@@ -118,18 +118,25 @@ def overview(ctx: dict[str, Any]) -> InsightResponse:
             "top_skus": product_rows[:10],
         }
     )
-    warnings = ctx["warnings"] + warning("missing_refund_data", "info", "Refund detail is not synced yet, so refund metrics are returned as zero.")
-    return response("overview", summary=summary, trends=trends, tables={"stockout_risk": stockout_rows[:10], "reorder_risk": due_rows[:10]}, warnings=warnings)
+    warnings = sales_ctx["warnings"] + warning("missing_refund_data", "info", "Refund detail is not synced yet, so refund metrics are unavailable.")
+    return response(
+        "overview",
+        summary=summary,
+        trends=trends,
+        tables={"stockout_risk": stockout_rows[:10], "reorder_risk": due_rows[:10]},
+        warnings=warnings,
+        empty_state=None if sales_ctx["orders"] else "No matching completed or active sales orders",
+    )
 
 
 def orders_revenue(ctx: dict[str, Any]) -> InsightResponse:
     orders = ctx["successful_orders"]
-    metrics = revenue_metrics(orders)
-    totals = [float(order_total(order)) for order in orders]
+    metrics = revenue_metrics(orders, ctx)
+    totals = [float(order_net_sales(order, ctx)) for order in orders]
     metrics.update(
         {
             "median_order_value": median(totals) if totals else 0,
-            "units_per_order": safe_div(metrics["total_units_sold"], metrics["total_orders"]),
+            "units_per_order": safe_div(metrics["units_sold"], metrics["total_orders"]),
             "revenue_growth_percent": None,
             "order_growth_percent": None,
             "discount_rate": percent(metrics["discount_amount"], metrics["gross_sales"]),
@@ -137,15 +144,25 @@ def orders_revenue(ctx: dict[str, Any]) -> InsightResponse:
             "tax_total": dec(sum((money(order.tax_total) for order in orders), Decimal("0"))),
         }
     )
-    trends = daily_trends(orders)
-    tables = {"status_breakdown": status_breakdown(orders), "payment_methods": payment_breakdown(orders)}
-    return response("orders-revenue", summary=metrics, metrics=metrics, trends=trends, rows=trends["daily_revenue"], tables=tables, warnings=ctx["warnings"])
+    trends = daily_trends(orders, ctx)
+    tables = {"status_breakdown": status_breakdown(orders, ctx), "payment_methods": payment_breakdown(orders, ctx)}
+    warnings = base_warnings(orders, ctx["items"]) + warning("missing_refund_data", "info", "Refund detail is not synced yet, so refund metrics are unavailable.")
+    return response(
+        "orders-revenue",
+        summary=metrics,
+        metrics=metrics,
+        trends=trends,
+        rows=trends["daily_revenue"],
+        tables=tables,
+        warnings=warnings,
+        empty_state=None if orders else "No matching completed or active sales orders",
+    )
 
 
 def customer_metrics(ctx: dict[str, Any]) -> InsightResponse:
     sales_ctx = successful_context(ctx)
     customers = customer_groups(sales_ctx["orders"])
-    rows = customer_rows(customers)
+    rows = customer_rows(customers, sales_ctx)
     returning = [row for row in rows if row["order_count"] > 1]
     intervals = [row["average_days_between_orders"] for row in rows if row["average_days_between_orders"] is not None]
     summary = {
@@ -172,7 +189,7 @@ def customer_metrics(ctx: dict[str, Any]) -> InsightResponse:
 def customer_segmentation(ctx: dict[str, Any]) -> InsightResponse:
     sales_ctx = successful_context(ctx)
     rows = []
-    for row in customer_rows(customer_groups(sales_ctx["orders"])):
+    for row in customer_rows(customer_groups(sales_ctx["orders"]), sales_ctx):
         segment = segment_customer(row)
         rows.append({**row, "segment": segment})
     counts = Counter(row["segment"] for row in rows)
@@ -192,50 +209,61 @@ def customer_segmentation(ctx: dict[str, Any]) -> InsightResponse:
 def product_sku(ctx: dict[str, Any]) -> InsightResponse:
     sales_ctx = successful_context(ctx)
     rows = product_rows_for_orders(sales_ctx)
+    costed_rows = [row for row in rows if row["cost_available"]]
+    all_costs_available = len(costed_rows) == len(rows)
     summary = {
         "sku_count": len(rows),
         "units_sold": sum(row["units_sold"] for row in rows),
         "revenue": round(sum(row["revenue"] for row in rows), 2),
-        "estimated_margin": round(sum(row["estimated_margin"] for row in rows), 2),
+        "estimated_margin": round(sum(row["estimated_margin"] for row in costed_rows), 2) if all_costs_available else None,
+        "cost_data_available": all_costs_available,
         "top_selling_skus": rows[:10],
         "slow_moving_skus": sorted(rows, key=lambda row: row["units_sold"])[:10],
         "dead_stock_skus": [row for row in inventory_sku_base(sales_ctx) if row["units_sold"] == 0][:25],
         "fast_moving_skus": rows[:10],
         "high_revenue_skus": sorted(rows, key=lambda row: row["revenue"], reverse=True)[:10],
-        "high_margin_skus": sorted(rows, key=lambda row: row["estimated_margin"], reverse=True)[:10],
-        "high_volume_low_margin_skus": [row for row in rows if row["units_sold"] >= 5 and row["margin_percent"] < 20],
+        "high_margin_skus": sorted(costed_rows, key=lambda row: row["estimated_margin"], reverse=True)[:10],
+        "high_volume_low_margin_skus": [row for row in costed_rows if row["units_sold"] >= 5 and row["margin_percent"] < 20],
     }
-    warnings = sales_ctx["warnings"]
-    if any(row["estimated_cost"] == 0 for row in rows):
-        warnings += warning("missing_unit_cost", "warning", "Some SKU margin estimates are incomplete because unit cost is missing or zero.")
+    warnings = [entry for entry in sales_ctx["warnings"] if entry["code"] != "missing_unit_cost"]
+    if not all_costs_available:
+        warnings += warning("missing_unit_cost", "warning", "Some SKU margin estimates are unavailable because unit cost is missing.")
     return response("product-sku", summary=summary, rows=rows, tables={"skus": rows}, warnings=warnings)
 
 
 def subscriptions(ctx: dict[str, Any]) -> InsightResponse:
-    return response("subscriptions", summary={"active_subscriptions": 0, "subscription_revenue": 0, "monthly_recurring_revenue": 0, "failed_renewals": 0, "upcoming_renewals_7_days": 0, "upcoming_renewals_30_days": 0}, rows=[], warnings=warning("missing_subscription_data", "info", "No WooCommerce Subscriptions snapshots are synced locally yet."), empty_state="No subscription data synced yet")
+    return response("subscriptions", summary={"data_available": False, "active_subscriptions": None, "subscription_revenue": None, "monthly_recurring_revenue": None, "failed_renewals": None, "upcoming_renewals_7_days": None, "upcoming_renewals_30_days": None}, rows=[], warnings=warning("missing_subscription_data", "info", "No WooCommerce Subscriptions snapshots are synced locally yet."), empty_state="No subscription data synced yet")
 
 
 def subscription_products(ctx: dict[str, Any]) -> InsightResponse:
-    return response("subscription-products", summary={"products_on_subscription_count": 0, "stockout_risk_for_subscription_products": 0}, rows=[], warnings=warning("missing_subscription_data", "info", "No subscription product demand data is available locally yet."), empty_state="No subscription data synced yet")
+    return response("subscription-products", summary={"data_available": False, "products_on_subscription_count": None, "stockout_risk_for_subscription_products": None}, rows=[], warnings=warning("missing_subscription_data", "info", "No subscription product demand data is available locally yet."), empty_state="No subscription data synced yet")
 
 
 def inventory_forecasting(ctx: dict[str, Any]) -> InsightResponse:
     sales_ctx = successful_context(ctx)
     rows = forecast_rows(sales_ctx)
+    available_rows = [row for row in rows if row["forecast_available"]]
+    forecast_status = "available" if rows and len(available_rows) == len(rows) else ("partial" if available_rows else ("insufficient_history" if rows else "unavailable"))
     summary = {
         "sku_count": len(rows),
+        "forecast_available_count": len(available_rows),
+        "insufficient_history_count": len(rows) - len(available_rows),
+        "forecast_status": forecast_status,
         "stockout_risk": sum(1 for row in rows if row["risk_level"] == "high"),
         "overstock_risk": sum(1 for row in rows if row["risk_level"] == "overstock"),
-        "forecasted_30_day_demand": round(sum(row["forecasted_30_day_demand"] for row in rows), 2),
-        "forecasted_60_day_demand": round(sum(row["forecasted_60_day_demand"] for row in rows), 2),
-        "forecasted_90_day_demand": round(sum(row["forecasted_90_day_demand"] for row in rows), 2),
+        "forecasted_30_day_demand": round(sum(row["forecasted_30_day_demand"] for row in available_rows), 2) if available_rows else None,
+        "forecasted_60_day_demand": round(sum(row["forecasted_60_day_demand"] for row in available_rows), 2) if available_rows else None,
+        "forecasted_90_day_demand": round(sum(row["forecasted_90_day_demand"] for row in available_rows), 2) if available_rows else None,
     }
-    return response("inventory-forecasting", summary=summary, rows=rows, tables={"forecast": rows}, warnings=sales_ctx["warnings"])
+    warnings = list(sales_ctx["warnings"])
+    if len(available_rows) < len(rows):
+        warnings += warning("insufficient_sales_history", "info", "Forecasts are unavailable for SKUs without usable sales in the last 30 days.")
+    return response("inventory-forecasting", summary=summary, rows=rows, tables={"forecast": rows}, warnings=warnings)
 
 
 def coupons(ctx: dict[str, Any]) -> InsightResponse:
     sales_ctx = successful_context(ctx)
-    rows = coupon_rows(sales_ctx["orders"])
+    rows = coupon_rows(sales_ctx["orders"], sales_ctx)
     discount = sum(row["discount_amount"] for row in rows)
     summary = {
         "coupon_orders": sum(row["order_count"] for row in rows),
@@ -250,7 +278,7 @@ def coupons(ctx: dict[str, Any]) -> InsightResponse:
 
 
 def payment_health(ctx: dict[str, Any]) -> InsightResponse:
-    rows = payment_rows(ctx["orders"])
+    rows = payment_rows(ctx["orders"], ctx)
     failed = sum(row["failed_count"] for row in rows)
     attempts = sum(row["attempt_count"] for row in rows)
     summary = {
@@ -273,7 +301,7 @@ def geography(ctx: dict[str, Any]) -> InsightResponse:
         key = (city, postal)
         grouped[key]["orders"].append(order)
         grouped[key]["customers"].add(customer_key(order))
-        grouped[key]["revenue"] += order_total(order)
+        grouped[key]["revenue"] += order_net_sales(order, sales_ctx)
     rows = []
     for (city, postal), data in grouped.items():
         customers = customer_groups(data["orders"])
@@ -304,17 +332,18 @@ def product_affinity(ctx: dict[str, Any]) -> InsightResponse:
     pair_revenue = defaultdict(Decimal)
     descriptions = {}
     for order in sales_ctx["orders"]:
-        line_skus = sorted({clean_key(line.sku) for line in order.items if clean_key(line.sku)})
+        lines = scoped_order_lines(order, sales_ctx)
+        line_skus = sorted({clean_key(line.sku) for line in lines if clean_key(line.sku)})
         if len(line_skus) < 2:
             continue
-        for line in order.items:
+        for line in lines:
             if clean_key(line.sku):
                 descriptions[clean_key(line.sku)] = line.description or line.name
         for sku in line_skus:
             base_counts[sku] += 1
         for base, paired in combinations(line_skus, 2):
             pair_counts[(base, paired)] += 1
-            pair_revenue[(base, paired)] += order_total(order)
+            pair_revenue[(base, paired)] += order_net_sales(order, sales_ctx)
     rows = []
     for (base, paired), count in pair_counts.most_common(100):
         rows.append(
@@ -333,8 +362,9 @@ def product_affinity(ctx: dict[str, Any]) -> InsightResponse:
 
 
 def reorder_forecast(ctx: dict[str, Any]) -> InsightResponse:
-    rows = reorder_rows(ctx)
-    return response("reorder-forecast", summary={"candidate_count": len(rows), "due_soon": sum(1 for row in rows if row["churn_risk_score"] == "low"), "overdue": sum(1 for row in rows if row["churn_risk_score"] in {"medium", "high"}), "lost": sum(1 for row in rows if row["churn_risk_score"] == "lost")}, rows=rows, warnings=ctx["warnings"], empty_state=None if rows else "Not enough repeat purchase history yet")
+    sales_ctx = successful_context(ctx)
+    rows = reorder_rows(sales_ctx)
+    return response("reorder-forecast", summary={"candidate_count": len(rows), "due_soon": sum(1 for row in rows if row["churn_risk_score"] == "low"), "overdue": sum(1 for row in rows if row["churn_risk_score"] in {"medium", "high"}), "lost": sum(1 for row in rows if row["churn_risk_score"] == "lost")}, rows=rows, warnings=sales_ctx["warnings"], empty_state=None if rows else "Not enough repeat purchase history yet")
 
 
 def response(dashboard: str, summary=None, metrics=None, trends=None, rows=None, tables=None, warnings=None, empty_state=None) -> InsightResponse:
@@ -358,68 +388,68 @@ def is_success_order(order: Order) -> bool:
     return bool(statuses & SUCCESS_STATUSES)
 
 
-def revenue_metrics(orders: list[Order]) -> dict[str, Any]:
-    gross = sum((order_gross(order) for order in orders), Decimal("0"))
-    net = sum((order_total(order) for order in orders), Decimal("0"))
-    units = sum((line_qty(line) for order in orders for line in order.items), Decimal("0"))
-    discounts = sum((money(order.discount_total) for order in orders), Decimal("0"))
+def revenue_metrics(orders: list[Order], ctx: dict[str, Any] | None = None) -> dict[str, Any]:
+    gross = sum((order_gross(order, ctx) for order in orders), Decimal("0"))
+    net = sum((order_net_sales(order, ctx) for order in orders), Decimal("0"))
+    units = sum((line_qty(line) for order in orders for line in scoped_order_lines(order, ctx)), Decimal("0"))
+    discounts = sum((order_discount(order, ctx) for order in orders), Decimal("0"))
     return {
         "total_orders": len(orders),
-        "gross_revenue": dec(gross),
         "gross_sales": dec(gross),
-        "net_revenue": dec(net),
         "net_sales": dec(net),
-        "total_revenue": dec(net),
-        "total_sales": dec(net),
-        "average_order_value": dec(net / Decimal(len(orders))) if orders else 0,
-        "total_units_sold": dec(units),
+        "average_order_value": dec(net / Decimal(len(orders))) if orders else None,
         "units_sold": dec(units),
-        "refund_amount": 0,
-        "refund_rate": 0,
+        "refund_amount": None,
+        "refund_rate": None,
         "discount_amount": dec(discounts),
     }
 
 
 def product_rows_for_orders(ctx: dict[str, Any]) -> list[dict[str, Any]]:
-    grouped = defaultdict(lambda: {"units": Decimal("0"), "revenue": Decimal("0"), "cost": Decimal("0"), "orders": set(), "customers": set(), "first": None, "last": None, "description": None, "brand": None, "category": None, "barcode": None})
+    grouped = defaultdict(lambda: {"units": Decimal("0"), "revenue": Decimal("0"), "cost": Decimal("0"), "cost_available": True, "orders": set(), "customers": set(), "first": None, "last": None, "product_title": None, "brand": None, "category": None, "barcode": None})
     for order in ctx["orders"]:
         od = order_date(order)
         customer = customer_key(order)
-        for line in order.items:
+        for line in scoped_order_lines(order, ctx):
             sku = clean_key(line.sku) or f"line-{line.id}"
             item = line.inventory_item or ctx["item_by_sku"].get(sku)
             qty = line_qty(line)
             revenue = line_revenue(line)
-            unit_cost = money(line.unit_cost if line.unit_cost is not None else item.unit_cost if item else None)
+            unit_cost = line.unit_cost if line.unit_cost is not None else item.unit_cost if item else None
             grouped[sku]["units"] += qty
             grouped[sku]["revenue"] += revenue
-            grouped[sku]["cost"] += unit_cost * qty
+            if unit_cost is None:
+                grouped[sku]["cost_available"] = False
+            else:
+                grouped[sku]["cost"] += money(unit_cost) * qty
             grouped[sku]["orders"].add(order.id)
             grouped[sku]["customers"].add(customer)
             grouped[sku]["first"] = min_date(grouped[sku]["first"], od)
             grouped[sku]["last"] = max_date(grouped[sku]["last"], od)
-            grouped[sku]["description"] = line.description or line.name or (item.description if item else None)
+            grouped[sku]["product_title"] = line.name or (item.woo_name if item else None) or (item.description if item else None) or line.description
             grouped[sku]["brand"] = line.brand or (item.brand if item else None)
             grouped[sku]["category"] = item.category if item else None
             grouped[sku]["barcode"] = line.barcode or (item.barcode if item else None)
     rows = []
     for sku, data in grouped.items():
         item = ctx["item_by_sku"].get(sku)
-        margin = data["revenue"] - data["cost"]
+        margin = data["revenue"] - data["cost"] if data["cost_available"] else None
         rows.append(
             {
                 "sku": sku,
                 "barcode": data["barcode"],
-                "description": data["description"],
+                "product_title": data["product_title"],
+                "description": data["product_title"],
                 "brand": data["brand"],
                 "category": data["category"],
                 "units_sold": dec(data["units"]),
                 "order_count": len(data["orders"]),
                 "customer_count": len(data["customers"]),
                 "revenue": dec(data["revenue"]),
-                "estimated_cost": dec(data["cost"]),
-                "estimated_margin": dec(margin),
-                "margin_percent": percent(margin, data["revenue"]),
+                "cost_available": data["cost_available"],
+                "estimated_cost": dec(data["cost"]) if data["cost_available"] else None,
+                "estimated_margin": dec(margin) if margin is not None else None,
+                "margin_percent": percent(margin, data["revenue"]) if margin is not None else None,
                 "current_in_stock": dec(item.in_stock) if item else None,
                 "current_allocated": dec(item.allocated) if item else None,
                 "current_sellable": dec(item.sellable) if item else None,
@@ -436,55 +466,65 @@ def inventory_sku_base(ctx: dict[str, Any]) -> list[dict[str, Any]]:
     sold = {row["sku"]: row for row in product_rows_for_orders(ctx)}
     rows = []
     for item in ctx["items"]:
+        if not forecast_item_matches(item, ctx.get("params") or {}):
+            continue
         sku = clean_key(item.sku)
         if not sku:
             continue
-        rows.append({**sold.get(sku, {}), "sku": sku, "description": item.description, "brand": item.brand, "category": item.category, "units_sold": sold.get(sku, {}).get("units_sold", 0), "current_sellable": dec(item.sellable)})
+        product_title = item.woo_name or item.description
+        rows.append({**sold.get(sku, {}), "sku": sku, "product_title": product_title, "description": product_title, "brand": item.brand, "category": item.category, "units_sold": sold.get(sku, {}).get("units_sold", 0), "current_sellable": dec(item.sellable)})
     return rows
 
 
 def forecast_rows(ctx: dict[str, Any]) -> list[dict[str, Any]]:
     now = datetime.now(timezone.utc)
     sales = defaultdict(lambda: {"7": Decimal("0"), "30": Decimal("0"), "60": Decimal("0"), "90": Decimal("0")})
-    for order in ctx["all_orders"]:
+    scoped_items = [item for item in ctx["items"] if forecast_item_matches(item, ctx.get("params") or {})]
+    scoped_skus = {clean_key(item.sku) for item in scoped_items if clean_key(item.sku)}
+    for order in ctx["orders"]:
         od = order_date(order)
         if not od:
             continue
         days = (now - make_aware(od)).days
         for line in order.items:
             sku = clean_key(line.sku)
-            if not sku:
+            if not sku or sku not in scoped_skus:
                 continue
             qty = line_qty(line)
-            if days <= 7:
+            if 0 <= days <= 7:
                 sales[sku]["7"] += qty
-            if days <= 30:
+            if 0 <= days <= 30:
                 sales[sku]["30"] += qty
-            if days <= 60:
+            if 0 <= days <= 60:
                 sales[sku]["60"] += qty
-            if days <= 90:
+            if 0 <= days <= 90:
                 sales[sku]["90"] += qty
     rows = []
-    for item in ctx["items"]:
+    for item in scoped_items:
         sku = clean_key(item.sku)
+        product_title = item.woo_name or item.description
         units30 = sales[sku]["30"]
-        daily_velocity = units30 / Decimal("30") if units30 else Decimal("0")
+        forecast_available = units30 > 0
+        daily_velocity = units30 / Decimal("30") if forecast_available else None
         sellable = money(item.sellable)
         lead_time = item.default_lead_time_days or 7
         days_left = sellable / daily_velocity if daily_velocity else None
         par = money(item.par_level)
-        suggested = max(Decimal("0"), (daily_velocity * Decimal(str(lead_time))) + par - sellable)
-        risk = "low"
-        if item.under_par or (days_left is not None and days_left < lead_time):
-            risk = "high"
-        elif days_left is not None and days_left < lead_time * 2:
-            risk = "medium"
-        elif days_left is not None and days_left > 180:
-            risk = "overstock"
+        suggested = max(Decimal("0"), (daily_velocity * Decimal(str(lead_time))) + par - sellable) if daily_velocity is not None else None
+        risk = "insufficient_history"
+        if forecast_available:
+            risk = "low"
+            if item.under_par or (days_left is not None and days_left < lead_time):
+                risk = "high"
+            elif days_left is not None and days_left < lead_time * 2:
+                risk = "medium"
+            elif days_left is not None and days_left > 180:
+                risk = "overstock"
         rows.append(
             {
                 "sku": item.sku,
-                "description": item.description,
+                "product_title": product_title,
+                "description": product_title,
                 "brand": item.brand,
                 "category": item.category,
                 "current_sellable": dec(sellable),
@@ -492,20 +532,33 @@ def forecast_rows(ctx: dict[str, Any]) -> list[dict[str, Any]]:
                 "units_sold_30d": dec(sales[sku]["30"]),
                 "units_sold_60d": dec(sales[sku]["60"]),
                 "units_sold_90d": dec(sales[sku]["90"]),
-                "daily_velocity": dec(daily_velocity),
+                "forecast_available": forecast_available,
+                "forecast_status": "available" if forecast_available else "insufficient_history",
+                "daily_velocity": dec(daily_velocity) if daily_velocity is not None else None,
                 "days_of_stock_left": dec(days_left) if days_left is not None else None,
                 "lead_time_days": lead_time,
                 "par_level": dec(par),
-                "suggested_reorder_qty": dec(suggested),
+                "suggested_reorder_qty": dec(suggested) if suggested is not None else None,
                 "risk_level": risk,
-                "forecasted_30_day_demand": dec(daily_velocity * Decimal("30")),
-                "forecasted_60_day_demand": dec(daily_velocity * Decimal("60")),
-                "forecasted_90_day_demand": dec(daily_velocity * Decimal("90")),
+                "forecasted_30_day_demand": dec(daily_velocity * Decimal("30")) if daily_velocity is not None else None,
+                "forecasted_60_day_demand": dec(daily_velocity * Decimal("60")) if daily_velocity is not None else None,
+                "forecasted_90_day_demand": dec(daily_velocity * Decimal("90")) if daily_velocity is not None else None,
                 "under_par_risk": bool(item.under_par),
             }
         )
-    rows.sort(key=lambda row: {"high": 0, "medium": 1, "low": 2, "overstock": 3}.get(row["risk_level"], 9))
+    rows.sort(key=lambda row: {"high": 0, "medium": 1, "low": 2, "overstock": 3, "insufficient_history": 4}.get(row["risk_level"], 9))
     return rows
+
+
+def forecast_item_matches(item: InventoryItem, params: dict[str, Any]) -> bool:
+    sku = clean_key(params.get("sku"))
+    if sku and clean_key(item.sku) != sku:
+        return False
+    brand = clean(params.get("brand")).lower()
+    if brand and clean(item.brand).lower() != brand:
+        return False
+    category = clean(params.get("category")).lower()
+    return not category or clean(item.category).lower() == category
 
 
 def customer_groups(orders: list[Order]) -> dict[str, dict[str, Any]]:
@@ -519,13 +572,13 @@ def customer_groups(orders: list[Order]) -> dict[str, dict[str, Any]]:
     return grouped
 
 
-def customer_rows(customers: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def customer_rows(customers: dict[str, dict[str, Any]], ctx: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     rows = []
     now = datetime.now(timezone.utc)
     for key, data in customers.items():
         dates = sorted([make_aware(order_date(order)) for order in data["orders"] if order_date(order)])
         intervals = [(dates[index] - dates[index - 1]).days for index in range(1, len(dates))]
-        spend = sum((order_total(order) for order in data["orders"]), Decimal("0"))
+        spend = sum((order_net_sales(order, ctx) for order in data["orders"]), Decimal("0"))
         rows.append(
             {
                 "customer_key": key,
@@ -547,8 +600,8 @@ def customer_rows(customers: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
 
 def reorder_rows(ctx: dict[str, Any]) -> list[dict[str, Any]]:
     grouped = defaultdict(list)
-    for order in ctx["all_orders"]:
-        for line in order.items:
+    for order in ctx["orders"]:
+        for line in scoped_order_lines(order, ctx):
             sku = clean_key(line.sku)
             if sku:
                 grouped[(customer_key(order), sku)].append(order)
@@ -584,7 +637,7 @@ def reorder_rows(ctx: dict[str, Any]) -> list[dict[str, Any]]:
                 "expected_next_order_date": iso(expected),
                 "days_overdue": days_overdue,
                 "churn_risk_score": risk,
-                "expected_order_value": dec(order_total(order)),
+                "expected_order_value": dec(order_net_sales(order, ctx)),
                 "recommended_action": recommended_reorder_action(risk),
             }
     rows = list(candidates.values())
@@ -592,32 +645,32 @@ def reorder_rows(ctx: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def daily_trends(orders: list[Order]) -> dict[str, list[dict[str, Any]]]:
+def daily_trends(orders: list[Order], ctx: dict[str, Any] | None = None) -> dict[str, list[dict[str, Any]]]:
     grouped = defaultdict(lambda: {"orders": 0, "gross": Decimal("0"), "net": Decimal("0"), "units": Decimal("0")})
     for order in orders:
         key = (order_date(order) or datetime.now(timezone.utc)).date().isoformat()
         grouped[key]["orders"] += 1
-        grouped[key]["gross"] += order_gross(order)
-        grouped[key]["net"] += order_total(order)
-        grouped[key]["units"] += sum((line_qty(line) for line in order.items), Decimal("0"))
+        grouped[key]["gross"] += order_gross(order, ctx)
+        grouped[key]["net"] += order_net_sales(order, ctx)
+        grouped[key]["units"] += sum((line_qty(line) for line in scoped_order_lines(order, ctx)), Decimal("0"))
     daily = [{"date": key, "order_count": value["orders"], "gross_sales": dec(value["gross"]), "net_sales": dec(value["net"]), "units_sold": dec(value["units"])} for key, value in sorted(grouped.items())]
     return {"daily_revenue": daily, "revenue_by_day": daily, "orders_by_day": [{"date": row["date"], "order_count": row["order_count"]} for row in daily]}
 
 
-def status_breakdown(orders: list[Order]) -> list[dict[str, Any]]:
+def status_breakdown(orders: list[Order], ctx: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     grouped = defaultdict(lambda: {"orders": 0, "revenue": Decimal("0")})
     for order in orders:
         status = order.status or order.local_status or order.woo_status or "unknown"
         grouped[status]["orders"] += 1
-        grouped[status]["revenue"] += order_total(order)
+        grouped[status]["revenue"] += order_net_sales(order, ctx)
     return [{"status": key, "order_count": value["orders"], "revenue": dec(value["revenue"])} for key, value in sorted(grouped.items())]
 
 
-def payment_breakdown(orders: list[Order]) -> list[dict[str, Any]]:
-    return payment_rows(orders)
+def payment_breakdown(orders: list[Order], ctx: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    return payment_rows(orders, ctx)
 
 
-def payment_rows(orders: list[Order]) -> list[dict[str, Any]]:
+def payment_rows(orders: list[Order], ctx: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     grouped = defaultdict(lambda: {"attempts": 0, "success": 0, "failed": 0, "revenue": Decimal("0")})
     duplicates = Counter(row["payment_method"] for row in duplicate_patterns(orders))
     for order in orders:
@@ -628,7 +681,7 @@ def payment_rows(orders: list[Order]) -> list[dict[str, Any]]:
             grouped[method]["failed"] += 1
         else:
             grouped[method]["success"] += 1
-            grouped[method]["revenue"] += order_total(order)
+            grouped[method]["revenue"] += order_net_sales(order, ctx)
     rows = []
     for method, value in grouped.items():
         rows.append({"payment_method": method, "attempt_count": value["attempts"], "success_count": value["success"], "failed_count": value["failed"], "success_rate": percent(value["success"], value["attempts"]), "revenue": dec(value["revenue"]), "duplicate_pattern_count": duplicates[method]})
@@ -657,7 +710,7 @@ def duplicate_patterns(orders: list[Order]) -> list[dict[str, Any]]:
     return rows
 
 
-def coupon_rows(orders: list[Order]) -> list[dict[str, Any]]:
+def coupon_rows(orders: list[Order], ctx: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     grouped = defaultdict(lambda: {"usage": 0, "orders": set(), "revenue": Decimal("0"), "discount": Decimal("0"), "customers": set()})
     for order in orders:
         payload = order.raw_woo_payload or {}
@@ -666,11 +719,11 @@ def coupon_rows(orders: list[Order]) -> list[dict[str, Any]]:
             code = str(coupon.get("code") or coupon.get("coupon_code") or "").strip()
             if not code:
                 continue
-            discount = money(coupon.get("discount") or coupon.get("discount_amount") or order.discount_total)
+            discount = order_discount(order, ctx) if has_product_filters(ctx) else money(coupon.get("discount") or coupon.get("discount_amount") or order.discount_total)
             grouped[code]["usage"] += 1
             grouped[code]["orders"].add(order.id)
             grouped[code]["customers"].add(customer_key(order))
-            grouped[code]["revenue"] += order_total(order)
+            grouped[code]["revenue"] += order_net_sales(order, ctx)
             grouped[code]["discount"] += discount
     rows = []
     for code, value in grouped.items():
@@ -743,7 +796,7 @@ def warning(code: str, severity: str, message: str) -> list[dict[str, str]]:
     return [{"code": code, "severity": severity, "message": message}]
 
 
-def order_matches(order: Order, params: dict[str, Any]) -> bool:
+def order_matches(order: Order, params: dict[str, Any], item_by_sku: dict[str, InventoryItem]) -> bool:
     status = clean(params.get("order_status"))
     if status and status.lower() not in {clean(order.status).lower(), clean(order.local_status).lower(), clean(order.woo_status).lower()}:
         return False
@@ -759,13 +812,34 @@ def order_matches(order: Order, params: dict[str, Any]) -> bool:
     postal = clean(params.get("postal_code"))
     if postal and postal.lower() not in clean(order.shipping_zip or order.billing_zip).lower():
         return False
-    sku = clean_key(params.get("sku"))
-    if sku and sku not in {clean_key(line.sku) for line in order.items}:
-        return False
-    brand = clean(params.get("brand")).lower()
-    if brand and brand not in {clean(line.brand).lower() for line in order.items}:
+    if any(clean(params.get(key)) for key in ("sku", "brand", "category")) and not any(
+        line_matches_product_filters(line, params, item_by_sku) for line in order.items
+    ):
         return False
     return True
+
+
+def line_matches_product_filters(line: OrderItem, params: dict[str, Any], item_by_sku: dict[str, InventoryItem]) -> bool:
+    item = line.inventory_item or item_by_sku.get(clean_key(line.sku))
+    sku = clean_key(params.get("sku"))
+    if sku and clean_key(line.sku or (item.sku if item else None)) != sku:
+        return False
+    brand = clean(params.get("brand")).lower()
+    if brand and clean(line.brand or (item.brand if item else None)).lower() != brand:
+        return False
+    category = clean(params.get("category")).lower()
+    return not category or clean(item.category if item else None).lower() == category
+
+
+def has_product_filters(ctx: dict[str, Any] | None) -> bool:
+    params = ctx.get("params", {}) if ctx else {}
+    return any(clean(params.get(key)) for key in ("sku", "brand", "category"))
+
+
+def scoped_order_lines(order: Order, ctx: dict[str, Any] | None = None) -> list[OrderItem]:
+    if not has_product_filters(ctx):
+        return list(order.items)
+    return [line for line in order.items if line_matches_product_filters(line, ctx["params"], ctx["item_by_sku"])]
 
 
 def order_in_range(order: Order, start: datetime | None, end: datetime | None) -> bool:
@@ -786,10 +860,24 @@ def order_total(order: Order) -> Decimal:
     return sum((line_revenue(line) for line in order.items), Decimal("0"))
 
 
-def order_gross(order: Order) -> Decimal:
+def order_net_sales(order: Order, ctx: dict[str, Any] | None = None) -> Decimal:
+    if order.items:
+        return sum((line_revenue(line) for line in scoped_order_lines(order, ctx)), Decimal("0"))
+    return order_total(order) - money(order.shipping_total) - money(order.tax_total)
+
+
+def order_gross(order: Order, ctx: dict[str, Any] | None = None) -> Decimal:
+    if has_product_filters(ctx):
+        return sum((money(line.line_subtotal) if line.line_subtotal is not None else line_revenue(line) for line in scoped_order_lines(order, ctx)), Decimal("0"))
     if order.subtotal is not None:
         return money(order.subtotal)
     return sum((money(line.line_subtotal) if line.line_subtotal is not None else line_revenue(line) for line in order.items), Decimal("0"))
+
+
+def order_discount(order: Order, ctx: dict[str, Any] | None = None) -> Decimal:
+    if not has_product_filters(ctx):
+        return money(order.discount_total)
+    return max(Decimal("0"), order_gross(order, ctx) - order_net_sales(order, ctx))
 
 
 def line_revenue(line: OrderItem) -> Decimal:
@@ -829,8 +917,8 @@ def dormant_count(rows: list[dict[str, Any]], days: int) -> int:
     return sum(1 for row in rows if (row.get("recency_days") or 0) >= days)
 
 
-def coupon_total(orders: list[Order]) -> float:
-    return dec(sum((money(order.discount_total) for order in orders), Decimal("0")))
+def coupon_total(orders: list[Order], ctx: dict[str, Any] | None = None) -> float:
+    return dec(sum((order_discount(order, ctx) for order in orders), Decimal("0")))
 
 
 def recommended_reorder_action(risk: str) -> str:

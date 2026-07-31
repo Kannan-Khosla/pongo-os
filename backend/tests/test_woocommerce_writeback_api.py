@@ -1,14 +1,22 @@
+import asyncio
 from types import SimpleNamespace
 
 import httpx
+from sqlalchemy.orm import sessionmaker
 
+from app.db.session import get_db
+from app.main import app
+from app.models.woocommerce import WooStockSyncJob
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError, safe_woocommerce_error_message
+from app.services.woocommerce_stock_sync_jobs import cancel_stock_sync_job, process_next_stock_sync_job, run_stock_sync_job_scheduler, unresolved_stock_sync_job_count
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
+from tests.test_woocommerce_sync_api import patch_woo_client, simple_product
 
 
 def staging_settings(**overrides):
     values = {
+        "app_env": "development",
         "woocommerce_base_url": "https://staging32.pongo.ca/",
         "woocommerce_consumer_key": "ck_test_secret_value",
         "woocommerce_consumer_secret": "cs_test_secret_value",
@@ -19,6 +27,7 @@ def staging_settings(**overrides):
         "woocommerce_writeback_dry_run": False,
         "woocommerce_staging_live_test_mode": True,
         "woocommerce_allow_stock_write": True,
+        "woocommerce_production_stock_authority": "disabled",
         "woocommerce_allow_order_status_write": True,
         "woocommerce_allow_product_metadata_write": False,
         "woocommerce_allow_customer_write": False,
@@ -29,9 +38,18 @@ def staging_settings(**overrides):
         "woocommerce_timeout_seconds": 30,
         "woocommerce_page_size": 100,
         "woocommerce_order_sync_page_size": 100,
+        "woocommerce_stock_sync_job_stale_seconds": 900,
+        "woocommerce_stock_sync_max_retries": 3,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def stock_sync_db_factory():
+    db = next(app.dependency_overrides[get_db]())
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False)
+    db.close()
+    return factory
 
 
 def test_woocommerce_status_masks_credentials_and_shows_staging(client, monkeypatch):
@@ -83,9 +101,41 @@ def test_woocommerce_client_blocks_write_outside_staging():
     try:
         client.guarded_write("update_product_stock", "PATCH", "/wp-json/wc/v3/products/101", {"stock_quantity": 3})
     except WooCommerceClientError as error:
-        assert "limited to allowlisted order completion" in error.message
+        assert "PRODUCTION_STOCK_AUTHORITY=pongo" in error.message
     else:
         raise AssertionError("Production stock writeback should be blocked")
+
+
+def test_production_app_cannot_bypass_guard_by_claiming_staging():
+    client = WooCommerceClient(
+        staging_settings(
+            app_env="production",
+            woocommerce_environment="staging",
+            woocommerce_production_stock_authority="pongo",
+        )
+    )
+
+    try:
+        client.guarded_write("update_product_stock", "PATCH", "/wp-json/wc/v3/products/101", {"stock_quantity": 3})
+    except WooCommerceClientError as error:
+        assert "WOOCOMMERCE_ENVIRONMENT=production" in error.message
+    else:
+        raise AssertionError("A production app must never use staging write guards")
+
+
+def test_woocommerce_client_allows_production_stock_only_with_explicit_pongo_authority(monkeypatch):
+    client = WooCommerceClient(staging_settings(
+        woocommerce_base_url="https://shop.pongo.ca/",
+        woocommerce_allowed_host="shop.pongo.ca",
+        woocommerce_environment="production",
+        woocommerce_staging_live_test_mode=False,
+        woocommerce_production_stock_authority="pongo",
+    ))
+    monkeypatch.setattr(client, "_request", lambda method, path, params=None, payload=None: {"id": 101, **payload})
+
+    result = client.guarded_write("update_product_stock", "PATCH", "/wp-json/wc/v3/products/101", {"stock_quantity": 3})
+
+    assert result["stock_quantity"] == 3
 
 
 def test_woocommerce_client_allows_explicit_production_order_completion(monkeypatch):
@@ -157,6 +207,28 @@ def test_woocommerce_client_blocks_host_mismatch():
         raise AssertionError("Host mismatch should be blocked")
 
 
+def test_woocommerce_client_rejects_plaintext_or_noncanonical_base_url():
+    for base_url in [
+        "http://shop.pongo.ca",
+        "https://user:pass@shop.pongo.ca",
+        "https://shop.pongo.ca/store",
+        "https://shop.pongo.ca?debug=1",
+    ]:
+        client = WooCommerceClient(staging_settings(
+            app_env="production",
+            woocommerce_base_url=base_url,
+            woocommerce_allowed_host="shop.pongo.ca",
+            woocommerce_environment="production",
+            woocommerce_production_stock_authority="pongo",
+        ))
+        try:
+            client._request("GET", "/wp-json/wc/v3/products", params={"per_page": 1})
+        except WooCommerceClientError as error:
+            assert "HTTPS" in error.message or "canonical" in error.message
+        else:
+            raise AssertionError(f"Unsafe WooCommerce base URL should be blocked: {base_url}")
+
+
 def test_woocommerce_client_blocks_writeback_disabled():
     client = WooCommerceClient(staging_settings(woocommerce_writeback_enabled=False))
 
@@ -211,6 +283,17 @@ def test_stock_preview_creates_no_woo_request(client, monkeypatch):
     body = response.json()
     assert body["operation_type"] == "update_product_stock"
     assert body["payload_json"]["body"]["stock_quantity"] == 8
+
+
+def test_stock_preview_fails_closed_for_duplicate_sku(client, monkeypatch):
+    monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: staging_settings())
+    seed_item(client, sku="DUPLICATE-STOCK-SKU", wooProductId=111)
+    seed_item(client, sku="DUPLICATE-STOCK-SKU", wooProductId=112)
+
+    response = client.post("/api/integrations/woocommerce/writeback/stock/preview", json={"sku": "DUPLICATE-STOCK-SKU"})
+
+    assert response.status_code == 409
+    assert "duplicate_sku_conflict" in response.text
 
 
 def test_order_status_preview_creates_no_woo_request(client, monkeypatch):
@@ -321,7 +404,7 @@ def test_failed_legacy_order_status_queue_can_retry_with_woo_put(client, monkeyp
 
 def test_send_requires_approval(client, monkeypatch):
     monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: staging_settings())
-    seed_item(client, sku="NEEDS-APPROVAL", wooProductId=505, **{"In Stock": 2})
+    seed_item(client, sku="NEEDS-APPROVAL", wooProductId=505, **{"In Stock": 2, "Allocated": 0})
     preview = client.post("/api/integrations/woocommerce/writeback/stock/preview", json={"sku": "NEEDS-APPROVAL"}).json()
     queued = client.post("/api/integrations/woocommerce/writeback/queue", json=preview).json()
 
@@ -357,24 +440,162 @@ def test_stock_sync_updates_only_changed_items_then_can_force_all(client, monkey
             calls.append((path, payload["stock_quantity"]))
             return {"stock_quantity": payload["stock_quantity"]}
 
-    monkeypatch.setattr("app.api.routes.woocommerce.create_woocommerce_client", lambda: FakeWoo())
+    changed = client.post(
+        "/api/integrations/woocommerce/writeback/stock/sync",
+        json={"force": False, "idempotency_key": "changed-stock-job", "chunk_size": 10},
+    )
 
-    changed = client.post("/api/integrations/woocommerce/writeback/stock/sync", json={"force": False})
-
-    assert changed.status_code == 200
-    assert changed.json()["status"] == "sent"
-    assert changed.json()["candidate_count"] == 1
-    assert changed.json()["sent_count"] == 1
-    assert changed.json()["unchanged_count"] == 1
+    assert changed.status_code == 202
+    assert changed.json()["status"] == "queued"
+    assert client.post(
+        "/api/integrations/woocommerce/writeback/stock/sync",
+        json={"force": False, "idempotency_key": "changed-stock-job", "chunk_size": 10},
+    ).json()["id"] == changed.json()["id"]
+    process_next_stock_sync_job(staging_settings(), db_factory=stock_sync_db_factory(), client_factory=lambda _settings: FakeWoo())
+    process_next_stock_sync_job(staging_settings(), db_factory=stock_sync_db_factory(), client_factory=lambda _settings: FakeWoo())
+    completed = client.get(f"/api/integrations/woocommerce/writeback/stock/jobs/{changed.json()['id']}").json()
+    assert completed["status"] == "completed"
+    assert completed["sent_count"] == 1
+    assert completed["unchanged_count"] == 1
     assert calls == [("/wp-json/wc/v3/products/701", 8.0)]
 
     calls.clear()
-    all_items = client.post("/api/integrations/woocommerce/writeback/stock/sync", json={"force": True})
+    all_items = client.post(
+        "/api/integrations/woocommerce/writeback/stock/sync",
+        json={"force": True, "idempotency_key": "force-stock-job", "chunk_size": 10},
+    )
 
-    assert all_items.status_code == 200
-    assert all_items.json()["candidate_count"] == 2
-    assert all_items.json()["sent_count"] == 2
+    assert all_items.status_code == 202
+    process_next_stock_sync_job(staging_settings(), db_factory=stock_sync_db_factory(), client_factory=lambda _settings: FakeWoo())
+    process_next_stock_sync_job(staging_settings(), db_factory=stock_sync_db_factory(), client_factory=lambda _settings: FakeWoo())
+    completed_all = client.get(f"/api/integrations/woocommerce/writeback/stock/jobs/{all_items.json()['id']}").json()
+    assert completed_all["sent_count"] == 2
     assert calls == [("/wp-json/wc/v3/products/701", 8.0), ("/wp-json/wc/v3/products/702", 5.0)]
+
+
+def test_stock_sync_recovers_a_stale_running_chunk(client, monkeypatch):
+    monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: staging_settings())
+    item = seed_item(client, sku="CRASH-RECOVERY", wooProductId=799, **{"In Stock": 4})
+    created = client.post(
+        "/api/integrations/woocommerce/writeback/stock/sync",
+        json={"force": True, "idempotency_key": "crash-recovery-job", "chunk_size": 10},
+    ).json()
+    factory = stock_sync_db_factory()
+    with factory() as db:
+        job = db.get(WooStockSyncJob, created["id"])
+        job.status = "running"
+        job.retry_item_ids = [item["id"]]
+        job.last_item_id = item["id"]
+        job.processed_items = 1
+        db.commit()
+
+    calls = []
+
+    class FakeWoo:
+        def guarded_write(self, operation_type, method, path, payload):
+            calls.append((path, payload["stock_quantity"]))
+            return {"stock_quantity": payload["stock_quantity"]}
+
+    settings = staging_settings(woocommerce_stock_sync_job_stale_seconds=0)
+    process_next_stock_sync_job(settings, db_factory=factory, client_factory=lambda _settings: FakeWoo())
+    process_next_stock_sync_job(settings, db_factory=factory, client_factory=lambda _settings: FakeWoo())
+
+    completed = client.get(f"/api/integrations/woocommerce/writeback/stock/jobs/{created['id']}").json()
+    assert completed["status"] == "completed"
+    assert calls == [("/wp-json/wc/v3/products/799", 4.0)]
+
+
+def test_completed_stock_sync_failures_can_be_resumed(client, monkeypatch):
+    monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: staging_settings())
+    seed_item(client, sku="RESUME-FAILED-STOCK", wooProductId=798, **{"In Stock": 4})
+    created = client.post(
+        "/api/integrations/woocommerce/writeback/stock/sync",
+        json={"force": True, "idempotency_key": "resume-failed-stock-job", "chunk_size": 10},
+    ).json()
+    factory = stock_sync_db_factory()
+
+    class FailedWoo:
+        def guarded_write(self, *args, **kwargs):
+            raise WooCommerceClientError("temporary failure")
+
+    settings = staging_settings(woocommerce_stock_sync_max_retries=0)
+    process_next_stock_sync_job(settings, db_factory=factory, client_factory=lambda _settings: FailedWoo())
+    process_next_stock_sync_job(settings, db_factory=factory, client_factory=lambda _settings: FailedWoo())
+    failed = client.get(f"/api/integrations/woocommerce/writeback/stock/jobs/{created['id']}").json()
+    assert failed["status"] == "completed_with_errors"
+    assert failed["failed_count"] == 1
+    with factory() as db:
+        assert unresolved_stock_sync_job_count(db) == 1
+
+    assert client.post(f"/api/integrations/woocommerce/writeback/stock/jobs/{created['id']}/resume").status_code == 200
+
+    class SuccessfulWoo:
+        def guarded_write(self, operation_type, method, path, payload):
+            return {"stock_quantity": payload["stock_quantity"]}
+
+    process_next_stock_sync_job(settings, db_factory=factory, client_factory=lambda _settings: SuccessfulWoo())
+    process_next_stock_sync_job(settings, db_factory=factory, client_factory=lambda _settings: SuccessfulWoo())
+    completed = client.get(f"/api/integrations/woocommerce/writeback/stock/jobs/{created['id']}").json()
+    assert completed["status"] == "completed"
+    assert completed["failed_count"] == 0
+    assert completed["sent_count"] == 1
+    with factory() as db:
+        assert unresolved_stock_sync_job_count(db) == 0
+
+
+def test_stock_sync_scheduler_alerts_on_terminal_item_failures(monkeypatch):
+    job = SimpleNamespace(id=91, status="completed_with_errors", failed_count=2, last_error="two mappings failed")
+    captured = {}
+
+    class StopAfterOne:
+        calls = 0
+
+        def is_set(self):
+            self.calls += 1
+            return self.calls > 1
+
+        async def wait(self):
+            return None
+
+    monkeypatch.setattr("app.services.woocommerce_stock_sync_jobs.process_next_stock_sync_job", lambda _settings: job)
+    monkeypatch.setattr("app.services.woocommerce_stock_sync_jobs.send_operations_alert", lambda _settings, event, message, **details: captured.update(event=event, message=message, details=details) or True)
+    settings = staging_settings(
+        woocommerce_stock_sync_job_interval_seconds=1,
+        operations_alert_failure_threshold=3,
+        operations_alert_webhook_url="https://alerts.example.invalid/hook",
+    )
+
+    asyncio.run(run_stock_sync_job_scheduler(settings, StopAfterOne()))
+
+    assert captured["event"] == "woo_stock_sync_job_requires_review"
+    assert captured["details"]["failed_count"] == 2
+    monkeypatch.setattr("app.services.woocommerce_stock_sync_jobs.process_next_stock_sync_job", lambda _settings: None)
+    asyncio.run(run_stock_sync_job_scheduler(settings, StopAfterOne()))
+
+
+def test_running_stock_sync_cancel_stops_between_items_and_keeps_completed_counts(client, monkeypatch):
+    monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: staging_settings())
+    seed_item(client, sku="CANCEL-STOCK-A", wooProductId=796, **{"In Stock": 4})
+    seed_item(client, sku="CANCEL-STOCK-B", wooProductId=797, **{"In Stock": 5})
+    created = client.post(
+        "/api/integrations/woocommerce/writeback/stock/sync",
+        json={"force": True, "idempotency_key": "cancel-running-stock-job", "chunk_size": 10},
+    ).json()
+    factory = stock_sync_db_factory()
+    calls = []
+
+    class CancellingWoo:
+        def guarded_write(self, operation_type, method, path, payload):
+            calls.append(path)
+            with factory() as other:
+                cancel_stock_sync_job(other, created["id"])
+            return {"stock_quantity": payload["stock_quantity"]}
+
+    process_next_stock_sync_job(staging_settings(), db_factory=factory, client_factory=lambda _settings: CancellingWoo())
+    cancelled = client.get(f"/api/integrations/woocommerce/writeback/stock/jobs/{created['id']}").json()
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["sent_count"] == 1
+    assert len(calls) == 1
 
 
 def test_stock_sync_recovers_unambiguous_mapping_from_imported_order(client, monkeypatch):
@@ -396,12 +617,15 @@ def test_stock_sync_recovers_unambiguous_mapping_from_imported_order(client, mon
             calls.append((operation_type, path, payload))
             return {"stock_quantity": payload["stock_quantity"], "stock_status": payload["stock_status"]}
 
-    monkeypatch.setattr("app.api.routes.woocommerce.create_woocommerce_client", lambda: FakeWoo())
+    response = client.post(
+        "/api/integrations/woocommerce/writeback/stock/sync",
+        json={"force": False, "idempotency_key": "recovered-stock-job", "chunk_size": 10},
+    )
 
-    response = client.post("/api/integrations/woocommerce/writeback/stock/sync", json={"force": False})
-
-    assert response.status_code == 200
-    assert response.json()["sent_count"] == 1
+    assert response.status_code == 202
+    process_next_stock_sync_job(staging_settings(), db_factory=stock_sync_db_factory(), client_factory=lambda _settings: FakeWoo())
+    process_next_stock_sync_job(staging_settings(), db_factory=stock_sync_db_factory(), client_factory=lambda _settings: FakeWoo())
+    assert client.get(f"/api/integrations/woocommerce/writeback/stock/jobs/{response.json()['id']}").json()["sent_count"] == 1
     assert calls == [
         (
             "update_variation_stock",
@@ -432,6 +656,7 @@ def test_manual_stock_adjustment_writes_changed_item_to_woo(client, monkeypatch)
     response = client.post(
         "/api/inventory/adjustments",
         json={
+            "idempotency_key": "writeback-adjustment",
             "adjustment_type": "manual_increase",
             "reason": "Physical count correction",
             "created_by": "pytest",
@@ -441,3 +666,46 @@ def test_manual_stock_adjustment_writes_changed_item_to_woo(client, monkeypatch)
 
     assert response.status_code == 201, response.text
     assert calls == [("update_product_stock", "/wp-json/wc/v3/products/703", 8.0)]
+
+
+def test_writeback_missing_duplicate_and_incomplete_mappings_fail_closed(client, monkeypatch):
+    monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: staging_settings())
+    missing = seed_item(client, sku="NO-WOO-MAPPING")
+    assert client.post("/api/integrations/woocommerce/writeback/stock/preview", json={"item_id": missing["id"]}).status_code == 409
+
+    seed_item(client, sku="DUP-MAP-1", wooProductId=8801)
+    duplicate = seed_item(client, sku="DUP-MAP-2", wooProductId=8801)
+    conflict = client.post("/api/integrations/woocommerce/writeback/stock/preview", json={"item_id": duplicate["id"]})
+    assert conflict.status_code == 409
+    assert "woo_mapping_conflict" in conflict.text
+
+    incomplete = seed_item(client, sku="INCOMPLETE-VAR", wooProductId=8802, wooProductType="variation")
+    invalid = client.post("/api/integrations/woocommerce/writeback/stock/preview", json={"item_id": incomplete["id"]})
+    assert invalid.status_code == 409
+    assert "woo_variation_mapping_incomplete" in invalid.text
+
+
+def test_stale_pending_stock_writeback_can_be_revalidated_and_must_be_reapproved(client, monkeypatch):
+    monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: staging_settings(woocommerce_writeback_dry_run=True))
+    patch_woo_client(monkeypatch, [simple_product(id=9901, sku="REVALIDATE")])
+    assert client.post("/api/integrations/woocommerce/products/commit", json={}).status_code == 200
+    item = client.get("/api/items", params={"sku": "REVALIDATE"}).json()["items"][0]
+    preview = client.post("/api/integrations/woocommerce/writeback/stock/preview", json={"item_id": item["id"]}).json()
+    preview["payload_json"]["path"] = "/wp-json/wc/v3/products/123"
+    queued = client.post("/api/integrations/woocommerce/writeback/queue", json=preview).json()
+
+    blocked = client.post(f"/api/integrations/woocommerce/writeback/queue/{queued['id']}/approve")
+    revalidated = client.post(f"/api/integrations/woocommerce/writeback/queue/{queued['id']}/revalidate")
+    approved = client.post(f"/api/integrations/woocommerce/writeback/queue/{queued['id']}/approve")
+    sent = client.post(f"/api/integrations/woocommerce/writeback/queue/{queued['id']}/send")
+    immutable = client.post(f"/api/integrations/woocommerce/writeback/queue/{queued['id']}/revalidate")
+
+    assert blocked.status_code == 409
+    assert "woo_writeback_target_stale" in blocked.text
+    assert revalidated.status_code == 200
+    assert revalidated.json()["status"] == "pending"
+    assert revalidated.json()["payload_json"]["path"] == "/wp-json/wc/v3/products/9901"
+    assert revalidated.json()["approved_by"] is None
+    assert approved.json()["status"] == "approved"
+    assert sent.json()["status"] == "dry_run"
+    assert immutable.status_code == 409

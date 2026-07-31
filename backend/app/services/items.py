@@ -84,7 +84,7 @@ def apply_calculated_fields(item: InventoryItem) -> None:
 def apply_item_payload(item: InventoryItem, payload: InventoryItemCreate | InventoryItemUpdate, partial: bool = False) -> InventoryItem:
     data = payload.model_dump(by_alias=False, exclude_unset=partial)
     for field, value in data.items():
-        if field in {"sellable", "under_par", "storage_volume"}:
+        if field in {"in_stock", "allocated", "sellable", "under_par", "storage_volume"}:
             continue
         if hasattr(item, field):
             setattr(item, field, value)

@@ -74,6 +74,17 @@ class InventoryItemUpdate(InventoryItemBase):
     woo_sync_error: str | None = Field(default=None, alias="wooSyncError")
 
 
+class InventoryOpeningBalanceRequest(BaseModel):
+    in_stock: float = Field(alias="In Stock", ge=0)
+    allocated: float = Field(default=0, alias="Allocated", ge=0)
+    warehouse: str = Field(alias="Warehouse", min_length=1)
+    inventory_location: str = Field(alias="Inventory Location", min_length=1)
+    idempotency_key: str = Field(alias="idempotencyKey", min_length=1, max_length=120)
+    created_by: str | None = Field(default="system", alias="createdBy")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class InventoryItemRead(InventoryItemBase):
     id: int
     image_url: str | None = Field(default=None, alias="imageUrl")
@@ -82,6 +93,9 @@ class InventoryItemRead(InventoryItemBase):
     woo_product_id: int | None = Field(default=None, alias="wooProductId")
     woo_variation_id: int | None = Field(default=None, alias="wooVariationId")
     woo_product_type: str | None = Field(default=None, alias="wooProductType")
+    woo_name: str | None = Field(default=None, alias="wooName")
+    woo_parent_name: str | None = Field(default=None, alias="wooParentName")
+    woo_variation_attributes: list[dict] | None = Field(default=None, alias="wooVariationAttributes")
     woo_permalink: str | None = Field(default=None, alias="wooPermalink")
     woo_status: str | None = Field(default=None, alias="wooStatus")
     woo_manage_stock: bool | None = Field(default=None, alias="wooManageStock")
@@ -97,5 +111,12 @@ class InventoryItemRead(InventoryItemBase):
 class InventoryItemListResponse(BaseModel):
     items: list[InventoryItemRead]
     total: int
+    page: int = 1
+    page_size: int = 0
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
+    facets: dict[str, list[str]] = Field(default_factory=lambda: {"categories": [], "brands": []})
 
     model_config = ConfigDict(populate_by_name=True)

@@ -25,7 +25,7 @@ def picked_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2
     sync = client.post("/api/integrations/woocommerce/orders/commit", json={})
     assert sync.status_code == 200, sync.text
     order = [row for row in client.get("/api/orders/open").json()["orders"] if row["woo_order_id"] == woo_id][0]
-    pick = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": True, "created_by": "pytest"})
+    pick = client.post("/api/picks/commit", json={"idempotency_key": f"fulfillment-pick-{order['id']}", "order_ids": [order["id"]], "allow_partial": True, "created_by": "pytest"})
     assert pick.status_code == 200, pick.text
     assert pick.json()["status"] == "posted"
     detail = client.get(f"/api/orders/{order['id']}").json()

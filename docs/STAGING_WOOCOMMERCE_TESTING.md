@@ -82,10 +82,13 @@ In WooCommerce, go to **WooCommerce > Settings > Advanced > Webhooks** and add:
 - Secret: the exact value in `WOOCOMMERCE_WEBHOOK_SECRET`
 - API version: current WP REST API integration version
 
-Phase 1 imports only `order.created`. Do not configure `order.updated` or
-`order.deleted` as operational Pongo webhooks yet. If an authenticated different
-topic reaches the endpoint, Pongo records it as ignored and returns success
-without changing an order.
+Add a second active webhook with the same delivery URL and secret:
+
+- Name: `Pongo OS Order Updated`
+- Topic: `Order updated`
+
+Pongo imports `order.created` and `order.updated`. Do not configure
+`order.deleted`; unsupported authenticated topics are audited and ignored.
 
 The first activation sends an unsigned body in the exact form
 `webhook_id=<positive integer>`. Pongo returns `status = ready` and performs no
@@ -143,8 +146,8 @@ Always blocked:
 3. Open Settings and confirm WooCommerce shows `Environment: staging`, webhook
    enabled/configured state, and no secret value.
 4. Run Check Connection for the REST fallback.
-5. Create/activate the WooCommerce `Order created` webhook and confirm the setup
-   ping receives HTTP 200 with no order or webhook-event row created.
+5. Create/activate the WooCommerce `Order created` and `Order updated` webhooks
+   and confirm each setup ping receives HTTP 200 with no order mutation.
 6. Place one fake staging order and confirm the delivery log receives HTTP 200.
 7. Confirm one `woocommerce_webhook_deliveries` row has topic `order.created`, a
    processed status, a local order reference, and no raw payload/secret.
@@ -154,18 +157,18 @@ Always blocked:
    and the history closes with Escape/Close.
 9. Redeliver the same Woo delivery and confirm it returns `duplicate`, increments
    its attempt count, and does not duplicate the order, allocation, or notice.
-10. Send a signed `order.updated` test only in isolated API testing and confirm it
-    is audited as ignored without changing the order or showing a new-order
-    notice.
+10. Change the staging order quantity and confirm `order.updated` releases only
+    unpicked excess allocation, records an order workflow note, and does not show
+    a new-order notice.
 11. Import a newer order snapshot through REST, then deliver an older signed
-    `order.created` snapshot for the same order. Confirm the delivery is audited
+    `order.created` or `order.updated` snapshot for the same order. Confirm the delivery is audited
     as ignored, the local order does not regress, and no notice appears.
 12. Confirm a fresh frontend session calls the event feed with
     `initialize=true`, then polls every 2 seconds with `after_id=next_after_id`
     and drains all pages while `has_more=true`.
-13. Confirm the 10-second quick sync still reconciles the open order. A nonzero
-    `created_count` may produce one fallback notice, but repeating the same
-    `sync_run_id` must not re-notify it.
+13. Temporarily withhold a webhook and confirm the backend reconciliation job
+    imports the change without an open browser. Confirm the frontend only
+    refreshes local Pongo data and never posts `orders/quick-sync` on a timer.
 14. Confirm a valid active order with enough local stock is auto-allocated,
     appears in both Open Orders and Pick Orders, leaves In Stock unchanged, and
     creates no stock movement during import.
@@ -176,6 +179,13 @@ Always blocked:
 17. Confirm Business Dashboard and Pongo Insights read the synced local data.
 18. Only for a separate deliberate staging-writeback test, preview, queue,
     approve, and send an allowlisted stock/order-status writeback.
+19. Remove an unpicked Woo order line and confirm Pongo retains a zero-ordered
+    retired history row, releases its allocation, and records a deallocation
+    audit. Re-add the same Woo line ID and confirm the row reactivates instead of
+    duplicating.
+20. Reduce a line below its already-picked quantity and confirm Pongo preserves
+    pick/stock history, blocks further picking with a reconciliation exception,
+    and does not restore stock automatically.
 19. Confirm no REST keys, webhook secret, or raw customer webhook payload appear
     in browser dev tools, API responses, delivery ledger, or application logs.
 
@@ -185,3 +195,20 @@ writeback is configured.
 
 The internal new-order notice is local staff UI feedback. It is not a customer
 email, SMS, browser push notification, or WooCommerce write.
+
+## Mapping Migration Safety Check
+
+Before a deliberate staging stock test, run Import Mappings and resolve all
+conflicts. Confirm simple items target `/products/{product_id}` and variations
+target `/products/{parent_id}/variations/{variation_id}`. A variable parent
+must not be a stock item or writeback target.
+
+After correcting a mapping, use the explicit Revalidate action only on a pending
+or failed mapping-related stock queue row. Revalidation recalculates the target
+and current absolute quantity; it neither approves nor sends. Preview and
+approve again through the existing queue controls. Completed and dry-run history
+cannot be revalidated.
+
+Keep production writes disabled for the first-time catalog/enrichment migration.
+Import Mappings, enrichment, opening stock, and remap are local operations and
+never authorize a WooCommerce write.

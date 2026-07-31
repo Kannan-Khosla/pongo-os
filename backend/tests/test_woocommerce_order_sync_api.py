@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Base
 from app.models.woocommerce import WooCommerceSyncRun
+from app.services import woocommerce_orders as order_service
 from app.services.woocommerce_orders import (
     POSTGRES_ORDER_IMPORT_LOCK_KEY,
     acquire_order_import_transaction_lock,
@@ -147,7 +148,9 @@ def test_order_preview_matches_lines_and_does_not_write_or_allocate(client, monk
     item = client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]
     assert item["In Stock"] == 6
     assert item["Allocated"] == 1
-    assert client.get("/api/stock-movements").json()["total"] == 0
+    movements = client.get("/api/stock-movements").json()
+    assert movements["total"] == 1
+    assert movements["movements"][0]["movement_type"] == "opening_balance_import"
 
 
 def test_order_preview_reports_unmatched_and_shortage(client, monkeypatch):
@@ -172,6 +175,20 @@ def test_order_preview_detects_conflicting_matches(client, monkeypatch):
     line = response.json()["preview_orders"][0]["lines"][0]
     assert line["matched_status"] == "conflict"
     assert response.json()["conflict_count"] == 1
+
+
+def test_order_preview_fails_closed_for_duplicate_sku(client, monkeypatch):
+    seed_item(client, sku="ORDER-SKU", Barcode="DUPLICATE-ONE")
+    seed_item(client, sku="ORDER-SKU", Barcode="DUPLICATE-TWO")
+    order = woo_order(line_items=[{**woo_order()["line_items"][0], "product_id": 0, "variation_id": 0, "meta_data": []}])
+    patch_woo_order_client(monkeypatch, [order])
+
+    response = client.post("/api/integrations/woocommerce/orders/preview", json={})
+
+    line = response.json()["preview_orders"][0]["lines"][0]
+    assert line["matched_status"] == "conflict"
+    assert line["item_id"] is None
+    assert "Duplicate SKU" in line["errors"][0]
 
 
 def test_order_commit_creates_local_order_lines_and_auto_allocates(client, monkeypatch):
@@ -200,7 +217,9 @@ def test_order_commit_creates_local_order_lines_and_auto_allocates(client, monke
     item = client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]
     assert item["In Stock"] == 6
     assert item["Allocated"] == 3
-    assert client.get("/api/stock-movements").json()["total"] == 0
+    movements = client.get("/api/stock-movements").json()
+    assert movements["total"] == 1
+    assert movements["movements"][0]["movement_type"] == "opening_balance_import"
     assert body["auto_allocated_count"] == 1
     assert body["pick_ready_count"] == 1
     assert fake.write_called is False
@@ -268,7 +287,7 @@ def test_processing_resync_does_not_reopen_or_reallocate_locally_completed_order
     assert client.get("/api/allocations").json()["total"] == 1
 
 
-def test_quantity_decrease_below_allocated_flags_review_without_deallocating(client, monkeypatch):
+def test_quantity_decrease_releases_only_unpicked_excess_and_records_reconciliation(client, monkeypatch):
     seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 10, "Allocated": 0})
     fake = patch_woo_order_client(monkeypatch, [woo_order()])
     client.post("/api/integrations/woocommerce/orders/commit", json={})
@@ -285,28 +304,141 @@ def test_quantity_decrease_below_allocated_flags_review_without_deallocating(cli
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "completed_with_errors"
-    assert body["error_count"] == 1
-    assert body["allocation_exception_count"] == 1
-    assert "allocation was preserved and requires review" in body["errors"][0]
+    assert body["status"] == "completed"
+    assert body["error_count"] == 0
     detail = client.get(f"/api/orders/{order['id']}").json()
     line = detail["lines"][0]
     assert line["quantity_ordered"] == 1
-    assert line["quantity_allocated"] == 2
-    assert line["allocation_status"] == "exception"
-    assert line["allocation_exception_reason"] == "woo_quantity_below_allocated"
-    assert line["sync_status"] == "needs_review"
-    assert "requires review" in line["sync_error"]
-    assert detail["allocation_status"] == "exception"
-    assert detail["allocation_exception_reason"] == "woo_quantity_below_allocated"
-    assert detail["can_pick"] is False
-    assert order["id"] in {row["id"] for row in client.get("/api/orders/allocate").json()["orders"]}
-    assert order["id"] not in {row["id"] for row in client.get("/api/orders/pick").json()["orders"]}
+    assert line["quantity_allocated"] == 1
+    assert line["allocation_status"] == "allocated"
+    assert line["allocation_exception_reason"] is None
+    assert detail["allocation_exception_reason"] is None
+    assert detail["can_pick"] is True
+    assert "released 1.000 unpicked units" in detail["workflow_notes"]
     item = client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]
     assert item["In Stock"] == 10
-    assert item["Allocated"] == 2
+    assert item["Allocated"] == 1
     assert client.get("/api/allocations").json()["total"] == 1
-    assert client.get("/api/stock-movements").json()["total"] == 0
+    assert client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]["Allocated"] == 1
+
+
+def test_quantity_below_picked_preserves_history_and_blocks_further_picking(client, monkeypatch):
+    seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 10, "Allocated": 0})
+    fake = patch_woo_order_client(monkeypatch, [woo_order()])
+    client.post("/api/integrations/woocommerce/orders/commit", json={})
+    order = client.get("/api/orders/open").json()["orders"][0]
+    line = client.get(f"/api/orders/{order['id']}").json()["lines"][0]
+    picked = client.post(
+        "/api/picks/commit",
+        json={"idempotency_key": "woo-quantity-change-pick", "lines": [{"order_line_id": line["id"], "quantity_to_pick": 2}], "allow_partial": False},
+    )
+    assert picked.status_code == 200
+    changed_line = {**woo_order()["line_items"][0], "quantity": 1, "subtotal": "12.00", "total": "12.00"}
+    fake.orders = [woo_order(total="18.00", line_items=[changed_line])]
+
+    response = client.post("/api/integrations/woocommerce/orders/commit", json={})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed_with_errors"
+    detail = client.get(f"/api/orders/{order['id']}").json()
+    updated_line = detail["lines"][0]
+    assert updated_line["quantity_ordered"] == 1
+    assert updated_line["quantity_allocated"] == 2
+    assert updated_line["quantity_picked"] == 2
+    assert updated_line["quantity_stock_reduced"] == 2
+    assert updated_line["allocation_status"] == "exception"
+    assert updated_line["allocation_exception_reason"] == "woo_quantity_below_allocated"
+    assert "history was preserved" in updated_line["sync_error"]
+    assert detail["can_pick"] is False
+
+
+def test_failed_line_reconciliation_rolls_back_that_order_savepoint(client, monkeypatch):
+    seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 10, "Allocated": 0})
+    fake = patch_woo_order_client(monkeypatch, [woo_order()])
+    client.post("/api/integrations/woocommerce/orders/commit", json={})
+    order = client.get("/api/orders/open").json()["orders"][0]
+    changed_line = {**woo_order()["line_items"][0], "quantity": 1, "subtotal": "12.00", "total": "12.00"}
+    fake.orders = [woo_order(total="18.00", line_items=[changed_line])]
+    real_upsert = order_service.upsert_order_lines
+
+    def fail_after_reconciliation(*args, **kwargs):
+        real_upsert(*args, **kwargs)
+        raise RuntimeError("simulated reconciliation failure")
+
+    monkeypatch.setattr(order_service, "upsert_order_lines", fail_after_reconciliation)
+
+    response = client.post("/api/integrations/woocommerce/orders/commit", json={})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed_with_errors"
+    assert response.json()["error_count"] == 1
+    detail = client.get(f"/api/orders/{order['id']}").json()
+    assert detail["lines"][0]["quantity_ordered"] == 2
+    assert detail["lines"][0]["quantity_allocated"] == 2
+    item = client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]
+    assert item["Allocated"] == 2
+
+
+def test_product_change_on_unpicked_line_moves_reservation_to_new_item(client, monkeypatch):
+    first = seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 10, "Allocated": 0})
+    second = seed_item(client, sku="SECOND-SKU", Barcode="SECOND-BAR", wooProductId=102, **{"In Stock": 10, "Allocated": 0})
+    fake = patch_woo_order_client(monkeypatch, [woo_order()])
+    client.post("/api/integrations/woocommerce/orders/commit", json={})
+    order = client.get("/api/orders/open").json()["orders"][0]
+    changed_line = {
+        **woo_order()["line_items"][0],
+        "product_id": 102,
+        "sku": "SECOND-SKU",
+        "name": "Second Item",
+        "meta_data": [{"key": "barcode", "value": "SECOND-BAR"}],
+    }
+    fake.orders = [woo_order(date_modified_gmt="2026-07-07T13:30:00", line_items=[changed_line])]
+
+    response = client.post("/api/integrations/woocommerce/orders/commit", json={})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    detail = client.get(f"/api/orders/{order['id']}").json()
+    assert detail["lines"][0]["item_id"] == second["id"]
+    assert detail["lines"][0]["quantity_allocated"] == 2
+    assert detail["lines"][0]["allocation_exception_reason"] is None
+    assert client.get(f"/api/items/{first['id']}").json()["Allocated"] == 0
+    assert client.get(f"/api/items/{second['id']}").json()["Allocated"] == 2
+    assert "changed inventory item" in detail["workflow_notes"]
+
+
+def test_product_change_after_pick_preserves_original_item_history_as_exception(client, monkeypatch):
+    first = seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 10, "Allocated": 0})
+    second = seed_item(client, sku="SECOND-SKU", Barcode="SECOND-BAR", wooProductId=102, **{"In Stock": 10, "Allocated": 0})
+    fake = patch_woo_order_client(monkeypatch, [woo_order()])
+    client.post("/api/integrations/woocommerce/orders/commit", json={})
+    order = client.get("/api/orders/open").json()["orders"][0]
+    line = client.get(f"/api/orders/{order['id']}").json()["lines"][0]
+    client.post(
+        "/api/picks/commit",
+        json={"idempotency_key": "woo-product-change-pick", "lines": [{"order_line_id": line["id"], "quantity_to_pick": 2}], "allow_partial": False},
+    )
+    changed_line = {
+        **woo_order()["line_items"][0],
+        "product_id": 102,
+        "sku": "SECOND-SKU",
+        "name": "Second Item",
+        "meta_data": [{"key": "barcode", "value": "SECOND-BAR"}],
+    }
+    fake.orders = [woo_order(date_modified_gmt="2026-07-07T13:30:00", line_items=[changed_line])]
+
+    response = client.post("/api/integrations/woocommerce/orders/commit", json={})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed_with_errors"
+    detail = client.get(f"/api/orders/{order['id']}").json()
+    updated_line = detail["lines"][0]
+    assert updated_line["item_id"] == first["id"]
+    assert updated_line["quantity_picked"] == 2
+    assert updated_line["quantity_stock_reduced"] == 2
+    assert updated_line["allocation_status"] == "exception"
+    assert "original item history was preserved" in updated_line["sync_error"]
+    assert client.get(f"/api/items/{second['id']}").json()["Allocated"] == 0
 
 
 def test_open_orders_filters_and_export(client, monkeypatch):

@@ -1,4 +1,10 @@
+import httpx
+import pytest
+
 from tests.test_items_api import client, seed_item  # noqa: F401
+from app.core.config import Settings
+from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
+from app.services.woocommerce_configuration import save_woocommerce_configuration
 
 
 class FakeWooClient:
@@ -17,6 +23,298 @@ class FakeWooClient:
 
     def check_connection(self):
         return None
+
+
+def test_woocommerce_credentials_use_basic_auth_and_never_enter_error_urls(monkeypatch):
+    captured = {}
+
+    def reject(method, url, **kwargs):
+        captured.update(kwargs)
+        request = httpx.Request(method, url, params=kwargs["params"])
+        return httpx.Response(401, request=request, json={"message": "denied"})
+
+    monkeypatch.setattr("app.services.woocommerce_client.httpx.request", reject)
+    client = WooCommerceClient(Settings(
+        _env_file=None,
+        woocommerce_base_url="https://store.example",
+        woocommerce_allowed_host="store.example",
+        woocommerce_consumer_key="ck_must_not_leak",
+        woocommerce_consumer_secret="cs_must_not_leak",
+    ))
+
+    with pytest.raises(WooCommerceClientError) as raised:
+        client.check_connection()
+
+    assert isinstance(captured["auth"], httpx.BasicAuth)
+    assert "consumer_key" not in captured["params"]
+    assert "consumer_secret" not in captured["params"]
+    assert "ck_must_not_leak" not in repr(raised.value.__cause__)
+    assert "cs_must_not_leak" not in repr(raised.value.__cause__)
+
+
+def test_woocommerce_configuration_is_verified_and_saved_backend_only(tmp_path, monkeypatch):
+    checked = []
+
+    class ConnectionCheck:
+        def __init__(self, settings):
+            self.settings = settings
+
+        def check_connection(self):
+            checked.append(self.settings.woocommerce_base_url)
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("APP_ENV=development\nKEEP_ME=yes\n", encoding="utf-8")
+    settings = Settings(
+        _env_file=None,
+        woocommerce_base_url="",
+        woocommerce_consumer_key="",
+        woocommerce_consumer_secret="",
+        woocommerce_allowed_host="store.example",
+    )
+
+    saved = save_woocommerce_configuration(
+        "https://store.example/",
+        "ck_test_key",
+        "cs_test_secret",
+        env_path=env_path,
+        settings=settings,
+        client_type=ConnectionCheck,
+    )
+
+    assert checked == ["https://store.example"]
+    assert saved.woocommerce_allowed_host == "store.example"
+    contents = env_path.read_text(encoding="utf-8")
+    assert "KEEP_ME=yes" in contents
+    assert 'WOOCOMMERCE_BASE_URL="https://store.example"' in contents
+    assert 'WOOCOMMERCE_CONSUMER_KEY="ck_test_key"' in contents
+    assert 'WOOCOMMERCE_CONSUMER_SECRET="cs_test_secret"' in contents
+    assert 'WOOCOMMERCE_ALLOWED_HOST="store.example"' in contents
+
+
+def test_woocommerce_configuration_rejects_host_change_before_connection_check(tmp_path):
+    class ConnectionCheck:
+        def __init__(self, settings):
+            raise AssertionError("connection check must not run")
+
+    settings = Settings(
+        _env_file=None,
+        woocommerce_base_url="",
+        woocommerce_consumer_key="ck_existing",
+        woocommerce_consumer_secret="cs_existing",
+        woocommerce_allowed_host="staging32.pongo.ca",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"WooCommerce store host 'staging23\.pongo\.ca' does not match configured allowed host "
+            r"'staging32\.pongo\.ca'. Retry with allow_host_change=true to replace the allowed host\."
+        ),
+    ):
+        save_woocommerce_configuration(
+            "https://staging23.pongo.ca",
+            None,
+            None,
+            env_path=tmp_path / ".env",
+            settings=settings,
+            client_type=ConnectionCheck,
+        )
+
+    assert not (tmp_path / ".env").exists()
+
+
+def test_woocommerce_configuration_does_not_persist_failed_verification(tmp_path):
+    class ConnectionCheck:
+        def __init__(self, settings):
+            self.settings = settings
+
+        def check_connection(self):
+            raise WooCommerceClientError("credentials rejected")
+
+    env_path = tmp_path / ".env"
+    original = (
+        'WOOCOMMERCE_BASE_URL="https://old.example"\n'
+        'WOOCOMMERCE_CONSUMER_KEY="ck_old"\n'
+        'WOOCOMMERCE_CONSUMER_SECRET="cs_old"\n'
+        'WOOCOMMERCE_ALLOWED_HOST="old.example"\n'
+    )
+    env_path.write_text(original, encoding="utf-8")
+    settings = Settings(
+        _env_file=None,
+        woocommerce_consumer_key="ck_old",
+        woocommerce_consumer_secret="cs_old",
+        woocommerce_allowed_host="old.example",
+    )
+
+    with pytest.raises(WooCommerceClientError, match="credentials rejected"):
+        save_woocommerce_configuration(
+            "https://new.example",
+            "ck_new",
+            "cs_new",
+            allow_host_change=True,
+            env_path=env_path,
+            settings=settings,
+            client_type=ConnectionCheck,
+        )
+
+    assert env_path.read_text(encoding="utf-8") == original
+
+
+def test_woocommerce_configuration_can_explicitly_replace_allowed_host(tmp_path):
+    checked = []
+
+    class ConnectionCheck:
+        def __init__(self, settings):
+            checked.append((settings.woocommerce_base_url, settings.woocommerce_allowed_host))
+
+        def check_connection(self):
+            return None
+
+    env_path = tmp_path / ".env"
+    settings = Settings(
+        _env_file=None,
+        woocommerce_base_url="",
+        woocommerce_consumer_key="ck_existing",
+        woocommerce_consumer_secret="cs_existing",
+        woocommerce_allowed_host="staging32.pongo.ca",
+    )
+
+    saved = save_woocommerce_configuration(
+        "https://staging23.pongo.ca/",
+        "ck_replacement",
+        "cs_replacement",
+        allow_host_change=True,
+        env_path=env_path,
+        settings=settings,
+        client_type=ConnectionCheck,
+    )
+
+    assert checked == [("https://staging23.pongo.ca", "staging23.pongo.ca")]
+    assert saved.woocommerce_allowed_host == "staging23.pongo.ca"
+    assert 'WOOCOMMERCE_ALLOWED_HOST="staging23.pongo.ca"' in env_path.read_text(encoding="utf-8")
+
+
+def test_woocommerce_configuration_never_reuses_credentials_for_a_new_host(tmp_path):
+    class ConnectionCheck:
+        def __init__(self, settings):
+            raise AssertionError("old credentials must never be sent to a new host")
+
+    settings = Settings(
+        _env_file=None,
+        woocommerce_consumer_key="ck_existing",
+        woocommerce_consumer_secret="cs_existing",
+        woocommerce_allowed_host="old.example",
+    )
+
+    with pytest.raises(ValueError, match="fresh consumer key and secret"):
+        save_woocommerce_configuration(
+            "https://new.example",
+            None,
+            None,
+            allow_host_change=True,
+            env_path=tmp_path / ".env",
+            settings=settings,
+            client_type=ConnectionCheck,
+        )
+
+
+def test_woocommerce_configuration_cannot_mutate_runtime_production_secrets(tmp_path):
+    settings = Settings(_env_file=None, app_env="production")
+
+    with pytest.raises(ValueError, match="deployment environment"):
+        save_woocommerce_configuration(
+            "https://store.example",
+            "ck_new",
+            "cs_new",
+            env_path=tmp_path / ".env",
+            settings=settings,
+        )
+
+
+def test_woocommerce_configuration_binds_blank_allowed_host(tmp_path):
+    checked = []
+
+    class ConnectionCheck:
+        def __init__(self, settings):
+            checked.append(settings.woocommerce_allowed_host)
+
+        def check_connection(self):
+            return None
+
+    env_path = tmp_path / ".env"
+    settings = Settings(
+        _env_file=None,
+        woocommerce_base_url="",
+        woocommerce_consumer_key="ck_existing",
+        woocommerce_consumer_secret="cs_existing",
+        woocommerce_allowed_host="",
+    )
+
+    saved = save_woocommerce_configuration(
+        "https://store.example",
+        None,
+        None,
+        env_path=env_path,
+        settings=settings,
+        client_type=ConnectionCheck,
+    )
+
+    assert checked == ["store.example"]
+    assert saved.woocommerce_allowed_host == "store.example"
+    assert 'WOOCOMMERCE_ALLOWED_HOST="store.example"' in env_path.read_text(encoding="utf-8")
+
+
+def test_woocommerce_configuration_never_reuses_credentials_across_hosts_without_allowed_host(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        woocommerce_base_url="https://old.example",
+        woocommerce_consumer_key="ck_existing",
+        woocommerce_consumer_secret="cs_existing",
+        woocommerce_allowed_host="",
+    )
+
+    with pytest.raises(ValueError, match="fresh consumer key and secret"):
+        save_woocommerce_configuration(
+            "https://new.example",
+            None,
+            None,
+            allow_host_change=True,
+            env_path=tmp_path / ".env",
+            settings=settings,
+            client_type=lambda _settings: None,
+        )
+
+
+def test_woocommerce_configuration_response_never_exposes_keys(client, monkeypatch):
+    saved_options = {}
+    settings = Settings(
+        _env_file=None,
+        woocommerce_base_url="https://store.example",
+        woocommerce_consumer_key="ck_private",
+        woocommerce_consumer_secret="cs_private",
+        woocommerce_allowed_host="store.example",
+    )
+    def save_configuration(*args, **kwargs):
+        saved_options.update(kwargs)
+        return settings
+
+    monkeypatch.setattr("app.api.routes.woocommerce.save_woocommerce_configuration", save_configuration)
+
+    response = client.post(
+        "/api/integrations/woocommerce/configuration",
+        json={
+            "base_url": "https://store.example",
+            "consumer_key": "ck_private",
+            "consumer_secret": "cs_private",
+            "allow_host_change": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["connected"] is True
+    assert saved_options["allow_host_change"] is True
+    assert "ck_private" not in response.text
+    assert "cs_private" not in response.text
 
 
 def simple_product(**overrides):
@@ -155,7 +453,7 @@ def test_woocommerce_preview_skips_blank_sku(client, monkeypatch):
     assert response.json()["preview_rows"][0]["action"] == "skip"
 
 
-def test_woocommerce_preview_matches_by_woo_ids_sku_and_barcode(client, monkeypatch):
+def test_woocommerce_preview_matches_by_woo_ids_and_sku_but_not_barcode(client, monkeypatch):
     by_ids = seed_item(client, sku="LOCAL-IDS", wooProductId=101, wooVariationId=None)
     by_sku = seed_item(client, sku="WOO-SKU-MATCH")
     by_barcode = seed_item(client, sku="LOCAL-BAR", Barcode="REMOTE-BAR")
@@ -171,8 +469,9 @@ def test_woocommerce_preview_matches_by_woo_ids_sku_and_barcode(client, monkeypa
     rows = response.json()["preview_rows"]
     assert rows[0]["local_item_id"] == by_ids["id"]
     assert rows[1]["local_item_id"] == by_sku["id"]
-    assert rows[2]["local_item_id"] == by_barcode["id"]
-    assert response.json()["matched_count"] == 3
+    assert rows[2]["local_item_id"] is None
+    assert rows[2]["action"] == "create"
+    assert response.json()["matched_count"] == 2
 
 
 def test_woocommerce_preview_prefers_unique_sku_before_barcode_fallback(client, monkeypatch):
@@ -197,7 +496,7 @@ def test_woocommerce_preview_does_not_write_to_database_or_stock(client, monkeyp
     item = client.get("/api/items", params={"sku": "KEEP-STOCK"}).json()["items"][0]
     assert item["In Stock"] == 7
     assert item["wooProductId"] is None
-    assert client.get("/api/stock-movements").json()["total"] == 0
+    assert client.get("/api/stock-movements").json()["total"] == 1
 
 
 def test_woocommerce_commit_creates_new_local_item_from_simple_product(client, monkeypatch):
@@ -235,9 +534,9 @@ def test_woocommerce_commit_updates_existing_item_and_preserves_manual_fields(cl
     assert response.status_code == 200
     item = client.get("/api/items", params={"sku": "WOO-SIMPLE"}).json()["items"][0]
     assert item["wooProductId"] == 101
-    assert item["Description"] == "API Test Item"
+    assert item["Description"] == "Woo Simple Item"
     assert item["Brand"] == "Test Brand"
-    assert item["Sales Price"] == 10.99
+    assert item["Sales Price"] == 17.99
     assert item["In Stock"] == 11
     assert item["Allocated"] == 3
     assert item["Warehouse"] == "Manual Warehouse"
@@ -264,8 +563,8 @@ def test_batched_catalog_mapping_preserves_local_items_and_reports_duplicates(cl
     preview = client.post("/api/integrations/woocommerce/products/preview", json={"page": 1, "per_page": 50}).json()
 
     assert preview["has_more"] is False
-    assert preview["create_count"] == 1
-    assert preview["update_count"] == 2
+    assert preview["create_count"] == 2
+    assert preview["update_count"] == 1
     assert preview["conflict_count"] == 3
     assert any("Duplicate local SKU" in error for error in preview["errors"])
     assert sum("Duplicate WooCommerce SKU" in error for error in preview["errors"]) == 2
@@ -275,21 +574,22 @@ def test_batched_catalog_mapping_preserves_local_items_and_reports_duplicates(cl
         json={"page": 1, "per_page": 50, "blocked_skus": ["remote-duplicate"]},
     ).json()
 
-    assert commit["created_count"] == 1
-    assert commit["updated_count"] == 2
+    assert commit["created_count"] == 2
+    assert commit["updated_count"] == 1
     assert commit["conflict_count"] == 3
-    assert commit["unmatched_local_count"] == 2
-    assert set(commit["unmatched_local_skus"]) == {"DUPLICATE-LOCAL"}
+    assert commit["unmatched_local_count"] == 3
+    assert set(commit["unmatched_local_skus"]) == {"DUPLICATE-LOCAL", "LOCAL-BARCODE"}
     mapped_after = client.get("/api/items", params={"sku": "MAP-ME"}).json()["items"][0]
     assert mapped_after["id"] == mapped["id"]
     assert mapped_after["wooProductId"] == 501
-    assert mapped_after["Description"] == "API Test Item"
+    assert mapped_after["Description"] == "Woo Simple Item"
     assert mapped_after["Barcode"] == "KEEP-BAR"
     assert mapped_after["In Stock"] == 6
     assert mapped_after["Unit Cost"] == 7
     barcode_after = client.get("/api/items", params={"sku": "LOCAL-BARCODE"}).json()["items"][0]
     assert barcode_after["id"] == barcode_fallback["id"]
-    assert barcode_after["wooProductId"] == 502
+    assert barcode_after["wooProductId"] is None
+    assert client.get("/api/items", params={"sku": "REMOTE-BARCODE"}).json()["items"][0]["wooProductId"] == 502
     assert client.get("/api/items", params={"sku": "NEW-FROM-WOO"}).json()["items"][0]["wooProductId"] == 504
     assert all(client.get(f"/api/items/{item['id']}").json()["wooProductId"] is None for item in [duplicate_a, duplicate_b])
 
@@ -325,3 +625,55 @@ def test_woocommerce_sync_runs_list(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["total"] == 1
+
+
+def test_variable_parent_with_three_variations_creates_three_items_and_is_idempotent(client, monkeypatch):
+    first = variation_product(id=3101, sku="SIZE-S", attributes=[{"name": "Size", "option": "Small"}])
+    first["variation"]["id"] = 3101
+    medium = variation_product(id=3102, sku="SIZE-M", attributes=[{"name": "Size", "option": "Medium"}])
+    medium["variation"]["id"] = 3102
+    large = variation_product(id=3103, sku="SIZE-L", attributes=[{"name": "Size", "option": "Large"}])
+    large["variation"]["id"] = 3103
+    parent = {"product": first["product"], "variation": None, "parent_container": True}
+    patch_woo_client(monkeypatch, [parent, first, medium, large])
+
+    preview = client.post("/api/integrations/woocommerce/products/preview", json={}).json()
+    first_commit = client.post("/api/integrations/woocommerce/products/commit", json={}).json()
+    second_preview = client.post("/api/integrations/woocommerce/products/preview", json={}).json()
+    second_commit = client.post("/api/integrations/woocommerce/products/commit", json={}).json()
+
+    assert preview["variable_parents_examined"] == 1
+    assert preview["purchasable_variations_examined"] == 3
+    assert preview["skipped_parent_count"] == 1
+    assert preview["new_variation_count"] == 3
+    assert first_commit["created_count"] == 3
+    assert client.get("/api/items").json()["total"] == 3
+    items = client.get("/api/items").json()["items"]
+    assert {item["wooProductId"] for item in items} == {202}
+    assert {item["wooVariationId"] for item in items} == {3101, 3102, 3103}
+    assert {item["SKU"] for item in items} == {"SIZE-S", "SIZE-M", "SIZE-L"}
+    assert second_preview["unchanged_count"] == 3
+    assert second_commit["created_count"] == 0
+    assert second_commit["unchanged_count"] == 3
+    assert client.get("/api/items").json()["total"] == 3
+
+
+def test_later_new_variation_creates_only_one_item_and_mapping_targets_writeback(client, monkeypatch):
+    first = variation_product(sku="LATER-S")
+    first["variation"]["id"] = 4101
+    patch_woo_client(monkeypatch, [first])
+    assert client.post("/api/integrations/woocommerce/products/commit", json={}).json()["created_count"] == 1
+
+    second = variation_product(sku="LATER-L", attributes=[{"name": "Size", "option": "Large"}])
+    second["variation"]["id"] = 4102
+    patch_woo_client(monkeypatch, [first, second])
+    preview = client.post("/api/integrations/woocommerce/products/preview", json={}).json()
+    commit = client.post("/api/integrations/woocommerce/products/commit", json={}).json()
+
+    assert preview["new_variation_count"] == 1
+    assert commit["created_count"] == 1
+    assert client.get("/api/items").json()["total"] == 2
+    item = client.get("/api/items", params={"sku": "LATER-L"}).json()["items"][0]
+    writeback = client.post("/api/integrations/woocommerce/writeback/stock/preview", json={"item_id": item["id"]})
+    assert writeback.status_code == 200
+    assert writeback.json()["payload_json"]["path"] == "/wp-json/wc/v3/products/202/variations/4102"

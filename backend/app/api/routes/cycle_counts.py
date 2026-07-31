@@ -24,6 +24,7 @@ from app.services.cycle_counts import (
     cycle_count_to_detail,
     cycle_count_to_read,
 )
+from app.services.auth import authenticated_actor
 
 router = APIRouter(prefix="/cycle-counts", tags=["cycle-counts"])
 
@@ -34,8 +35,8 @@ def preview_cycle_count(payload: CycleCountRequest, db: Session = Depends(get_db
 
 
 @router.post("/commit", response_model=CycleCountCommitResponse)
-def commit_cycle_count_endpoint(payload: CycleCountRequest, db: Session = Depends(get_db)) -> CycleCountCommitResponse:
-    count, movement_count, totals, warnings = commit_cycle_count(payload, db)
+def commit_cycle_count_endpoint(payload: CycleCountRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> CycleCountCommitResponse:
+    count, movement_count, totals, warnings = commit_cycle_count(payload.model_copy(update={"created_by": actor}), db)
     return CycleCountCommitResponse(
         cycle_count_id=count.id,
         count_number=count.count_number,

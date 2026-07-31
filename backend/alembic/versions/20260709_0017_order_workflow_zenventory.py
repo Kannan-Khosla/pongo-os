@@ -49,7 +49,11 @@ def drop_index_if_exists(table_name: str, index_name: str) -> None:
 
 def drop_column_if_exists(table_name: str, column_name: str) -> None:
     if column_exists(table_name, column_name):
-        op.drop_column(table_name, column_name)
+        if op.get_bind().dialect.name == "sqlite":
+            with op.batch_alter_table(table_name) as batch_op:
+                batch_op.drop_column(column_name)
+        else:
+            op.drop_column(table_name, column_name)
 
 
 def upgrade() -> None:

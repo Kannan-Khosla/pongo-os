@@ -21,10 +21,14 @@ from app.schemas.woocommerce import (
     WooCommerceWebhookEventListResponse,
     WooCommerceWebhookEventRead,
 )
-from app.services.woocommerce_orders import acquire_order_import_transaction_lock, commit_remote_order_records
+from app.services.woocommerce_orders import (
+    RETIRED_WOO_LINE_STATUS,
+    acquire_order_import_transaction_lock,
+    commit_remote_order_records,
+)
 
 PING_PATTERN = re.compile(rb"webhook_id=([1-9][0-9]{0,19})")
-SUPPORTED_ORDER_TOPIC = "order.created"
+SUPPORTED_ORDER_TOPICS = {"order.created", "order.updated"}
 TERMINAL_DELIVERY_STATUSES = {"processed", "processed_with_errors", "ignored"}
 
 
@@ -99,7 +103,7 @@ def process_order_webhook(
     payload = decode_json_object(raw_body)
     payload_sha256 = hashlib.sha256(raw_body).hexdigest()
 
-    if topic != SUPPORTED_ORDER_TOPIC:
+    if topic not in SUPPORTED_ORDER_TOPICS:
         existing = find_delivery(db, webhook_id, delivery_id, payload_sha256)
         if existing and existing.processing_status in TERMINAL_DELIVERY_STATUSES:
             existing.attempt_count += 1
@@ -118,7 +122,7 @@ def process_order_webhook(
         if existing:
             delivery.attempt_count += 1
         delivery.processing_status = "ignored"
-        delivery.error_message = "Only order.created is enabled for the first webhook rollout."
+        delivery.error_message = "Only order.created and order.updated are enabled."
         delivery.processed_at = datetime.now(timezone.utc)
         db.add(delivery)
         try:
@@ -155,7 +159,7 @@ def process_order_webhook(
             delivery.attempt_count += 1
         delivery.local_order_id = existing_order.id
         delivery.processing_status = "ignored"
-        delivery.error_message = "Stale order.created payload was ignored because newer local WooCommerce data already exists."
+        delivery.error_message = f"Stale {topic} payload was ignored because newer local WooCommerce data already exists."
         delivery.processed_at = datetime.now(timezone.utc)
         db.add(delivery)
         try:
@@ -198,7 +202,11 @@ def process_order_webhook(
             select(Order).where(Order.woo_order_id == woo_order_id).options(selectinload(Order.items))
         ).one_or_none()
         expected_line_ids = [int(line["id"]) for line in payload["line_items"]]
-        actual_line_ids = [line.woo_order_item_id for line in local_order.items] if local_order else []
+        actual_line_ids = [
+            line.woo_order_item_id
+            for line in local_order.items
+            if line.status != RETIRED_WOO_LINE_STATUS
+        ] if local_order else []
         if local_order is None or len(actual_line_ids) != len(expected_line_ids) or set(actual_line_ids) != set(expected_line_ids):
             raise RuntimeError("Verified WooCommerce order payload was not imported completely.")
         delivery.local_order_id = local_order.id if local_order else None
@@ -207,15 +215,14 @@ def process_order_webhook(
         delivery.processing_status = "processed_with_errors" if summary.error_count or summary.conflict_count else "processed"
         delivery.error_message = " ".join((summary.errors or summary.warnings)[:3])[:1000] or None
         delivery.processed_at = datetime.now(timezone.utc)
-        if delivery.created_order:
-            db.add(
-                WooCommerceOrderEvent(
-                    webhook_delivery_id=delivery.id,
-                    local_order_id=local_order.id,
-                    woo_order_id=woo_order_id,
-                    event_type="order_created",
-                )
+        db.add(
+            WooCommerceOrderEvent(
+                webhook_delivery_id=delivery.id,
+                local_order_id=local_order.id,
+                woo_order_id=woo_order_id,
+                event_type=topic.replace(".", "_"),
             )
+        )
         db.flush()
         db.commit()
         db.refresh(delivery)
@@ -247,10 +254,17 @@ def process_order_webhook(
 
 
 def list_webhook_events(db: Session, after_id: int = 0, limit: int = 50, initialize: bool = False) -> WooCommerceWebhookEventListResponse:
-    # Successful order events are immutable. The shared PostgreSQL transaction
-    # lock also makes their sequence high-water mark commit ordered.
+    # The staff cursor remains new-order-only; update events stay in the durable
+    # audit table without being presented as new-order notifications.
     acquire_order_import_transaction_lock(db)
-    latest_event_id = int(db.scalar(select(func.coalesce(func.max(WooCommerceOrderEvent.id), 0))) or 0)
+    latest_event_id = int(
+        db.scalar(
+            select(func.coalesce(func.max(WooCommerceOrderEvent.id), 0)).where(
+                WooCommerceOrderEvent.event_type == "order_created"
+            )
+        )
+        or 0
+    )
     if initialize:
         return WooCommerceWebhookEventListResponse(
             events=[],
@@ -263,7 +277,10 @@ def list_webhook_events(db: Session, after_id: int = 0, limit: int = 50, initial
         select(WooCommerceOrderEvent, WooCommerceWebhookDelivery, Order)
         .join(WooCommerceWebhookDelivery, WooCommerceWebhookDelivery.id == WooCommerceOrderEvent.webhook_delivery_id)
         .join(Order, Order.id == WooCommerceOrderEvent.local_order_id)
-        .where(WooCommerceOrderEvent.id > max(after_id, 0))
+        .where(
+            WooCommerceOrderEvent.id > max(after_id, 0),
+            WooCommerceOrderEvent.event_type == "order_created",
+        )
         .order_by(WooCommerceOrderEvent.id.asc())
         .limit(page_size + 1)
     )
@@ -276,6 +293,7 @@ def list_webhook_events(db: Session, after_id: int = 0, limit: int = 50, initial
             WooCommerceWebhookEventRead(
                 id=order_event.id,
                 topic=delivery.topic,
+                event_type=order_event.event_type,
                 woo_order_id=delivery.woo_order_id,
                 local_order_id=delivery.local_order_id,
                 woo_order_number=order.woo_order_number if order else None,

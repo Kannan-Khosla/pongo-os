@@ -1,11 +1,18 @@
-/Users/kannankhosla/Desktop/pongoOS/Untitled.mov
-
 # Frontend
 frontend/node_modules/
+frontend/**/node_modules/
 frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
 .DS_Store
+Untitled.mov
 tmp/
 docs/ui-reference/zenventory_images/
+docs/CSV_templates_with_data/
+
+# Local agent tooling (not part of the deployable product)
+.claude/
+.codex/
 
 # Python backend
 backend/.env

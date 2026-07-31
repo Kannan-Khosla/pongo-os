@@ -1,0 +1,36 @@
+from datetime import datetime
+from uuid import uuid4
+
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.base import Base
+
+
+class ReportRun(Base):
+    __tablename__ = "report_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    report_key: Mapped[str] = mapped_column(String(80), index=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    definition_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    timezone: Mapped[str] = mapped_column(String(80), nullable=False, default="America/Edmonton")
+    filters: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    data_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    generated_by: Mapped[str | None] = mapped_column(String(120))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
+class ReportDelivery(Base):
+    __tablename__ = "report_deliveries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_run_id: Mapped[str] = mapped_column(ForeignKey("report_runs.id"), index=True, nullable=False)
+    channel: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    recipient: Mapped[str | None] = mapped_column(String(320), index=True)
+    status: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    external_url: Mapped[str | None] = mapped_column(String(1000))
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)

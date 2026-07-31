@@ -34,7 +34,7 @@ def synced_unfulfilled_order(client, monkeypatch, status_step="open"):
         client.post("/api/allocations/commit", json={"order_ids": [order["id"]], "allow_partial": True})
     if status_step == "picked":
         client.post("/api/allocations/commit", json={"order_ids": [order["id"]], "allow_partial": True})
-        client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": True})
+        client.post("/api/picks/commit", json={"idempotency_key": f"route-pick-{order['id']}", "order_ids": [order["id"]], "allow_partial": True})
     return client.get(f"/api/orders/{order['id']}").json()
 
 
@@ -86,6 +86,16 @@ def test_route_candidates_exclude_ineligible_and_active_routed_orders(client, mo
     assert fulfilled["id"] in {row["order_id"] for row in candidates_after_cancel}
 
 
+def test_completed_picked_order_is_route_candidate(client, monkeypatch):
+    picked = synced_unfulfilled_order(client, monkeypatch, "picked")
+    completed = client.post(f"/api/orders/{picked['id']}/complete/commit", json={"completion_mode": "complete_picked", "queue_woo_status_update": False})
+
+    assert completed.status_code == 200, completed.text
+    candidate = next(row for row in client.get("/api/routes/candidates").json()["candidates"] if row["order_id"] == picked["id"])
+    assert candidate["local_status"] == "completed"
+    assert candidate["fulfilled_line_count"] == 1
+
+
 def test_route_preview_validates_without_writing_or_inventory_changes(client, monkeypatch):
     fulfilled = fulfilled_route_order(client, monkeypatch)
     before_item = client.get("/api/items", params={"sku": "ROUTE-SKU"}).json()["items"][0]
@@ -121,6 +131,7 @@ def test_route_commit_creates_route_stops_and_rejects_invalid_atomically(client,
     assert body["route_number"].startswith("RT-")
     assert body["total_stops"] == 2
     detail = client.get(f"/api/routes/{body['route_id']}").json()
+    assert detail["created_by"] == "pytest@example.com"
     assert [stop["stop_sequence"] for stop in detail["stops"]] == [1, 2]
     assert [stop["order_id"] for stop in detail["stops"]] == [first["id"], second["id"]]
 

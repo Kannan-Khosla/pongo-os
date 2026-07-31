@@ -4,13 +4,13 @@ from io import StringIO
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.imports import ImportError as ImportErrorRow
 from app.models.imports import ImportJob
-from app.models.inventory import InventoryLocation
+from app.models.inventory import InventoryItemLocation, InventoryLocation
 from app.schemas.locations import (
     InventoryLocationCreate,
     InventoryLocationListResponse,
@@ -20,7 +20,9 @@ from app.schemas.locations import (
     LocationImportPreviewResponse,
 )
 from app.services.location_import import parse_locations_csv, preview_from_parsed, read_upload_text, values_to_location_payload
+from app.services.location_inventory import lock_stock_mutation_scope, to_decimal
 from app.services.locations import CANONICAL_LOCATION_COLUMNS, apply_location_payload, location_to_csv_row, location_to_read
+from app.services.auth import authenticated_actor
 
 router = APIRouter(prefix="/locations", tags=["locations"])
 
@@ -109,7 +111,7 @@ async def preview_locations_import(file: UploadFile = File(...), db: Session = D
 
 
 @router.post("/import/commit", response_model=LocationImportCommitResponse)
-async def commit_locations_import(file: UploadFile = File(...), db: Session = Depends(get_db)) -> LocationImportCommitResponse:
+async def commit_locations_import(file: UploadFile = File(...), db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> LocationImportCommitResponse:
     csv_text = await read_upload_text(file)
     parsed = parse_locations_csv(csv_text, db)
     created_count = 0
@@ -122,7 +124,7 @@ async def commit_locations_import(file: UploadFile = File(...), db: Session = De
         successful_rows=0,
         failed_rows=len(parsed.errors),
         status="completed",
-        created_by="system",
+        created_by=actor,
         completed_at=datetime.now(timezone.utc),
     )
     db.add(import_job)
@@ -193,6 +195,8 @@ def create_location(payload: InventoryLocationCreate, db: Session = Depends(get_
 @router.patch("/{location_id}", response_model=InventoryLocationRead)
 def update_location(location_id: int, payload: InventoryLocationUpdate, db: Session = Depends(get_db)) -> InventoryLocationRead:
     location = get_location_or_404(location_id, db)
+    if payload.is_active is False and location.active:
+        ensure_location_has_no_stock(db, location)
     next_warehouse = payload.warehouse if payload.warehouse is not None else location.warehouse
     next_code = payload.code if payload.code is not None else location.location_code
     if next_warehouse != location.warehouse or next_code != location.location_code:
@@ -210,6 +214,7 @@ def update_location(location_id: int, payload: InventoryLocationUpdate, db: Sess
 @router.delete("/{location_id}", response_model=InventoryLocationRead)
 def deactivate_location(location_id: int, db: Session = Depends(get_db)) -> InventoryLocationRead:
     location = get_location_or_404(location_id, db)
+    ensure_location_has_no_stock(db, location)
     location.active = False
     db.add(location)
     db.commit()
@@ -230,6 +235,36 @@ def ensure_unique_location(db: Session, warehouse: str | None, code: str | None,
         statement = statement.where(InventoryLocation.id != exclude_id)
     if db.scalars(statement).first() is not None:
         raise HTTPException(status_code=409, detail="Location code already exists for this warehouse.")
+
+
+def ensure_location_has_no_stock(db: Session, location: InventoryLocation) -> None:
+    lock_stock_mutation_scope(db)
+    location = db.scalar(
+        select(InventoryLocation)
+        .where(InventoryLocation.id == location.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if location is None:
+        raise HTTPException(status_code=404, detail="Inventory location not found")
+    legacy_names = [value for value in {location.location_code, location.location_name} if value]
+    linked = or_(
+        InventoryItemLocation.location_id == location.id,
+        and_(
+            InventoryItemLocation.location_id.is_(None),
+            InventoryItemLocation.warehouse == location.warehouse,
+            InventoryItemLocation.inventory_location.in_(legacy_names),
+        ),
+    )
+    linked_rows = db.scalars(
+        select(InventoryItemLocation)
+        .where(linked)
+        .order_by(InventoryItemLocation.inventory_item_id, InventoryItemLocation.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    if any(to_decimal(row.in_stock) != 0 or to_decimal(row.allocated) != 0 or to_decimal(row.on_order) != 0 for row in linked_rows):
+        raise HTTPException(status_code=409, detail="Move or clear in-stock, allocated, and on-order quantities before deactivating this location.")
 
 
 def clear_other_defaults(db: Session, warehouse: str | None, location_id: int) -> None:

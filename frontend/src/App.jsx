@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import './ReportIntelligence.css';
+import { API_BASE_URL, apiFetch } from './api';
 import {
   ArrowLeft,
   BarChart3,
@@ -40,6 +42,8 @@ import {
   Warehouse,
   X,
 } from 'lucide-react';
+
+const ReportIntelligencePage = lazy(() => import('./ReportIntelligence'));
 
 const CANONICAL_ITEM_COLUMNS = [
   'Client',
@@ -96,7 +100,6 @@ const NUMERIC_FIELDS = new Set([
   'Storage Volume',
 ]);
 const CALCULATED_FIELDS = new Set(['Sellable', 'Under Par', 'Storage Volume']);
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
 const CANONICAL_LOCATION_COLUMNS = ['Warehouse', 'Location Code', 'Location Name', 'Description', 'Zone', 'Aisle', 'Rack', 'Shelf', 'Bin', 'Default', 'Active'];
 const emptyInventorySummary = {
   groups: [],
@@ -107,6 +110,14 @@ const emptyInventorySummary = {
   total_on_order: 0,
   total_inventory_value: 0,
   under_par_count: 0,
+};
+const emptyItemsPagination = {
+  page: 1,
+  page_size: 20,
+  total: 0,
+  total_pages: 1,
+  returned_count: 0,
+  facets: { categories: [], brands: [] },
 };
 const emptyReceivedInventorySummary = {
   total_receipts: 0,
@@ -170,6 +181,7 @@ const emptyWooStatus = {
   base_url_present: false,
   consumer_key_present: false,
   consumer_secret_present: false,
+  base_url: '',
   base_url_host: '',
   environment: 'development',
   read_only: true,
@@ -191,12 +203,29 @@ const emptyWooStatus = {
   last_webhook_delivery: null,
   last_product_sync: null,
   last_order_sync: null,
+  order_reconciliation: {
+    enabled: false,
+    running: false,
+    healthy: false,
+    degraded: false,
+    stale: false,
+    interval_seconds: 60,
+    stale_after_seconds: 300,
+    statuses: [],
+    last_status: null,
+    error_count: 0,
+    last_attempt_at: null,
+    last_success_at: null,
+    last_failure_at: null,
+    last_error: '',
+    message: '',
+  },
   last_error: '',
   message: 'WooCommerce status has not been checked.',
 };
 const wooOrderSyncStatuses = ['processing', 'on-hold', 'pending', 'completed', 'failed', 'cancelled', 'refunded'];
-const wooOpenOrderQuickSyncStatuses = ['processing'];
-const ORDER_QUICK_SYNC_INTERVAL_MS = 10000;
+const ORDER_VIEW_REFRESH_INTERVAL_MS = 10000;
+const WOO_SYNC_HEALTH_POLL_INTERVAL_MS = 30000;
 const WEBHOOK_EVENT_POLL_INTERVAL_MS = 2000;
 const WEBHOOK_EVENT_POLL_LIMIT = 50;
 const ORDER_NOTIFICATION_HISTORY_LIMIT = 50;
@@ -208,6 +237,19 @@ const emptyOpenOrders = {
   unavailable_count: 0,
   unknown_count: 0,
 };
+
+export function withMutationIdempotency(ref, operation, payload) {
+  const fingerprint = JSON.stringify([operation, payload]);
+  if (ref.current?.fingerprint !== fingerprint) {
+    const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    ref.current = { fingerprint, key: `${operation}-${suffix}` };
+  }
+  return { ...payload, idempotency_key: ref.current.key };
+}
+
+export function resetMutationIdempotency(ref) {
+  ref.current = null;
+}
 
 const orderSubpages = [
   { id: 'open', label: 'Open Orders', href: '#/orders/open' },
@@ -270,6 +312,9 @@ const navigationGroups = [
 function navItemHref(item) {
   if (item.id === 'orders') return '#/orders/open';
   if (item.id === 'inventory') return '#/inventory/all';
+  if (item.id === 'receiving') return '#/receiving/direct';
+  if (item.id === 'reports') return '#/reports/inventory/inventory-valuation';
+  if (item.id === 'insights') return '#/insights/overview';
   return `#${item.id}`;
 }
 
@@ -289,21 +334,114 @@ const insightTabs = [
   { id: 'reorder-forecast', label: 'Reorder Forecast', endpoint: '/api/insights/reorder-forecast', exportable: true, description: 'Customers likely due or overdue for reorder based on local repeat purchase intervals.' },
 ];
 
+const insightFiltersByTab = {
+  overview: ['start_date', 'end_date', 'brand', 'category', 'sku'],
+  'orders-revenue': ['start_date', 'end_date', 'payment_method', 'order_status'],
+  'customer-metrics': ['start_date', 'end_date', 'customer_email'],
+  'customer-segmentation': ['start_date', 'end_date', 'customer_email'],
+  'product-sku': ['start_date', 'end_date', 'brand', 'category', 'sku'],
+  subscriptions: ['customer_email', 'sku'],
+  'subscription-products': ['brand', 'category', 'sku'],
+  'inventory-forecasting': ['start_date', 'end_date', 'brand', 'category', 'sku'],
+  coupons: ['start_date', 'end_date'],
+  'payment-health': ['start_date', 'end_date', 'payment_method'],
+  geography: ['start_date', 'end_date', 'city', 'postal_code'],
+  'product-affinity': ['start_date', 'end_date', 'sku'],
+  'reorder-forecast': ['start_date', 'end_date', 'customer_email'],
+};
+
+const insightFilterLabels = {
+  start_date: 'Start Date',
+  end_date: 'End Date',
+  brand: 'Brand',
+  category: 'Category',
+  sku: 'SKU',
+  customer_email: 'Customer Email',
+  city: 'City',
+  postal_code: 'Postal Code',
+  payment_method: 'Payment Method',
+  order_status: 'Order Status',
+};
+
 const insightColumnsByTab = {
-  overview: ['sku', 'description', 'risk_level', 'current_sellable', 'daily_velocity', 'days_of_stock_left'],
+  overview: ['sku', 'product_name', 'risk_level', 'current_sellable', 'daily_velocity', 'days_of_stock_left'],
   'orders-revenue': ['date', 'order_count', 'gross_sales', 'net_sales', 'units_sold'],
   'customer-metrics': ['customer_name', 'email', 'order_count', 'lifetime_spend', 'average_days_between_orders', 'last_order_date'],
   'customer-segmentation': ['segment', 'customer_count', 'revenue', 'repeat_rate'],
-  'product-sku': ['sku', 'description', 'brand', 'category', 'units_sold', 'revenue', 'estimated_margin', 'current_sellable'],
+  'product-sku': ['sku', 'product_name', 'brand', 'category', 'units_sold', 'revenue', 'estimated_margin', 'current_sellable'],
   subscriptions: ['subscription_id', 'customer', 'email', 'status', 'next_payment_date', 'subscription_total'],
-  'subscription-products': ['sku', 'description', 'active_subscriptions', 'upcoming_30_day_units', 'current_sellable', 'stockout_risk'],
-  'inventory-forecasting': ['sku', 'description', 'current_sellable', 'units_sold_30d', 'daily_velocity', 'days_of_stock_left', 'suggested_reorder_qty', 'risk_level'],
+  'subscription-products': ['sku', 'product_name', 'active_subscriptions', 'upcoming_30_day_units', 'current_sellable', 'stockout_risk'],
+  'inventory-forecasting': ['sku', 'product_name', 'current_sellable', 'units_sold_30d', 'daily_velocity', 'days_of_stock_left', 'suggested_reorder_qty', 'risk_level'],
   coupons: ['coupon_code', 'usage_count', 'order_count', 'revenue', 'discount_amount', 'average_order_value'],
   'payment-health': ['payment_method', 'attempt_count', 'success_count', 'failed_count', 'success_rate', 'revenue', 'duplicate_pattern_count'],
   geography: ['city', 'postal_code', 'order_count', 'customer_count', 'revenue', 'average_order_value', 'repeat_customer_rate'],
   'product-affinity': ['base_sku', 'paired_sku', 'pair_order_count', 'attach_rate', 'average_order_value_with_pair', 'suggested_cross_sell_text'],
   'reorder-forecast': ['customer_email', 'customer_name', 'last_order_date', 'most_repeated_sku', 'average_reorder_interval_days', 'days_overdue', 'churn_risk_score', 'recommended_action'],
 };
+
+const reportCategories = [
+  { id: 'executive', label: 'Executive' },
+  { id: 'inventory', label: 'Inventory' },
+  { id: 'orders', label: 'Orders' },
+  { id: 'operations', label: 'Operations' },
+  { id: 'intelligence', label: 'Intelligence' },
+  { id: 'receiving', label: 'Receiving' },
+  { id: 'sku-barcode', label: 'SKU / Barcode' },
+];
+
+const intelligentReportDefinitions = [
+  { key: 'executive-weekly', label: 'Executive Weekly', category: 'executive' },
+  { key: 'sales-by-sku', label: 'Sales by SKU', category: 'executive' },
+  { key: 'inventory-cost-category', label: 'Cost by Category', category: 'inventory' },
+  { key: 'inventory-cost-sku', label: 'Cost by SKU', category: 'inventory' },
+  { key: 'inventory-in-stock', label: 'Inventory in Stock', category: 'inventory' },
+  { key: 'inventory-usage', label: 'Inventory Usage', category: 'inventory' },
+  { key: 'inventory-export', label: 'Inventory Export', category: 'inventory' },
+  { key: 'unallocated-order-items', label: 'Unallocated Items', category: 'orders' },
+  { key: 'incomplete-orders', label: 'Incomplete Orders', category: 'orders' },
+  { key: 'order-summary', label: 'Order Summary', category: 'orders' },
+  { key: 'daily-item-orders', label: 'Daily Item Orders', category: 'orders' },
+  { key: 'detailed-customer-orders', label: 'Customer Orders', category: 'orders' },
+  { key: 'delivered-inventory', label: 'Delivered Inventory', category: 'operations' },
+  { key: 'received-inventory-intelligence', apiKey: 'received-inventory', label: 'Received Inventory', category: 'operations' },
+  { key: 'po-received', label: 'PO Received', category: 'operations' },
+  { key: 'inventory-forecast', label: 'Inventory Forecast', category: 'intelligence' },
+  { key: 'reorder-intelligence', label: 'Reorder Intelligence', category: 'intelligence' },
+];
+const intelligentReportKeys = new Set(intelligentReportDefinitions.map((report) => report.key));
+
+const expandedReportDefinitions = [
+  { key: 'inventory-valuation', label: 'Inventory Valuation', category: 'inventory', filters: ['warehouse', 'inventory_location', 'brand', 'category', 'sku'] },
+  { key: 'low-stock', label: 'Low Stock / Reorder', category: 'inventory', filters: ['warehouse', 'inventory_location', 'brand', 'category', 'sku'] },
+  { key: 'stock-movement-ledger', label: 'Stock Movement Ledger', category: 'inventory', filters: ['start_date', 'end_date', 'warehouse', 'inventory_location', 'sku', 'barcode', 'movement_type'] },
+  { key: 'item-activity', label: 'Item Activity', category: 'inventory', filters: ['start_date', 'end_date', 'sku', 'barcode', 'movement_type'] },
+  { key: 'location-utilization', label: 'Location Utilization', category: 'inventory', filters: ['warehouse', 'inventory_location'] },
+  { key: 'margin-by-sku', label: 'Margin by SKU', category: 'inventory', filters: ['start_date', 'end_date', 'brand', 'category', 'sku'] },
+  { key: 'receiving-cost', label: 'Receiving Cost', category: 'receiving', filters: ['start_date', 'end_date', 'warehouse', 'inventory_location', 'sku'] },
+  { key: 'adjustments', label: 'Adjustment / Damage / Loss', category: 'receiving', filters: ['warehouse', 'inventory_location', 'sku', 'adjustment_type'] },
+];
+
+const legacyReportDefinitions = [
+  { key: 'received-inventory', label: 'Received Inventory', category: 'receiving', kind: 'received' },
+  { key: 'fulfillment', label: 'Fulfillment', category: 'orders', kind: 'fulfillment' },
+  { key: 'sku-orders', label: 'SKU Orders', category: 'sku-barcode', kind: 'sku-orders' },
+];
+
+const allReportDefinitions = [...intelligentReportDefinitions, ...expandedReportDefinitions, ...legacyReportDefinitions];
+
+const reportFilterLabels = {
+  sku: 'SKU',
+  barcode: 'Barcode',
+  inventory_location: 'Inventory Location',
+  start_date: 'Start Date',
+  end_date: 'End Date',
+  movement_type: 'Movement Type',
+  adjustment_type: 'Adjustment Type',
+};
+
+function reportHref(report) {
+  return `#/reports/${report.category}/${report.key}`;
+}
 
 const pageMeta = {
   dashboard: {
@@ -346,7 +484,7 @@ const pageMeta = {
   receiving: {
     title: 'Receiving',
     kicker: 'Direct receiving without PO',
-    tabs: ['Create Receipt', 'Select Items', 'Accept Delivery'],
+    tabs: [],
   },
   scanner: {
     title: 'Scanner',
@@ -366,7 +504,11 @@ const pageMeta = {
   reports: {
     title: 'Reports',
     kicker: 'Export-ready operational views',
-    tabs: ['Received Inventory', 'Inventory', 'Orders', 'SKU / Barcode'],
+    tabs: reportCategories.map((category) => ({
+      label: category.label,
+      href: reportHref(allReportDefinitions.find((report) => report.category === category.id)),
+      category: category.id,
+    })),
   },
   routes: {
     title: 'Routes',
@@ -374,13 +516,38 @@ const pageMeta = {
     tabs: ['Route Date', 'Stops', 'Optimization'],
   },
   settings: {
-    title: 'Settings',
-    kicker: 'Internal administration',
-    tabs: ['Company', 'Users', 'Warehouses', 'System'],
+    title: 'WooCommerce Connection',
+    kicker: 'Settings / Integrations',
+    tabs: [
+      { label: 'Connection', href: '#/settings/connection' },
+      { label: 'Sync & Mapping', href: '#/settings/sync' },
+      { label: 'Writeback', href: '#/settings/writeback' },
+    ],
   },
 };
 
 const detailTabs = [];
+
+const settingsViews = [
+  { id: 'connection', label: 'Connection', href: '#/settings/connection' },
+  { id: 'sync', label: 'Sync & Mapping', href: '#/settings/sync' },
+  { id: 'writeback', label: 'Writeback', href: '#/settings/writeback' },
+];
+
+const settingsViewMeta = {
+  connection: {
+    title: 'WooCommerce Connection',
+    kicker: 'Settings / Integrations',
+  },
+  sync: {
+    title: 'Sync & Mapping',
+    kicker: 'Settings / WooCommerce',
+  },
+  writeback: {
+    title: 'Writeback Control',
+    kicker: 'Settings / WooCommerce',
+  },
+};
 
 function submitSearchOnEnter(event, submit) {
   if (event.key !== 'Enter') {
@@ -388,6 +555,155 @@ function submitSearchOnEnter(event, submit) {
   }
   event.preventDefault();
   submit();
+}
+
+function InventoryKeywordSearch({ value, onChange, onSearch, label, placeholder, className = '', autoFocus = false }) {
+  const listboxId = useId();
+  const [suggestions, setSuggestions] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const mountedRef = useRef(false);
+  const searchRef = useRef(onSearch);
+  searchRef.current = onSearch;
+
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return undefined;
+    }
+    const timer = window.setTimeout(() => searchRef.current(value.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [value]);
+
+  useEffect(() => {
+    const query = value.trim();
+    if (!query) {
+      setSuggestions([]);
+      setOpen(false);
+      setLoading(false);
+      setError('');
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setLoading(true);
+      setError('');
+      setOpen(true);
+      try {
+        const response = await apiFetch(`${API_BASE_URL}/api/items/search?q=${encodeURIComponent(query)}&limit=100`, { signal: controller.signal });
+        if (!response.ok) throw new Error(`Item search returned ${response.status}`);
+        const body = await response.json();
+        setSuggestions(body.items || []);
+        setActiveIndex(-1);
+      } catch (searchError) {
+        if (searchError.name !== 'AbortError') {
+          setSuggestions([]);
+          setError('Suggestions unavailable. Press Enter to search.');
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }, 100);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [value]);
+
+  function submit(nextValue = value.trim()) {
+    setOpen(false);
+    searchRef.current(nextValue);
+  }
+
+  function chooseSuggestion(item) {
+    const nextValue = item.sku || item.barcode || item.product_name || item.description || '';
+    onChange(nextValue);
+    submit(nextValue);
+  }
+
+  function handleKeyDown(event) {
+    if (event.key === 'ArrowDown' && suggestions.length) {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex((current) => (current + 1) % suggestions.length);
+      return;
+    }
+    if (event.key === 'ArrowUp' && suggestions.length) {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex((current) => (current <= 0 ? suggestions.length - 1 : current - 1));
+      return;
+    }
+    if (event.key === 'Escape') {
+      setOpen(false);
+      setActiveIndex(-1);
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (open && activeIndex >= 0) chooseSuggestion(suggestions[activeIndex]);
+      else submit();
+    }
+  }
+
+  return (
+    <div className={`keyword-item-search ${className}`} onBlur={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+    }}>
+      <span>{label}</span>
+      <div className="keyword-search-input">
+        <input
+          aria-label={label}
+          aria-autocomplete="list"
+          aria-controls={listboxId}
+          aria-expanded={open}
+          aria-activedescendant={activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined}
+          autoComplete="off"
+          autoFocus={autoFocus}
+          onChange={(event) => onChange(event.target.value)}
+          onFocus={() => value.trim() && setOpen(true)}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          role="combobox"
+          type="search"
+          value={value}
+        />
+        <Search aria-hidden="true" size={18} />
+      </div>
+      {open && (
+        <div className="keyword-suggestions" id={listboxId} role="listbox" aria-label="Inventory suggestions">
+          {loading && <div className="keyword-suggestion-status" role="status">Finding inventory…</div>}
+          {!loading && error && <div className="keyword-suggestion-status">{error}</div>}
+          {!loading && !error && !suggestions.length && <div className="keyword-suggestion-status">No matching inventory items</div>}
+          {!loading && suggestions.map((item, index) => (
+            <button
+              aria-selected={index === activeIndex}
+              className={`keyword-suggestion${index === activeIndex ? ' is-active' : ''}`}
+              id={`${listboxId}-${index}`}
+              key={item.id}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => chooseSuggestion(item)}
+              role="option"
+              type="button"
+            >
+              <span className="keyword-suggestion-copy">
+                <strong>{decodeHtmlEntities(item.product_name || item.description || 'Untitled inventory item')}</strong>
+                <small>{[item.brand, item.category].filter(Boolean).map(decodeHtmlEntities).join(' · ') || 'Inventory item'}</small>
+              </span>
+              <span className="keyword-suggestion-identifiers">
+                {item.sku && <b>SKU {item.sku}</b>}
+                {item.barcode && <small>{item.barcode}</small>}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 const genericRows = [
@@ -664,51 +980,85 @@ function parseHashRoute() {
   if (hash.startsWith('/')) {
     hash = hash.slice(1);
   }
-  if (hash === 'items/categories') {
+  const [path, queryString = ''] = hash.split('?');
+  const query = new URLSearchParams(queryString);
+  if (path === 'items/categories') {
     return { pageId: 'items', itemView: 'categories' };
   }
-  if (hash === 'items/commodities') {
+  if (path === 'items/commodities') {
     return { pageId: 'items', itemView: 'commodities' };
   }
-  if (hash === 'items/new') {
+  if (path === 'items/new') {
     return { pageId: 'items', itemView: 'new' };
   }
-  if (hash.startsWith('items/')) {
-    return { pageId: 'items', itemView: 'detail', itemId: hash.split('/')[1] };
+  if (path.startsWith('items/')) {
+    return { pageId: 'items', itemView: 'detail', itemId: path.split('/')[1] };
   }
-  if (hash === 'locations/new') {
+  if (path === 'locations/new') {
     return { pageId: 'locations', locationView: 'new' };
   }
-  if (hash === 'locations/stock') {
+  if (path === 'locations/stock') {
     return { pageId: 'locations', locationView: 'stock' };
   }
-  if (hash.startsWith('locations/')) {
-    return { pageId: 'locations', locationView: 'detail', locationId: hash.split('/')[1] };
+  if (path.startsWith('locations/')) {
+    return { pageId: 'locations', locationView: 'detail', locationId: path.split('/')[1] };
   }
-  if (hash === 'orders') {
+  if (path === 'orders') {
     return { pageId: 'orders', ordersView: 'open' };
   }
-  if (hash.startsWith('orders/')) {
-    const ordersView = hash.split('/')[1] || 'open';
+  if (path.startsWith('orders/')) {
+    const ordersView = path.split('/')[1] || 'open';
     const knownView = orderSubpages.some((page) => page.id === ordersView);
     return { pageId: 'orders', ordersView: knownView ? ordersView : 'open' };
   }
-  if (hash === 'inventory') {
-    return { pageId: 'inventory', inventoryView: 'all' };
-  }
-  if (hash.startsWith('inventory/')) {
-    const inventoryView = hash.split('/')[1] || 'all';
+  if (path === 'inventory' || path.startsWith('inventory/')) {
+    const inventoryView = path.split('/')[1] || 'all';
     const knownView = inventorySubpages.some((page) => page.id === inventoryView);
-    return { pageId: 'inventory', inventoryView: knownView ? inventoryView : 'all' };
+    const requestedPage = Math.max(1, Number.parseInt(query.get('page') || '1', 10) || 1);
+    const requestedPageSize = Number.parseInt(query.get('page_size') || '20', 10);
+    return {
+      pageId: 'inventory',
+      inventoryView: knownView ? inventoryView : 'all',
+      inventoryPage: requestedPage,
+      inventoryPageSize: [20, 50, 100].includes(requestedPageSize) ? requestedPageSize : 20,
+      inventorySearch: query.get('search') || '',
+      inventoryCategory: query.get('category') || '',
+      inventoryBrand: query.get('brand') || '',
+      inventoryDataQuality: query.get('data_quality') || '',
+      inventorySortBy: query.get('sort_by') || 'sku',
+      inventorySortDir: query.get('sort_dir') === 'desc' ? 'desc' : 'asc',
+    };
   }
-  return navItems.some((item) => item.id === hash) ? { pageId: hash } : { pageId: 'dashboard' };
+  if (path === 'reports' || path.startsWith('reports/')) {
+    const segments = path.split('/');
+    const requestedKey = segments[2] || segments[1] || 'inventory-valuation';
+    const report = allReportDefinitions.find((candidate) => candidate.key === requestedKey) || allReportDefinitions[0];
+    return { pageId: 'reports', reportCategory: report.category, reportKey: report.key };
+  }
+  if (path === 'insights' || path.startsWith('insights/')) {
+    const requestedView = path.split('/')[1] || 'overview';
+    const view = insightTabs.some((tab) => tab.id === requestedView) ? requestedView : 'overview';
+    return { pageId: 'insights', insightsView: view };
+  }
+  if (path === 'receiving' || path.startsWith('receiving/')) {
+    const requestedView = path.split('/')[1] || 'direct';
+    const view = ['direct', 'bulk', 'history'].includes(requestedView) ? requestedView : 'direct';
+    return { pageId: 'receiving', receivingView: view };
+  }
+  if (path === 'settings' || path.startsWith('settings/')) {
+    const requestedView = path.split('/')[1] || 'connection';
+    const view = settingsViews.some((candidate) => candidate.id === requestedView) ? requestedView : 'connection';
+    return { pageId: 'settings', settingsView: view };
+  }
+  return navItems.some((item) => item.id === path) ? { pageId: path } : { pageId: 'dashboard' };
 }
 
-export default function App() {
+export default function App({ currentUser = null }) {
   const [route, setRoute] = useState(parseHashRoute);
   const [navigationOpen, setNavigationOpen] = useState(false);
   const navigationButtonRef = useRef(null);
   const [items, setItems] = useState([]);
+  const [itemsPagination, setItemsPagination] = useState(emptyItemsPagination);
   const [itemsLoading, setItemsLoading] = useState(false);
   const [itemsError, setItemsError] = useState('');
   const [locations, setLocations] = useState([]);
@@ -755,10 +1105,12 @@ export default function App() {
   const [wooRemapPreview, setWooRemapPreview] = useState(null);
   const [wooRemapMessage, setWooRemapMessage] = useState('');
   const [wooWritebackQueue, setWooWritebackQueue] = useState({ queue: [], total: 0 });
+  const [wooStockSyncJobs, setWooStockSyncJobs] = useState([]);
   const [wooWritebackPreview, setWooWritebackPreview] = useState(null);
   const [wooWritebackMessage, setWooWritebackMessage] = useState('');
   const [wooLoading, setWooLoading] = useState(false);
   const [wooError, setWooError] = useState('');
+  const [wooHealthError, setWooHealthError] = useState('');
   const [openOrders, setOpenOrders] = useState(emptyOpenOrders);
   const [openOrdersLoading, setOpenOrdersLoading] = useState(false);
   const [openOrdersError, setOpenOrdersError] = useState('');
@@ -800,14 +1152,16 @@ export default function App() {
   const [activeOrderNotifications, setActiveOrderNotifications] = useState([]);
   const [unreadOrderNotificationKeys, setUnreadOrderNotificationKeys] = useState(() => new Set());
   const [orderNotificationHistoryOpen, setOrderNotificationHistoryOpen] = useState(false);
-  const wooOrderQuickSyncInFlight = useRef(false);
   const webhookEventPollInFlight = useRef(false);
   const webhookEventCursor = useRef(null);
   const seenWebhookEventIds = useRef(new Set());
-  const seenQuickSyncNotificationRuns = useRef(new Set());
   const activeRouteRef = useRef(route);
   const openOrderFiltersRef = useRef({});
   const openOrdersRequestIdRef = useRef(0);
+  const itemsRequestIdRef = useRef(0);
+  const inventorySummaryRequestIdRef = useRef(0);
+  const pickMutationRef = useRef(null);
+  const wooStockSyncMutationRef = useRef(null);
   activeRouteRef.current = route;
 
   useEffect(() => {
@@ -826,11 +1180,11 @@ export default function App() {
     if (route.pageId === 'inventory-overview') {
       loadDashboard();
     }
-    if (route.pageId === 'items' || route.pageId === 'inventory') {
+    if (route.pageId === 'items') {
       loadItems();
     }
     if (route.pageId === 'inventory') {
-      loadInventorySummary();
+      loadItems(inventoryRouteToItemFilters(route));
       loadLocations({ status: 'active' });
       if ((route.inventoryView || 'all') === 'movements') {
         loadStockMovements();
@@ -850,9 +1204,9 @@ export default function App() {
       loadLocations();
     }
     if (route.pageId === 'reports') {
-      loadReceivedInventoryReport();
-      loadFulfillmentReport();
-      loadSkuOrdersReport();
+      if (route.reportKey === 'received-inventory') loadReceivedInventoryReport();
+      if (route.reportKey === 'fulfillment') loadFulfillmentReport();
+      if (route.reportKey === 'sku-orders') loadSkuOrdersReport();
     }
     if (route.pageId === 'cycle-count') {
       loadItems();
@@ -875,37 +1229,64 @@ export default function App() {
     }
     if (route.pageId === 'settings') {
       loadWooStatus();
-      loadWooSyncRuns();
-      loadWooRemap();
-      loadWooWritebackQueue();
+      if ((route.settingsView || 'connection') === 'sync') {
+        loadWooSyncRuns();
+        loadWooRemap();
+      }
+      if (route.settingsView === 'writeback') {
+        loadWooWritebackQueue();
+        loadWooStockSyncJobs();
+      }
     }
     if (route.pageId === 'routes') {
       loadRouteCandidates();
       loadRoutes();
     }
-  }, [route.pageId, route.inventoryView, route.ordersView]);
+  }, [route.pageId, route.inventoryView, route.inventoryPage, route.inventoryPageSize, route.inventorySearch, route.inventoryCategory, route.inventoryBrand, route.inventoryDataQuality, route.inventorySortBy, route.inventorySortDir, route.ordersView, route.reportKey, route.settingsView]);
+
+  useEffect(() => {
+    if (route.pageId !== 'settings' || route.settingsView !== 'writeback') return undefined;
+    const intervalId = window.setInterval(loadWooStockSyncJobs, 3000);
+    return () => window.clearInterval(intervalId);
+  }, [route.pageId, route.settingsView]);
 
   useEffect(() => {
     const orderAwarePage = ['dashboard', 'orders', 'settings'].includes(route.pageId);
     if (!orderAwarePage) {
       return undefined;
     }
-    const runQuickSync = () => {
+    const refreshVisibleOrderData = () => {
       if (document.visibilityState === 'hidden') {
         return;
       }
-      syncLatestWooOrders();
+      refreshOrderAwarePage();
     };
-    runQuickSync();
-    const intervalId = window.setInterval(runQuickSync, ORDER_QUICK_SYNC_INTERVAL_MS);
-    window.addEventListener('focus', runQuickSync);
-    document.addEventListener('visibilitychange', runQuickSync);
+    const intervalId = window.setInterval(refreshVisibleOrderData, ORDER_VIEW_REFRESH_INTERVAL_MS);
+    window.addEventListener('focus', refreshVisibleOrderData);
+    document.addEventListener('visibilitychange', refreshVisibleOrderData);
     return () => {
       window.clearInterval(intervalId);
-      window.removeEventListener('focus', runQuickSync);
-      document.removeEventListener('visibilitychange', runQuickSync);
+      window.removeEventListener('focus', refreshVisibleOrderData);
+      document.removeEventListener('visibilitychange', refreshVisibleOrderData);
     };
   }, [route.pageId, route.ordersView]);
+
+  useEffect(() => {
+    const loadVisibleWooHealth = () => {
+      if (document.visibilityState !== 'hidden') {
+        loadWooStatus(false, { silent: true });
+      }
+    };
+    loadVisibleWooHealth();
+    const intervalId = window.setInterval(loadVisibleWooHealth, WOO_SYNC_HEALTH_POLL_INTERVAL_MS);
+    window.addEventListener('focus', loadVisibleWooHealth);
+    document.addEventListener('visibilitychange', loadVisibleWooHealth);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', loadVisibleWooHealth);
+      document.removeEventListener('visibilitychange', loadVisibleWooHealth);
+    };
+  }, []);
 
   useEffect(() => {
     const runWebhookEventPoll = () => {
@@ -954,19 +1335,37 @@ export default function App() {
   }
 
   async function loadItems(filters = {}) {
+    const requestId = itemsRequestIdRef.current + 1;
+    itemsRequestIdRef.current = requestId;
     setItemsLoading(true);
     setItemsError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/items${filtersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/items${filtersToQueryString(filters)}`);
       if (!response.ok) {
         throw new Error(`Items API returned ${response.status}`);
       }
       const body = await response.json();
+      if (requestId !== itemsRequestIdRef.current) return;
       setItems((body.items || []).map(normalizeItem));
+      const responsePage = body.page || 1;
+      setItemsPagination({
+        page: responsePage,
+        page_size: body.page_size ?? (body.items || []).length,
+        total: body.total ?? (body.items || []).length,
+        total_pages: body.total_pages ?? ((body.items || []).length ? 1 : 1),
+        returned_count: body.returned_count ?? (body.items || []).length,
+        facets: body.facets || { categories: [], brands: [] },
+      });
+      const currentRoute = activeRouteRef.current;
+      if (filters.page && responsePage !== filters.page && currentRoute.pageId === 'inventory' && (currentRoute.inventoryView || 'all') === 'all') {
+        window.location.hash = inventoryRouteHref(currentRoute, { page: responsePage });
+      }
     } catch (error) {
-      setItemsError('Unable to load items from the backend. Start the FastAPI server and try again.');
+      if (requestId === itemsRequestIdRef.current) {
+        setItemsError('Unable to load items from the backend. Start the FastAPI server and try again.');
+      }
     } finally {
-      setItemsLoading(false);
+      if (requestId === itemsRequestIdRef.current) setItemsLoading(false);
     }
   }
 
@@ -974,7 +1373,7 @@ export default function App() {
     const normalized = normalizeItem(nextItem);
     const isNew = normalized.id == null;
     const url = isNew ? `${API_BASE_URL}/api/items` : `${API_BASE_URL}/api/items/${normalized.id}`;
-    const response = await fetch(url, {
+    const response = await apiFetch(url, {
       method: isNew ? 'POST' : 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(itemToApiPayload(normalized)),
@@ -1006,7 +1405,7 @@ export default function App() {
     setLocationsLoading(true);
     setLocationsError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/locations${locationsFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/locations${locationsFiltersToQueryString(filters)}`);
       if (!response.ok) {
         throw new Error(`Locations API returned ${response.status}`);
       }
@@ -1023,7 +1422,7 @@ export default function App() {
     const normalized = normalizeLocation(nextLocation);
     const isNew = normalized.id == null;
     const url = isNew ? `${API_BASE_URL}/api/locations` : `${API_BASE_URL}/api/locations/${normalized.id}`;
-    const response = await fetch(url, {
+    const response = await apiFetch(url, {
       method: isNew ? 'POST' : 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(locationToApiPayload(normalized)),
@@ -1041,18 +1440,21 @@ export default function App() {
   }
 
   async function loadInventorySummary(filters = {}) {
+    const requestId = inventorySummaryRequestIdRef.current + 1;
+    inventorySummaryRequestIdRef.current = requestId;
     setInventoryLoading(true);
     setInventoryError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/inventory/summary/by-location${inventoryFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/inventory/summary/by-location${inventoryFiltersToQueryString(filters)}`);
       if (!response.ok) {
         throw new Error(`Inventory API returned ${response.status}`);
       }
-      setInventorySummary(await response.json());
+      const body = await response.json();
+      if (requestId === inventorySummaryRequestIdRef.current) setInventorySummary(body);
     } catch (error) {
-      setInventoryError('Unable to load inventory summary from the backend. Start the FastAPI server and try again.');
+      if (requestId === inventorySummaryRequestIdRef.current) setInventoryError('Unable to load inventory summary from the backend. Start the FastAPI server and try again.');
     } finally {
-      setInventoryLoading(false);
+      if (requestId === inventorySummaryRequestIdRef.current) setInventoryLoading(false);
     }
   }
 
@@ -1060,7 +1462,7 @@ export default function App() {
     setReceiptsLoading(true);
     setReceiptsError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/receipts${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/receipts${plainFiltersToQueryString(filters)}`);
       if (!response.ok) {
         throw new Error(`Receipts API returned ${response.status}`);
       }
@@ -1077,7 +1479,7 @@ export default function App() {
     setStockMovementsLoading(true);
     setStockMovementsError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/stock-movements${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/stock-movements${plainFiltersToQueryString(filters)}`);
       if (!response.ok) {
         throw new Error(`Stock movements API returned ${response.status}`);
       }
@@ -1096,8 +1498,8 @@ export default function App() {
     try {
       const queryString = plainFiltersToQueryString(receivedInventoryFiltersToApi(filters));
       const [rowsResponse, summaryResponse] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/reports/received-inventory${queryString}`),
-        fetch(`${API_BASE_URL}/api/reports/received-inventory/summary${queryString}`),
+        apiFetch(`${API_BASE_URL}/api/reports/received-inventory${queryString}`),
+        apiFetch(`${API_BASE_URL}/api/reports/received-inventory/summary${queryString}`),
       ]);
       if (!rowsResponse.ok || !summaryResponse.ok) {
         throw new Error('Reports API returned an error.');
@@ -1117,8 +1519,8 @@ export default function App() {
     try {
       const queryString = plainFiltersToQueryString(fulfillmentReportFiltersToApi(filters));
       const [rowsResponse, summaryResponse] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/reports/fulfillments${queryString}`),
-        fetch(`${API_BASE_URL}/api/reports/fulfillments/summary${queryString}`),
+        apiFetch(`${API_BASE_URL}/api/reports/fulfillments${queryString}`),
+        apiFetch(`${API_BASE_URL}/api/reports/fulfillments/summary${queryString}`),
       ]);
       if (!rowsResponse.ok || !summaryResponse.ok) {
         throw new Error('Fulfillment report API returned an error.');
@@ -1138,8 +1540,8 @@ export default function App() {
     try {
       const queryString = plainFiltersToQueryString(skuOrdersFiltersToApi(filters));
       const [rowsResponse, summaryResponse] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/reports/sku-orders${queryString}`),
-        fetch(`${API_BASE_URL}/api/reports/sku-orders/summary${queryString}`),
+        apiFetch(`${API_BASE_URL}/api/reports/sku-orders${queryString}`),
+        apiFetch(`${API_BASE_URL}/api/reports/sku-orders/summary${queryString}`),
       ]);
       if (!rowsResponse.ok || !summaryResponse.ok) {
         throw new Error('SKU Orders report API returned an error.');
@@ -1157,7 +1559,7 @@ export default function App() {
     setDashboardLoading(true);
     setDashboardError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/dashboard?limit=30`);
+      const response = await apiFetch(`${API_BASE_URL}/api/dashboard?limit=30`);
       if (!response.ok) {
         throw new Error(`Dashboard API returned ${response.status}`);
       }
@@ -1176,7 +1578,7 @@ export default function App() {
     }
     setBusinessDashboardError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/business-dashboard`);
+      const response = await apiFetch(`${API_BASE_URL}/api/business-dashboard`);
       if (!response.ok) {
         throw new Error(`Business Dashboard API returned ${response.status}`);
       }
@@ -1194,7 +1596,7 @@ export default function App() {
     setCycleCountsLoading(true);
     setCycleCountsError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/cycle-counts${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/cycle-counts${plainFiltersToQueryString(filters)}`);
       if (!response.ok) {
         throw new Error(`Cycle Counts API returned ${response.status}`);
       }
@@ -1207,26 +1609,36 @@ export default function App() {
     }
   }
 
-  async function loadWooStatus(check = false) {
-    setWooLoading(true);
-    setWooError('');
+  async function loadWooStatus(check = false, options = {}) {
+    const silent = options.silent === true;
+    if (!silent) {
+      setWooLoading(true);
+      setWooError('');
+    }
     try {
-      const response = await fetch(`${API_BASE_URL}/api/integrations/woocommerce/status${check ? '?check=true' : ''}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/status${check ? '?check=true' : ''}`);
       if (!response.ok) {
         throw new Error(`WooCommerce status returned ${response.status}`);
       }
       setWooStatus(await response.json());
+      setWooHealthError('');
     } catch (error) {
-      setWooError('Unable to load WooCommerce integration status from the backend.');
+      const message = 'Automatic WooCommerce order sync health cannot be checked. Verify that the Pongo backend is online.';
+      setWooHealthError(message);
+      if (!silent) {
+        setWooError('Unable to load WooCommerce integration status from the backend.');
+      }
     } finally {
-      setWooLoading(false);
+      if (!silent) {
+        setWooLoading(false);
+      }
     }
   }
 
   async function loadWooSyncRuns() {
     setWooError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/integrations/woocommerce/sync-runs`);
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/sync-runs`);
       if (!response.ok) {
         throw new Error(`WooCommerce sync runs returned ${response.status}`);
       }
@@ -1241,8 +1653,8 @@ export default function App() {
     setWooError('');
     try {
       const [candidatesResponse, mappingsResponse] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/candidates`),
-        fetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/mappings`),
+        apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/candidates`),
+        apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/mappings`),
       ]);
       if (!candidatesResponse.ok || !mappingsResponse.ok) {
         throw new Error('Remap API returned an error.');
@@ -1257,13 +1669,100 @@ export default function App() {
   async function loadWooWritebackQueue() {
     setWooError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/integrations/woocommerce/writeback/queue`);
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/writeback/queue`);
       if (!response.ok) {
         throw new Error(`WooCommerce writeback queue returned ${response.status}`);
       }
       setWooWritebackQueue(await response.json());
     } catch (error) {
       setWooError('Unable to load WooCommerce writeback queue.');
+    }
+  }
+
+  async function loadWooStockSyncJobs() {
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/writeback/stock/jobs`);
+      if (!response.ok) throw new Error(`Stock sync jobs returned ${response.status}`);
+      const body = await response.json();
+      setWooStockSyncJobs(body.jobs || []);
+    } catch (error) {
+      setWooError(error.message || 'Unable to load stock sync jobs.');
+    }
+  }
+
+  async function changeWooStockSyncJob(jobId, action) {
+    setWooLoading(true);
+    setWooError('');
+    try {
+      await postJson(`/api/integrations/woocommerce/writeback/stock/jobs/${jobId}/${action}`, {});
+      await loadWooStockSyncJobs();
+    } catch (error) {
+      setWooError(error.message || `Unable to ${action} stock sync job.`);
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function saveWooConfiguration(payload) {
+    setWooLoading(true);
+    setWooError('');
+    try {
+      const result = await postJson('/api/integrations/woocommerce/configuration', payload);
+      await loadWooStatus(false, { silent: true });
+      return result;
+    } catch (error) {
+      setWooError(error.message || 'Unable to connect WooCommerce.');
+      throw error;
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function syncWooStockFromSettings(force) {
+    const confirmed = !force || window.confirm('Update all sends every mapped inventory stock level through the existing WooCommerce writeback rules. Continue?');
+    if (!confirmed) return null;
+    setWooLoading(true);
+    setWooError('');
+    setWooWritebackMessage('');
+    try {
+      const payload = withMutationIdempotency(wooStockSyncMutationRef, 'woo-stock-sync', {
+        force,
+        requested_by: force ? 'settings-update-all' : 'settings-update-changed',
+        chunk_size: 50,
+      });
+      const result = await postJson('/api/integrations/woocommerce/writeback/stock/sync', payload);
+      setWooWritebackMessage(`Stock update queued: 0 of ${result.total_items} item(s). You can leave this page safely.`);
+      trackWooStockSyncJob(result.id);
+      await loadWooStockSyncJobs();
+      return result;
+    } catch (error) {
+      setWooError(error.message || 'Unable to update WooCommerce stock.');
+      return null;
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
+  async function trackWooStockSyncJob(jobId) {
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/writeback/stock/jobs/${jobId}`);
+      if (!response.ok) throw new Error(`Stock sync job returned ${response.status}`);
+      const job = await response.json();
+      await loadWooStockSyncJobs();
+      const terminal = ['completed', 'completed_with_errors', 'paused', 'cancelled'].includes(job.status);
+      setWooWritebackMessage(
+        terminal
+          ? `Stock update ${job.status.replaceAll('_', ' ')}: ${job.sent_count + job.dry_run_count} sent/dry-run, ${job.failed_count} failed.`
+          : `Stock update ${job.progress_percent}%: ${job.processed_items} of ${job.total_items} item(s). You can leave this page safely.`,
+      );
+      if (terminal) {
+        resetMutationIdempotency(wooStockSyncMutationRef);
+        await loadWooStatus(false, { silent: true });
+      } else {
+        window.setTimeout(() => trackWooStockSyncJob(jobId), 2000);
+      }
+    } catch (error) {
+      setWooError(error.message || 'Unable to read stock update progress.');
     }
   }
 
@@ -1333,7 +1832,7 @@ export default function App() {
       const query = currentCursor === null
         ? `initialize=true&limit=${WEBHOOK_EVENT_POLL_LIMIT}`
         : `after_id=${currentCursor}&limit=${WEBHOOK_EVENT_POLL_LIMIT}`;
-      const response = await fetch(`${API_BASE_URL}/api/integrations/woocommerce/webhooks/events?${query}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/webhooks/events?${query}`);
       if (!response.ok) {
         throw new Error(`WooCommerce webhook events returned ${response.status}`);
       }
@@ -1363,7 +1862,10 @@ export default function App() {
       webhookEventCursor.current = nextCursor;
 
       if (unseenEvents.length) {
-        publishOrderNotifications(unseenEvents.map(webhookEventToNotification));
+        const newOrderEvents = unseenEvents.filter(isNewOrderWebhookEvent);
+        if (newOrderEvents.length) {
+          publishOrderNotifications(newOrderEvents.map(webhookEventToNotification));
+        }
         await refreshLocalOrderDataAfterNotification();
       }
       if (body.has_more && nextCursor > currentCursor) {
@@ -1377,50 +1879,23 @@ export default function App() {
     }
   }
 
-  function publishQuickSyncFallback(result) {
-    const createdCount = Math.max(0, Math.trunc(toNumber(result?.created_count)));
-    if (!createdCount) {
-      return;
+  async function refreshOrderAwarePage() {
+    const activeRoute = activeRouteRef.current;
+    if (activeRoute.pageId === 'orders') {
+      await Promise.all([
+        loadOpenOrders(openOrderFiltersRef.current, { silent: true, preserveFilters: true, preserveDetail: true, ordersView: activeRoute.ordersView }),
+        loadCompletedOrders({}, { silent: true }),
+      ]);
     }
-    const runIdentity = result?.sync_run_id == null
-      ? `${result?.status || 'unknown'}:${toNumber(result?.total_remote_records)}:${createdCount}`
-      : String(result.sync_run_id);
-    if (seenQuickSyncNotificationRuns.current.has(runIdentity)) {
-      return;
+    if (activeRoute.pageId === 'dashboard') {
+      await loadBusinessDashboard({ silent: true });
     }
-    seenQuickSyncNotificationRuns.current.add(runIdentity);
-    publishOrderNotifications([quickSyncToNotification(result, runIdentity, createdCount)]);
-  }
-
-  async function syncLatestWooOrders() {
-    if (wooOrderQuickSyncInFlight.current) {
-      return null;
-    }
-    wooOrderQuickSyncInFlight.current = true;
-    try {
-      const result = await postJson('/api/integrations/woocommerce/orders/quick-sync?per_status_limit=10', {
-        include_statuses: wooOpenOrderQuickSyncStatuses,
-        limit: 30,
-        created_by: 'auto-order-poll',
-      });
-      publishQuickSyncFallback(result);
-      const activeRoute = activeRouteRef.current;
-      if (activeRoute.pageId === 'orders') {
-        await loadOpenOrders(openOrderFiltersRef.current, { silent: true, preserveFilters: true, preserveDetail: true, ordersView: activeRoute.ordersView });
-        await loadCompletedOrders({}, { silent: true });
+    if (activeRoute.pageId === 'settings') {
+      const refreshes = [loadWooStatus(false, { silent: true })];
+      if ((activeRoute.settingsView || 'connection') === 'sync') {
+        refreshes.push(loadWooSyncRuns());
       }
-      if (activeRoute.pageId === 'dashboard') {
-        await loadBusinessDashboard({ silent: true });
-      }
-      if (activeRoute.pageId === 'settings') {
-        setWooOrderCommitSummary(result);
-        await loadWooSyncRuns();
-      }
-      return result;
-    } catch {
-      return null;
-    } finally {
-      wooOrderQuickSyncInFlight.current = false;
+      await Promise.all(refreshes);
     }
   }
 
@@ -1443,7 +1918,7 @@ export default function App() {
     try {
       const ordersView = options.ordersView || activeRouteRef.current.ordersView || 'open';
       const endpoint = ordersView === 'allocate' ? '/api/orders/allocate' : (ordersView === 'pick' ? '/api/orders/pick' : '/api/orders/open');
-      const response = await fetch(`${API_BASE_URL}${endpoint}${plainFiltersToQueryString(openOrderFiltersToApi(effectiveFilters))}`);
+      const response = await apiFetch(`${API_BASE_URL}${endpoint}${plainFiltersToQueryString(openOrderFiltersToApi(effectiveFilters))}`);
       if (!response.ok) {
         throw new Error(`Open Orders API returned ${response.status}`);
       }
@@ -1471,7 +1946,7 @@ export default function App() {
     }
     setCompletedOrdersError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/orders/completed${plainFiltersToQueryString(completedOrderFiltersToApi(filters))}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/orders/completed${plainFiltersToQueryString(completedOrderFiltersToApi(filters))}`);
       if (!response.ok) {
         throw new Error(`Completed Orders API returned ${response.status}`);
       }
@@ -1492,7 +1967,7 @@ export default function App() {
       return null;
     }
     try {
-      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/orders/${orderId}`);
       if (!response.ok) {
         throw new Error(`Order detail API returned ${response.status}`);
       }
@@ -1508,7 +1983,7 @@ export default function App() {
   async function loadAllocations(filters = {}) {
     setAllocationError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/allocations${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/allocations${plainFiltersToQueryString(filters)}`);
       if (!response.ok) {
         throw new Error(`Allocations API returned ${response.status}`);
       }
@@ -1526,7 +2001,7 @@ export default function App() {
     }
     setAllocationError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/allocations/${allocationId}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/allocations/${allocationId}`);
       if (!response.ok) {
         throw new Error(`Allocation detail API returned ${response.status}`);
       }
@@ -1539,7 +2014,7 @@ export default function App() {
   async function loadPicks(filters = {}) {
     setPickError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/picks${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/picks${plainFiltersToQueryString(filters)}`);
       if (!response.ok) {
         throw new Error(`Picks API returned ${response.status}`);
       }
@@ -1553,7 +2028,7 @@ export default function App() {
   async function loadFulfillments(filters = {}) {
     setFulfillmentError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/fulfillments${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/fulfillments${plainFiltersToQueryString(filters)}`);
       if (!response.ok) {
         throw new Error(`Fulfillments API returned ${response.status}`);
       }
@@ -1571,7 +2046,7 @@ export default function App() {
     }
     setFulfillmentError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/fulfillments/${fulfillmentId}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/fulfillments/${fulfillmentId}`);
       if (!response.ok) {
         throw new Error(`Fulfillment detail API returned ${response.status}`);
       }
@@ -1585,7 +2060,7 @@ export default function App() {
     setRouteCandidatesLoading(true);
     setRouteCandidatesError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/routes/candidates${plainFiltersToQueryString(routeCandidateFiltersToApi(filters))}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/routes/candidates${plainFiltersToQueryString(routeCandidateFiltersToApi(filters))}`);
       if (!response.ok) {
         throw new Error(`Route candidates API returned ${response.status}`);
       }
@@ -1602,7 +2077,7 @@ export default function App() {
     setRoutesLoading(true);
     setRoutesError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/routes${plainFiltersToQueryString(routeFiltersToApi(filters))}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/routes${plainFiltersToQueryString(routeFiltersToApi(filters))}`);
       if (!response.ok) {
         throw new Error(`Routes API returned ${response.status}`);
       }
@@ -1625,7 +2100,7 @@ export default function App() {
     }
     setRoutesError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/routes/${routeId}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/routes/${routeId}`);
       if (!response.ok) {
         throw new Error(`Route detail API returned ${response.status}`);
       }
@@ -1643,7 +2118,7 @@ export default function App() {
       return;
     }
     try {
-      const response = await fetch(`${API_BASE_URL}/api/routes/${routeId}/map`);
+      const response = await apiFetch(`${API_BASE_URL}/api/routes/${routeId}/map`);
       if (response.ok) {
         setRouteMapPayload(await response.json());
       }
@@ -1790,7 +2265,7 @@ export default function App() {
     }
     setPickError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/picks/${pickId}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/picks/${pickId}`);
       if (!response.ok) {
         throw new Error(`Pick detail API returned ${response.status}`);
       }
@@ -1832,14 +2307,15 @@ export default function App() {
     setPickLoading(true);
     setPickError('');
     try {
-      const result = await postJson('/api/picks/commit', {
+      const payload = {
         order_ids: lines.length ? [] : [orderId],
         lines,
         pick_strategy: 'allocated_first',
         allow_partial: true,
         created_by: 'system',
         notes: 'Manual quantities from Pick Orders',
-      });
+      };
+      const result = await postJson('/api/picks/commit', withMutationIdempotency(pickMutationRef, 'pick', payload));
       setPickCommitSummary(result);
       if (result.status !== 'posted') {
         setPickError((result.errors || []).join(' ') || 'The pick could not be posted. Review the quantities and try again.');
@@ -1850,6 +2326,7 @@ export default function App() {
       await loadPicks();
       await loadItems();
       await loadInventorySummary();
+      resetMutationIdempotency(pickMutationRef);
       return result;
     } catch (error) {
       setPickError(error.message || 'Unable to commit pick.');
@@ -2188,6 +2665,7 @@ export default function App() {
       <div className="workspace">
         <TopHeader
           meta={activeMeta}
+          currentUser={currentUser}
           notifications={orderNotificationHistory}
           unreadCount={notificationOrderCount(orderNotificationHistory.filter((notification) => unreadOrderNotificationKeys.has(notification.key)))}
           historyOpen={orderNotificationHistoryOpen}
@@ -2204,11 +2682,13 @@ export default function App() {
           onDismiss={dismissActiveOrderNotifications}
           onViewOpenOrders={viewOpenOrdersFromNotification}
         />
+        <WooOrderSyncHealthWarning status={wooStatus} error={wooHealthError} />
         <main className="main-content" id="main-content" tabIndex={-1}>
           <PageHeader meta={activeMeta} route={route} />
           <PageBody
             route={route}
             items={items}
+            itemsPagination={itemsPagination}
             itemsLoading={itemsLoading}
             itemsError={itemsError}
             onLoadItems={loadItems}
@@ -2269,11 +2749,13 @@ export default function App() {
             wooRemapPreview={wooRemapPreview}
             wooRemapMessage={wooRemapMessage}
             wooWritebackQueue={wooWritebackQueue}
+            wooStockSyncJobs={wooStockSyncJobs}
             wooWritebackPreview={wooWritebackPreview}
             wooWritebackMessage={wooWritebackMessage}
             wooLoading={wooLoading}
             wooError={wooError}
             onLoadWooStatus={loadWooStatus}
+            onSaveWooConfiguration={saveWooConfiguration}
             onPreviewWooProductSync={previewWooProductSync}
             onCommitWooProductSync={commitWooProductSync}
             onPreviewWooOrderSync={previewWooOrderSync}
@@ -2288,6 +2770,9 @@ export default function App() {
             onSendWooWriteback={sendWooWriteback}
             onCancelWooWriteback={cancelWooWriteback}
             onRevalidateWooWriteback={revalidateWooWriteback}
+            onSyncWooStock={syncWooStockFromSettings}
+            onResumeWooStockJob={(jobId) => changeWooStockSyncJob(jobId, 'resume')}
+            onCancelWooStockJob={(jobId) => changeWooStockSyncJob(jobId, 'cancel')}
             openOrders={openOrders}
             openOrdersLoading={openOrdersLoading}
             openOrdersError={openOrdersError}
@@ -2361,6 +2846,7 @@ function Sidebar({ activePage, route, onNavigate, isOpen, onClose }) {
   const [ordersExpanded, setOrdersExpanded] = useState(activePage === 'orders');
   const [inventoryExpanded, setInventoryExpanded] = useState(activePage === 'inventory');
   const closeButtonRef = useRef(null);
+  const navListRef = useRef(null);
   const activeGroup = navigationGroups.find((group) => group.pages.includes(activePage)) || navigationGroups[0];
 
   useEffect(() => {
@@ -2377,6 +2863,17 @@ function Sidebar({ activePage, route, onNavigate, isOpen, onClose }) {
       closeButtonRef.current?.focus();
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    const container = navListRef.current;
+    const activeLink = container?.querySelector('[aria-current="page"]');
+    if (!container || !activeLink) return;
+    const containerRect = container.getBoundingClientRect();
+    const linkRect = activeLink.getBoundingClientRect();
+    if (linkRect.top < containerRect.top || linkRect.bottom > containerRect.bottom) {
+      activeLink.scrollIntoView?.({ block: 'nearest' });
+    }
+  }, [activePage, route.inventoryView, route.ordersView, inventoryExpanded, ordersExpanded]);
 
   function renderNavItem(item) {
     const Icon = item.icon;
@@ -2450,7 +2947,7 @@ function Sidebar({ activePage, route, onNavigate, isOpen, onClose }) {
               <X size={18} aria-hidden="true" />
             </button>
           </div>
-          <nav className="nav-list" aria-label="Main navigation">
+          <nav className="nav-list" aria-label="Main navigation" ref={navListRef}>
             {navigationGroups.map((group) => (
               <section className="context-nav-group" key={group.id} aria-labelledby={`nav-${group.id}`}>
                 <h2 id={`nav-${group.id}`}>{group.label}</h2>
@@ -2458,11 +2955,6 @@ function Sidebar({ activePage, route, onNavigate, isOpen, onClose }) {
               </section>
             ))}
           </nav>
-          <div className="sidebar-footer">
-            <span className="system-live-dot" aria-hidden="true" />
-            <span><strong>Main Warehouse</strong><small>Operational workspace</small></span>
-            <Warehouse size={18} aria-hidden="true" />
-          </div>
         </div>
       </aside>
     </>
@@ -2502,14 +2994,8 @@ function webhookEventToNotification(event) {
   };
 }
 
-function quickSyncToNotification(result, runIdentity, createdCount) {
-  return {
-    key: `quick-sync:${runIdentity}`,
-    source: 'quick-sync',
-    syncRunId: result?.sync_run_id,
-    orderCount: createdCount,
-    receivedAt: new Date().toISOString(),
-  };
+function isNewOrderWebhookEvent(event) {
+  return event?.event_type ? event.event_type === 'order_created' : event?.topic === 'order.created';
 }
 
 function notificationOrderCount(notifications) {
@@ -2532,22 +3018,14 @@ function orderNotificationDetail(notification) {
   if (notification?.total != null) {
     details.push(formatOrderNotificationCurrency(notification.total, notification.currency));
   }
-  if (!details.length && notification?.source === 'quick-sync') {
-    details.push('Imported by the polling fallback.');
-  }
   return details.join(' · ');
 }
 
 function formatOrderNotificationCurrency(value, currency) {
-  const currencyCode = /^[A-Z]{3}$/.test(String(currency || '').toUpperCase()) ? String(currency).toUpperCase() : 'USD';
-  try {
-    return new Intl.NumberFormat('en-CA', { style: 'currency', currency: currencyCode }).format(toNumber(value));
-  } catch {
-    return formatCurrency(value);
-  }
+  return formatCurrency(value, currency || APP_CURRENCY);
 }
 
-function TopHeader({ meta, notifications = [], unreadCount = 0, historyOpen, navigationOpen, navigationButtonRef, onMenuToggle, onNavigate, onToggleHistory, onCloseHistory, onViewOpenOrders }) {
+function TopHeader({ meta, currentUser, notifications = [], unreadCount = 0, historyOpen, navigationOpen, navigationButtonRef, onMenuToggle, onNavigate, onToggleHistory, onCloseHistory, onViewOpenOrders }) {
   return (
     <header className="top-header">
       <div className="header-primary">
@@ -2568,10 +3046,9 @@ function TopHeader({ meta, notifications = [], unreadCount = 0, historyOpen, nav
         </div>
       </div>
       <div className="header-actions">
-        <div className="warehouse-control">
+        <div className="warehouse-context" aria-label="Current warehouse: Main Warehouse">
           <Warehouse size={17} aria-hidden="true" />
-          <span>Main Warehouse</span>
-          <ChevronDown size={15} aria-hidden="true" />
+          <span><small>Current warehouse</small>Main Warehouse</span>
         </div>
         <div className="notification-center" onKeyDown={(event) => {
           if (event.key === 'Escape' && historyOpen) {
@@ -2627,7 +3104,7 @@ function TopHeader({ meta, notifications = [], unreadCount = 0, historyOpen, nav
           <div className="avatar">
             <UserCircle size={26} />
           </div>
-          <span>Kannan</span>
+          <span>{currentUser?.display_name || 'Pongo Staff'}</span>
         </div>
       </div>
     </header>
@@ -2659,6 +3136,28 @@ function NewOrderNotificationRegion({ notifications = [], onDismiss, onViewOpenO
         </section>
       )}
     </div>
+  );
+}
+
+function WooOrderSyncHealthWarning({ status, error }) {
+  const health = status?.order_reconciliation;
+  if (!error && (!status?.configured || !health || health.healthy)) {
+    return null;
+  }
+  const title = error
+    ? 'Automatic order sync health is unavailable'
+    : (health.degraded ? 'Automatic order sync needs review' : 'Automatic order sync is not healthy');
+  const detail = error || health.last_error || health.message || 'Open WooCommerce Settings to review the server reconciliation status.';
+  return (
+    <section className="woo-sync-health-warning" role="alert" aria-label="WooCommerce order sync warning">
+      <span className="woo-sync-health-icon" aria-hidden="true"><TriangleAlert size={21} /></span>
+      <div>
+        <strong>{title}</strong>
+        <p>{detail}</p>
+        {health?.last_success_at && <small>Last successful check {formatDateTime(health.last_success_at)}</small>}
+      </div>
+      <a href="#/settings/sync">Review WooCommerce Settings</a>
+    </section>
   );
 }
 
@@ -2701,6 +3200,7 @@ function PageHeader({ meta, route }) {
 function PageBody({
   route,
   items,
+  itemsPagination,
   itemsLoading,
   itemsError,
   onLoadItems,
@@ -2761,11 +3261,13 @@ function PageBody({
   wooRemapPreview,
   wooRemapMessage,
   wooWritebackQueue,
+  wooStockSyncJobs,
   wooWritebackPreview,
   wooWritebackMessage,
   wooLoading,
   wooError,
   onLoadWooStatus,
+  onSaveWooConfiguration,
   onPreviewWooProductSync,
   onCommitWooProductSync,
   onPreviewWooOrderSync,
@@ -2780,6 +3282,9 @@ function PageBody({
   onSendWooWriteback,
   onCancelWooWriteback,
   onRevalidateWooWriteback,
+  onSyncWooStock,
+  onResumeWooStockJob,
+  onCancelWooStockJob,
   openOrders,
   openOrdersLoading,
   openOrdersError,
@@ -2847,7 +3352,7 @@ function PageBody({
   }
 
   if (route.pageId === 'insights') {
-    return <InsightsPage />;
+    return <InsightsPage route={route} />;
   }
 
   if (route.pageId === 'locations') {
@@ -2859,6 +3364,7 @@ function PageBody({
       <InventoryPage
         route={route}
         items={items}
+        pagination={itemsPagination}
         itemsLoading={itemsLoading}
         summary={inventorySummary}
         loading={inventoryLoading}
@@ -2876,6 +3382,7 @@ function PageBody({
   if (route.pageId === 'receiving') {
     return (
       <DirectReceivingPage
+        route={route}
         items={items}
         locations={locations}
         receipts={receipts}
@@ -2898,6 +3405,7 @@ function PageBody({
   if (route.pageId === 'reports') {
     return (
       <ReportsPage
+        route={route}
         receivedRows={receivedInventoryRows}
         receivedSummary={receivedInventorySummary}
         receivedLoading={receivedInventoryLoading}
@@ -2982,6 +3490,7 @@ function PageBody({
   if (route.pageId === 'settings') {
     return (
       <WooCommerceSettingsPage
+        view={route.settingsView || 'connection'}
         status={wooStatus}
         preview={wooPreview}
         commitSummary={wooCommitSummary}
@@ -2993,11 +3502,13 @@ function PageBody({
         remapPreview={wooRemapPreview}
         remapMessage={wooRemapMessage}
         writebackQueue={wooWritebackQueue}
+        stockSyncJobs={wooStockSyncJobs}
         writebackPreview={wooWritebackPreview}
         writebackMessage={wooWritebackMessage}
         loading={wooLoading}
         error={wooError}
         onCheckConnection={() => onLoadWooStatus(true)}
+        onSaveConfiguration={onSaveWooConfiguration}
         onPreview={onPreviewWooProductSync}
         onCommit={onCommitWooProductSync}
         onPreviewOrders={onPreviewWooOrderSync}
@@ -3012,6 +3523,9 @@ function PageBody({
         onSendWriteback={onSendWooWriteback}
         onCancelWriteback={onCancelWooWriteback}
         onRevalidateWriteback={onRevalidateWooWriteback}
+        onSyncStock={onSyncWooStock}
+        onResumeStockJob={onResumeWooStockJob}
+        onCancelStockJob={onCancelWooStockJob}
       />
     );
   }
@@ -3216,13 +3730,47 @@ function BusinessRevenueCard({ revenue }) {
   );
 }
 
-function InsightsPage() {
-  const [activeTab, setActiveTab] = useState('overview');
+const insightSummaryOrder = {
+  overview: ['gross_sales', 'discount_amount', 'refund_amount', 'net_sales', 'total_orders', 'units_sold', 'average_order_value'],
+  'orders-revenue': ['gross_sales', 'discount_amount', 'refund_amount', 'net_sales', 'total_orders', 'units_sold', 'average_order_value'],
+};
+
+const insightMetricDefinitions = {
+  gross_sales: 'Product line subtotal before discounts for matching completed or active sales orders.',
+  discount_amount: 'Discount value captured in local order snapshots.',
+  refund_amount: 'Refund value when refund detail is available locally.',
+  net_sales: 'Product line sales after line discounts, excluding shipping and tax, for matching completed or active sales orders.',
+  total_orders: 'Orders matching the selected range and report inclusion rules.',
+  units_sold: 'Sum of item quantities on matching orders.',
+  average_order_value: 'Net sales divided by matching orders.',
+};
+
+const insightWarningPresentation = {
+  limited_order_history: { impact: 'Trend and forecasting confidence is limited until more order snapshots are available.', href: '#settings', label: 'Review sync status' },
+  missing_unit_cost: { impact: 'Margin and inventory-value metrics exclude items without cost.', href: '#/inventory/all?data_quality=missing_cost', label: 'Review missing costs' },
+  missing_refund_data: { impact: 'Refund amount and refund rate remain unavailable; net figures are not adjusted using fabricated refund values.' },
+  missing_customer_email: { impact: 'Customer retention and reorder analysis cannot include orders without a customer email.' },
+  missing_subscription_data: { impact: 'Subscription dashboards remain unavailable until local subscription snapshots exist.' },
+  insufficient_sales_history: { impact: 'Demand, velocity, days-left, and reorder recommendations remain unavailable for affected SKUs until matching sales history exists.' },
+  missing_barcode: { impact: 'Scanner-based workflows may require SKU entry for these items.', href: '#/inventory/all?data_quality=missing_barcode', label: 'Review missing barcodes' },
+  unmapped_products: { impact: 'Unmapped items cannot be reconciled to WooCommerce reporting.', href: '#/inventory/all?data_quality=unmapped', label: 'Review unmapped items' },
+};
+
+function pickFilterValues(filters, allowed) {
+  return Object.fromEntries((allowed || []).filter((key) => filters[key] !== undefined && filters[key] !== '').map((key) => [key, filters[key]]));
+}
+
+function InsightsPage({ route }) {
+  const activeTab = route.insightsView || 'overview';
   const [cache, setCache] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [filters, setFilters] = useState({ start_date: '', end_date: '', brand: '', category: '', sku: '', customer_email: '', city: '', postal_code: '', payment_method: '', order_status: '' });
+  const tabListRef = useRef(null);
+  const tabRefs = useRef({});
   const activeConfig = insightTabs.find((tab) => tab.id === activeTab) || insightTabs[0];
+  const allowedFilters = insightFiltersByTab[activeTab] || [];
+  const activeFilters = pickFilterValues(filters, allowedFilters);
   const activeData = cache[activeTab];
 
   useEffect(() => {
@@ -3231,12 +3779,18 @@ function InsightsPage() {
     }
   }, [activeTab]);
 
-  async function loadInsight(tabId = activeTab, forceFilters = filters) {
+  useEffect(() => {
+    setFilters((current) => Object.fromEntries(Object.entries(current).map(([key, value]) => [key, allowedFilters.includes(key) ? value : ''])));
+    tabRefs.current[activeTab]?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [activeTab]);
+
+  async function loadInsight(tabId = activeTab, forceFilters) {
     const config = insightTabs.find((tab) => tab.id === tabId) || insightTabs[0];
+    const requestFilters = forceFilters || pickFilterValues(filters, insightFiltersByTab[tabId] || []);
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(`${API_BASE_URL}${config.endpoint}${plainFiltersToQueryString(forceFilters)}`);
+      const response = await apiFetch(`${API_BASE_URL}${config.endpoint}${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) {
         throw new Error(`Insights API returned ${response.status}`);
       }
@@ -3254,23 +3808,36 @@ function InsightsPage() {
   }
 
   function applyFilters() {
-    setCache((current) => {
-      const next = { ...current };
-      delete next[activeTab];
-      return next;
-    });
-    loadInsight(activeTab);
+    setCache({});
+    loadInsight(activeTab, activeFilters);
   }
 
   function clearFilters() {
     const nextFilters = { start_date: '', end_date: '', brand: '', category: '', sku: '', customer_email: '', city: '', postal_code: '', payment_method: '', order_status: '' };
     setFilters(nextFilters);
-    setCache((current) => {
-      const next = { ...current };
-      delete next[activeTab];
-      return next;
-    });
-    loadInsight(activeTab, nextFilters);
+    setCache({});
+    loadInsight(activeTab, {});
+  }
+
+  function selectTab(tabId) {
+    window.location.hash = `#/insights/${tabId}`;
+  }
+
+  function handleTabKeyDown(event, index) {
+    let nextIndex = index;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % insightTabs.length;
+    else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + insightTabs.length) % insightTabs.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = insightTabs.length - 1;
+    else return;
+    event.preventDefault();
+    const nextTab = insightTabs[nextIndex];
+    selectTab(nextTab.id);
+    window.setTimeout(() => tabRefs.current[nextTab.id]?.focus(), 0);
+  }
+
+  function scrollTabs(direction) {
+    tabListRef.current?.scrollBy?.({ left: direction * Math.max(240, tabListRef.current.clientWidth * 0.7), behavior: 'smooth' });
   }
 
   return (
@@ -3281,29 +3848,44 @@ function InsightsPage() {
           <p>Business intelligence, customer behavior, revenue, product demand, and forecasting.</p>
         </div>
         <div className="button-row">
-          {activeConfig.exportable && <a className="action-button" href={`${API_BASE_URL}/api/insights/${activeConfig.id}/export${plainFiltersToQueryString(filters)}`}><Download size={16} />Export CSV</a>}
+          {activeConfig.exportable && <a className="action-button" href={`${API_BASE_URL}/api/insights/${activeConfig.id}/export${plainFiltersToQueryString(activeFilters)}`}><Download size={16} />Export CSV</a>}
           <button className="primary-button" onClick={() => loadInsight(activeTab)} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
         </div>
       </div>
 
-      <div className="insights-tabs" role="tablist" aria-label="Insights dashboards">
-        {insightTabs.map((tab) => (
-          <button className={tab.id === activeTab ? 'insight-tab active' : 'insight-tab'} key={tab.id} onClick={() => setActiveTab(tab.id)} role="tab" aria-selected={tab.id === activeTab} type="button">
-            {tab.label}
-          </button>
-        ))}
+      <div className="insights-tabs-shell">
+        <button className="insights-tab-scroll-button" aria-label="Show previous Insights tabs" onClick={() => scrollTabs(-1)} type="button"><ChevronLeft size={18} /></button>
+        <div className="insights-tabs" ref={tabListRef} role="tablist" aria-label="Insights dashboards">
+          {insightTabs.map((tab, index) => (
+            <button
+              className={tab.id === activeTab ? 'insight-tab active' : 'insight-tab'}
+              id={`insight-tab-${tab.id}`}
+              key={tab.id}
+              onClick={() => selectTab(tab.id)}
+              onKeyDown={(event) => handleTabKeyDown(event, index)}
+              ref={(node) => { tabRefs.current[tab.id] = node; }}
+              role="tab"
+              aria-controls="insight-dashboard-panel"
+              aria-selected={tab.id === activeTab}
+              tabIndex={tab.id === activeTab ? 0 : -1}
+              type="button"
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <button className="insights-tab-scroll-button" aria-label="Show more Insights tabs" onClick={() => scrollTabs(1)} type="button"><ChevronRight size={18} /></button>
       </div>
 
       <div className="filter-card insights-filter-card">
+        {(allowedFilters.includes('start_date') || allowedFilters.includes('end_date')) && <p className="filter-context">Date range: {filters.start_date || filters.end_date ? `${filters.start_date || 'earliest'} to ${filters.end_date || 'latest'}` : 'All available local history'}</p>}
         <div className="filter-grid report-filter-grid">
-          <label className="field"><span>Start Date</span><input type="date" value={filters.start_date} onChange={(event) => updateFilter('start_date', event.target.value)} /></label>
-          <label className="field"><span>End Date</span><input type="date" value={filters.end_date} onChange={(event) => updateFilter('end_date', event.target.value)} /></label>
-          <label className="field"><span>Brand</span><input value={filters.brand} onChange={(event) => updateFilter('brand', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
-          <label className="field"><span>Category</span><input value={filters.category} onChange={(event) => updateFilter('category', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
-          <label className="field"><span>SKU</span><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
-          <label className="field"><span>Customer Email</span><input value={filters.customer_email} onChange={(event) => updateFilter('customer_email', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
-          <label className="field"><span>City</span><input value={filters.city} onChange={(event) => updateFilter('city', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
-          <label className="field"><span>Payment Method</span><input value={filters.payment_method} onChange={(event) => updateFilter('payment_method', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
+          {allowedFilters.map((field) => (
+            <label className="field" key={field}>
+              <span>{insightFilterLabels[field] || titleize(field)}</span>
+              <input type={field.endsWith('_date') ? 'date' : 'text'} value={filters[field]} onChange={(event) => updateFilter(field, event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} />
+            </label>
+          ))}
         </div>
         <div className="button-row">
           <button className="primary-button" onClick={applyFilters} type="button"><Filter size={16} />Apply Filters</button>
@@ -3311,7 +3893,7 @@ function InsightsPage() {
         </div>
       </div>
 
-      <div className="wide-panel insight-dashboard-panel">
+      <div className="wide-panel insight-dashboard-panel" id="insight-dashboard-panel" role="tabpanel" aria-labelledby={`insight-tab-${activeTab}`}>
         <div className="panel-title">
           <div>
             <h2>{activeConfig.label}</h2>
@@ -3319,25 +3901,34 @@ function InsightsPage() {
           </div>
           <span className="status-pill">Read only</span>
         </div>
-        {error && <div className="api-error">{error}</div>}
-        {loading && <div className="loading-strip">Loading {activeConfig.label}...</div>}
-        {activeData ? <InsightDashboard config={activeConfig} data={activeData} /> : !loading && <div className="empty-state"><h2>Loading dashboard</h2><p>Select a tab or refresh to load local analytics.</p></div>}
+        {error ? <div className="api-error" role="alert"><span>{error}</span><button className="muted-button" onClick={() => loadInsight(activeTab, activeFilters)} type="button">Retry</button></div> : loading ? <div className="loading-strip">Loading {activeConfig.label}...</div> : activeData ? <InsightDashboard config={activeConfig} data={activeData} /> : <div className="empty-state"><h2>Dashboard unavailable</h2><p>Select a tab or refresh to load local analytics.</p></div>}
       </div>
     </section>
   );
 }
 
 function InsightDashboard({ config, data }) {
-  const summaryEntries = Object.entries(data.summary || {}).filter(([, value]) => typeof value !== 'object' || value === null).slice(0, 12);
-  const tableRows = insightRowsForTab(config.id, data);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const rawSummaryEntries = Object.entries(data.summary || {}).filter(([, value]) => typeof value !== 'object' || value === null);
+  const preferredKeys = insightSummaryOrder[config.id];
+  const summaryEntries = (preferredKeys ? preferredKeys.map((key) => [key, data.summary?.[key]]).filter(([, value]) => value !== undefined) : rawSummaryEntries).slice(0, 12);
+  const tableRows = insightRowsForTab(config.id, data).map((row) => ({ ...row, product_name: row.product_name || row.woo_name || row.name || row.description || '' }));
   const columns = insightColumnsByTab[config.id] || Object.keys(tableRows[0] || {}).slice(0, 8);
   const trendRows = data.trends?.daily_revenue || data.trends?.revenue_by_day || [];
+  const totalPages = Math.max(1, Math.ceil(tableRows.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const visibleRows = tableRows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [config.id, data]);
 
   return (
     <div className="insight-report-layout">
       <InsightDataQuality warnings={data.data_quality || []} emptyState={data.empty_state} />
       <div className="summary-strip insights-summary-strip">
-        {summaryEntries.map(([key, value]) => <Metric key={key} label={titleize(key)} value={formatInsightValue(key, value)} />)}
+        {summaryEntries.map(([key, value]) => <Metric key={key} label={titleize(key)} value={formatInsightValue(key, value)} help={insightMetricDefinitions[key]} />)}
         {!summaryEntries.length && <div className="empty-table-row">No summary metrics available for this dashboard yet.</div>}
       </div>
 
@@ -3357,16 +3948,23 @@ function InsightDashboard({ config, data }) {
         </div>
       )}
 
-      <TableShell caption={`${tableRows.length} insight row(s)`} columns={columns.map(titleize)}>
-        {tableRows.slice(0, 100).map((row, index) => (
+      <TableShell caption="Insights" columns={columns.map(titleize)} pagination={{ page: currentPage, pageSize, total: tableRows.length, totalPages, returnedCount: visibleRows.length, noun: 'insights', onPageChange: setPage, onPageSizeChange: (size) => { setPageSize(size); setPage(1); } }}>
+        {visibleRows.map((row, index) => (
           <tr key={`${config.id}-${index}`}>
-            {columns.map((column) => <td key={column} className={column.includes('description') || column.includes('text') ? 'description-cell' : ''}>{formatInsightValue(column, row[column])}</td>)}
+            {columns.map((column) => <td key={column} className={column.includes('description') || column.includes('text') || column === 'product_name' ? 'description-cell' : ''}>{renderInsightCell(column, row[column])}</td>)}
           </tr>
         ))}
         {!tableRows.length && <tr><td colSpan={columns.length}><div className="empty-table-row">{data.empty_state || 'Not enough data yet for this dashboard.'}</div></td></tr>}
       </TableShell>
     </div>
   );
+}
+
+function renderInsightCell(column, value) {
+  if (column.includes('status')) return StatusText(value);
+  if (column.includes('risk')) return StatusText(value, 'risk');
+  if (column.includes('description') || column.includes('text') || column === 'product_name') return <ClampedText value={formatInsightValue(column, value)} />;
+  return formatInsightValue(column, value);
 }
 
 function InsightDataQuality({ warnings, emptyState }) {
@@ -3380,6 +3978,9 @@ function InsightDataQuality({ warnings, emptyState }) {
         <div className={`insight-warning ${warning.severity || 'info'}`} key={warning.code}>
           <strong>{titleize(warning.code)}</strong>
           <span>{warning.message}</span>
+          {insightWarningPresentation[warning.code]?.impact && <small>{insightWarningPresentation[warning.code].impact}</small>}
+          {warning.count != null && <small>{formatNumber(warning.count)} affected record(s)</small>}
+          {insightWarningPresentation[warning.code]?.href && <a className="warning-action" href={insightWarningPresentation[warning.code].href}>{insightWarningPresentation[warning.code].label}</a>}
         </div>
       ))}
     </div>
@@ -3436,14 +4037,21 @@ function ItemsPage({ route, items, itemsLoading, itemsError, onLoadItems, onSave
   return <ItemsList items={items} loading={itemsLoading} error={itemsError} onLoadItems={onLoadItems} />;
 }
 
-function InventoryPage({ route, items, itemsLoading, summary, loading, error, onLoadItems, onLoadSummary, stockMovements, stockMovementsLoading, stockMovementsError, onLoadStockMovements }) {
+function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsLoading, summary, loading, error, onLoadItems, onLoadSummary, stockMovements, stockMovementsLoading, stockMovementsError, onLoadStockMovements }) {
   const inventoryView = route.inventoryView || 'all';
-  const [queryDraft, setQueryDraft] = useState('');
-  const [activeSearch, setActiveSearch] = useState('');
-  const [filters, setFilters] = useState({ category: '', brand: '' });
+  const [queryDraft, setQueryDraft] = useState(route.inventorySearch || '');
+  const activeSearch = route.inventorySearch || '';
+  const filters = useMemo(() => ({
+    category: route.inventoryCategory || '',
+    brand: route.inventoryBrand || '',
+    dataQuality: route.inventoryDataQuality || '',
+    sortBy: route.inventorySortBy || 'sku',
+    sortDir: route.inventorySortDir || 'asc',
+  }), [route.inventoryCategory, route.inventoryBrand, route.inventoryDataQuality, route.inventorySortBy, route.inventorySortDir]);
   const [locationRows, setLocationRows] = useState([]);
   const [locationRowsLoading, setLocationRowsLoading] = useState(false);
   const [locationRowsError, setLocationRowsError] = useState('');
+  const locationRowsRequestIdRef = useRef(0);
   const [message, setMessage] = useState('');
   const [stockSyncError, setStockSyncError] = useState('');
   const [stockSyncMode, setStockSyncMode] = useState('');
@@ -3454,20 +4062,31 @@ function InventoryPage({ route, items, itemsLoading, summary, loading, error, on
 
   const options = useMemo(
     () => ({
-      categories: uniqueOptions(items, 'Category'),
-      brands: uniqueOptions(items, 'Brand'),
+      categories: pagination.facets?.categories?.length ? pagination.facets.categories : uniqueOptions(items, 'Category'),
+      brands: pagination.facets?.brands?.length ? pagination.facets.brands : uniqueOptions(items, 'Brand'),
     }),
-    [items],
+    [items, pagination.facets],
   );
 
   useEffect(() => {
+    setQueryDraft(route.inventorySearch || '');
+  }, [route.inventorySearch]);
+
+  useEffect(() => {
     const apiFilters = inventoryView === 'low-stock' ? { ...filters, underPar: 'true' } : filters;
-    onLoadSummary(apiFilters);
-    loadLocationRows(apiFilters, activeSearch);
+    onLoadSummary({ ...apiFilters, search: activeSearch });
+  }, [inventoryView, activeSearch, filters]);
+
+  useEffect(() => {
+    const apiFilters = inventoryView === 'low-stock' ? { ...filters, underPar: 'true' } : filters;
+    loadLocationRows(apiFilters, activeSearch, items);
+  }, [inventoryView, activeSearch, filters, items]);
+
+  useEffect(() => {
     if (inventoryView === 'movements') {
       onLoadStockMovements(stockMovementFiltersToApi(activeSearch, movementFilters));
     }
-  }, [inventoryView, activeSearch, filters, movementFilters]);
+  }, [inventoryView, activeSearch, movementFilters]);
 
   const enrichedLocationRows = useMemo(() => {
     const itemById = new Map(items.map((item) => [item.id, item]));
@@ -3476,22 +4095,29 @@ function InventoryPage({ route, items, itemsLoading, summary, loading, error, on
   const itemRows = useMemo(() => buildInventoryItemRows(items, enrichedLocationRows, activeSearch, filters, inventoryView), [items, enrichedLocationRows, activeSearch, filters, inventoryView]);
   const groupedRows = useMemo(() => groupLocationRows(enrichedLocationRows), [enrichedLocationRows]);
 
-  function submitSearch() {
-    setActiveSearch(queryDraft.trim());
+  function submitSearch(nextSearch = queryDraft) {
+    window.location.hash = inventoryRouteHref(route, { search: nextSearch.trim(), page: 1 });
   }
 
   function updateFilter(name, value) {
-    setFilters((current) => ({ ...current, [name]: value }));
+    window.location.hash = inventoryRouteHref(route, { [name]: value, page: 1 });
   }
 
   function clearFilters() {
     setQueryDraft('');
-    setActiveSearch('');
-    setFilters({ category: '', brand: '' });
     setMovementFilters({ movement_type: '', warehouse: '', inventory_location: '', date_from: '', date_to: '' });
+    window.location.hash = inventoryRouteHref(route, { search: '', category: '', brand: '', dataQuality: '', sortBy: 'sku', sortDir: 'asc', page: 1 });
   }
 
-  async function loadLocationRows(nextFilters = filters, search = activeSearch) {
+  async function loadLocationRows(nextFilters = filters, search = activeSearch, currentItems = items) {
+    const requestId = locationRowsRequestIdRef.current + 1;
+    locationRowsRequestIdRef.current = requestId;
+    if (inventoryView === 'all' && currentItems.length === 0) {
+      setLocationRows([]);
+      setLocationRowsError('');
+      setLocationRowsLoading(false);
+      return;
+    }
     setLocationRowsLoading(true);
     setLocationRowsError('');
     try {
@@ -3500,25 +4126,25 @@ function InventoryPage({ route, items, itemsLoading, summary, loading, error, on
         category: nextFilters.category || undefined,
         brand: nextFilters.brand || undefined,
         under_par: nextFilters.underPar || undefined,
+        item_ids: inventoryView === 'all' ? currentItems.map((item) => item.id).filter(Boolean).join(',') || undefined : undefined,
         limit: 1000,
       });
-      const response = await fetch(`${API_BASE_URL}/api/inventory/locations${query}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/inventory/locations${query}`);
       if (!response.ok) {
         throw new Error(`Location inventory API returned ${response.status}`);
       }
       const body = await response.json();
-      setLocationRows(body.rows || []);
+      if (requestId === locationRowsRequestIdRef.current) setLocationRows(body.rows || []);
     } catch (fetchError) {
-      setLocationRowsError('Unable to load location stock rows from the backend.');
+      if (requestId === locationRowsRequestIdRef.current) setLocationRowsError('Unable to load location stock rows from the backend.');
     } finally {
-      setLocationRowsLoading(false);
+      if (requestId === locationRowsRequestIdRef.current) setLocationRowsLoading(false);
     }
   }
 
   async function refreshInventory() {
-    await onLoadItems({ search: activeSearch, includeNonInventory: true });
-    await onLoadSummary(filters);
-    await loadLocationRows(filters, activeSearch);
+    await onLoadItems(inventoryRouteToItemFilters(route));
+    await onLoadSummary({ ...filters, search: activeSearch });
     if (inventoryView === 'movements') {
       await onLoadStockMovements(stockMovementFiltersToApi(activeSearch, movementFilters));
     }
@@ -3579,15 +4205,11 @@ function InventoryPage({ route, items, itemsLoading, summary, loading, error, on
   }
 
   function viewLocationStock(item) {
-    setQueryDraft(item.SKU || item.Barcode || '');
-    setActiveSearch(item.SKU || item.Barcode || '');
-    window.location.hash = '#/inventory/by-location';
+    window.location.hash = inventoryRouteHref({ ...route, inventoryView: 'by-location' }, { search: item.SKU || item.Barcode || '', page: 1 });
   }
 
   function viewMovements(item) {
-    setQueryDraft(item.SKU || item.Barcode || '');
-    setActiveSearch(item.SKU || item.Barcode || '');
-    window.location.hash = '#/inventory/movements';
+    window.location.hash = inventoryRouteHref({ ...route, inventoryView: 'movements' }, { search: item.SKU || item.Barcode || '', page: 1 });
   }
 
   function viewOrders(item) {
@@ -3608,12 +4230,12 @@ function InventoryPage({ route, items, itemsLoading, summary, loading, error, on
         </button>
       </div>
       <div className="summary-strip inventory-summary-strip">
-        <Metric label="Total Items" value={summary.total_items || items.length || 0} />
-        <Metric label="In Stock" value={formatNumber(summary.total_in_stock || inventoryTotal(items, 'In Stock'))} />
-        <Metric label="Allocated" value={formatNumber(summary.total_allocated || inventoryTotal(items, 'Allocated'))} />
-        <Metric label="Sellable" value={formatNumber(summary.total_sellable || inventoryTotal(items, 'Sellable'))} />
-        <Metric label="Inventory Value" value={formatCurrency(summary.total_inventory_value || inventoryValue(items))} />
-        <Metric label="Under Par" value={summary.under_par_count || itemRows.filter((row) => row.underPar).length} />
+        <Metric label="Inventory Records" value={pagination.total ?? items.length} help="Catalog inventory records matching the current filters." />
+        <Metric label="In Stock" value={formatNumber(summary.total_in_stock ?? inventoryTotal(items, 'In Stock'))} />
+        <Metric label="Allocated" value={formatNumber(summary.total_allocated ?? inventoryTotal(items, 'Allocated'))} />
+        <Metric label="Sellable" value={formatNumber(summary.total_sellable ?? inventoryTotal(items, 'Sellable'))} />
+        <Metric label="Inventory Value" value={formatCurrency(summary.total_inventory_value ?? inventoryValue(items))} help="On-hand quantity multiplied by known unit cost; items without cost do not add fabricated value." />
+        <Metric label="Under Par" value={summary.under_par_count ?? itemRows.filter((row) => row.underPar).length} />
       </div>
 
       <InventoryScannerSearch value={queryDraft} onChange={setQueryDraft} onSubmit={submitSearch} onClear={clearFilters} filters={filters} options={options} onFilterChange={updateFilter} />
@@ -3626,7 +4248,7 @@ function InventoryPage({ route, items, itemsLoading, summary, loading, error, on
       {message && <div className="api-success" role="status" aria-live="polite">{message}</div>}
       {(loading || locationRowsLoading || itemsLoading) && <div className="loading-strip">Loading inventory...</div>}
 
-      {inventoryView === 'all' && <AllInventoryTable rows={itemRows} onEdit={setEditingItem} onStock={setAdjustingItem} onLocation={viewLocationStock} onMovements={viewMovements} onOrders={viewOrders} />}
+      {inventoryView === 'all' && <AllInventoryTable rows={itemRows} pagination={pagination} onPageChange={(page) => { window.location.hash = inventoryRouteHref(route, { page }); }} onPageSizeChange={(pageSize) => { window.location.hash = inventoryRouteHref(route, { pageSize, page: 1 }); }} onEdit={setEditingItem} onStock={setAdjustingItem} onLocation={viewLocationStock} onMovements={viewMovements} onOrders={viewOrders} />}
       {inventoryView === 'by-location' && <InventoryByLocationView groups={groupedRows} rows={enrichedLocationRows} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
       {inventoryView === 'low-stock' && <LowStockTable rows={itemRows} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
       {inventoryView === 'expiring' && <ExpiringStockView rows={itemRows.filter((row) => row.item.Perishable || row.item['Track Lot'])} />}
@@ -3648,30 +4270,54 @@ function InventoryScannerSearch({ value, onChange, onSubmit, onClear, filters, o
           <span>Category</span>
           <select value={filters.category} onChange={(event) => onFilterChange('category', event.target.value)}>
             <option value="">All Categories</option>
-            {options.categories.map((category) => <option key={category} value={category}>{category}</option>)}
+            {[...new Set([filters.category, ...options.categories].filter(Boolean))].map((category) => <option key={category} value={category}>{decodeHtmlEntities(category)}</option>)}
           </select>
         </label>
         <label className="zenventory-filter-field">
           <span>Brand</span>
           <select value={filters.brand} onChange={(event) => onFilterChange('brand', event.target.value)}>
             <option value="">All Brands</option>
-            {options.brands.map((brand) => <option key={brand} value={brand}>{brand}</option>)}
+            {[...new Set([filters.brand, ...options.brands].filter(Boolean))].map((brand) => <option key={brand} value={brand}>{decodeHtmlEntities(brand)}</option>)}
           </select>
         </label>
-        <label className="zenventory-search-field">
-          <span>Scan or search inventory</span>
-          <input autoComplete="off" autoFocus value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, onSubmit)} placeholder="Search barcode, SKU, product title, or brand" type="search" />
+        <label className="zenventory-filter-field">
+          <span>Data Quality</span>
+          <select value={filters.dataQuality} onChange={(event) => onFilterChange('dataQuality', event.target.value)}>
+            <option value="">All Records</option>
+            <option value="missing_barcode">Barcode missing</option>
+            <option value="missing_brand">Brand missing</option>
+            <option value="missing_cost">Cost missing</option>
+            <option value="unmapped">WooCommerce mapping missing</option>
+            <option value="receiving">In receiving staging</option>
+            <option value="missing_location">Location unassigned</option>
+          </select>
         </label>
-        <button className="inventory-search-button" onClick={onSubmit} type="button">Search</button>
+        <label className="zenventory-filter-field">
+          <span>Sort By</span>
+          <select value={filters.sortBy} onChange={(event) => onFilterChange('sortBy', event.target.value)}>
+            <option value="sku">SKU</option>
+            <option value="description">Product title</option>
+            <option value="brand">Brand</option>
+            <option value="category">Category</option>
+            <option value="in_stock">In stock</option>
+            <option value="unit_cost">Unit cost</option>
+          </select>
+        </label>
+        <label className="zenventory-filter-field">
+          <span>Sort Direction</span>
+          <select value={filters.sortDir} onChange={(event) => onFilterChange('sortDir', event.target.value)}><option value="asc">Ascending</option><option value="desc">Descending</option></select>
+        </label>
+        <InventoryKeywordSearch className="zenventory-search-field" value={value} onChange={onChange} onSearch={onSubmit} label="Scan or search inventory" placeholder="Search barcode, SKU, product title, or brand" autoFocus />
+        <button className="inventory-search-button" onClick={() => onSubmit(value.trim())} type="button">Search</button>
         <button className="inventory-reset-button" onClick={onClear} type="button">Reset</button>
       </div>
     </div>
   );
 }
 
-function AllInventoryTable({ rows, onEdit, onStock, onLocation, onMovements, onOrders }) {
+function AllInventoryTable({ rows, pagination, onPageChange, onPageSizeChange, onEdit, onStock, onLocation, onMovements, onOrders }) {
   return (
-    <TableShell caption={`${rows.length} inventory item(s)`} columns={['Actions', 'SKU / Barcode', 'Product Title', 'Brand', 'Category', 'Location', 'In Stock', 'Open Orders', 'Allocated', 'Sellable', 'Unit Cost', 'Value', 'Active']}>
+    <TableShell caption="Inventory records" columns={['Actions', 'SKU / Barcode', 'Product Title', 'Brand', 'Category', 'Location', 'In Stock', 'Open Orders', 'Allocated', 'Sellable', 'Unit Cost', 'Value', 'Active']} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: pagination.returned_count, noun: 'inventory records', onPageChange, onPageSizeChange }}>
       {rows.map((row) => <InventoryItemRow key={row.item.id} row={row} onEdit={onEdit} onStock={onStock} onLocation={onLocation} onMovements={onMovements} onOrders={onOrders} />)}
       {!rows.length && <tr><td colSpan={13}><div className="empty-table-row">No inventory items match the current search.</div></td></tr>}
     </TableShell>
@@ -3683,17 +4329,17 @@ function InventoryItemRow({ row, onEdit, onStock, onLocation, onMovements, onOrd
   return (
     <tr>
       <td><InventoryRowActions item={item} onEdit={onEdit} onStock={onStock} onLocation={onLocation} onMovements={onMovements} onOrders={onOrders} /></td>
-      <td><div className="sku-barcode-cell"><strong>{item.SKU || 'No SKU'}</strong><span>{item.Barcode || 'No barcode'}</span></div></td>
-      <td className="description-cell">{productTitle(item)}</td>
-      <td>{item.Brand}</td>
-      <td>{item.Category}</td>
-      <td>{row.locationSummary}</td>
+      <td><div className="sku-barcode-cell"><strong>{item.SKU || <DataQualityBadge kind="missing_sku" />}</strong><span>{item.Barcode || <DataQualityBadge kind="missing_barcode" />}</span></div></td>
+      <td className="description-cell"><ClampedText value={productTitle(item)} /></td>
+      <td>{item.Brand ? decodeHtmlEntities(item.Brand) : <DataQualityBadge kind="missing_brand" />}</td>
+      <td>{item.Category ? decodeHtmlEntities(item.Category) : <DataQualityBadge kind="missing_category" />}</td>
+      <td>{row.locationSummary ? <LocationPresentation value={row.locationSummary} /> : <DataQualityBadge kind="missing_location" />}</td>
       <td>{formatNumber(item['In Stock'])}</td>
       <td>{formatOpenOrders(item)}</td>
       <td>{formatNumber(item.Allocated)}</td>
       <td>{formatNumber(item.Sellable)}</td>
-      <td>{formatCurrency(item['Unit Cost'])}</td>
-      <td>{formatCurrency(toNumber(item['In Stock']) * toNumber(item['Unit Cost']))}</td>
+      <td>{isMissingValue(item['Unit Cost']) ? <DataQualityBadge kind="missing_cost" /> : formatCurrency(item['Unit Cost'])}</td>
+      <td>{isMissingValue(item['Unit Cost']) ? 'Not available' : formatCurrency(toNumber(item['In Stock']) * toNumber(item['Unit Cost']))}</td>
       <td><StatusBadge active={item.active} /></td>
     </tr>
   );
@@ -3776,9 +4422,9 @@ function InventoryByLocationView({ groups, rows, onEdit, onStock, onMovements })
                   <tr key={row.id}>
                     <td><InventoryCompactActions item={item} onEdit={onEdit} onStock={onStock} onMovements={onMovements} /></td>
                     <td><div className="sku-barcode-cell"><strong>{row.sku || item.SKU}</strong><span>{row.barcode || item.Barcode}</span></div></td>
-                    <td className="description-cell">{productTitle(item) || row.description}</td>
-                    <td>{item.Brand}</td>
-                    <td>{item.Category}</td>
+                    <td className="description-cell"><ClampedText value={productTitle(item) || row.description} /></td>
+                    <td>{item.Brand ? decodeHtmlEntities(item.Brand) : <DataQualityBadge kind="missing_brand" />}</td>
+                    <td>{item.Category ? decodeHtmlEntities(item.Category) : <DataQualityBadge kind="missing_category" />}</td>
                     <td>{formatNumber(row.in_stock)}</td>
                     <td>{formatNumber(row.allocated)}</td>
                     <td>{formatNumber(row.sellable)}</td>
@@ -3805,7 +4451,7 @@ function LowStockTable({ rows, onEdit, onStock, onMovements }) {
         <tr key={row.item.id}>
           <td><InventoryCompactActions item={row.item} onEdit={onEdit} onStock={onStock} onMovements={onMovements} /></td>
           <td><div className="sku-barcode-cell"><strong>{row.item.SKU}</strong><span>{row.item.Barcode}</span></div></td>
-          <td className="description-cell">{productTitle(row.item)}</td>
+          <td className="description-cell"><ClampedText value={productTitle(row.item)} /></td>
           <td>{row.locationSummary}</td>
           <td>{formatNumber(row.item['In Stock'])}</td>
           <td>{formatNumber(row.item.Allocated)}</td>
@@ -3837,7 +4483,7 @@ function ParLevelTable({ rows, onEdit, onPar, onStock, onMovements }) {
         <tr key={row.item.id}>
           <td><InventoryParActions item={row.item} onEdit={onEdit} onPar={onPar} onStock={onStock} onMovements={onMovements} /></td>
           <td><div className="sku-barcode-cell"><strong>{row.item.SKU}</strong><span>{row.item.Barcode}</span></div></td>
-          <td className="description-cell">{productTitle(row.item)}</td>
+          <td className="description-cell"><ClampedText value={productTitle(row.item)} /></td>
           <td>{row.locationSummary}</td>
           <td>{formatNumber(row.item['In Stock'])}</td>
           <td>{formatNumber(row.item.Allocated)}</td>
@@ -3875,12 +4521,12 @@ function InventoryMovementsView({ movements, loading, filters, setFilters, activ
         {movements.map((movement) => (
           <tr key={movement.id}>
             <td>{formatDateTime(movement.created_at)}</td>
-            <td>{movement.movement_type}</td>
+            <td>{StatusText(movement.movement_type)}</td>
             <td className="mono">{movement.sku}</td>
             <td className="mono">{movement.barcode}</td>
-            <td className="description-cell">{movement.description || ''}</td>
+            <td className="description-cell"><ClampedText value={movement.description} /></td>
             <td>{movement.warehouse}</td>
-            <td>{movement.inventory_location}</td>
+            <td><LocationPresentation value={movement.inventory_location} /></td>
             <td>{formatNumber(movement.quantity_delta)}</td>
             <td>{formatNumber(movement.previous_in_stock ?? movement.previous_location_in_stock)}</td>
             <td>{formatNumber(movement.new_in_stock ?? movement.new_location_in_stock)}</td>
@@ -3956,6 +4602,7 @@ function ProductInfoModal({ item, onClose, onSave }) {
 }
 
 function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
+  const mutationRef = useRef(null);
   const defaultRow = locationRows[0] || null;
   const [form, setForm] = useState({ itemLocationId: defaultRow?.id || '', mode: 'new_quantity', newQuantity: defaultRow ? String(defaultRow.in_stock) : '', quantityChange: '', reason: '', notes: '' });
   const [error, setError] = useState('');
@@ -3988,13 +4635,15 @@ function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
       return;
     }
     try {
-      await onCommit({
+      const payload = {
         adjustment_type: quantityChange < 0 ? 'manual_decrease' : 'manual_increase',
         reason: form.reason,
         notes: form.notes || null,
         created_by: 'frontend',
         lines: [{ item_id: item.id, inventory_item_location_id: selectedRow.id, quantity_change: quantityChange, notes: form.notes || null }],
-      });
+      };
+      await onCommit(withMutationIdempotency(mutationRef, 'stock-adjustment', payload));
+      resetMutationIdempotency(mutationRef);
     } catch (commitError) {
       setError(commitError.message || 'Unable to commit stock edit.');
     }
@@ -4055,19 +4704,7 @@ function InventorySummaryTable({ groups }) {
   return (
     <div className="table-wrap">
       <div className="table-meta">
-        <span>
-          Showing records 1-{groups.length} out of {groups.length}
-        </span>
-        <div className="table-pager">
-          <span>{groups.length} Results</span>
-          <button className="pager-button" aria-label="Previous page" title="Pagination is not available yet" disabled type="button">
-            <ChevronLeft size={18} />
-          </button>
-          <span>1 / 1</span>
-          <button className="pager-button active" aria-label="Next page" title="Pagination is not available yet" disabled type="button">
-            <ChevronRight size={18} />
-          </button>
-        </div>
+        <span>{formatNumber(groups.length)} location group(s)</span>
       </div>
       <div className="table-action-band">
         <span>Actions</span>
@@ -4249,19 +4886,7 @@ function LocationsTable({ locations }) {
   return (
     <div className="table-wrap">
       <div className="table-meta">
-        <span>
-          Showing records 1-{locations.length} out of {locations.length}
-        </span>
-        <div className="table-pager">
-          <span>{locations.length} Results</span>
-          <button className="pager-button" aria-label="Previous page" title="Pagination is not available yet" disabled type="button">
-            <ChevronLeft size={18} />
-          </button>
-          <span>1 / 1</span>
-          <button className="pager-button active" aria-label="Next page" title="Pagination is not available yet" disabled type="button">
-            <ChevronRight size={18} />
-          </button>
-        </div>
+        <span>{formatNumber(locations.length)} location record(s)</span>
       </div>
       <div className="table-action-band">
         <span>Actions</span>
@@ -4288,7 +4913,7 @@ function LocationsTable({ locations }) {
                 <td>{location.warehouse}</td>
                 <td className="mono">{location.code}</td>
                 <td>{location.name}</td>
-                <td className="description-cell">{location.description}</td>
+                <td className="description-cell"><ClampedText value={location.description} /></td>
                 <td>{location.zone}</td>
                 <td>{location.aisle}</td>
                 <td>{location.rack}</td>
@@ -4405,6 +5030,7 @@ function ItemsList({ items, loading, error, onLoadItems }) {
     stockStatus: '',
     includeNonInventory: true,
   });
+  const [searchDraft, setSearchDraft] = useState('');
 
   const options = useMemo(
     () => ({
@@ -4419,6 +5045,10 @@ function ItemsList({ items, loading, error, onLoadItems }) {
   }, [filters]);
 
   useEffect(() => {
+    setSearchDraft(filters.search);
+  }, [filters.search]);
+
+  useEffect(() => {
     loadSavedViews();
   }, []);
 
@@ -4429,6 +5059,7 @@ function ItemsList({ items, loading, error, onLoadItems }) {
   }
 
   function clearFilters() {
+    setSearchDraft('');
     setFilters({
       search: '',
       category: '',
@@ -4441,7 +5072,7 @@ function ItemsList({ items, loading, error, onLoadItems }) {
 
   async function loadSavedViews() {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/ui/saved-views?page=items`);
+      const response = await apiFetch(`${API_BASE_URL}/api/ui/saved-views?page=items`);
       if (response.ok) {
         const body = await response.json();
         setSavedViews(body.views || []);
@@ -4467,13 +5098,15 @@ function ItemsList({ items, loading, error, onLoadItems }) {
       return;
     }
     setSelectedViewId(String(view.id));
-    setFilters({ ...filters, ...(view.filters || {}) });
+    const nextFilters = { ...filters, ...(view.filters || {}) };
+    setSearchDraft(nextFilters.search || '');
+    setFilters(nextFilters);
     setVisibleColumns((view.columns?.length ? view.columns : visibleColumns).map((column) => (column === 'Description' ? 'Product Title' : column)));
     setMessage(`Loaded ${view.name}.`);
   }
 
   async function deleteView(viewId) {
-    const response = await fetch(`${API_BASE_URL}/api/ui/saved-views/${viewId}`, { method: 'DELETE' });
+    const response = await apiFetch(`${API_BASE_URL}/api/ui/saved-views/${viewId}`, { method: 'DELETE' });
     if (response.ok) {
       setMessage('Deleted saved view.');
       setSelectedViewId('');
@@ -4486,7 +5119,7 @@ function ItemsList({ items, loading, error, onLoadItems }) {
     setDetailData(null);
     setDetailTab('overview');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/items/${itemId}/detail`);
+      const response = await apiFetch(`${API_BASE_URL}/api/items/${itemId}/detail`);
       if (!response.ok) throw new Error(`Detail API returned ${response.status}`);
       setDetailData(await response.json());
     } catch {
@@ -4495,10 +5128,12 @@ function ItemsList({ items, loading, error, onLoadItems }) {
   }
 
   function toggleSelected(itemId) {
+    setBulkPreview(null);
     setSelectedIds((current) => (current.includes(itemId) ? current.filter((id) => id !== itemId) : [...current, itemId]));
   }
 
   function toggleAllDisplayed(checked) {
+    setBulkPreview(null);
     setSelectedIds(checked ? displayedItems.map((item) => item.id) : []);
   }
 
@@ -4549,7 +5184,7 @@ function ItemsList({ items, loading, error, onLoadItems }) {
               <Link2 size={17} />
               Remap Exceptions
             </button>
-            <button className="action-button" disabled={!selectedIds.length} onClick={() => setBulkOpen(true)} type="button">
+            <button className="action-button" disabled={!selectedIds.length} onClick={() => { setBulkPreview(null); setBulkOpen(true); }} type="button">
               <Edit3 size={17} />
               Bulk Edit
             </button>
@@ -4565,13 +5200,7 @@ function ItemsList({ items, loading, error, onLoadItems }) {
           </div>
         </div>
         <div className="items-filter-grid-pro">
-          <label className="field">
-            <span>SKU / Barcode / Product Title</span>
-            <div className="input-with-icon">
-              <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadItems(filters))} placeholder="Search SKU, barcode, product title, or brand" type="search" />
-              <Search size={18} />
-            </div>
-          </label>
+          <InventoryKeywordSearch className="field" value={searchDraft} onChange={setSearchDraft} onSearch={(search) => updateFilter('search', search)} label="SKU / Barcode / Product Title" placeholder="Search SKU, barcode, product title, or brand" />
           <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
           <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
           <FilterSelect label="Stock Status" value={filters.stockStatus} options={['in_stock', 'out_of_stock', 'under_par', 'negative_sellable']} onChange={(value) => updateFilter('stockStatus', value)} />
@@ -4629,7 +5258,7 @@ function ItemsList({ items, loading, error, onLoadItems }) {
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImported={() => onLoadItems(filters)} />}
       {mappingOpen && <ImportMappingsModal onClose={() => setMappingOpen(false)} onImported={() => onLoadItems(filters)} />}
       {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onRefresh={() => openDetail(detailId)} />}
-      {bulkOpen && <BulkEditModal selectedCount={selectedIds.length} updates={bulkUpdates} setUpdates={setBulkUpdates} preview={bulkPreview} onPreview={previewBulkEdit} onCommit={commitBulkEdit} onClose={() => setBulkOpen(false)} />}
+      {bulkOpen && <BulkEditModal selectedCount={selectedIds.length} updates={bulkUpdates} setUpdates={setBulkUpdates} preview={bulkPreview} onInvalidate={() => setBulkPreview(null)} onPreview={previewBulkEdit} onCommit={commitBulkEdit} onClose={() => { setBulkPreview(null); setBulkOpen(false); }} />}
       {remapOpen && <LocalRemapSearchModal onClose={() => setRemapOpen(false)} />}
     </section>
   );
@@ -4706,7 +5335,7 @@ function WooMappingPreview({ preview }) {
           <tbody>
             {(preview.preview_rows || []).map((row, index) => (
               <tr key={`${row.woo_product_id}-${row.woo_variation_id || 'parent'}-${index}`}>
-                <td>{row.product_name || row.description}</td><td>{row.parent_product_name || ''}</td><td>{formatVariationAttributes(row.variation_attributes)}</td><td className="mono">{row.sku}</td><td className="mono">{row.woo_product_id}</td><td className="mono">{row.woo_variation_id}</td><td>{row.current_mapping ? `Mapped item ${row.current_mapping.item_id}` : 'Unmapped'}</td><td>{row.proposed_item?.description || ''}</td><td><Badge tone={row.action === 'conflict' || row.action === 'error' ? 'danger' : row.action === 'skip' ? 'neutral' : 'success'}>{row.action}</Badge></td><td className="description-cell">{[...(row.warnings || []), ...(row.errors || [])].join(' ')}</td>
+                <td><ClampedText value={row.product_name || row.description} /></td><td><ClampedText value={row.parent_product_name || ''} /></td><td>{formatVariationAttributes(row.variation_attributes)}</td><td className="mono">{row.sku}</td><td className="mono">{row.woo_product_id}</td><td className="mono">{row.woo_variation_id}</td><td>{row.current_mapping ? `Mapped item ${row.current_mapping.item_id}` : 'Unmapped'}</td><td><ClampedText value={row.proposed_item?.description || ''} /></td><td><Badge tone={row.action === 'conflict' || row.action === 'error' ? 'danger' : row.action === 'skip' ? 'neutral' : 'success'}>{row.action}</Badge></td><td className="description-cell">{[...(row.warnings || []), ...(row.errors || [])].join(' ')}</td>
               </tr>
             ))}
           </tbody>
@@ -4791,7 +5420,7 @@ function ImportModal({ onClose, onImported }) {
           <section className="import-step">
             <h3>1. Upload CSV</h3>
             <p>{mode === 'enrichment' ? 'Use the dedicated Export Enrichment Template from Items. Do not match spreadsheets by row position.' : 'Import expects the canonical item CSV header. Extra columns are ignored and reported as warnings.'}</p>
-            <input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+            <input type="file" accept=".csv,text/csv" onChange={(event) => { setFile(event.target.files?.[0] || null); setPreview(null); setSummary(null); setError(''); }} />
             {mode === 'standard' && <button className="muted-button" onClick={downloadSampleCsv} type="button">
               <Download size={17} />
               Download Sample CSV
@@ -4863,7 +5492,7 @@ function ImportPreview({ preview, mode = 'standard' }) {
                 <td>{row.action}</td>
                 <td>{row.sku}</td>
                 <td>{row.barcode}</td>
-                <td>{mode === 'enrichment' ? row.match_method : row.row?.Description}</td>
+                <td>{mode === 'enrichment' ? row.match_method : decodeHtmlEntities(row.row?.Description || '')}</td>
                 <td>{mode === 'enrichment' ? (row.fields_changing || []).join(', ') : (row.warnings || []).join(' ')}</td>
                 {mode === 'enrichment' && <td className="description-cell">{[...(row.warnings || []), ...(row.errors || [])].join(' ')}</td>}
               </tr>
@@ -4980,7 +5609,7 @@ function LocationImportModal({ onClose, onImported }) {
           <section className="import-step">
             <h3>1. Upload CSV</h3>
             <p>Expected columns: {CANONICAL_LOCATION_COLUMNS.join(', ')}. Extra columns are ignored and reported as warnings.</p>
-            <input type="file" accept=".csv,text/csv" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+            <input type="file" accept=".csv,text/csv" onChange={(event) => { setFile(event.target.files?.[0] || null); setPreview(null); setSummary(null); setError(''); }} />
             <button className="muted-button" onClick={downloadSampleLocationsCsv} type="button">
               <Download size={17} />
               Download Sample CSV
@@ -5045,7 +5674,7 @@ function LocationImportPreview({ preview }) {
                 <td>{row.action}</td>
                 <td>{row.warehouse}</td>
                 <td>{row.code}</td>
-                <td>{row.name}</td>
+                <td>{decodeHtmlEntities(row.name || '')}</td>
                 <td>{row.row.Active ? 'Yes' : 'No'}</td>
               </tr>
             ))}
@@ -5056,11 +5685,12 @@ function LocationImportPreview({ preview }) {
   );
 }
 
-function Metric({ label, value }) {
+function Metric({ label, value, help = '' }) {
   return (
     <div className="metric">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong>{typeof value === 'number' ? formatNumber(value) : value}</strong>
+      {help && <small className="metric-definition">{help}</small>}
     </div>
   );
 }
@@ -5074,7 +5704,7 @@ function FilterSelect({ label, value, options, onChange }) {
           <option value="">All {label}</option>
           {options.map((option) => (
             <option key={option} value={option}>
-              {option}
+              {decodeHtmlEntities(String(option))}
             </option>
           ))}
         </select>
@@ -5088,19 +5718,7 @@ function ItemsTable({ items, visibleColumns, selectedIds, onToggleSelected, onTo
   return (
     <div className="table-wrap">
       <div className="table-meta">
-        <span>
-          Showing records 1-{items.length} out of {items.length}
-        </span>
-        <div className="table-pager">
-          <span>{items.length} Results</span>
-          <button className="pager-button" aria-label="Previous page" title="Pagination is not available yet" disabled type="button">
-            <ChevronLeft size={18} />
-          </button>
-          <span>1 / 1</span>
-          <button className="pager-button active" aria-label="Next page" title="Pagination is not available yet" disabled type="button">
-            <ChevronRight size={18} />
-          </button>
-        </div>
+        <span>{formatNumber(items.length)} loaded item(s)</span>
       </div>
       <div className="table-action-band">
         <span>Actions</span>
@@ -5239,7 +5857,7 @@ function ItemHistoryPanel({ itemId }) {
   const [section, setSection] = useState('receipts');
   const [history, setHistory] = useState({ rows: [], total: 0 });
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/items/${itemId}/history?section=${section}`).then((response) => response.json()).then(setHistory).catch(() => setHistory({ rows: [], total: 0 }));
+    apiFetch(`${API_BASE_URL}/api/items/${itemId}/history?section=${section}`).then((response) => response.json()).then(setHistory).catch(() => setHistory({ rows: [], total: 0 }));
   }, [itemId, section]);
   return (
     <div className="drawer-section">
@@ -5275,13 +5893,16 @@ function ItemMetadataPanel({ item, onSaved }) {
   );
 }
 
-function BulkEditModal({ selectedCount, updates, setUpdates, preview, onPreview, onCommit, onClose }) {
+function BulkEditModal({ selectedCount, updates, setUpdates, preview, onInvalidate, onPreview, onCommit, onClose }) {
+  function updateField(field, value) {
+    setUpdates((current) => ({ ...current, [field]: value }));
+  }
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="import-modal" role="dialog" aria-modal="true" aria-label="Bulk edit items">
         <div className="modal-header"><div><h2>Bulk Edit Metadata</h2><p>{selectedCount} selected item(s). Stock and Woo fields are blocked.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close bulk edit" title="Close" type="button"><X size={20} /></button></div>
         <div className="operation-grid">
-          {Object.keys(updates).map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={updates[field]} onChange={(event) => setUpdates((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
+          {Object.keys(updates).map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={updates[field]} onChange={(event) => { updateField(field, event.target.value); onInvalidate(); }} /></label>)}
         </div>
         <div className="button-row"><button className="muted-button" onClick={onPreview} type="button">Preview</button><button className="primary-button" disabled={!preview?.can_commit} onClick={onCommit} type="button">Commit Metadata</button></div>
         {preview && <div className="import-results"><div className="import-metrics"><Metric label="Affected" value={preview.affected_count} /><Metric label="Fields" value={(preview.fields_to_update || []).length} /></div>{preview.warnings?.map((warning) => <div className="api-error" key={warning}>{warning}</div>)}</div>}
@@ -5308,7 +5929,7 @@ function LocalRemapSearchModal({ onClose }) {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/candidates?search=${encodeURIComponent(value)}&limit=100`);
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/candidates?search=${encodeURIComponent(value)}&limit=100`);
       if (!response.ok) throw new Error(`Remap candidates returned ${response.status}`);
       const body = await response.json();
       setCandidates(body.candidates || []);
@@ -5323,7 +5944,7 @@ function LocalRemapSearchModal({ onClose }) {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/items/search?q=${encodeURIComponent(itemQuery)}&limit=20`);
+      const response = await apiFetch(`${API_BASE_URL}/api/items/search?q=${encodeURIComponent(itemQuery)}&limit=20`);
       if (!response.ok) throw new Error(`Item search returned ${response.status}`);
       const body = await response.json();
       setResults(body.items || []);
@@ -5374,13 +5995,13 @@ function LocalRemapSearchModal({ onClose }) {
         <div className="import-steps">
           <section className="import-step"><h3>1. Choose WooCommerce record</h3><div className="scanner-input-row"><input value={remoteQuery} onChange={(event) => setRemoteQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && searchRemote()} placeholder="Search product, variation, SKU, or Woo ID" /><button className="primary-button" onClick={() => searchRemote()} type="button"><Search size={16} />Search Woo Records</button></div>
             <TableShell caption={`${candidates.length} Woo record(s)`} columns={['Product', 'Parent / Attributes', 'SKU', 'Woo Identity', 'Stock Snapshot', 'Status', 'Action']}>
-              {candidates.map((candidate) => <tr key={`${candidate.remote.woo_product_id}-${candidate.remote.woo_variation_id || 'simple'}`}><td>{candidate.remote.woo_name}</td><td className="description-cell">{candidate.remote.parent_product_name || ''} {formatVariationAttributes(candidate.remote.variation_attributes)}</td><td>{candidate.remote.woo_sku}</td><td className="mono">{candidate.remote.woo_product_id}{candidate.remote.woo_variation_id ? ` / ${candidate.remote.woo_variation_id}` : ''}</td><td>{formatNumber(candidate.remote.woo_stock_snapshot)}</td><td>{candidate.remote.mapping_status || candidate.remote.reason}</td><td><button className={selectedRemote === candidate ? 'primary-button' : 'muted-button'} onClick={() => { setSelectedRemote(candidate); setPreview(null); }} type="button">Select</button></td></tr>)}
+              {candidates.map((candidate) => <tr key={`${candidate.remote.woo_product_id}-${candidate.remote.woo_variation_id || 'simple'}`}><td><ClampedText value={candidate.remote.woo_name} /></td><td className="description-cell"><ClampedText value={`${candidate.remote.parent_product_name || ''} ${formatVariationAttributes(candidate.remote.variation_attributes)}`.trim()} /></td><td>{candidate.remote.woo_sku}</td><td className="mono">{candidate.remote.woo_product_id}{candidate.remote.woo_variation_id ? ` / ${candidate.remote.woo_variation_id}` : ''}</td><td>{formatNumber(candidate.remote.woo_stock_snapshot)}</td><td>{candidate.remote.mapping_status || candidate.remote.reason}</td><td><button className={selectedRemote === candidate ? 'primary-button' : 'muted-button'} onClick={() => { setSelectedRemote(candidate); setPreview(null); }} type="button">Select</button></td></tr>)}
               {!candidates.length && <tr><td colSpan={7}><div className="empty-table-row">No Woo exception records match.</div></td></tr>}
             </TableShell>
           </section>
           <section className="import-step"><h3>2. Choose local Pongo item</h3><div className="scanner-input-row"><input value={itemQuery} onChange={(event) => setItemQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && searchItems()} placeholder="Search SKU, barcode, product name, or brand" /><button className="primary-button" onClick={searchItems} type="button"><Search size={16} />Search Items</button></div>
             <TableShell caption={`${results.length} local candidate(s)`} columns={['SKU', 'Barcode', 'Product Title', 'Brand', 'Current Woo Mapping', 'Action']}>
-              {results.map((item) => <tr key={item.id}><td>{item.sku}</td><td>{item.barcode}</td><td>{item.description}</td><td>{item.brand}</td><td>{item.woo_mapping_summary?.mapped ? `${item.woo_mapping_summary.woo_product_id || ''}/${item.woo_mapping_summary.woo_variation_id || ''}` : 'Unmapped'}</td><td><button className={selectedItem?.id === item.id ? 'primary-button' : 'muted-button'} onClick={() => { setSelectedItem(item); setPreview(null); }} type="button">Select</button></td></tr>)}
+              {results.map((item) => <tr key={item.id}><td>{item.sku}</td><td>{item.barcode}</td><td className="description-cell"><ClampedText value={item.description} /></td><td>{decodeHtmlEntities(item.brand || '') || <DataQualityBadge kind="missing_brand" />}</td><td>{item.woo_mapping_summary?.mapped ? `${item.woo_mapping_summary.woo_product_id || ''}/${item.woo_mapping_summary.woo_variation_id || ''}` : <DataQualityBadge kind="unmapped" />}</td><td><button className={selectedItem?.id === item.id ? 'primary-button' : 'muted-button'} onClick={() => { setSelectedItem(item); setPreview(null); }} type="button">Select</button></td></tr>)}
               {!results.length && <tr><td colSpan={6}><div className="empty-table-row">Search for a local item to continue.</div></td></tr>}
             </TableShell>
           </section>
@@ -5613,7 +6234,7 @@ function CommandCenterPage({ dashboard, loading, error, onRefresh }) {
               <td>{StatusText(warning.severity)}</td>
               <td>{warning.title}</td>
               <td>{warning.count}</td>
-              <td className="description-cell">{warning.description}</td>
+              <td className="description-cell"><ClampedText value={warning.description} /></td>
               <td className="description-cell">{(warning.sample_records || []).map((sample) => sample.label).join(', ')}</td>
             </tr>
           ))}
@@ -5749,7 +6370,7 @@ function CycleCountPage({ items, locations, cycleCounts, cycleCountsLoading, cyc
     setDetailLoading(true);
     setError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/cycle-counts/${cycleCountId}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/cycle-counts/${cycleCountId}`);
       if (!response.ok) {
         throw new Error(`Cycle Count detail returned ${response.status}`);
       }
@@ -5824,7 +6445,7 @@ function CycleCountPage({ items, locations, cycleCounts, cycleCountsLoading, cyc
                     <td>
                       <input value={line.query} onChange={(event) => updateLine(index, 'query', event.target.value)} placeholder="Scan or type SKU/barcode" />
                     </td>
-                    <td className="description-cell">{productTitle(item)}</td>
+                    <td className="description-cell"><ClampedText value={productTitle(item)} /></td>
                     <td>{item ? formatNumber(item['In Stock']) : ''}</td>
                     <td>
                       <input value={line.counted_quantity} onChange={(event) => updateLine(index, 'counted_quantity', event.target.value)} inputMode="decimal" />
@@ -5923,10 +6544,10 @@ function CycleCountPreview({ preview }) {
             {preview.preview_lines.map((line) => (
               <tr key={line.line_number}>
                 <td>{line.line_number}</td>
-                <td>{line.status}</td>
+                <td>{StatusText(line.status)}</td>
                 <td>{line.sku}</td>
-                <td>{line.description}</td>
-                <td>{line.inventory_location}</td>
+                <td className="description-cell"><ClampedText value={line.description} /></td>
+                <td><LocationPresentation value={line.inventory_location} /></td>
                 <td>{formatNumber(line.system_quantity)}</td>
                 <td>{formatNumber(line.counted_quantity)}</td>
                 <td>{formatNumber(line.variance_quantity)}</td>
@@ -5950,9 +6571,9 @@ function CycleCountHistoryTable({ counts, onLoadDetail }) {
               {count.count_number}
             </button>
           </td>
-          <td>{count.status}</td>
+          <td>{StatusText(count.status)}</td>
           <td>{count.warehouse}</td>
-          <td>{count.inventory_location}</td>
+          <td><LocationPresentation value={count.inventory_location} /></td>
           <td>{formatCountType(count.count_type)}</td>
           <td>{count.total_lines}</td>
           <td>{count.adjustment_lines}</td>
@@ -6003,7 +6624,7 @@ function CycleCountDetailPanel({ detail, onClose }) {
           <tr key={line.id}>
             <td className="mono">{line.sku}</td>
             <td className="mono">{line.barcode}</td>
-            <td className="description-cell">{line.description}</td>
+            <td className="description-cell"><ClampedText value={line.description} /></td>
             <td>{line.warehouse}</td>
             <td>{line.inventory_location}</td>
             <td>{formatNumber(line.system_quantity)}</td>
@@ -6019,8 +6640,9 @@ function CycleCountDetailPanel({ detail, onClose }) {
   );
 }
 
-function DirectReceivingPage({ items, locations, receipts, receiptsLoading, receiptsError, onLoadReceipts, stockMovements, stockMovementsLoading, stockMovementsError, onLoadStockMovements, onLoadInventorySummary }) {
-  const [mode, setMode] = useState('direct');
+function DirectReceivingPage({ route, items, locations, receipts, receiptsLoading, receiptsError, onLoadReceipts, stockMovements, stockMovementsLoading, stockMovementsError, onLoadStockMovements, onLoadInventorySummary }) {
+  const mutationRef = useRef(null);
+  const mode = route.receivingView || 'direct';
   const [form, setForm] = useState({
     warehouse: 'Main Warehouse',
     reference_number: '',
@@ -6034,6 +6656,10 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
 
   const activeLocations = locations.filter((location) => location.isActive);
   const locationOptions = activeLocations.filter((location) => !form.warehouse || location.warehouse === form.warehouse);
+  const commitReason = receivingCommitReason(form, preview, loading);
+  const hasSelectedLine = form.lines.some((line) => String(line.query || '').trim());
+  const currentStep = summary ? 4 : preview?.invalid_lines === 0 ? 3 : hasSelectedLine ? 2 : 1;
+  const receivingSteps = ['Create Receipt', 'Select Items', 'Accept Delivery'];
 
   function updateHeader(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -6059,6 +6685,7 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
   }
 
   function resetForm() {
+    resetMutationIdempotency(mutationRef);
     setForm({ warehouse: 'Main Warehouse', reference_number: '', notes: '', lines: [emptyReceivingLine()] });
     setPreview(null);
     setSummary(null);
@@ -6082,13 +6709,15 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
     setLoading(true);
     setError('');
     try {
-      const result = await postJson('/api/receipts/direct/commit', receivingPayload(form, items));
+      const payload = receivingPayload(form, items);
+      const result = await postJson('/api/receipts/direct/commit', withMutationIdempotency(mutationRef, 'direct-receipt', payload));
       setSummary(result);
       await onLoadReceipts();
       await onLoadStockMovements({ movement_type: 'receive_direct' });
       await onLoadInventorySummary();
       setForm({ warehouse: 'Main Warehouse', reference_number: '', notes: '', lines: [emptyReceivingLine()] });
       setPreview(null);
+      resetMutationIdempotency(mutationRef);
     } catch (apiError) {
       setError(apiError.message || 'Unable to commit receiving.');
     } finally {
@@ -6098,12 +6727,19 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
 
   return (
     <section className="content-panel receiving-page">
-      <div className="tab-row">
-        <button className={mode === 'direct' ? 'tab-button active' : 'tab-button'} onClick={() => setMode('direct')} type="button">Direct Receiving</button>
-        <button className={mode === 'bulk' ? 'tab-button active' : 'tab-button'} onClick={() => setMode('bulk')} type="button">Bulk Receiving Session</button>
-        <button className={mode === 'history' ? 'tab-button active' : 'tab-button'} onClick={() => setMode('history')} type="button">Receipt History</button>
-      </div>
+      <nav className="tab-row" aria-label="Receiving modes">
+        <a className={mode === 'direct' ? 'tab-button active' : 'tab-button'} href="#/receiving/direct" aria-current={mode === 'direct' ? 'page' : undefined}>Direct Receiving</a>
+        <a className={mode === 'bulk' ? 'tab-button active' : 'tab-button'} href="#/receiving/bulk" aria-current={mode === 'bulk' ? 'page' : undefined}>Bulk Receiving Session</a>
+        <a className={mode === 'history' ? 'tab-button active' : 'tab-button'} href="#/receiving/history" aria-current={mode === 'history' ? 'page' : undefined}>Receipt History</a>
+      </nav>
       {mode === 'direct' && <div className="receiving-form">
+        <ol className="receiving-stepper" aria-label="Direct receiving progress">
+          {receivingSteps.map((label, index) => {
+            const step = index + 1;
+            const state = currentStep > receivingSteps.length ? 'complete' : step < currentStep ? 'complete' : step === currentStep ? (preview?.invalid_lines > 0 ? 'error' : 'current') : 'upcoming';
+            return <li className="receiving-step" data-state={state} aria-current={state === 'current' || state === 'error' ? 'step' : undefined} key={label}><span className="receiving-step-marker">{state === 'complete' ? '✓' : step}</span><span>{label}</span></li>;
+          })}
+        </ol>
         <div className="section-heading">
           <div>
             <h2>Direct Receiving</h2>
@@ -6143,11 +6779,11 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
                 return (
                   <tr key={line.localId}>
                     <td>
-                      <input value={line.query} onChange={(event) => updateLine(index, 'query', event.target.value)} placeholder="Scan or type SKU/barcode" />
+                      <input aria-label={`Line ${index + 1} SKU or barcode`} value={line.query} onChange={(event) => updateLine(index, 'query', event.target.value)} placeholder="Scan or type SKU/barcode" />
                     </td>
-                    <td className="description-cell">{productTitle(item)}</td>
+                    <td className="description-cell"><ClampedText value={productTitle(item)} /></td>
                     <td>
-                      <select value={line.inventory_location} onChange={(event) => updateLine(index, 'inventory_location', event.target.value)}>
+                      <select aria-label={`Line ${index + 1} inventory location`} value={line.inventory_location} onChange={(event) => updateLine(index, 'inventory_location', event.target.value)}>
                         <option value="">Select location</option>
                         {locationOptions.map((location) => (
                           <option key={location.id} value={location.code}>
@@ -6157,17 +6793,17 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
                       </select>
                     </td>
                     <td>
-                      <input value={line.quantity_received} onChange={(event) => updateLine(index, 'quantity_received', event.target.value)} inputMode="decimal" />
+                      <input aria-label={`Line ${index + 1} quantity received`} value={line.quantity_received} onChange={(event) => updateLine(index, 'quantity_received', event.target.value)} inputMode="decimal" />
                     </td>
                     <td>
-                      <input value={line.unit_cost} onChange={(event) => updateLine(index, 'unit_cost', event.target.value)} inputMode="decimal" />
+                      <input aria-label={`Line ${index + 1} unit cost`} value={line.unit_cost} onChange={(event) => updateLine(index, 'unit_cost', event.target.value)} inputMode="decimal" />
                     </td>
                     <td>
-                      <input value={line.notes} onChange={(event) => updateLine(index, 'notes', event.target.value)} />
+                      <input aria-label={`Line ${index + 1} notes`} value={line.notes} onChange={(event) => updateLine(index, 'notes', event.target.value)} />
                     </td>
-                    <td>
-                      <button className="pager-button" onClick={() => removeLine(index)} disabled={form.lines.length === 1} type="button">
-                        <X size={17} />
+                    <td className="receiving-action-cell">
+                      <button className="pager-button" aria-label={`Remove receiving line ${index + 1}`} onClick={() => removeLine(index)} disabled={form.lines.length === 1} type="button">
+                        <X size={17} aria-hidden="true" />
                       </button>
                     </td>
                   </tr>
@@ -6184,10 +6820,11 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
           <button className="primary-button" disabled={loading} onClick={previewReceiving} type="button">
             Preview Receiving
           </button>
-          <button className="primary-button" disabled={loading || !preview || preview.invalid_lines > 0} onClick={commitReceiving} type="button">
+          <button className="primary-button" aria-describedby={commitReason ? 'receiving-commit-reason' : undefined} disabled={Boolean(commitReason)} onClick={commitReceiving} type="button">
             Commit Receiving
           </button>
         </div>
+        {commitReason && <p className="receiving-disabled-reason" id="receiving-commit-reason" role="status">Commit unavailable: {commitReason}</p>}
         {loading && <div className="loading-strip">Working on receiving...</div>}
         {error && <div className="api-error">{error}</div>}
         {summary && (
@@ -6198,7 +6835,7 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
         {preview && <ReceivingPreview preview={preview} />}
       </div>}
       {mode === 'bulk' && <BulkReceivingSession items={items} locations={locations} onCommitted={async () => { await onLoadReceipts(); await onLoadStockMovements({ movement_type: 'receive_direct' }); await onLoadInventorySummary(); }} />}
-      {(mode === 'history' || mode === 'direct') && <div className="wide-panel">
+      {mode === 'history' && <div className="wide-panel">
         <div className="panel-title">
           <div>
             <h2>Receipt History</h2>
@@ -6233,6 +6870,7 @@ function DirectReceivingPage({ items, locations, receipts, receiptsLoading, rece
 }
 
 function BulkReceivingSession({ items, locations, onCommitted }) {
+  const mutationRef = useRef(null);
   const [header, setHeader] = useState({ warehouse: 'Main Warehouse', notes: '' });
   const [scanInput, setScanInput] = useState('');
   const [quantity, setQuantity] = useState(1);
@@ -6244,6 +6882,7 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState('');
   const activeLocations = locations.filter((location) => location.isActive && (!header.warehouse || location.warehouse === header.warehouse));
+  const commitReason = !lines.length ? 'add at least one receiving line.' : !preview ? 'preview the session before committing.' : !preview.can_commit ? 'resolve the validation errors shown below.' : '';
 
   function addLine() {
     const item = findReceivingItem(items, scanInput);
@@ -6266,11 +6905,13 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
   async function commitSession() {
     setError('');
     try {
-      const result = await postJson('/api/receipts/bulk/commit', { ...header, source: 'manual', lines });
+      const payload = { ...header, source: 'manual', lines };
+      const result = await postJson('/api/receipts/bulk/commit', withMutationIdempotency(mutationRef, 'bulk-receipt', payload));
       setSummary(result);
       setLines([]);
       setPreview(null);
       await onCommitted();
+      resetMutationIdempotency(mutationRef);
     } catch (apiError) {
       setError(apiError.message || 'Unable to commit bulk receipt.');
     }
@@ -6278,7 +6919,7 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
 
   return (
     <div className="receiving-form bulk-session">
-      <div className="section-heading"><div><h2>Bulk Receiving Session</h2><p>Multi-row receiving cart committed as one receipt.</p></div><button className="muted-button" onClick={() => { setLines([]); setPreview(null); setSummary(null); }} type="button">Clear Session</button></div>
+      <div className="section-heading"><div><h2>Bulk Receiving Session</h2><p>Multi-row receiving cart committed as one receipt.</p></div><button className="muted-button" onClick={() => { resetMutationIdempotency(mutationRef); setLines([]); setPreview(null); setSummary(null); }} type="button">Clear Session</button></div>
       <div className="receiving-header-fields">
         <FilterSelect label="Warehouse" value={header.warehouse} options={uniqueOptions(locations, 'warehouse')} onChange={(value) => setHeader((current) => ({ ...current, warehouse: value || 'Main Warehouse' }))} />
         <label className="field wide-field"><span>Notes</span><input value={header.notes} onChange={(event) => setHeader((current) => ({ ...current, notes: event.target.value }))} /></label>
@@ -6291,11 +6932,12 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
         <button className="primary-button" onClick={addLine} type="button"><Plus size={16} />Add Line</button>
       </div>
       <details className="optional-fields"><summary>Optional receiving fields</summary><div className="operation-grid">{Object.keys(optional).map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={optional[field]} onChange={(event) => setOptional((current) => ({ ...current, [field]: event.target.value }))} type={field === 'expiration_date' ? 'date' : 'text'} /></label>)}</div></details>
-      <TableShell caption={`${lines.length} cart line(s)`} columns={['Scan', 'SKU', 'Location', 'Qty', 'Unit Cost', 'Notes']}>
-        {lines.map((line) => <tr key={line.localId}><td>{line.scan_input}</td><td>{line.sku}</td><td>{line.inventory_location}</td><td>{formatNumber(line.quantity)}</td><td>{formatCurrency(line.unit_cost)}</td><td>{line.notes}</td></tr>)}
-        {!lines.length && <tr><td colSpan={6}><div className="empty-table-row">Scan or add lines to begin.</div></td></tr>}
+      <TableShell caption={`${lines.length} cart line(s)`} columns={['Scan', 'SKU', 'Location', 'Qty', 'Unit Cost', 'Notes', 'Remove']}>
+        {lines.map((line, index) => <tr key={line.localId}><td>{line.scan_input}</td><td>{line.sku || <DataQualityBadge kind="missing_sku" />}</td><td><LocationPresentation value={line.inventory_location} /></td><td>{formatNumber(line.quantity)}</td><td>{isMissingValue(line.unit_cost) ? <DataQualityBadge kind="missing_cost" /> : formatCurrency(line.unit_cost)}</td><td>{line.notes}</td><td className="receiving-action-cell"><button className="pager-button" aria-label={`Remove bulk receiving line ${index + 1}`} onClick={() => { setLines((current) => current.filter((candidate) => candidate.localId !== line.localId)); setPreview(null); }} type="button"><X size={17} aria-hidden="true" /></button></td></tr>)}
+        {!lines.length && <tr><td colSpan={7}><div className="empty-table-row">Scan or add lines to begin.</div></td></tr>}
       </TableShell>
-      <div className="detail-actions"><button className="muted-button" onClick={previewSession} type="button">Preview Session</button><button className="primary-button" disabled={!preview?.can_commit} onClick={commitSession} type="button">Commit Session</button></div>
+      <div className="detail-actions"><button className="muted-button" onClick={previewSession} type="button">Preview Session</button><button className="primary-button" aria-describedby={commitReason ? 'bulk-receiving-commit-reason' : undefined} disabled={Boolean(commitReason)} onClick={commitSession} type="button">Commit Session</button></div>
+      {commitReason && <p className="receiving-disabled-reason" id="bulk-receiving-commit-reason" role="status">Commit unavailable: {commitReason}</p>}
       {error && <div className="api-error">{error}</div>}
       {summary && <div className="success-strip">Receipt {summary.receipt_number} committed. <a href={`${API_BASE_URL}/api/receipts/${summary.id}/export`}>Export CSV</a></div>}
       {preview && <BulkReceivingPreview preview={preview} />}
@@ -6308,13 +6950,14 @@ function BulkReceivingPreview({ preview }) {
     <div className="import-results">
       <div className="import-metrics"><Metric label="Lines" value={preview.line_count} /><Metric label="Valid" value={preview.valid_line_count} /><Metric label="Errors" value={preview.error_line_count} /><Metric label="Qty" value={formatNumber(preview.total_quantity)} /><Metric label="Cost" value={formatCurrency(preview.total_cost)} /></div>
       <TableShell caption="Bulk preview" columns={['Line', 'Status', 'SKU', 'Location', 'Qty', 'Old Loc', 'New Loc', 'Errors']}>
-        {preview.lines.map((line) => <tr key={line.line_number}><td>{line.line_number}</td><td>{line.status}</td><td>{line.item?.sku}</td><td>{line.inventory_location}</td><td>{formatNumber(line.quantity)}</td><td>{formatNumber(line.old_location_stock)}</td><td>{formatNumber(line.new_location_stock)}</td><td>{line.errors?.join(' ')}</td></tr>)}
+        {preview.lines.map((line) => <tr key={line.line_number}><td>{line.line_number}</td><td>{StatusText(line.status)}</td><td>{line.item?.sku}</td><td><LocationPresentation value={line.inventory_location} /></td><td>{formatNumber(line.quantity)}</td><td>{formatNumber(line.old_location_stock)}</td><td>{formatNumber(line.new_location_stock)}</td><td>{line.errors?.join(' ')}</td></tr>)}
       </TableShell>
     </div>
   );
 }
 
 function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }) {
+  const mutationRef = useRef(null);
   const [mode, setMode] = useState('inventory');
   const [form, setForm] = useState({ scan_input: '', quantity: 1, warehouse: 'Main Warehouse', inventory_location: '', counted_quantity: '', adjustment_type: 'correction', quantity_change: '', new_quantity: '', reason: '', notes: '', order_id: '' });
   const [result, setResult] = useState(null);
@@ -6339,10 +6982,10 @@ function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }
     try {
       let nextResult;
       if (mode === 'inventory') {
-        const response = await fetch(`${API_BASE_URL}/api/scanner/inventory/lookup?scan_input=${encodeURIComponent(form.scan_input)}`);
+        const response = await apiFetch(`${API_BASE_URL}/api/scanner/inventory/lookup?scan_input=${encodeURIComponent(form.scan_input)}`);
         nextResult = await response.json();
       } else if (mode === 'location') {
-        const response = await fetch(`${API_BASE_URL}/api/scanner/location/lookup?scan_input=${encodeURIComponent(form.scan_input)}`);
+        const response = await apiFetch(`${API_BASE_URL}/api/scanner/location/lookup?scan_input=${encodeURIComponent(form.scan_input)}`);
         nextResult = await response.json();
       } else {
         const endpoint = {
@@ -6350,13 +6993,18 @@ function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }
           'cycle-count': `/api/scanner/cycle-count/${commit ? 'commit' : 'preview'}`,
           adjustment: `/api/scanner/adjustments/${commit ? 'commit' : 'preview'}`,
         }[mode];
-        nextResult = await postJson(endpoint, { ...form, quantity: toNumber(form.quantity), counted_quantity: toNumber(form.counted_quantity), quantity_change: form.quantity_change === '' ? '' : toNumber(form.quantity_change), new_quantity: form.new_quantity === '' ? '' : toNumber(form.new_quantity) });
+        const payload = { ...form, quantity: toNumber(form.quantity), counted_quantity: toNumber(form.counted_quantity), quantity_change: form.quantity_change === '' ? '' : toNumber(form.quantity_change), new_quantity: form.new_quantity === '' ? '' : toNumber(form.new_quantity) };
+        const commitPayload = commit && ['receiving', 'adjustment'].includes(mode)
+          ? withMutationIdempotency(mutationRef, `scanner-${mode}`, payload)
+          : payload;
+        nextResult = await postJson(endpoint, commitPayload);
       }
       setResult(nextResult);
       setRecent((current) => [{ mode, scan: form.scan_input, status: nextResult.matched === false || nextResult.can_commit === false ? 'warning' : 'success', at: new Date().toISOString() }, ...current].slice(0, 12));
       if (commit) {
         await onLoadItems();
         await onLoadInventorySummary();
+        if (['receiving', 'adjustment'].includes(mode)) resetMutationIdempotency(mutationRef);
       }
     } catch (apiError) {
       setError(apiError.message || 'Scanner request failed.');
@@ -6423,7 +7071,7 @@ function ScannerResult({ result }) {
   return (
     <div className="scanner-result-panel">
       <div className="panel-title compact-title"><div><h2>Scan Result</h2><p>{result.matched === false ? 'No matching item or location was found.' : 'Validated scanner response.'}</p></div></div>
-      {item && <div className="scanner-match"><strong>{item.sku}</strong><span>{item.barcode}</span><p>{item.description}</p></div>}
+      {item && <div className="scanner-match"><strong>{item.sku}</strong><span>{item.barcode}</span><p>{decodeHtmlEntities(item.description || '')}</p></div>}
       {result.stock_by_location && <ItemStockByLocation rows={result.stock_by_location} />}
       {result.items && <TableShell caption={`${result.items.length} location item(s)`} columns={['SKU', 'Product Title', 'Location', 'In Stock', 'Sellable']} >{result.items.map((row) => <tr key={row.id}><td>{row.sku}</td><td>{productTitle(row)}</td><td>{row.inventory_location}</td><td>{formatNumber(row.in_stock)}</td><td>{formatNumber(row.sellable)}</td></tr>)}</TableShell>}
       {!item && !result.stock_by_location && !result.items && <div className={result.matched === false ? 'api-error' : 'success-strip'}>{result.message || result.safe_message || 'Scan response received.'}</div>}
@@ -6472,10 +7120,10 @@ function ReceivingPreview({ preview }) {
             {preview.preview_lines.map((line) => (
               <tr key={line.line_number}>
                 <td>{line.line_number}</td>
-                <td>{line.status}</td>
+                <td>{StatusText(line.status)}</td>
                 <td>{line.sku}</td>
-                <td>{line.description}</td>
-                <td>{line.inventory_location}</td>
+                <td className="description-cell"><ClampedText value={line.description} /></td>
+                <td><LocationPresentation value={line.inventory_location} /></td>
                 <td>{formatNumber(line.quantity_received)}</td>
                 <td>{formatNumber(line.previous_in_stock)}</td>
                 <td>{formatNumber(line.new_in_stock)}</td>
@@ -6497,7 +7145,7 @@ function ReceiptHistoryTable({ receipts }) {
           <td className="mono">{receipt.receipt_number}</td>
           <td>{receipt.warehouse}</td>
           <td>{receipt.reference_number}</td>
-          <td>{receipt.status}</td>
+          <td>{StatusText(receipt.status)}</td>
           <td>{receipt.total_lines}</td>
           <td>{formatNumber(receipt.total_quantity)}</td>
           <td>{formatDateTime(receipt.received_at || receipt.created_at)}</td>
@@ -6523,12 +7171,12 @@ function StockMovementsTable({ movements }) {
           <td>{formatDateTime(movement.created_at)}</td>
           <td className="mono">{movement.sku}</td>
           <td className="mono">{movement.barcode}</td>
-          <td>{movement.movement_type}</td>
+          <td>{StatusText(movement.movement_type)}</td>
           <td>{formatNumber(movement.quantity_delta)}</td>
           <td>{formatNumber(movement.previous_in_stock)}</td>
           <td>{formatNumber(movement.new_in_stock)}</td>
           <td>{movement.warehouse}</td>
-          <td>{movement.inventory_location}</td>
+          <td><LocationPresentation value={movement.inventory_location} /></td>
           <td className="mono">{movement.reference_number}</td>
         </tr>
       ))}
@@ -6543,14 +7191,18 @@ function StockMovementsTable({ movements }) {
   );
 }
 
-function ReportsPage({ receivedRows, receivedSummary, receivedLoading, receivedError, onLoadReceivedReport, fulfillmentRows, fulfillmentSummary, fulfillmentLoading, fulfillmentError, onLoadFulfillmentReport, skuOrdersRows, skuOrdersSummary, skuOrdersLoading, skuOrdersError, onLoadSkuOrdersReport }) {
-  const [activeReport, setActiveReport] = useState(expandedReportDefinitions[0].key);
-  const allReports = [
-    ...expandedReportDefinitions,
-    { key: 'received-inventory', label: 'Received Inventory' },
-    { key: 'fulfillment', label: 'Fulfillment' },
-    { key: 'sku-orders', label: 'SKU Orders' },
-  ];
+function ReportsPage({ route, receivedRows, receivedSummary, receivedLoading, receivedError, onLoadReceivedReport, fulfillmentRows, fulfillmentSummary, fulfillmentLoading, fulfillmentError, onLoadFulfillmentReport, skuOrdersRows, skuOrdersSummary, skuOrdersLoading, skuOrdersError, onLoadSkuOrdersReport }) {
+  const activeDefinition = allReportDefinitions.find((report) => report.key === route.reportKey) || allReportDefinitions[0];
+  const activeReport = activeDefinition.key;
+  if (intelligentReportKeys.has(activeReport)) {
+    return (
+      <Suspense fallback={<div className="ri-report-loading">Loading report workspace…</div>}>
+        <ReportIntelligencePage apiBaseUrl={API_BASE_URL} reportKey={activeDefinition.apiKey || activeReport} />
+      </Suspense>
+    );
+  }
+  const category = reportCategories.find((candidate) => candidate.id === activeDefinition.category) || reportCategories[0];
+  const categoryReports = allReportDefinitions.filter((report) => report.category === category.id);
   const isExpandedReport = expandedReportDefinitions.some((report) => report.key === activeReport);
 
   return (
@@ -6558,19 +7210,20 @@ function ReportsPage({ receivedRows, receivedSummary, receivedLoading, receivedE
       <div className="reports-workspace">
         <aside className="report-nav-card" aria-label="Report list">
           <div>
-            <h2>Reports</h2>
-            <p>Choose one export-ready view.</p>
+            <span className="report-category-label">{category.label}</span>
+            <h2>{category.label} reports</h2>
+            <p>Choose one read-only, export-ready view.</p>
           </div>
-          <div className="report-nav-list">
-            {allReports.map((report) => (
-              <button className={activeReport === report.key ? 'report-nav-button active' : 'report-nav-button'} key={report.key} onClick={() => setActiveReport(report.key)} type="button">
+          <nav className="report-nav-list" aria-label={`${category.label} reports`}>
+            {categoryReports.map((report) => (
+              <a className={activeReport === report.key ? 'report-nav-button active' : 'report-nav-button'} href={reportHref(report)} key={report.key} aria-current={activeReport === report.key ? 'page' : undefined}>
                 {report.label}
-              </button>
+              </a>
             ))}
-          </div>
+          </nav>
         </aside>
         <div className="report-main-panel">
-          {isExpandedReport && <ExpandedReportsPanel activeReport={activeReport} />}
+          {isExpandedReport && <ExpandedReportsPanel activeReport={activeReport} key={activeReport} />}
           {activeReport === 'received-inventory' && <ReceivedInventoryReportPage rows={receivedRows} summary={receivedSummary} loading={receivedLoading} error={receivedError} onLoadReport={onLoadReceivedReport} />}
           {activeReport === 'fulfillment' && <FulfillmentReportPage rows={fulfillmentRows} summary={fulfillmentSummary} loading={fulfillmentLoading} error={fulfillmentError} onLoadReport={onLoadFulfillmentReport} />}
           {activeReport === 'sku-orders' && <SkuOrdersReportPage rows={skuOrdersRows} summary={skuOrdersSummary} loading={skuOrdersLoading} error={skuOrdersError} onLoadReport={onLoadSkuOrdersReport} />}
@@ -6580,17 +7233,6 @@ function ReportsPage({ receivedRows, receivedSummary, receivedLoading, receivedE
   );
 }
 
-const expandedReportDefinitions = [
-  { key: 'inventory-valuation', label: 'Inventory Valuation' },
-  { key: 'low-stock', label: 'Low Stock / Reorder' },
-  { key: 'stock-movement-ledger', label: 'Stock Movement Ledger' },
-  { key: 'item-activity', label: 'Item Activity' },
-  { key: 'location-utilization', label: 'Location Utilization' },
-  { key: 'margin-by-sku', label: 'Margin by SKU' },
-  { key: 'receiving-cost', label: 'Receiving Cost' },
-  { key: 'adjustments', label: 'Adjustment / Damage / Loss' },
-];
-
 function ExpandedReportsPanel({ activeReport }) {
   const active = activeReport || expandedReportDefinitions[0].key;
   const [filters, setFilters] = useState({ sku: '', barcode: '', brand: '', category: '', warehouse: '', inventory_location: '', start_date: '', end_date: '', movement_type: '', adjustment_type: '' });
@@ -6599,6 +7241,8 @@ function ExpandedReportsPanel({ activeReport }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const definition = expandedReportDefinitions.find((report) => report.key === active) || expandedReportDefinitions[0];
+  const valuationSummaryKeys = ['inventory_record_count', 'unique_sku_count', 'reported_sku_count', 'valued_sku_count', 'total_units', 'total_inventory_value', 'total_retail_value', 'excluded_record_count', 'missing_cost_count'];
+  const summaryEntries = (active === 'inventory-valuation' ? valuationSummaryKeys.map((key) => [key, summary[key]]).filter(([, value]) => value !== undefined) : Object.entries(summary).filter(([, value]) => value === null || ['string', 'number', 'boolean'].includes(typeof value))).slice(0, 9);
 
   useEffect(() => {
     loadReport();
@@ -6608,12 +7252,13 @@ function ExpandedReportsPanel({ activeReport }) {
     setFilters((current) => ({ ...current, [field]: value }));
   }
 
-  async function loadReport() {
+  async function loadReport(forceFilters = filters) {
     setLoading(true);
     setError('');
     try {
-      const query = plainFiltersToQueryString(filters);
-      const [rowsResponse, summaryResponse] = await Promise.all([fetch(`${API_BASE_URL}/api/reports/${active}${query}`), fetch(`${API_BASE_URL}/api/reports/${active}/summary${query}`)]);
+      const requestFilters = pickFilterValues(forceFilters, definition.filters);
+      const query = plainFiltersToQueryString(requestFilters);
+      const [rowsResponse, summaryResponse] = await Promise.all([apiFetch(`${API_BASE_URL}/api/reports/${active}${query}`), apiFetch(`${API_BASE_URL}/api/reports/${active}/summary${query}`)]);
       if (!rowsResponse.ok || !summaryResponse.ok) throw new Error('Report API returned an error.');
       setRows(await rowsResponse.json());
       setSummary(await summaryResponse.json());
@@ -6630,19 +7275,19 @@ function ExpandedReportsPanel({ activeReport }) {
     <section className="wide-panel report-section">
       <div className="panel-title"><div><h2>{definition.label}</h2><p>Read-only local inventory and operations report.</p></div></div>
       <div className="summary-strip report-summary-strip">
-        {Object.entries(summary).slice(0, 6).map(([key, value]) => <Metric key={key} label={key.replace(/_/g, ' ')} value={typeof value === 'number' ? formatNumber(value) : String(value ?? '')} />)}
+        {summaryEntries.map(([key, value]) => <Metric key={key} label={titleize(key)} value={formatInsightValue(key, value)} />)}
         {Object.keys(summary).length === 0 && <Metric label="Rows" value={rows.length} />}
       </div>
+      {active === 'inventory-valuation' && <div className="data-quality-warning info"><strong>Count definition</strong><span>Inventory records count catalog items. Reported SKUs have matching location rows; valued SKUs also have a non-null unit cost. Exclusions are listed below rather than hidden.</span></div>}
+      {Array.isArray(summary.exclusion_summary) && summary.exclusion_summary.length > 0 && <div className="insight-warning-list" aria-label="Valuation exclusions">{summary.exclusion_summary.map((entry, index) => <div className="insight-warning warning" key={`${entry.reason || entry.label}-${index}`}><strong>{entry.label || titleize(entry.reason)}</strong><span>{entry.message || `${formatNumber(entry.count)} record(s) excluded.`}</span></div>)}</div>}
       <div className="toolbar report-toolbar">
         <div className="filter-grid report-filter-grid">
-          {['start_date', 'end_date'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={filters[field]} onChange={(event) => update(field, event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, loadReport)} type="date" /></label>)}
-          {['sku', 'barcode', 'brand', 'category', 'warehouse', 'inventory_location', 'movement_type', 'adjustment_type'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={filters[field]} onChange={(event) => update(field, event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, loadReport)} /></label>)}
+          {definition.filters.map((field) => <label className="field" key={field}><span>{reportFilterLabels[field] || titleize(field)}</span><input value={filters[field]} onChange={(event) => update(field, event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, loadReport)} type={field.endsWith('_date') ? 'date' : 'text'} /></label>)}
         </div>
-        <div className="button-row items-actions"><button className="primary-button" onClick={loadReport} type="button"><RefreshCw size={17} />Refresh</button><button className="action-button" onClick={() => exportGenericReportCsv(active, filters, definition.label)} type="button"><Download size={17} />Export CSV</button></div>
+        <div className="button-row items-actions"><button className="primary-button" onClick={() => loadReport()} type="button"><RefreshCw size={17} />Refresh</button><button className="muted-button" onClick={() => { const cleared = { sku: '', barcode: '', brand: '', category: '', warehouse: '', inventory_location: '', start_date: '', end_date: '', movement_type: '', adjustment_type: '' }; setFilters(cleared); loadReport(cleared); }} type="button"><RotateCcw size={17} />Reset Filters</button><button className="action-button" onClick={() => exportGenericReportCsv(active, pickFilterValues(filters, definition.filters), definition.label)} type="button"><Download size={17} />Export CSV</button></div>
       </div>
       {loading && <div className="loading-strip">Loading {definition.label}...</div>}
-      {error && <div className="api-error">{error}</div>}
-      <GenericReportTable rows={rows} />
+      {error ? <div className="api-error" role="alert">{error}</div> : !loading && <GenericReportTable rows={rows} />}
     </section>
   );
 }
@@ -6651,10 +7296,22 @@ function GenericReportTable({ rows }) {
   const columns = rows[0] ? Object.keys(rows[0]) : [];
   return (
     <TableShell caption={`${rows.length} row(s)`} columns={columns.length ? columns.map((column) => column.replace(/_/g, ' ')) : ['Report']}>
-      {rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}>{formatReportValue(row[column])}</td>)}</tr>)}
+      {rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column} className={column.includes('description') || column.includes('name') ? 'description-cell' : ''}>{renderReportCell(column, row[column])}</td>)}</tr>)}
       {!rows.length && <tr><td colSpan={Math.max(columns.length, 1)}><div className="empty-table-row">No report rows match the current filters.</div></td></tr>}
     </TableShell>
   );
+}
+
+function renderReportCell(column, value) {
+  if (isMissingValue(value)) {
+    const kind = column.includes('barcode') ? 'missing_barcode' : column.includes('brand') ? 'missing_brand' : column.includes('category') ? 'missing_category' : column.includes('cost') ? 'missing_cost' : column.includes('location') ? 'missing_location' : column === 'sku' ? 'missing_sku' : 'unavailable';
+    return <DataQualityBadge kind={kind} />;
+  }
+  if (column.includes('location')) return <LocationPresentation value={value} />;
+  if (column.includes('description') || column.includes('name')) return <ClampedText value={formatReportValue(value, column)} />;
+  if (column.includes('risk')) return StatusText(value, 'risk');
+  if (column.includes('status') || column.endsWith('_type')) return StatusText(value);
+  return formatReportValue(value, column);
 }
 
 function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadReport }) {
@@ -6797,19 +7454,7 @@ function ReceivedInventoryTable({ rows }) {
   return (
     <div className="table-wrap">
       <div className="table-meta">
-        <span>
-          Showing records 1-{rows.length} out of {rows.length}
-        </span>
-        <div className="table-pager">
-          <span>{rows.length} Results</span>
-          <button className="pager-button" aria-label="Previous page" title="Pagination is not available yet" disabled type="button">
-            <ChevronLeft size={18} />
-          </button>
-          <span>1 / 1</span>
-          <button className="pager-button active" aria-label="Next page" title="Pagination is not available yet" disabled type="button">
-            <ChevronRight size={18} />
-          </button>
-        </div>
+        <span>{formatNumber(rows.length)} received inventory row(s)</span>
       </div>
       <div className="table-action-band">
         <span>Actions</span>
@@ -6840,16 +7485,16 @@ function ReceivedInventoryTable({ rows }) {
               <tr key={`${row.receipt_id}-${row.sku}-${row.inventory_location}`}>
                 <td className="mono">{row.receipt_number}</td>
                 <td>{formatDateTime(row.received_at || row.created_at)}</td>
-                <td>{row.warehouse}</td>
-                <td>{row.inventory_location}</td>
-                <td className="mono">{row.sku}</td>
-                <td className="mono">{row.barcode}</td>
-                <td className="description-cell">{row.description}</td>
-                <td>{row.category}</td>
-                <td>{row.brand}</td>
+                <td>{row.warehouse || <DataQualityBadge kind="missing_location" />}</td>
+                <td><LocationPresentation value={row.inventory_location} /></td>
+                <td className="mono">{row.sku || <DataQualityBadge kind="missing_sku" />}</td>
+                <td className="mono">{row.barcode || <DataQualityBadge kind="missing_barcode" />}</td>
+                <td className="description-cell"><ClampedText value={row.description} /></td>
+                <td>{row.category ? decodeHtmlEntities(row.category) : <DataQualityBadge kind="missing_category" />}</td>
+                <td>{row.brand ? decodeHtmlEntities(row.brand) : <DataQualityBadge kind="missing_brand" />}</td>
                 <td>{formatNumber(row.quantity_received)}</td>
-                <td>{formatCurrency(row.unit_cost)}</td>
-                <td>{formatCurrency(row.total_received_value)}</td>
+                <td>{isMissingValue(row.unit_cost) ? <DataQualityBadge kind="missing_cost" /> : formatCurrency(row.unit_cost)}</td>
+                <td>{isMissingValue(row.total_received_value) ? 'Not available' : formatCurrency(row.total_received_value)}</td>
                 <td className="mono">{row.reference_number}</td>
                 <td>{row.created_by}</td>
               </tr>
@@ -7005,9 +7650,9 @@ function FulfillmentReportTable({ rows }) {
           <td>{row.inventory_location}</td>
           <td className="mono">{row.sku}</td>
           <td className="mono">{row.barcode}</td>
-          <td className="description-cell">{row.description}</td>
-          <td>{row.category}</td>
-          <td>{row.brand}</td>
+          <td className="description-cell"><ClampedText value={row.description} /></td>
+          <td>{row.category ? decodeHtmlEntities(row.category) : <DataQualityBadge kind="missing_category" />}</td>
+          <td>{row.brand ? decodeHtmlEntities(row.brand) : <DataQualityBadge kind="missing_brand" />}</td>
           <td>{formatNumber(row.quantity_fulfilled)}</td>
           <td>{formatCurrency(row.unit_cost)}</td>
           <td>{formatCurrency(row.fulfilled_value)}</td>
@@ -7040,7 +7685,7 @@ function FulfillmentSkuSummaryTable({ groups }) {
   return (
     <TableShell caption={`${groups.length} SKU group(s)`} columns={['SKU', 'Product Title', 'Brand', 'Category', 'Qty Fulfilled', 'Fulfilled Value', 'Fulfillments', 'Orders']}>
       {groups.map((group) => (
-        <tr key={group.sku}><td className="mono">{group.sku}</td><td className="description-cell">{group.description}</td><td>{group.brand}</td><td>{group.category}</td><td>{formatNumber(group.total_quantity_fulfilled)}</td><td>{formatCurrency(group.total_fulfilled_value)}</td><td>{group.fulfillment_count}</td><td>{group.order_count}</td></tr>
+        <tr key={group.sku}><td className="mono">{group.sku}</td><td className="description-cell"><ClampedText value={group.description} /></td><td>{decodeHtmlEntities(group.brand || '')}</td><td>{decodeHtmlEntities(group.category || '')}</td><td>{formatNumber(group.total_quantity_fulfilled)}</td><td>{formatCurrency(group.total_fulfilled_value)}</td><td>{formatNumber(group.fulfillment_count)}</td><td>{formatNumber(group.order_count)}</td></tr>
       ))}
       {groups.length === 0 && <tr><td colSpan={8}><div className="empty-table-row">No SKU groups match the current filters.</div></td></tr>}
     </TableShell>
@@ -7108,9 +7753,9 @@ function SkuOrdersReportPage({ rows, summary, loading, error, onLoadReport }) {
           <tr key={`${row.sku}-${row.item_id || row.location || row.brand || row.category}`}>
             <td className="mono">{row.sku}</td>
             <td>{row.item_id || ''}</td>
-            <td className="description-cell">{row.description}</td>
-            <td>{row.brand}</td>
-            <td>{row.category}</td>
+            <td className="description-cell"><ClampedText value={row.description} /></td>
+            <td>{row.brand ? decodeHtmlEntities(row.brand) : <DataQualityBadge kind="missing_brand" />}</td>
+            <td>{row.category ? decodeHtmlEntities(row.category) : <DataQualityBadge kind="missing_category" />}</td>
             <td>{row.location}</td>
             <td>{row.total_orders_count}</td>
             <td>{formatNumber(row.total_quantity_ordered)}</td>
@@ -7185,6 +7830,7 @@ function OrdersPage({
   const [bulkActionMessage, setBulkActionMessage] = useState('');
   const [bulkActionError, setBulkActionError] = useState('');
   const [bulkPrintOrders, setBulkPrintOrders] = useState([]);
+  const unpickMutationRef = useRef(null);
   const orders = ordersData.orders || [];
   const filteredOpenOrders = useMemo(() => orders.filter((order) => {
     const orderNumber = String(order.woo_order_number || order.woo_order_id || '').toLowerCase();
@@ -7254,10 +7900,12 @@ function OrdersPage({
     setBulkActionLoading(true);
     setBulkActionError('');
     try {
-      const result = await postJson('/api/orders/bulk/unpick', { order_ids: [order.id], created_by: 'system', reason: 'Unpicked from Open Orders row action.' });
+      const payload = { order_ids: [order.id], created_by: 'system', reason: 'Unpicked from Open Orders row action.' };
+      const result = await postJson('/api/orders/bulk/unpick', withMutationIdempotency(unpickMutationRef, 'unpick', payload));
       if (result.status === 'rejected') throw new Error((result.errors || []).join(' ') || 'The order could not be unpicked.');
       setBulkActionMessage(`Order ${order.woo_order_number || order.woo_order_id} was unpicked.`);
       await onLoadOpenOrders({}, { ordersView: 'open' });
+      resetMutationIdempotency(unpickMutationRef);
     } catch (unpickError) {
       setBulkActionError(unpickError.message || 'Unable to unpick this order.');
     } finally {
@@ -7296,7 +7944,7 @@ function OrdersPage({
       setBulkActionLoading(true);
       setBulkActionError('');
       try {
-        const responses = await Promise.all(selectedOpenOrderIds.map((orderId) => fetch(`${API_BASE_URL}/api/orders/${orderId}`)));
+        const responses = await Promise.all(selectedOpenOrderIds.map((orderId) => apiFetch(`${API_BASE_URL}/api/orders/${orderId}`)));
         if (responses.some((response) => !response.ok)) throw new Error('One or more selected orders could not be loaded for printing.');
         setBulkPrintOrders(await Promise.all(responses.map((response) => response.json())));
         document.body.classList.add('bulk-order-printing');
@@ -7321,11 +7969,15 @@ function OrdersPage({
     setBulkActionError('');
     try {
       const endpoint = action === 'complete' ? '/api/orders/bulk/complete' : '/api/orders/bulk/unpick';
-      const result = await postJson(endpoint, {
+      const payload = {
         order_ids: selectedOpenOrderIds,
         created_by: 'system',
         reason: action === 'complete' ? 'Bulk completed from Open Orders.' : 'Bulk unpick all from Open Orders.',
-      });
+      };
+      const result = await postJson(
+        endpoint,
+        action === 'complete' ? payload : withMutationIdempotency(unpickMutationRef, 'unpick', payload),
+      );
       if (result.status === 'rejected') throw new Error((result.errors || []).join(' ') || 'The bulk action was rejected.');
       setBulkActionMessage(`${result.succeeded_count} of ${result.requested_count} selected order(s) updated.`);
       if (result.errors?.length) setBulkActionError(result.errors.join(' '));
@@ -7340,6 +7992,7 @@ function OrdersPage({
       }
       setSelectedOpenOrderIds([]);
       await onLoadOpenOrders(filters, { ordersView: 'open' });
+      if (action === 'unpick') resetMutationIdempotency(unpickMutationRef);
     } catch (bulkError) {
       setBulkActionError(bulkError.message || 'Unable to complete the bulk action.');
     } finally {
@@ -7520,6 +8173,8 @@ function OrdersPage({
 }
 
 function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSummary, onLoadOrders, onLoadOrder, onPreviewPick, onCommitPick }) {
+  const bulkPickMutationRef = useRef(null);
+  const bulkUnpickMutationRef = useRef(null);
   const [search, setSearch] = useState('');
   const [pickedQuantities, setPickedQuantities] = useState({});
   const [selectedOrderIds, setSelectedOrderIds] = useState([]);
@@ -7593,9 +8248,11 @@ function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSum
     setBulkMessage('');
     setBulkError('');
     try {
+      const pickPayload = { order_ids: eligibleIds, lines: [], pick_strategy: 'allocated_first', allow_partial: false, created_by: 'system', notes: 'Bulk Pick Selected' };
+      const unpickPayload = { order_ids: eligibleIds, created_by: 'system', reason: 'Bulk Unpick Selected from Pick Orders.' };
       const result = action === 'pick'
-        ? await postJson('/api/picks/commit', { order_ids: eligibleIds, lines: [], pick_strategy: 'allocated_first', allow_partial: false, created_by: 'system', notes: 'Bulk Pick Selected' })
-        : await postJson('/api/orders/bulk/unpick', { order_ids: eligibleIds, created_by: 'system', reason: 'Bulk Unpick Selected from Pick Orders.' });
+        ? await postJson('/api/picks/commit', withMutationIdempotency(bulkPickMutationRef, 'bulk-pick', pickPayload))
+        : await postJson('/api/orders/bulk/unpick', withMutationIdempotency(bulkUnpickMutationRef, 'unpick', unpickPayload));
       if (!['posted', 'completed', 'partial'].includes(result.status)) throw new Error((result.errors || []).join(' ') || 'The bulk action was rejected.');
       const succeeded = result.succeeded_count ?? result.total_orders ?? eligibleIds.length;
       setBulkMessage(`${succeeded} selected order(s) ${action === 'pick' ? 'picked' : 'unpicked'}.`);
@@ -7603,6 +8260,8 @@ function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSum
       setSelectedOrderIds([]);
       onLoadOrder(null);
       await onLoadOrders({ search });
+      if (action === 'pick') resetMutationIdempotency(bulkPickMutationRef);
+      if (action === 'unpick') resetMutationIdempotency(bulkUnpickMutationRef);
     } catch (bulkActionError) {
       setBulkError(bulkActionError.message || 'Unable to complete the bulk pick action.');
     } finally {
@@ -7806,7 +8465,7 @@ function AllocationExceptionsPage({ onRefreshOperationalOrders }) {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/allocations/exceptions${plainFiltersToQueryString({
+      const response = await apiFetch(`${API_BASE_URL}/api/allocations/exceptions${plainFiltersToQueryString({
         search: nextFilters.search,
         warehouse: nextFilters.warehouse,
         ordered_from: nextFilters.orderedFrom,
@@ -7938,7 +8597,7 @@ function AllocationExceptionItemsTable({ groups, loading, onViewOrders, onAdjust
         <tr key={group.key}>
           <td><AllocationExceptionActions label={group.sku || group.barcode || group.description} canAdjust={Boolean(group.item_id)} canAllocate={group.quantity_available > 0} disabled={loading} onView={() => onViewOrders(group)} onAdjust={() => onAdjustStock(group.lines[0])} onAllocate={onAllocate} /></td>
           <td><strong className="mono">{group.sku || 'Unmatched'}</strong><span className="table-subline mono">{group.barcode || ''}</span></td>
-          <td className="description-cell">{group.description}</td>
+          <td className="description-cell"><ClampedText value={group.description} /></td>
           <td>{group.affected_order_count}</td>
           <td>{formatNumber(group.quantity_ordered)}</td>
           <td>{formatNumber(group.quantity_allocated)}</td>
@@ -7965,7 +8624,7 @@ function AllocationExceptionOrdersTable({ lines, focused, onClearFocus, onAdjust
             <td>{formatDateTime(line.ordered_at)}</td>
             <td>{line.customer_name}</td>
             <td><strong className="mono">{line.sku || 'Unmatched'}</strong><span className="table-subline mono">{line.barcode || ''}</span></td>
-            <td className="description-cell">{line.description}</td>
+            <td className="description-cell"><ClampedText value={line.description} /></td>
             <td>{formatNumber(line.quantity_ordered)}</td>
             <td>{formatNumber(line.quantity_allocated)}</td>
             <td><strong className="allocation-shortage-number">{formatNumber(line.quantity_unallocated)}</strong></td>
@@ -8005,6 +8664,7 @@ function AllocationExceptionActions({ label, canAdjust, canAllocate, disabled = 
 }
 
 function AllocationStockModal({ line, onClose, onSaved }) {
+  const mutationRef = useRef(null);
   const [locations, setLocations] = useState([]);
   const [locationId, setLocationId] = useState('');
   const [warehouse, setWarehouse] = useState(line.warehouse || 'Main Warehouse');
@@ -8017,7 +8677,7 @@ function AllocationStockModal({ line, onClose, onSaved }) {
 
   useEffect(() => {
     let active = true;
-    fetch(`${API_BASE_URL}/api/inventory/locations?item_id=${line.item_id}&limit=100`)
+    apiFetch(`${API_BASE_URL}/api/inventory/locations?item_id=${line.item_id}&limit=100`)
       .then((response) => { if (!response.ok) throw new Error('Unable to load item locations.'); return response.json(); })
       .then((body) => {
         if (!active) return;
@@ -8059,15 +8719,16 @@ function AllocationStockModal({ line, onClose, onSaved }) {
     try {
       let result;
       if (selected) {
-        result = await postJson('/api/inventory/adjustments', {
+        const payload = {
           adjustment_type: quantityChange < 0 ? 'manual_decrease' : 'manual_increase',
           reason,
           notes: notes || null,
           created_by: 'allocation-review',
           lines: [{ item_id: line.item_id, inventory_item_location_id: selected.id, quantity_change: quantityChange, notes: notes || null }],
-        });
+        };
+        result = await postJson('/api/inventory/adjustments', withMutationIdempotency(mutationRef, 'allocation-adjustment', payload));
       } else {
-        result = await postJson('/api/scanner/adjustments/commit', {
+        const payload = {
           scan_input: line.sku || line.barcode,
           warehouse,
           inventory_location: locationName,
@@ -8076,9 +8737,11 @@ function AllocationStockModal({ line, onClose, onSaved }) {
           reason,
           notes: notes || null,
           created_by: 'allocation-review',
-        });
+        };
+        result = await postJson('/api/scanner/adjustments/commit', withMutationIdempotency(mutationRef, 'allocation-scanner-adjustment', payload));
       }
       await onSaved(result);
+      resetMutationIdempotency(mutationRef);
     } catch (commitError) {
       setError(commitError.message || 'Unable to update stock.');
       setLoading(false);
@@ -8088,7 +8751,7 @@ function AllocationStockModal({ line, onClose, onSaved }) {
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="import-modal allocation-stock-modal" role="dialog" aria-modal="true" aria-label="Update stock levels">
-        <div className="modal-header"><div><h2>Update Stock Levels</h2><p>{line.sku || line.barcode} · {line.description}</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close stock adjustment" type="button"><X size={20} /></button></div>
+        <div className="modal-header"><div><h2>Update Stock Levels</h2><p>{line.sku || line.barcode} · {decodeHtmlEntities(line.description || '')}</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close stock adjustment" type="button"><X size={20} /></button></div>
         <div className="allocation-stock-warning"><TriangleAlert size={18} /><span>This creates an audited stock adjustment. Enter only stock that is physically present.</span></div>
         <div className="form-grid">
           {locations.length ? <label className="field wide-field"><span>Location</span><select value={locationId} onChange={(event) => selectLocation(event.target.value)}>{locations.map((row) => <option key={row.id} value={row.id}>{row.warehouse} / {row.inventory_location} · {formatNumber(row.in_stock)} in stock</option>)}</select></label> : <><label className="field"><span>Warehouse</span><input value={warehouse} onChange={(event) => setWarehouse(event.target.value)} /></label><label className="field"><span>New Stock Location</span><input value={locationName} onChange={(event) => setLocationName(event.target.value)} /></label></>}
@@ -8213,7 +8876,7 @@ function BulkPrintSheet({ orders }) {
             <thead><tr><th>SKU</th><th>Product</th><th>Ordered</th><th>Allocated</th><th>Picked</th></tr></thead>
             <tbody>
               {(order.lines || []).map((line) => (
-                <tr key={line.id}><td>{line.sku}</td><td>{line.name}</td><td>{formatNumber(line.quantity_ordered)}</td><td>{formatNumber(line.quantity_allocated)}</td><td>{formatNumber(line.quantity_picked)}</td></tr>
+                <tr key={line.id}><td>{line.sku}</td><td>{decodeHtmlEntities(line.name || '')}</td><td>{formatNumber(line.quantity_ordered)}</td><td>{formatNumber(line.quantity_allocated)}</td><td>{formatNumber(line.quantity_picked)}</td></tr>
               ))}
             </tbody>
           </table>
@@ -8228,16 +8891,16 @@ function OrdersPager({ count, page, pageCount, pageSize, onPageChange, onPageSiz
   const last = Math.min(page * pageSize, count);
   return (
     <div className="zen-orders-pager">
-      <span>Showing records {first}-{last} out of {count}</span>
+      <span>Showing {formatNumber(first)}–{formatNumber(last)} of {formatNumber(count)} orders</span>
       <div>
         <label>
-          <span className="sr-only">Results per page</span>
-          <select aria-label="Results per page" onChange={(event) => onPageSizeChange(Number(event.target.value))} value={pageSize}>
-            {[20, 50, 100].map((size) => <option key={size} value={size}>{size} Results</option>)}
+          <span className="sr-only">Rows per page</span>
+          <select aria-label="Rows per page" onChange={(event) => onPageSizeChange(Number(event.target.value))} value={pageSize}>
+            {[20, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}
           </select>
         </label>
         <button aria-label="Previous orders page" disabled={page <= 1} onClick={() => onPageChange(page - 1)} type="button"><ChevronLeft size={20} /></button>
-        <span>{page} / {pageCount}</span>
+        <span>Page {formatNumber(page)} of {formatNumber(pageCount)}</span>
         <button aria-label="Next orders page" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)} type="button"><ChevronRight size={20} /></button>
       </div>
     </div>
@@ -8460,7 +9123,7 @@ function PickPreviewPanel({ preview }) {
             <td className="mono">{order.woo_order_number || order.order_id}</td>
             <td className="mono">{line.sku}</td>
             <td className="mono">{line.barcode}</td>
-            <td className="description-cell">{line.description}</td>
+            <td className="description-cell"><ClampedText value={line.description} /></td>
             <td>{line.warehouse}</td>
             <td>{line.inventory_location}</td>
             <td>{formatNumber(line.quantity_ordered)}</td>
@@ -8470,8 +9133,8 @@ function PickPreviewPanel({ preview }) {
             <td>{formatNumber(line.recommended_pick_quantity)}</td>
             <td>{formatNumber(line.quantity_picked_after)}</td>
             <td>{StatusText(line.pick_status)}</td>
-            <td className="description-cell">{(line.warnings || []).join(' ')}</td>
-            <td className="description-cell">{(line.errors || []).join(' ')}</td>
+            <td className="description-cell"><ClampedText value={(line.warnings || []).join(' ')} /></td>
+            <td className="description-cell"><ClampedText value={(line.errors || []).join(' ')} /></td>
           </tr>
         ))}
       </TableShell>
@@ -8503,7 +9166,7 @@ function FulfillmentPreviewPanel({ preview }) {
             <td className="mono">{order.woo_order_number || order.order_id}</td>
             <td className="mono">{line.sku}</td>
             <td className="mono">{line.barcode}</td>
-            <td className="description-cell">{line.description}</td>
+            <td className="description-cell"><ClampedText value={line.description} /></td>
             <td>{formatNumber(line.quantity_ordered)}</td>
             <td>{formatNumber(line.quantity_allocated)}</td>
             <td>{formatNumber(line.quantity_picked)}</td>
@@ -8516,8 +9179,8 @@ function FulfillmentPreviewPanel({ preview }) {
             <td>{formatNumber(line.sellable)}</td>
             <td>{line.warehouse}</td>
             <td>{line.inventory_location}</td>
-            <td className="description-cell">{(line.warnings || []).join(' ')}</td>
-            <td className="description-cell">{(line.errors || []).join(' ')}</td>
+            <td className="description-cell"><ClampedText value={(line.warnings || []).join(' ')} /></td>
+            <td className="description-cell"><ClampedText value={(line.errors || []).join(' ')} /></td>
           </tr>
         ))}
       </TableShell>
@@ -8550,7 +9213,7 @@ function AllocationPreviewPanel({ preview }) {
             <td className="mono">{order.woo_order_number || order.order_id}</td>
             <td className="mono">{line.sku}</td>
             <td className="mono">{line.barcode}</td>
-            <td className="description-cell">{line.description}</td>
+            <td className="description-cell"><ClampedText value={line.description} /></td>
             <td>{formatNumber(line.quantity_ordered)}</td>
             <td>{formatNumber(line.quantity_previously_allocated)}</td>
             <td>{formatNumber(line.remaining_to_allocate)}</td>
@@ -8560,8 +9223,8 @@ function AllocationPreviewPanel({ preview }) {
             <td>{formatNumber(line.recommended_allocate_quantity)}</td>
             <td>{formatNumber(line.shortage_quantity)}</td>
             <td>{StatusText(line.allocation_status)}</td>
-            <td className="description-cell">{(line.warnings || []).join(' ')}</td>
-            <td className="description-cell">{(line.errors || []).join(' ')}</td>
+            <td className="description-cell"><ClampedText value={(line.warnings || []).join(' ')} /></td>
+            <td className="description-cell"><ClampedText value={(line.errors || []).join(' ')} /></td>
           </tr>
         ))}
       </TableShell>
@@ -9304,18 +9967,244 @@ function routesErrorOrLoading(loading, error) {
   );
 }
 
-function StatusText(value) {
-  return <span className={`status-pill order-status-${String(value || 'unknown').replace(/[^a-z0-9-]/gi, '-').toLowerCase()}`}>{value || 'unknown'}</span>;
+const statusPresentation = {
+  active: { label: 'Active', tone: 'success' },
+  completed: { label: 'Completed', tone: 'success' },
+  committed: { label: 'Committed', tone: 'success' },
+  success: { label: 'Success', tone: 'success' },
+  sent: { label: 'Sent', tone: 'success' },
+  ready: { label: 'Ready', tone: 'success' },
+  low: { label: 'Low stock', tone: 'warning' },
+  under_par: { label: 'Under par', tone: 'warning' },
+  missing_cost: { label: 'Cost missing', tone: 'warning' },
+  warning: { label: 'Warning', tone: 'warning' },
+  pending: { label: 'Pending', tone: 'warning' },
+  receiving: { label: 'Receiving staging', tone: 'info', help: 'Inbound stock awaiting put-away.' },
+  receive_direct: { label: 'Direct receiving', tone: 'info' },
+  in_progress: { label: 'In progress', tone: 'info' },
+  processing: { label: 'Processing', tone: 'info' },
+  available: { label: 'Available', tone: 'success' },
+  partial: { label: 'Partially available', tone: 'warning' },
+  insufficient_history: { label: 'Insufficient history', tone: 'info' },
+  unavailable: { label: 'Not available', tone: 'neutral' },
+  draft: { label: 'Draft', tone: 'neutral' },
+  out_of_stock: { label: 'Out of stock', tone: 'danger' },
+  failed: { label: 'Failed', tone: 'danger' },
+  error: { label: 'Error', tone: 'danger' },
+  cancelled: { label: 'Cancelled', tone: 'danger' },
+  canceled: { label: 'Cancelled', tone: 'danger' },
+};
+
+const riskStatusPresentation = {
+  low: { label: 'Low risk', tone: 'success' },
+  medium: { label: 'Medium risk', tone: 'warning' },
+  high: { label: 'High risk', tone: 'danger' },
+  lost: { label: 'Lost', tone: 'danger' },
+  overstock: { label: 'Overstock', tone: 'info' },
+  insufficient_history: { label: 'Insufficient history', tone: 'info' },
+};
+
+function StatusText(value, context = '') {
+  if (isMissingValue(value)) return <DataQualityBadge kind="unavailable" />;
+  const key = String(value).trim().toLowerCase();
+  const presentation = (context === 'risk' ? riskStatusPresentation[key] : null) || statusPresentation[key] || { label: titleize(value), tone: 'neutral' };
+  return <span className={`status-pill status-${presentation.tone} order-status-${key.replace(/[^a-z0-9-]/g, '-')}`} aria-label={presentation.help ? `${presentation.label}: ${presentation.help}` : presentation.label} title={presentation.help || undefined}>{presentation.label}</span>;
 }
 
-function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, remapCandidates, remapMappings, remapPreview, remapMessage, writebackQueue, writebackPreview, writebackMessage, loading, error, onCheckConnection, onPreview, onCommit, onPreviewOrders, onCommitOrders, onPreviewRemap, onCommitRemap, onLoadRemap, onPreviewStockWriteback, onPreviewOrderStatusWriteback, onQueueWriteback, onApproveWriteback, onSendWriteback, onCancelWriteback, onRevalidateWriteback }) {
+function WooCommerceSettingsPage({ view = 'connection', status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, remapCandidates, remapMappings, remapPreview, remapMessage, writebackQueue, stockSyncJobs, writebackPreview, writebackMessage, loading, error, onCheckConnection, onSaveConfiguration, onPreview, onCommit, onPreviewOrders, onCommitOrders, onPreviewRemap, onCommitRemap, onLoadRemap, onPreviewStockWriteback, onPreviewOrderStatusWriteback, onQueueWriteback, onApproveWriteback, onSendWriteback, onCancelWriteback, onRevalidateWriteback, onSyncStock, onResumeStockJob, onCancelStockJob }) {
   const latestRun = syncRuns.find((run) => run.sync_type === 'products') || syncRuns[0];
   const latestOrderRun = syncRuns.find((run) => run.sync_type === 'orders');
+  const reconciliation = status.order_reconciliation || {};
   const commitDisabled = !status.configured || !preview || preview.error_count > 0;
   const orderCommitDisabled = !status.configured || !orderPreview;
+  const [connectionForm, setConnectionForm] = useState({ base_url: status.base_url || '', consumer_key: '', consumer_secret: '' });
+  const [connectionMessage, setConnectionMessage] = useState('');
+  const [hostChangeAuthorized, setHostChangeAuthorized] = useState(false);
+  const requestedHost = hostnameFromUrl(connectionForm.base_url);
+  const allowedHost = normalizeHostname(status.allowed_host);
+  const hostMismatch = Boolean(requestedHost && allowedHost && requestedHost !== allowedHost);
+
+  useEffect(() => {
+    setConnectionForm((current) => ({ ...current, base_url: status.base_url || current.base_url }));
+    setHostChangeAuthorized(false);
+  }, [status.base_url]);
+
+  async function connectWooCommerce(event) {
+    event.preventDefault();
+    if (hostMismatch && !hostChangeAuthorized) return;
+    setConnectionMessage('');
+    try {
+      const payload = hostMismatch
+        ? { ...connectionForm, allow_host_change: hostChangeAuthorized }
+        : connectionForm;
+      const result = await onSaveConfiguration(payload);
+      setConnectionForm((current) => ({ ...current, consumer_key: '', consumer_secret: '' }));
+      setConnectionMessage(result.message);
+    } catch {
+      // The shared API error is rendered below the connection workspace.
+    }
+  }
+
   return (
-    <section className="content-panel settings-page">
-      <div className="wide-panel">
+    <section className="content-panel settings-page" data-settings-view={view}>
+      {(loading || error) && (
+        <div className="integration-feedback" aria-live="polite">
+          {loading && <div className="loading-strip">Working with the Pongo backend…</div>}
+          {error && <div className="api-error">{error}</div>}
+        </div>
+      )}
+      {view === 'connection' && <section className="integration-console" aria-labelledby="woocommerce-integration-title">
+        <aside className="integration-rail" aria-label="Connected systems">
+          <div className="integration-rail-heading">
+            <span>Connected systems</span>
+            <strong>01</strong>
+          </div>
+          <button className="integration-source active" type="button" aria-current="page">
+            <span className="integration-source-mark">woo</span>
+            <span><strong>WooCommerce</strong><small>{status.configured ? status.base_url_host : 'Needs connection'}</small></span>
+            <span className={`integration-status-dot ${status.configured ? 'is-live' : ''}`} aria-hidden="true" />
+          </button>
+          <div className="integration-rail-note">
+            <span>Backend managed</span>
+            <p>Keys never return to the browser after saving.</p>
+          </div>
+        </aside>
+
+        <div className="integration-workspace">
+          <header className="integration-masthead">
+            <div>
+              <span className="integration-eyebrow">Marketplace / WooCommerce</span>
+              <h2 id="woocommerce-integration-title">Store connection &amp; operations</h2>
+              <p>Connect Pongo to your WooCommerce store, then run the existing catalog, order, mapping, and stock workflows from one place.</p>
+            </div>
+            <div className={`integration-health ${hostMismatch ? 'needs-review' : (status.configured ? 'is-connected' : '')}`} role="status">
+              <span className="integration-health-pulse" aria-hidden="true" />
+              <div>
+                <strong>{hostMismatch ? 'Host review required' : (connectionMessage ? 'Connected' : (status.configured ? 'Configured' : 'Not connected'))}</strong>
+                <small>{hostMismatch ? requestedHost : `${status.environment || 'development'} environment`}</small>
+              </div>
+            </div>
+          </header>
+
+          <div className="integration-control-grid">
+            <form className="integration-credentials" onSubmit={connectWooCommerce}>
+              <div className="integration-section-label">
+                <span>01</span>
+                <div><strong>Connection credentials</strong><small>Verify first, save second</small></div>
+              </div>
+              <label className="integration-field">
+                <span>Store URL</span>
+                <input
+                  type="url"
+                  required
+                  value={connectionForm.base_url}
+                  onChange={(event) => {
+                    setConnectionForm((current) => ({ ...current, base_url: event.target.value }));
+                    setHostChangeAuthorized(false);
+                  }}
+                  placeholder="https://pongo.ca"
+                  autoComplete="url"
+                />
+              </label>
+              {hostMismatch && (
+                <div className="integration-host-warning" role="alert">
+                  <div className="integration-host-warning-heading">
+                    <span>Host replacement required</span>
+                    <strong>Explicit approval</strong>
+                  </div>
+                  <div className="integration-host-comparison" aria-label="WooCommerce host comparison">
+                    <div>
+                      <span>Currently authorized</span>
+                      <strong>{allowedHost}</strong>
+                    </div>
+                    <ChevronRight size={18} aria-hidden="true" />
+                    <div>
+                      <span>Requested host</span>
+                      <strong>{requestedHost}</strong>
+                    </div>
+                  </div>
+                  <label className="integration-host-authorization">
+                    <input
+                      type="checkbox"
+                      checked={hostChangeAuthorized}
+                      onChange={(event) => setHostChangeAuthorized(event.target.checked)}
+                    />
+                    <span>
+                      <strong>Authorize replacing the WooCommerce host</strong>
+                      <small>This changes which store Pongo connects to. Existing credentials remain unchanged when the key fields are blank.</small>
+                    </span>
+                  </label>
+                </div>
+              )}
+              <div className="integration-key-grid">
+                <label className="integration-field">
+                  <span>Consumer key</span>
+                  <input
+                    type="password"
+                    value={connectionForm.consumer_key}
+                    onChange={(event) => setConnectionForm((current) => ({ ...current, consumer_key: event.target.value }))}
+                    placeholder={status.consumer_key_present ? 'Saved — enter only to replace' : 'ck_…'}
+                    autoComplete="new-password"
+                  />
+                </label>
+                <label className="integration-field">
+                  <span>Consumer secret</span>
+                  <input
+                    type="password"
+                    value={connectionForm.consumer_secret}
+                    onChange={(event) => setConnectionForm((current) => ({ ...current, consumer_secret: event.target.value }))}
+                    placeholder={status.consumer_secret_present ? 'Saved — enter only to replace' : 'cs_…'}
+                    autoComplete="new-password"
+                  />
+                </label>
+              </div>
+              <div className="integration-form-footer">
+                <p>Blank key fields keep the credentials already stored in the backend.</p>
+                <button className="primary-button integration-connect-button" disabled={loading || !connectionForm.base_url || (hostMismatch && !hostChangeAuthorized)} type="submit">
+                  <CheckCircle2 size={17} />
+                  {loading ? 'Verifying…' : 'Save & verify connection'}
+                </button>
+              </div>
+              {connectionMessage && <div className="integration-inline-success" role="status">{connectionMessage}</div>}
+            </form>
+
+            <nav className="integration-operations" aria-label="WooCommerce settings pages">
+              <div className="integration-section-label">
+                <span>02</span>
+                <div><strong>Continue setup</strong><small>Each workflow has its own page</small></div>
+              </div>
+              <div className="integration-destination-list">
+                <a href="#/settings/sync">
+                  <span className="integration-destination-icon"><RefreshCw size={19} /></span>
+                  <span><strong>Sync &amp; Mapping</strong><small>Catalog import, orders, remapping, and run history</small></span>
+                  <ChevronRight size={18} aria-hidden="true" />
+                </a>
+                <a href="#/settings/writeback">
+                  <span className="integration-destination-icon is-live"><Upload size={19} /></span>
+                  <span><strong>Writeback Control</strong><small>Stock updates, order status, and guarded queue</small></span>
+                  <ChevronRight size={18} aria-hidden="true" />
+                </a>
+              </div>
+              <button className="muted-button integration-test-button" onClick={onCheckConnection} disabled={loading || !status.configured} type="button"><CheckCircle2 size={17} />Test current connection</button>
+              <div className="integration-safety-line">
+                <span>Write guard</span>
+                <strong>{status.stock_write_allowed ? (status.dry_run ? 'Dry-run only' : 'Stock write enabled') : 'Stock writes blocked'}</strong>
+              </div>
+            </nav>
+          </div>
+        </div>
+      </section>}
+
+      {view === 'sync' && <>
+      <SettingsViewIntro
+        number="02"
+        eyebrow="Operational sync"
+        title="One preview before every commit"
+        description="Catalog, order, and mapping changes keep their existing guarded preview and commit flow. Nothing in this page bypasses Pongo’s allocation or inventory rules."
+        status={status.configured ? 'Connection ready' : 'Connection required'}
+        tone={status.configured ? 'success' : 'warning'}
+      />
+      <div className="wide-panel settings-operation-panel">
         <div className="panel-title">
           <div>
             <h2>WooCommerce Catalog Mapping &amp; Import</h2>
@@ -9348,9 +10237,6 @@ function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview,
         </div>
         <div className="warning-strip">Staging connection only. Credentials stay in backend environment variables and are never shown in the browser.</div>
         <div className="csv-note">{status.message}</div>
-        {status.last_error && <div className="api-error">{status.last_error}</div>}
-        {loading && <div className="loading-strip">Working with the Pongo backend...</div>}
-        {error && <div className="api-error">{error}</div>}
         {preview && <WooPreviewSummary preview={preview} />}
         {commitSummary && (
           <div className="success-strip">
@@ -9364,7 +10250,7 @@ function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview,
         )}
       </div>
       {preview && <WooPreviewTable rows={preview.preview_rows || []} />}
-      <div className="wide-panel">
+      <div className="wide-panel settings-operation-panel">
         <div className="panel-title">
           <div>
             <h2>WooCommerce Order Sync</h2>
@@ -9389,9 +10275,16 @@ function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview,
           <Metric label="Webhook Secret" value={status.webhook_secret_present ? 'Present' : 'Missing'} />
           <Metric label="Last Webhook" value={status.last_webhook_delivery?.status || 'None'} />
           <Metric label="Webhook Order" value={status.last_webhook_delivery?.woo_order_id ? `#${status.last_webhook_delivery.woo_order_id}` : 'None'} />
-          <Metric label="Safety" value="Read-only Woo" />
+          <Metric label="Server Reconciliation" value={reconciliation.healthy ? 'Healthy' : (reconciliation.degraded ? 'Needs review' : (reconciliation.enabled ? 'Attention' : 'Off'))} />
+          <Metric label="Last Server Success" value={reconciliation.last_success_at ? formatDateTime(reconciliation.last_success_at) : 'None'} />
         </div>
         <div className="csv-note">Order sync stores local order/order line snapshots and may safely auto-allocate active local orders. It does not write WooCommerce, update product stock, create stock movements, pick, fulfill, or route orders.</div>
+        {!reconciliation.healthy && (
+          <div className="warning-strip">
+            {reconciliation.message || 'Server order reconciliation needs attention.'}
+            {reconciliation.last_error ? ` ${reconciliation.last_error}` : ''}
+          </div>
+        )}
         {status.last_webhook_delivery && (
           <div className="api-success">
             Last webhook delivery {status.last_webhook_delivery.status} {formatDateTime(status.last_webhook_delivery.received_at)}.
@@ -9406,9 +10299,21 @@ function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview,
         )}
       </div>
       {orderPreview && <WooOrderPreviewTable orders={orderPreview.preview_orders || []} />}
-      <WooWritebackPanel status={status} queue={writebackQueue?.queue || []} preview={writebackPreview} message={writebackMessage} loading={loading} onPreviewStock={onPreviewStockWriteback} onPreviewOrderStatus={onPreviewOrderStatusWriteback} onQueue={onQueueWriteback} onApprove={onApproveWriteback} onSend={onSendWriteback} onCancel={onCancelWriteback} onRevalidate={onRevalidateWriteback} />
+      </>}
+      {view === 'writeback' && <>
+        <SettingsViewIntro
+          number="03"
+          eyebrow="Controlled outbound changes"
+          title="Write only what has been reviewed"
+          description="Stock and order-status updates still pass through Pongo’s existing preview, queue, approval, environment, and host safeguards."
+          status={status.dry_run ? 'Dry-run active' : (status.writeback_enabled ? 'Live guard active' : 'Writes disabled')}
+          tone={status.dry_run ? 'info' : (status.writeback_enabled ? 'warning' : 'neutral')}
+        />
+        <WooWritebackPanel status={status} queue={writebackQueue?.queue || []} stockSyncJobs={stockSyncJobs || []} preview={writebackPreview} message={writebackMessage} loading={loading} onPreviewStock={onPreviewStockWriteback} onPreviewOrderStatus={onPreviewOrderStatusWriteback} onQueue={onQueueWriteback} onApprove={onApproveWriteback} onSend={onSendWriteback} onCancel={onCancelWriteback} onRevalidate={onRevalidateWriteback} onSyncStock={onSyncStock} onResumeStockJob={onResumeStockJob} onCancelStockJob={onCancelStockJob} />
+      </>}
+      {view === 'sync' && <>
       <WooRemapPanel candidates={remapCandidates?.candidates || []} mappings={remapMappings?.mappings || []} preview={remapPreview} message={remapMessage} loading={loading} onPreview={onPreviewRemap} onCommit={onCommitRemap} onRefresh={onLoadRemap} />
-      <div className="wide-panel">
+      <div className="wide-panel settings-operation-panel">
         <div className="panel-title">
           <div>
             <h2>Sync Run History</h2>
@@ -9417,6 +10322,21 @@ function WooCommerceSettingsPage({ status, preview, commitSummary, orderPreview,
         </div>
         <WooSyncRunsTable runs={syncRuns} />
       </div>
+      </>}
+    </section>
+  );
+}
+
+function SettingsViewIntro({ number, eyebrow, title, description, status, tone = 'neutral' }) {
+  return (
+    <section className="settings-view-intro">
+      <span className="settings-view-number">{number}</span>
+      <div>
+        <span className="settings-view-eyebrow">{eyebrow}</span>
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </div>
+      <span className={`settings-view-state is-${tone}`}>{status}</span>
     </section>
   );
 }
@@ -9435,10 +10355,35 @@ function WooPreviewSummary({ preview }) {
   );
 }
 
+function useClientPagination(rows, noun) {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pageRows = rows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  return {
+    pageRows,
+    pagination: {
+      page: currentPage,
+      pageSize,
+      total: rows.length,
+      totalPages,
+      returnedCount: pageRows.length,
+      noun,
+      onPageChange: (nextPage) => setPage(Math.max(1, Math.min(totalPages, nextPage))),
+      onPageSizeChange: (nextPageSize) => {
+        setPageSize(nextPageSize);
+        setPage(1);
+      },
+    },
+  };
+}
+
 function WooPreviewTable({ rows }) {
+  const paged = useClientPagination(rows, 'preview rows');
   return (
-    <TableShell caption={`${rows.length} preview row(s)`} columns={['Action', 'Remote Type', 'Woo Product ID', 'Woo Variation ID', 'SKU', 'Barcode', 'Product Title', 'Category', 'Brand', 'Price', 'Stock Status', 'Woo Stock Snapshot', 'Local Item ID', 'Warnings', 'Errors']}>
-      {rows.map((row) => (
+    <TableShell caption={`${rows.length} preview row(s)`} columns={['Action', 'Remote Type', 'Woo Product ID', 'Woo Variation ID', 'SKU', 'Barcode', 'Product Title', 'Category', 'Brand', 'Price', 'Stock Status', 'Woo Stock Snapshot', 'Local Item ID', 'Warnings', 'Errors']} pagination={paged.pagination}>
+      {paged.pageRows.map((row) => (
         <tr key={`${row.woo_product_id}-${row.woo_variation_id || 'simple'}-${row.sku}`}>
           <td>{row.action}</td>
           <td>{row.remote_type}</td>
@@ -9446,9 +10391,9 @@ function WooPreviewTable({ rows }) {
           <td>{row.woo_variation_id}</td>
           <td className="mono">{row.sku}</td>
           <td className="mono">{row.barcode}</td>
-          <td className="description-cell">{row.description}</td>
-          <td>{row.category}</td>
-          <td>{row.brand}</td>
+          <td className="description-cell"><ClampedText value={row.description} /></td>
+          <td>{row.category ? decodeHtmlEntities(row.category) : <DataQualityBadge kind="missing_category" />}</td>
+          <td>{row.brand ? decodeHtmlEntities(row.brand) : <DataQualityBadge kind="missing_brand" />}</td>
           <td>{formatCurrency(row.price)}</td>
           <td>{row.stock_status}</td>
           <td>{formatNumber(row.stock_quantity_snapshot)}</td>
@@ -9484,9 +10429,10 @@ function WooOrderPreviewSummary({ preview }) {
 
 function WooOrderPreviewTable({ orders }) {
   const rows = orders.flatMap((order) => (order.lines || []).map((line) => ({ order, line })));
+  const paged = useClientPagination(rows, 'order lines');
   return (
-    <TableShell caption={`${orders.length} order(s), ${rows.length} line(s)`} columns={['Action', 'Order', 'Woo Status', 'Customer', 'Total', 'SKU', 'Barcode', 'Name', 'Qty', 'Match', 'Availability', 'Sellable', 'Shortage', 'Warnings', 'Errors']}>
-      {rows.map(({ order, line }) => (
+    <TableShell caption={`${orders.length} order(s), ${rows.length} line(s)`} columns={['Action', 'Order', 'Woo Status', 'Customer', 'Total', 'SKU', 'Barcode', 'Name', 'Qty', 'Match', 'Availability', 'Sellable', 'Shortage', 'Warnings', 'Errors']} pagination={paged.pagination}>
+      {paged.pageRows.map(({ order, line }) => (
         <tr key={`${order.woo_order_id}-${line.woo_line_item_id || line.sku}`}>
           <td>{order.action}</td>
           <td className="mono">{order.woo_order_number || order.woo_order_id}</td>
@@ -9495,7 +10441,7 @@ function WooOrderPreviewTable({ orders }) {
           <td>{formatCurrency(order.total)}</td>
           <td className="mono">{line.sku}</td>
           <td className="mono">{line.barcode}</td>
-          <td className="description-cell">{line.name}</td>
+          <td className="description-cell"><ClampedText value={line.name} /></td>
           <td>{formatNumber(line.quantity_ordered)}</td>
           <td>{StatusText(line.matched_status)}</td>
           <td>{StatusText(line.availability_status)}</td>
@@ -9516,10 +10462,40 @@ function WooOrderPreviewTable({ orders }) {
   );
 }
 
-function WooWritebackPanel({ status, queue, preview, message, loading, onPreviewStock, onPreviewOrderStatus, onQueue, onApprove, onSend, onCancel, onRevalidate }) {
+function WooWritebackPanel({ status, queue, stockSyncJobs, preview, message, loading, onPreviewStock, onPreviewOrderStatus, onQueue, onApprove, onSend, onCancel, onRevalidate, onSyncStock, onResumeStockJob, onCancelStockJob }) {
   const [stockForm, setStockForm] = useState({ sku: '', item_id: '', proposed_stock_quantity: '' });
   const [orderForm, setOrderForm] = useState({ woo_order_id: '', order_id: '', proposed_status: 'completed' });
+  const [queueFilter, setQueueFilter] = useState('all');
+  const [queueSearch, setQueueSearch] = useState('');
+  const [queuePage, setQueuePage] = useState(1);
+  const [queuePageSize, setQueuePageSize] = useState(20);
   const liveLabel = status.dry_run ? 'Dry Run On' : 'Live Staging Writes On';
+  const filteredQueue = useMemo(() => {
+    const query = queueSearch.trim().toLowerCase();
+    return queue.filter((row) => {
+      const matchesStatus = queueFilter === 'all' || row.status === queueFilter;
+      const matchesSearch = !query || [
+        row.operation_type,
+        row.entity_type,
+        row.entity_id,
+        row.woo_entity_id,
+        row.status,
+        writebackPreviewLabel(row),
+      ].some((value) => String(value ?? '').toLowerCase().includes(query));
+      return matchesStatus && matchesSearch;
+    });
+  }, [queue, queueFilter, queueSearch]);
+  const queueTotalPages = Math.max(1, Math.ceil(filteredQueue.length / queuePageSize));
+  const queueRows = filteredQueue.slice((queuePage - 1) * queuePageSize, queuePage * queuePageSize);
+
+  useEffect(() => {
+    setQueuePage(1);
+  }, [queueFilter, queueSearch, queuePageSize]);
+
+  useEffect(() => {
+    setQueuePage((current) => Math.min(current, queueTotalPages));
+  }, [queueTotalPages]);
+
   function stockPayload() {
     return {
       sku: stockForm.sku || null,
@@ -9535,60 +10511,157 @@ function WooWritebackPanel({ status, queue, preview, message, loading, onPreview
     };
   }
   return (
-    <div className="wide-panel woo-writeback-panel">
-      <div className="panel-title">
-        <div>
-          <h2>Staging Writeback Testing</h2>
-          <p>Explicit local queue for staging stock and order-status writeback tests.</p>
+    <section className="writeback-workspace">
+      <div className="writeback-overview-card">
+        <div className="writeback-overview-header">
+          <div>
+            <span className="settings-view-eyebrow">Environment safeguards</span>
+            <h2>WooCommerce write policy</h2>
+            <p>Every outbound change continues through the current Pongo write guards.</p>
+          </div>
+          <span className={`status-pill ${status.dry_run ? 'order-status-pending' : 'order-status-completed'}`}>{liveLabel}</span>
         </div>
-        <span className={`status-pill ${status.dry_run ? 'order-status-pending' : 'order-status-completed'}`}>{liveLabel}</span>
+        <div className="writeback-guard-grid">
+          <Metric label="Environment" value={status.environment || 'unknown'} />
+          <Metric label="Writeback" value={status.writeback_enabled ? 'Enabled' : 'Blocked'} />
+          <Metric label="Mode" value={status.dry_run ? 'Dry-run' : 'Live guarded'} />
+          <Metric label="Stock" value={status.stock_write_allowed ? 'Allowed' : 'Blocked'} />
+          <Metric label="Order Status" value={status.order_status_write_allowed ? 'Allowed' : 'Blocked'} />
+          <Metric label="Allowed Host" value={status.allowed_host || 'Not set'} />
+        </div>
+        <div className="writeback-policy-line">
+          <TriangleAlert size={18} aria-hidden="true" />
+          <div>
+            <strong>Hard-blocked operations</strong>
+            <span>Product metadata · Customer writes · Coupons · Refunds · Delete</span>
+          </div>
+          <div className="button-row compact">
+            <button className="muted-button" disabled={loading || !status.configured} onClick={() => onSyncStock(false)} type="button"><RefreshCw size={16} />Update changed stock</button>
+            <button className="primary-button" disabled={loading || !status.configured} onClick={() => onSyncStock(true)} type="button"><Upload size={16} />Update all stock</button>
+          </div>
+        </div>
       </div>
-      <div className="warning-strip">Live staging write testing is enabled when dry-run is off. This can change staging WooCommerce stock/order status only. No DELETE, refunds, customer writes, coupon writes, or product metadata writes are available.</div>
-      <div className="summary-strip report-summary-strip">
-        <Metric label="Environment" value={status.environment || 'unknown'} />
-        <Metric label="Writeback Enabled" value={status.writeback_enabled ? 'Yes' : 'No'} />
-        <Metric label="Dry-run" value={status.dry_run ? 'On' : 'Off'} />
-        <Metric label="Live Test Mode" value={status.staging_live_test_mode ? 'On' : 'Off'} />
-        <Metric label="Stock Write" value={status.stock_write_allowed ? 'Allowed' : 'Blocked'} />
-        <Metric label="Order Status Write" value={status.order_status_write_allowed ? 'Allowed' : 'Blocked'} />
-        <Metric label="Allowed Host" value={status.allowed_host || 'Not set'} />
-      </div>
-      <div className="summary-strip report-summary-strip">
-        <Metric label="Product Metadata" value={status.product_metadata_write_allowed ? 'Allowed' : 'Blocked'} />
-        <Metric label="Customer Write" value={status.customer_write_allowed ? 'Allowed' : 'Blocked'} />
-        <Metric label="Coupon Write" value={status.coupon_write_allowed ? 'Allowed' : 'Blocked'} />
-        <Metric label="Refund Write" value={status.refund_write_allowed ? 'Allowed' : 'Blocked'} />
-        <Metric label="Delete" value={status.delete_allowed ? 'Allowed' : 'Blocked'} />
-      </div>
+
       {message && <div className="success-strip">{message}</div>}
-      <div className="receiving-form route-form">
-        <div className="receiving-header-fields route-header-fields">
-          <label className="field"><span>SKU</span><input value={stockForm.sku} onChange={(event) => setStockForm((current) => ({ ...current, sku: event.target.value }))} /></label>
-          <label className="field"><span>Item ID</span><input value={stockForm.item_id} onChange={(event) => setStockForm((current) => ({ ...current, item_id: event.target.value }))} /></label>
-          <label className="field"><span>Proposed Woo Stock</span><input value={stockForm.proposed_stock_quantity} onChange={(event) => setStockForm((current) => ({ ...current, proposed_stock_quantity: event.target.value }))} /></label>
-          <button className="primary-button" disabled={loading || (!stockForm.sku && !stockForm.item_id)} onClick={() => onPreviewStock(stockPayload())} type="button"><Search size={17} />Preview Stock Writeback</button>
+
+      <section className="writeback-queue-card" aria-labelledby="stock-sync-jobs-title">
+        <div className="writeback-queue-header">
+          <div>
+            <span className="settings-view-eyebrow">Resumable catalog jobs</span>
+            <h2 id="stock-sync-jobs-title">Update All history</h2>
+            <p>Progress and failures persist after refresh. Paused jobs can resume from their saved chunk.</p>
+          </div>
         </div>
-        <div className="receiving-header-fields route-header-fields">
-          <label className="field"><span>Woo Order ID</span><input value={orderForm.woo_order_id} onChange={(event) => setOrderForm((current) => ({ ...current, woo_order_id: event.target.value }))} /></label>
-          <label className="field"><span>Local Order ID</span><input value={orderForm.order_id} onChange={(event) => setOrderForm((current) => ({ ...current, order_id: event.target.value }))} /></label>
-          <label className="field"><span>Proposed Status</span><select value={orderForm.proposed_status} onChange={(event) => setOrderForm((current) => ({ ...current, proposed_status: event.target.value }))}><option value="processing">processing</option><option value="on-hold">on-hold</option><option value="completed">completed</option><option value="cancelled">cancelled</option><option value="refunded">refunded</option><option value="failed">failed</option></select></label>
-          <button className="primary-button" disabled={loading || (!orderForm.woo_order_id && !orderForm.order_id)} onClick={() => onPreviewOrderStatus(orderPayload())} type="button"><Search size={17} />Preview Order Status Writeback</button>
-        </div>
+        <TableShell caption={`${stockSyncJobs.length} stock sync job(s)`} columns={['Created', 'Status', 'Progress', 'Sent', 'Failed', 'Last error', 'Actions']}>
+          {stockSyncJobs.map((job) => (
+            <tr key={job.id}>
+              <td>{formatDateTime(job.created_at)}</td>
+              <td>{StatusText(job.status)}</td>
+              <td>{job.progress_percent}% · {job.processed_items}/{job.total_items}</td>
+              <td>{job.sent_count + job.dry_run_count}</td>
+              <td>{job.failed_count}</td>
+              <td className="description-cell">
+                {job.errors?.length ? (
+                  <details>
+                    <summary>{job.last_error || `${job.errors.length} error(s)`}</summary>
+                    <ul>{job.errors.map((error, index) => <li key={`${job.id}-${index}`}>{error}</li>)}</ul>
+                    <a
+                      href={`data:text/plain;charset=utf-8,${encodeURIComponent(job.errors.join('\n'))}`}
+                      download={`pongo-stock-sync-job-${job.id}-errors.txt`}
+                    >Download error report</a>
+                  </details>
+                ) : '—'}
+              </td>
+              <td><div className="button-row compact">
+                <button className="muted-button" disabled={loading || !['paused', 'completed_with_errors'].includes(job.status)} onClick={() => onResumeStockJob(job.id)} type="button">Resume</button>
+                <button className="muted-button" disabled={loading || !['queued', 'running', 'paused'].includes(job.status)} onClick={() => onCancelStockJob(job.id)} type="button">Cancel</button>
+              </div></td>
+            </tr>
+          ))}
+          {!stockSyncJobs.length && <tr><td colSpan={7}><div className="empty-table-row">No Update All jobs have been created.</div></td></tr>}
+        </TableShell>
+      </section>
+
+      <div className="writeback-action-layout">
+        <article className="writeback-action-card">
+          <div className="writeback-action-heading">
+            <span className="writeback-action-icon"><Boxes size={20} /></span>
+            <div><h3>Preview a stock change</h3><p>Target one mapped item by SKU or local item ID.</p></div>
+          </div>
+          <div className="writeback-field-grid">
+            <label className="field"><span>SKU</span><input value={stockForm.sku} onChange={(event) => setStockForm((current) => ({ ...current, sku: event.target.value }))} placeholder="e.g. 70001" /></label>
+            <label className="field"><span>Item ID</span><input value={stockForm.item_id} onChange={(event) => setStockForm((current) => ({ ...current, item_id: event.target.value }))} inputMode="numeric" /></label>
+            <label className="field is-wide"><span>Proposed Woo stock</span><input value={stockForm.proposed_stock_quantity} onChange={(event) => setStockForm((current) => ({ ...current, proposed_stock_quantity: event.target.value }))} inputMode="decimal" /></label>
+          </div>
+          <button className="primary-button writeback-preview-button" disabled={loading || (!stockForm.sku && !stockForm.item_id)} onClick={() => onPreviewStock(stockPayload())} type="button"><Search size={17} />Preview stock writeback</button>
+        </article>
+
+        <article className="writeback-action-card">
+          <div className="writeback-action-heading">
+            <span className="writeback-action-icon is-order"><ShoppingCart size={20} /></span>
+            <div><h3>Preview an order status</h3><p>Target one Woo or local order before queueing it.</p></div>
+          </div>
+          <div className="writeback-field-grid">
+            <label className="field"><span>Woo Order ID</span><input value={orderForm.woo_order_id} onChange={(event) => setOrderForm((current) => ({ ...current, woo_order_id: event.target.value }))} inputMode="numeric" /></label>
+            <label className="field"><span>Local Order ID</span><input value={orderForm.order_id} onChange={(event) => setOrderForm((current) => ({ ...current, order_id: event.target.value }))} inputMode="numeric" /></label>
+            <label className="field is-wide"><span>Proposed Status</span><select value={orderForm.proposed_status} onChange={(event) => setOrderForm((current) => ({ ...current, proposed_status: event.target.value }))}><option value="processing">processing</option><option value="on-hold">on-hold</option><option value="completed">completed</option><option value="cancelled">cancelled</option><option value="refunded">refunded</option><option value="failed">failed</option></select></label>
+          </div>
+          <button className="primary-button writeback-preview-button" disabled={loading || (!orderForm.woo_order_id && !orderForm.order_id)} onClick={() => onPreviewOrderStatus(orderPayload())} type="button"><Search size={17} />Preview order writeback</button>
+        </article>
       </div>
+
       {preview && (
-        <div className="success-strip">
-          Preview ready for {preview.operation_type}. Proposed payload is queued locally before any send.
-          <button className="action-button inline-action" disabled={loading} onClick={() => onQueue(preview)} type="button"><Plus size={16} />Queue Preview</button>
+        <div className="writeback-preview-ready">
+          <div><strong>Preview ready</strong><span>{titleize(preview.operation_type)} is ready to enter the guarded queue.</span></div>
+          <button className="primary-button" disabled={loading} onClick={() => onQueue(preview)} type="button"><Plus size={16} />Add to queue</button>
         </div>
       )}
-      <WooWritebackQueueTable rows={queue} dryRun={status.dry_run} loading={loading} onApprove={onApprove} onSend={onSend} onCancel={onCancel} onRevalidate={onRevalidate} />
-    </div>
+
+      <section className="writeback-queue-card" aria-labelledby="writeback-queue-title">
+        <div className="writeback-queue-header">
+          <div>
+            <span className="settings-view-eyebrow">Review queue</span>
+            <h2 id="writeback-queue-title">Writeback activity</h2>
+            <p>{formatNumber(queue.length)} total queue item(s). Only {queuePageSize} render at a time.</p>
+          </div>
+          <label className="writeback-queue-search">
+            <span className="sr-only">Search writeback queue</span>
+            <Search size={16} aria-hidden="true" />
+            <input value={queueSearch} onChange={(event) => setQueueSearch(event.target.value)} placeholder="Search operation, entity, Woo ID…" />
+          </label>
+        </div>
+        <div className="writeback-queue-filters" aria-label="Filter writeback queue">
+          {['all', 'pending', 'approved', 'failed', 'sent', 'cancelled'].map((filter) => (
+            <button className={queueFilter === filter ? 'is-active' : ''} aria-pressed={queueFilter === filter} onClick={() => setQueueFilter(filter)} type="button" key={filter}>{titleize(filter)}</button>
+          ))}
+        </div>
+        <WooWritebackQueueTable
+          rows={queueRows}
+          dryRun={status.dry_run}
+          loading={loading}
+          onApprove={onApprove}
+          onSend={onSend}
+          onCancel={onCancel}
+          onRevalidate={onRevalidate}
+          pagination={{
+            total: filteredQueue.length,
+            page: queuePage,
+            pageSize: queuePageSize,
+            totalPages: queueTotalPages,
+            returnedCount: queueRows.length,
+            noun: 'queue items',
+            onPageChange: setQueuePage,
+            onPageSizeChange: setQueuePageSize,
+          }}
+        />
+      </section>
+    </section>
   );
 }
 
-function WooWritebackQueueTable({ rows, dryRun, loading, onApprove, onSend, onCancel, onRevalidate }) {
+function WooWritebackQueueTable({ rows, dryRun, loading, onApprove, onSend, onCancel, onRevalidate, pagination }) {
   return (
-    <TableShell caption={`${rows.length} writeback queue item(s)`} columns={['Created', 'Operation', 'Entity', 'Woo ID', 'Status', 'Environment', 'Dry-run', 'Preview', 'Actions']}>
+    <TableShell className="writeback-queue-table" caption={`${pagination.total} matching queue item(s)`} columns={['Created', 'Operation', 'Entity', 'Woo ID', 'Status', 'Environment', 'Dry-run', 'Preview', 'Actions']} showActionBand={false} pagination={pagination}>
       {rows.map((row) => (
         <tr key={row.id}>
           <td>{formatDateTime(row.created_at)}</td>
@@ -9628,6 +10701,8 @@ function writebackPreviewLabel(row) {
 function WooRemapPanel({ candidates, mappings, preview, message, loading, onPreview, onCommit, onRefresh }) {
   const [selected, setSelected] = useState({ woo_product_id: '', woo_variation_id: '', item_id: '', note: '' });
   const [selectedCandidate, setSelectedCandidate] = useState(null);
+  const candidatePaging = useClientPagination(candidates, 'candidates');
+  const mappingPaging = useClientPagination(mappings, 'mappings');
 
   function selectCandidate(candidate) {
     const firstSuggestion = candidate.suggested_items?.[0];
@@ -9650,7 +10725,7 @@ function WooRemapPanel({ candidates, mappings, preview, message, loading, onPrev
   }
 
   return (
-    <div className="wide-panel">
+    <div className="wide-panel settings-operation-panel">
       <div className="panel-title">
         <div>
           <h2>WooCommerce Remap</h2>
@@ -9676,8 +10751,8 @@ function WooRemapPanel({ candidates, mappings, preview, message, loading, onPrev
           Preview maps Woo {preview.remote.woo_product_id}{preview.remote.woo_variation_id ? `/${preview.remote.woo_variation_id}` : ''} to {preview.item.sku || preview.item.description}. {(preview.warnings || []).join(' ')} {(preview.errors || []).join(' ')}
         </div>
       )}
-      <TableShell caption={`${candidates.length} remap candidate(s)`} columns={['Woo Product', 'Variation', 'SKU', 'Reason', 'Current Item', 'Suggestions', 'Action']}>
-        {candidates.map((candidate) => (
+      <TableShell caption={`${candidates.length} remap candidate(s)`} columns={['Woo Product', 'Variation', 'SKU', 'Reason', 'Current Item', 'Suggestions', 'Action']} pagination={candidatePaging.pagination}>
+        {candidatePaging.pageRows.map((candidate) => (
           <tr key={`${candidate.remote.woo_product_id}-${candidate.remote.woo_variation_id || 'simple'}`}>
             <td className="mono">{candidate.remote.woo_product_id}</td>
             <td className="mono">{candidate.remote.woo_variation_id}</td>
@@ -9690,8 +10765,8 @@ function WooRemapPanel({ candidates, mappings, preview, message, loading, onPrev
         ))}
         {candidates.length === 0 && <tr><td colSpan={7}><div className="empty-table-row">No remap candidates found.</div></td></tr>}
       </TableShell>
-      <TableShell caption={`${mappings.length} active mapping(s)`} columns={['Item ID', 'Woo Product', 'Variation', 'SKU', 'Source', 'Active', 'Updated']}>
-        {mappings.map((mapping) => (
+      <TableShell caption={`${mappings.length} active mapping(s)`} columns={['Item ID', 'Woo Product', 'Variation', 'SKU', 'Source', 'Active', 'Updated']} pagination={mappingPaging.pagination}>
+        {mappingPaging.pageRows.map((mapping) => (
           <tr key={mapping.id}><td>{mapping.item_id}</td><td className="mono">{mapping.woo_product_id}</td><td className="mono">{mapping.woo_variation_id}</td><td className="mono">{mapping.woo_sku}</td><td>{mapping.mapping_source}</td><td>{mapping.active ? 'Yes' : 'No'}</td><td>{formatDateTime(mapping.updated_at)}</td></tr>
         ))}
         {mappings.length === 0 && <tr><td colSpan={7}><div className="empty-table-row">No active local remap records yet.</div></td></tr>}
@@ -9701,21 +10776,22 @@ function WooRemapPanel({ candidates, mappings, preview, message, loading, onPrev
 }
 
 function WooSyncRunsTable({ runs }) {
+  const paged = useClientPagination(runs, 'sync runs');
   return (
-    <TableShell caption={`${runs.length} sync run(s)`} columns={['Started At', 'Completed At', 'Sync Type', 'Status', 'Total Records', 'Created', 'Updated', 'Matched', 'Skipped', 'Conflicts', 'Errors', 'Created By']}>
-      {runs.map((run) => (
+    <TableShell caption={`${runs.length} sync run(s)`} columns={['Started At', 'Completed At', 'Sync Type', 'Status', 'Total Records', 'Created', 'Updated', 'Matched', 'Skipped', 'Conflicts', 'Errors', 'Created By']} pagination={paged.pagination}>
+      {paged.pageRows.map((run) => (
         <tr key={run.id}>
           <td>{formatDateTime(run.started_at)}</td>
           <td>{formatDateTime(run.completed_at)}</td>
-          <td>{run.sync_type}</td>
-          <td>{run.status}</td>
-          <td>{run.total_remote_records}</td>
-          <td>{run.created_count}</td>
-          <td>{run.updated_count}</td>
-          <td>{run.matched_count}</td>
-          <td>{run.skipped_count}</td>
-          <td>{run.conflict_count}</td>
-          <td>{run.error_count}</td>
+          <td>{titleize(run.sync_type)}</td>
+          <td>{StatusText(run.status)}</td>
+          <td>{formatNumber(run.total_remote_records)}</td>
+          <td>{formatNumber(run.created_count)}</td>
+          <td>{formatNumber(run.updated_count)}</td>
+          <td>{formatNumber(run.matched_count)}</td>
+          <td>{formatNumber(run.skipped_count)}</td>
+          <td>{formatNumber(run.conflict_count)}</td>
+          <td>{formatNumber(run.error_count)}</td>
           <td>{run.created_by}</td>
         </tr>
       ))}
@@ -9769,21 +10845,30 @@ function StandardPage({ icon: Icon, title, description, columns }) {
   );
 }
 
-function TableShell({ caption, columns, children, className = '', showActionBand = true }) {
+function TableShell({ caption, columns, children, className = '', showActionBand = true, pagination = null }) {
+  const total = Math.max(0, toNumber(pagination?.total));
+  const pageSize = Math.max(1, toNumber(pagination?.pageSize) || 20);
+  const totalPages = total === 0 ? 0 : Math.max(1, toNumber(pagination?.totalPages) || Math.ceil(total / pageSize));
+  const page = totalPages === 0 ? 0 : Math.min(totalPages, Math.max(1, toNumber(pagination?.page) || 1));
+  const returnedCount = Math.max(0, toNumber(pagination?.returnedCount));
+  const rangeStart = total && returnedCount ? (page - 1) * pageSize + 1 : 0;
+  const rangeEnd = total && returnedCount ? Math.min(total, rangeStart + returnedCount - 1) : 0;
+  const noun = pagination?.noun || 'records';
   return (
     <div className={`table-wrap table-card ${className}`.trim()}>
       <div className="table-meta">
         <span>{caption}</span>
-        <div className="table-pager">
-          <span>20 Results</span>
-          <button className="pager-button" aria-label="Previous page" title="Pagination is not available yet" disabled type="button">
-            <ChevronLeft size={18} />
+        {pagination && <div className="table-pager" aria-label={`${titleize(noun)} pagination`}>
+          <span>Showing {formatNumber(rangeStart)}–{formatNumber(rangeEnd)} of {formatNumber(total)} {noun}</span>
+          <label className="table-page-size"><span>Rows per page</span><select aria-label="Rows per page" value={pageSize} onChange={(event) => pagination.onPageSizeChange?.(Number(event.target.value))}>{[20, 50, 100].map((size) => <option value={size} key={size}>{size}</option>)}</select></label>
+          <button className="pager-button" aria-label="Previous page" onClick={() => pagination.onPageChange?.(page - 1)} disabled={page <= 1} type="button">
+            <ChevronLeft size={18} aria-hidden="true" />
           </button>
-          <span>1 / 1</span>
-          <button className="pager-button active" aria-label="Next page" title="Pagination is not available yet" disabled type="button">
-            <ChevronRight size={18} />
+          {totalPages > 0 ? <><label className="table-page-number"><span className="sr-only">Current page</span><select aria-label="Current page" value={page} onChange={(event) => pagination.onPageChange?.(Number(event.target.value))}>{Array.from({ length: totalPages }, (_, index) => index + 1).map((pageNumber) => <option value={pageNumber} key={pageNumber}>{pageNumber}</option>)}</select></label><span>of {formatNumber(totalPages)}</span></> : <span>No pages</span>}
+          <button className="pager-button active" aria-label="Next page" onClick={() => pagination.onPageChange?.(page + 1)} disabled={page >= totalPages || total === 0} type="button">
+            <ChevronRight size={18} aria-hidden="true" />
           </button>
-        </div>
+        </div>}
       </div>
       {showActionBand && (
         <div className="table-action-band">
@@ -9832,6 +10917,15 @@ function getHeaderMeta(route, items) {
     const meta = inventorySubpageMeta[route.inventoryView || 'all'] || inventorySubpageMeta.all;
     return { ...meta, tabs: [] };
   }
+  if (route.pageId === 'reports') {
+    const report = allReportDefinitions.find((candidate) => candidate.key === route.reportKey) || allReportDefinitions[0];
+    const category = reportCategories.find((candidate) => candidate.id === report.category);
+    return { title: report.label, kicker: `Reports / ${category?.label || 'Inventory'}`, tabs: pageMeta.reports.tabs };
+  }
+  if (route.pageId === 'settings') {
+    const meta = settingsViewMeta[route.settingsView || 'connection'] || settingsViewMeta.connection;
+    return { ...meta, tabs: pageMeta.settings.tabs };
+  }
   return pageMeta[route.pageId];
 }
 
@@ -9860,6 +10954,12 @@ function isTabActive(tab, index, route) {
     if (tab.href === '#/locations/stock') {
       return route.locationView === 'stock';
     }
+  }
+  if (route.pageId === 'reports' && tab.category) {
+    return route.reportCategory === tab.category;
+  }
+  if (route.pageId === 'settings' && tab.href) {
+    return tab.href === `#/settings/${route.settingsView || 'connection'}`;
   }
   return index === 0;
 }
@@ -9986,7 +11086,7 @@ function stockMovementFiltersToApi(search, filters = {}) {
 }
 
 function productTitle(item = {}) {
-  return item?.wooName || item?.woo_name || item?.Description || item?.description || '';
+  return decodeHtmlEntities(item?.wooName || item?.woo_name || item?.Description || item?.description || '');
 }
 
 function normalizeItem(item) {
@@ -10186,31 +11286,62 @@ function formatCell(value, column) {
       </a>
     );
   }
-  return value || '';
+  return typeof value === 'string' ? decodeHtmlEntities(value) : value || '';
 }
 
-function formatCurrency(value) {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(toNumber(value));
+const APP_LOCALE = 'en-CA';
+const APP_CURRENCY = 'CAD';
+const numberFormatter = new Intl.NumberFormat(APP_LOCALE, { maximumFractionDigits: 3 });
+const percentFormatter = new Intl.NumberFormat(APP_LOCALE, { maximumFractionDigits: 1, style: 'percent' });
+const dateTimeFormatter = new Intl.DateTimeFormat(APP_LOCALE, { dateStyle: 'medium', timeStyle: 'short' });
+const currencyFormatters = new Map();
+
+function isMissingValue(value) {
+  return value === null || value === undefined || value === '';
+}
+
+function decodeHtmlEntities(value) {
+  if (typeof value !== 'string' || !value.includes('&')) return value ?? '';
+  if (typeof document === 'undefined') return value;
+  decodeHtmlEntities.decoder ||= document.createElement('textarea');
+  decodeHtmlEntities.decoder.innerHTML = value;
+  return decodeHtmlEntities.decoder.value;
+}
+
+function formatCurrency(value, currency = APP_CURRENCY) {
+  if (isMissingValue(value)) return '—';
+  const currencyCode = /^[A-Z]{3}$/.test(String(currency || '').toUpperCase()) ? String(currency).toUpperCase() : APP_CURRENCY;
+  if (!currencyFormatters.has(currencyCode)) currencyFormatters.set(currencyCode, new Intl.NumberFormat(APP_LOCALE, { style: 'currency', currency: currencyCode }));
+  return currencyFormatters.get(currencyCode).format(toNumber(value));
 }
 
 function formatNumber(value) {
-  const number = toNumber(value);
-  return Number.isInteger(number) ? String(number) : number.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+  if (isMissingValue(value)) return '—';
+  return numberFormatter.format(toNumber(value));
+}
+
+function formatPercent(value) {
+  if (isMissingValue(value)) return '—';
+  return percentFormatter.format(toNumber(value) / 100);
 }
 
 function formatDateTime(value) {
-  if (!value) {
-    return '';
-  }
-  return new Intl.DateTimeFormat('en-US', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? decodeHtmlEntities(String(value)) : dateTimeFormatter.format(date);
 }
 
-function formatReportValue(value) {
-  if (value === null || value === undefined) {
-    return '';
+export { formatCurrency, formatDateTime, formatInsightValue, formatNumber, formatPercent, formatReportValue };
+
+function formatReportValue(value, key = '') {
+  if (value === null || value === undefined || value === '') {
+    return 'Not available';
   }
   if (typeof value === 'number') {
-    return Number.isInteger(value) ? String(value) : formatNumber(value);
+    if (/(^|_)(count|rows|skus|units|items|orders|customers|locations)$/i.test(key)) return formatNumber(value);
+    if (/(_rate|_percent|percentage)$/i.test(key)) return formatPercent(value);
+    if (/(revenue|sales|value|amount|discount|cost|margin|spend|price|aov|order_total|subscription_total)/i.test(key)) return formatCurrency(value);
+    return formatNumber(value);
   }
   if (typeof value === 'boolean') {
     return value ? 'Yes' : 'No';
@@ -10218,21 +11349,24 @@ function formatReportValue(value) {
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
     return formatDateTime(value);
   }
-  return String(value);
+  return decodeHtmlEntities(String(value));
 }
 
 function formatInsightValue(key, value) {
   if (value === null || value === undefined) {
-    return '';
+    return 'Not available';
   }
   if (typeof value === 'boolean') {
     return value ? 'Yes' : 'No';
   }
   if (typeof value === 'number') {
-    if (String(key).includes('rate') || String(key).includes('percent') || String(key).includes('margin')) {
-      return `${formatNumber(value)}%`;
+    if (/(^|_)(count|rows|skus|units|items|orders|customers|locations)$/i.test(String(key))) {
+      return formatNumber(value);
     }
-    if (/(revenue|sales|value|amount|discount|cost|margin|spend|total|aov)/i.test(String(key))) {
+    if (/(_rate|_percent|percentage|margin_percent)$/i.test(String(key))) {
+      return formatPercent(value);
+    }
+    if (/(revenue|sales|value|amount|discount|cost|margin|spend|price|aov|order_total|subscription_total)/i.test(String(key))) {
       return formatCurrency(value);
     }
     return formatNumber(value);
@@ -10240,14 +11374,17 @@ function formatInsightValue(key, value) {
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
     return formatDateTime(value);
   }
-  if (typeof value === 'object') {
-    return value.sku || value.description || value.label || '';
+  if (typeof value === 'string' && /(status|risk)$/i.test(String(key))) {
+    return titleize(value);
   }
-  return String(value);
+  if (typeof value === 'object') {
+    return decodeHtmlEntities(value.sku || value.product_name || value.description || value.label || '');
+  }
+  return decodeHtmlEntities(String(value));
 }
 
 function titleize(value) {
-  return String(value || '')
+  return decodeHtmlEntities(String(value || ''))
     .replace(/_/g, ' ')
     .replace(/-/g, ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -10273,6 +11410,39 @@ function Badge({ tone = 'neutral', children }) {
   return <span className={`badge badge-${tone}`}>{children}</span>;
 }
 
+const dataQualityLabels = {
+  missing_sku: 'SKU missing',
+  missing_barcode: 'Barcode missing',
+  missing_brand: 'Brand missing',
+  missing_category: 'Category missing',
+  missing_cost: 'Cost missing',
+  missing_location: 'Location unassigned',
+  unmapped: 'Mapping missing',
+  receiving: 'Receiving staging',
+  unavailable: 'Not available',
+};
+
+function DataQualityBadge({ kind }) {
+  const tone = kind === 'receiving' ? 'info' : kind === 'unavailable' ? 'neutral' : 'warning';
+  return <span className={`badge badge-${tone} data-quality-badge`}>{dataQualityLabels[kind] || titleize(kind)}</span>;
+}
+
+function ClampedText({ value }) {
+  if (isMissingValue(value)) return <DataQualityBadge kind="unavailable" />;
+  const text = decodeHtmlEntities(String(value));
+  return <span className="clamped-text" title={text} aria-label={text} tabIndex={0}>{text}</span>;
+}
+
+function LocationPresentation({ value }) {
+  if (isMissingValue(value) || /^unassigned$/i.test(String(value).trim())) return <DataQualityBadge kind="missing_location" />;
+  const text = decodeHtmlEntities(String(value));
+  if (/^receiving\b/i.test(text)) {
+    const suffix = text.replace(/^receiving/i, '');
+    return <span className="location-presentation"><DataQualityBadge kind="receiving" />{suffix && <small>{suffix}</small>}</span>;
+  }
+  return text;
+}
+
 function BooleanBadge({ value }) {
   return <span className={value ? 'boolean-badge yes' : 'boolean-badge no'}>{value ? 'Yes' : 'No'}</span>;
 }
@@ -10282,7 +11452,7 @@ function StatusBadge({ active }) {
 }
 
 async function exportItemsCsv(filters) {
-  const response = await fetch(`${API_BASE_URL}/api/items/export${filtersToQueryString(filters)}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/items/export${filtersToQueryString(filters)}`);
   if (!response.ok) {
     showPlaceholder('Unable to export CSV from the backend. Start the FastAPI server and try again.');
     return;
@@ -10299,7 +11469,7 @@ async function exportItemsCsv(filters) {
 }
 
 async function exportEnrichmentCsv() {
-  const response = await fetch(`${API_BASE_URL}/api/items/enrichment/export`);
+  const response = await apiFetch(`${API_BASE_URL}/api/items/enrichment/export`);
   if (!response.ok) {
     showPlaceholder('Unable to export the enrichment template. Import WooCommerce mappings first and confirm FastAPI is running.');
     return;
@@ -10333,7 +11503,7 @@ function downloadPreviewRows(rows = [], actions = [], fileName = 'pongo-import-e
 }
 
 async function exportLocationsCsv(filters) {
-  const response = await fetch(`${API_BASE_URL}/api/locations/export${locationsFiltersToQueryString(filters)}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/locations/export${locationsFiltersToQueryString(filters)}`);
   if (!response.ok) {
     showPlaceholder('Unable to export locations CSV from the backend. Start the FastAPI server and try again.');
     return;
@@ -10350,7 +11520,7 @@ async function exportLocationsCsv(filters) {
 }
 
 async function exportInventoryByLocationCsv(filters) {
-  const response = await fetch(`${API_BASE_URL}/api/inventory/export/by-location${inventoryFiltersToQueryString(filters)}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/inventory/export/by-location${inventoryFiltersToQueryString(filters)}`);
   if (!response.ok) {
     showPlaceholder('Unable to export inventory by location from the backend. Start the FastAPI server and try again.');
     return;
@@ -10367,7 +11537,7 @@ async function exportInventoryByLocationCsv(filters) {
 }
 
 async function exportStockMovementsCsv(filters) {
-  const response = await fetch(`${API_BASE_URL}/api/stock-movements/export${plainFiltersToQueryString(filters)}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/stock-movements/export${plainFiltersToQueryString(filters)}`);
   if (!response.ok) {
     showPlaceholder('Unable to export stock movements from the backend.');
     return;
@@ -10384,7 +11554,7 @@ async function exportStockMovementsCsv(filters) {
 }
 
 async function exportReceivedInventoryCsv(filters) {
-  const response = await fetch(`${API_BASE_URL}/api/reports/received-inventory/export${plainFiltersToQueryString(receivedInventoryFiltersToApi(filters))}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/reports/received-inventory/export${plainFiltersToQueryString(receivedInventoryFiltersToApi(filters))}`);
   if (!response.ok) {
     showPlaceholder('Unable to export received inventory report from the backend. Start the FastAPI server and try again.');
     return;
@@ -10401,7 +11571,7 @@ async function exportReceivedInventoryCsv(filters) {
 }
 
 async function exportFulfillmentReportCsv(filters) {
-  const response = await fetch(`${API_BASE_URL}/api/reports/fulfillments/export${plainFiltersToQueryString(fulfillmentReportFiltersToApi(filters))}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/reports/fulfillments/export${plainFiltersToQueryString(fulfillmentReportFiltersToApi(filters))}`);
   if (!response.ok) {
     showPlaceholder('Unable to export fulfillment report from the backend. Start the FastAPI server and try again.');
     return;
@@ -10418,7 +11588,7 @@ async function exportFulfillmentReportCsv(filters) {
 }
 
 async function exportSkuOrdersCsv(filters) {
-  const response = await fetch(`${API_BASE_URL}/api/reports/sku-orders/export${plainFiltersToQueryString(skuOrdersFiltersToApi(filters))}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/reports/sku-orders/export${plainFiltersToQueryString(skuOrdersFiltersToApi(filters))}`);
   if (!response.ok) {
     showPlaceholder('Unable to export SKU Orders report from the backend.');
     return;
@@ -10435,7 +11605,7 @@ async function exportSkuOrdersCsv(filters) {
 }
 
 async function exportGenericReportCsv(reportKey, filters, label) {
-  const response = await fetch(`${API_BASE_URL}/api/reports/${reportKey}/export${plainFiltersToQueryString(filters)}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/reports/${reportKey}/export${plainFiltersToQueryString(filters)}`);
   if (!response.ok) {
     showPlaceholder(`Unable to export ${label} from the backend.`);
     return;
@@ -10452,7 +11622,7 @@ async function exportGenericReportCsv(reportKey, filters, label) {
 }
 
 async function exportOpenOrdersCsv(filters) {
-  const response = await fetch(`${API_BASE_URL}/api/orders/open/export${plainFiltersToQueryString(openOrderFiltersToApi(filters))}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/orders/open/export${plainFiltersToQueryString(openOrderFiltersToApi(filters))}`);
   if (!response.ok) {
     showPlaceholder('Unable to export open orders from the backend. Start the FastAPI server and try again.');
     return;
@@ -10469,7 +11639,7 @@ async function exportOpenOrdersCsv(filters) {
 }
 
 async function exportCompletedOrdersCsv(filters) {
-  const response = await fetch(`${API_BASE_URL}/api/orders/completed/export${plainFiltersToQueryString(completedOrderFiltersToApi(filters))}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/orders/completed/export${plainFiltersToQueryString(completedOrderFiltersToApi(filters))}`);
   if (!response.ok) {
     showPlaceholder('Unable to export completed orders from the backend. Start the FastAPI server and try again.');
     return;
@@ -10486,7 +11656,7 @@ async function exportCompletedOrdersCsv(filters) {
 }
 
 async function exportAllocationCsv(allocationId, allocationNumber) {
-  const response = await fetch(`${API_BASE_URL}/api/allocations/${allocationId}/export`);
+  const response = await apiFetch(`${API_BASE_URL}/api/allocations/${allocationId}/export`);
   if (!response.ok) {
     showPlaceholder('Unable to export allocation from the backend.');
     return;
@@ -10533,7 +11703,7 @@ function downloadAllocationExceptionsCsv(lines) {
 }
 
 async function exportPickCsv(pickId, pickNumber) {
-  const response = await fetch(`${API_BASE_URL}/api/picks/${pickId}/export`);
+  const response = await apiFetch(`${API_BASE_URL}/api/picks/${pickId}/export`);
   if (!response.ok) {
     showPlaceholder('Unable to export pick from the backend.');
     return;
@@ -10550,7 +11720,7 @@ async function exportPickCsv(pickId, pickNumber) {
 }
 
 async function exportFulfillmentCsv(fulfillmentId, fulfillmentNumber) {
-  const response = await fetch(`${API_BASE_URL}/api/fulfillments/${fulfillmentId}/export`);
+  const response = await apiFetch(`${API_BASE_URL}/api/fulfillments/${fulfillmentId}/export`);
   if (!response.ok) {
     showPlaceholder('Unable to export fulfillment from the backend.');
     return;
@@ -10567,7 +11737,7 @@ async function exportFulfillmentCsv(fulfillmentId, fulfillmentNumber) {
 }
 
 async function exportRouteCsv(routeId, routeNumber) {
-  const response = await fetch(`${API_BASE_URL}/api/routes/${routeId}/export`);
+  const response = await apiFetch(`${API_BASE_URL}/api/routes/${routeId}/export`);
   if (!response.ok) {
     showPlaceholder('Unable to export route CSV from the backend.');
     return;
@@ -10584,7 +11754,7 @@ async function exportRouteCsv(routeId, routeNumber) {
 }
 
 async function exportCycleCountCsv(cycleCountId, countNumber) {
-  const response = await fetch(`${API_BASE_URL}/api/cycle-counts/${cycleCountId}/export`);
+  const response = await apiFetch(`${API_BASE_URL}/api/cycle-counts/${cycleCountId}/export`);
   if (!response.ok) {
     showPlaceholder('Unable to export cycle count CSV from the backend. Start the FastAPI server and try again.');
     return;
@@ -10604,7 +11774,7 @@ async function uploadImportFile(path, file, fields = {}) {
   const formData = new FormData();
   formData.append('file', file);
   Object.entries(fields).forEach(([key, value]) => formData.append(key, String(value)));
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await apiFetch(`${API_BASE_URL}${path}`, {
     method: 'POST',
     body: formData,
   });
@@ -10660,7 +11830,7 @@ async function runWooCatalogBatchesRequest(endpoint, blockedSkus = []) {
 }
 
 async function postJson(path, payload) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await apiFetch(`${API_BASE_URL}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -10669,7 +11839,7 @@ async function postJson(path, payload) {
     let detail = '';
     try {
       const body = await response.json();
-      detail = body.detail?.errors?.join(' ') || JSON.stringify(body.detail || body);
+      detail = apiErrorDetail(body);
     } catch {
       detail = await safeResponseText(response);
     }
@@ -10679,7 +11849,7 @@ async function postJson(path, payload) {
 }
 
 async function patchJson(path, payload) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await apiFetch(`${API_BASE_URL}${path}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -10688,13 +11858,33 @@ async function patchJson(path, payload) {
     let detail = '';
     try {
       const body = await response.json();
-      detail = body.detail?.errors?.join(' ') || JSON.stringify(body.detail || body);
+      detail = apiErrorDetail(body);
     } catch {
       detail = await safeResponseText(response);
     }
     throw new Error(detail || `API returned ${response.status}`);
   }
   return response.json();
+}
+
+function apiErrorDetail(body) {
+  const detail = body?.detail ?? body;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail?.errors)) return detail.errors.join(' ');
+  if (typeof detail?.message === 'string') return detail.message;
+  return JSON.stringify(detail);
+}
+
+function normalizeHostname(value) {
+  return String(value || '').trim().toLowerCase().replace(/\.$/, '');
+}
+
+function hostnameFromUrl(value) {
+  try {
+    return normalizeHostname(new URL(value).hostname);
+  } catch {
+    return '';
+  }
 }
 
 function downloadSampleCsv() {
@@ -10798,8 +11988,50 @@ function filtersToQueryString(filters = {}) {
   if (filters.status === 'active') params.set('active', 'true');
   if (filters.status === 'inactive') params.set('active', 'false');
   params.set('include_non_inventory', String(Boolean(filters.includeNonInventory)));
+  if (filters.page) params.set('page', String(filters.page));
+  if (filters.pageSize) params.set('page_size', String(filters.pageSize));
+  if (filters.sortBy) params.set('sort_by', filters.sortBy);
+  if (filters.sortDir) params.set('sort_direction', filters.sortDir);
+  if (filters.dataQuality) params.set('data_quality', filters.dataQuality);
   const query = params.toString();
   return query ? `?${query}` : '';
+}
+
+function inventoryRouteToItemFilters(route) {
+  const paged = (route.inventoryView || 'all') === 'all';
+  return {
+    search: route.inventorySearch || '',
+    category: route.inventoryCategory || '',
+    brand: route.inventoryBrand || '',
+    includeNonInventory: true,
+    page: paged ? route.inventoryPage || 1 : undefined,
+    pageSize: paged ? route.inventoryPageSize || 20 : undefined,
+    sortBy: route.inventorySortBy || 'sku',
+    sortDir: route.inventorySortDir || 'asc',
+    dataQuality: route.inventoryDataQuality || '',
+  };
+}
+
+function inventoryRouteHref(route, changes = {}) {
+  const next = {
+    page: route.inventoryPage || 1,
+    pageSize: route.inventoryPageSize || 20,
+    search: route.inventorySearch || '',
+    category: route.inventoryCategory || '',
+    brand: route.inventoryBrand || '',
+    dataQuality: route.inventoryDataQuality || '',
+    sortBy: route.inventorySortBy || 'sku',
+    sortDir: route.inventorySortDir || 'asc',
+    ...changes,
+  };
+  const params = new URLSearchParams({ page: String(Math.max(1, next.page)), page_size: String(next.pageSize) });
+  if (next.search) params.set('search', next.search);
+  if (next.category) params.set('category', next.category);
+  if (next.brand) params.set('brand', next.brand);
+  if (next.dataQuality) params.set('data_quality', next.dataQuality);
+  if (next.sortBy && next.sortBy !== 'sku') params.set('sort_by', next.sortBy);
+  if (next.sortDir && next.sortDir !== 'asc') params.set('sort_dir', next.sortDir);
+  return `#/inventory/${route.inventoryView || 'all'}?${params.toString()}`;
 }
 
 function locationsFiltersToQueryString(filters = {}) {
@@ -10834,6 +12066,7 @@ function inventoryFiltersToQueryString(filters = {}) {
   if (filters.category) params.set('category', filters.category);
   if (filters.brand) params.set('brand', filters.brand);
   if (filters.underPar) params.set('under_par', filters.underPar);
+  if (filters.dataQuality) params.set('data_quality', filters.dataQuality);
   const query = params.toString();
   return query ? `?${query}` : '';
 }
@@ -11008,6 +12241,17 @@ function receivingPayload(form, items) {
       };
     }),
   };
+}
+
+function receivingCommitReason(form, preview, loading) {
+  if (loading) return 'receipt validation is still in progress.';
+  const selectedLines = (form.lines || []).filter((line) => String(line.query || '').trim());
+  if (!selectedLines.length) return 'add at least one SKU or barcode.';
+  if (selectedLines.some((line) => !String(line.inventory_location || '').trim())) return 'choose a destination location for every selected item.';
+  if (selectedLines.some((line) => !Number.isFinite(Number(line.quantity_received)) || Number(line.quantity_received) <= 0)) return 'enter a quantity greater than zero for every selected item.';
+  if (!preview) return 'preview the receipt after completing the required fields.';
+  if (toNumber(preview.invalid_lines) > 0) return `resolve ${formatNumber(preview.invalid_lines)} validation error${toNumber(preview.invalid_lines) === 1 ? '' : 's'} shown below.`;
+  return '';
 }
 
 function cycleCountPayload(form, items) {

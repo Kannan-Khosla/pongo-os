@@ -414,11 +414,11 @@ WooCommerce, geocoding providers, or map providers, does not mutate local
 orders or inventory, and uses explicit empty states for missing subscription
 data.
 
-## ADR-033: Signed Order-Created Webhooks With Durable Staff Events
+## ADR-033: Signed Order Webhooks With Durable Staff Events
 
 Decision: Add a disabled-by-default backend receiver at
-`POST /api/integrations/woocommerce/webhooks/orders`. Phase 1 imports only
-authenticated `order.created` payloads. It authenticates the exact raw body with
+`POST /api/integrations/woocommerce/webhooks/orders`. It imports authenticated
+`order.created` and `order.updated` payloads. It authenticates the exact raw body with
 base64 HMAC-SHA256 using a separate secret of at least 32 bytes, verifies the
 WooCommerce source host and related delivery headers, enforces a configured body
 limit, and accepts WooCommerce's exact unsigned setup ping as a no-op.
@@ -426,20 +426,25 @@ limit, and accepts WooCommerce's exact unsigned setup ping as a no-op.
 Each authenticated JSON delivery is recorded in
 `woocommerce_webhook_deliveries` and uniquely identified by webhook ID,
 delivery ID, and raw-body SHA-256. Other authenticated topics are audited as
-ignored. A delayed `order.created` payload older than or equal to the local order snapshot
-is also audited as ignored so it cannot regress newer data. A successful new
-order transaction creates a separate immutable `woocommerce_order_events`
-outbox row. The cursor endpoint reads this commit-time event sequence for a
-dismissible internal staff UI notice. New sessions initialize at the current
-order-event high-water mark, and subsequent pagination advances through
-`next_after_id`. The existing 10-second REST quick sync remains a recovery and
-reconciliation fallback.
+ignored. A delayed supported payload older than or equal to the local order
+snapshot is also audited as ignored so it cannot regress newer data. Each
+successful supported delivery creates an immutable
+`woocommerce_order_events` audit row. The cursor endpoint exposes only
+`order_created` rows for the dismissible internal staff notice, so an update is
+never mislabeled as a new order.
 
-Reason: New storefront orders should enter Pongo OS without waiting for the
-next outbound REST poll, while retries, duplicate deliveries, configuration
-mistakes, and future topics remain observable and safe. A durable delivery
-ledger plus immutable event outbox works across restarts, retries, and multiple
-backend processes; an in-memory notification queue would not.
+Updates safely retire removed lines rather than deleting history, release only
+unpicked excess allocation after quantity or status changes, and retain a
+blocking exception if WooCommerce falls below already picked, fulfilled, or
+stock-reduced quantities. Order workflow notes and inventory deallocation
+events retain the reconciliation decisions. Each order uses a savepoint so a
+failed reconciliation cannot partially mutate it.
+
+Reason: New and changed storefront orders should enter Pongo OS without relying
+on an open browser, while retries, duplicate deliveries, configuration mistakes,
+and unsupported topics remain observable and safe. A durable delivery ledger
+plus immutable event audit works across restarts, retries, and multiple backend
+processes; an in-memory queue would not.
 
 The frontend polls the cursor feed every 2 seconds while visible, maintains a
 session-only Bell history/unread state, and uses nonzero quick-sync creation
@@ -452,3 +457,41 @@ The ledger stores safe metadata and a hash, not a second raw customer payload.
 Webhook import may use the existing audited local auto-allocation path, but it
 does not reduce In Stock, create stock movements, write WooCommerce, or send
 outbound/customer notifications. Staff notices are local UI feedback only.
+
+## ADR-034: Woo Identity First, CSV Enrichment Second
+
+Decision: Import Woo simple products and purchasable variations into the
+existing item/mapping model before applying local Zenventory enrichment. Simple
+identity is product ID plus null variation ID; variation identity is parent
+product ID plus exact variation ID. Variable parents are non-stock reference
+containers. Exact unique SKU is fallback only after authoritative Woo/explicit
+mapping checks; names and barcodes never drive catalog sync.
+
+Enrichment is update-only and starts with protected mapping columns. Empty cells
+preserve values, `__CLEAR__` is limited to safe local metadata, and expiry is
+excluded. Optional opening stock writes audited location balances and defaults
+off. Woo refresh owns storefront reference fields; Pongo owns operational
+inventory, local enrichment, and history.
+
+Reason: This creates one stable writeback target per sellable Woo record while
+preserving richer Pongo/Zenventory data and preventing duplicate variations or
+parent stock.
+
+Safety: Preview is mandatory. Import and remap never write WooCommerce. The
+existing queue/approval/send architecture is reused; missing, ambiguous,
+incomplete, or stale mapping targets fail closed. Only pending/failed rows may
+be explicitly revalidated and successful history stays immutable. Local
+database reset is a guarded CLI operation, never a public API.
+
+## ADR-035: Serialized, Retry-Safe Stock Mutations
+
+Decision: Pick, unpick, receipt, transfer, and adjustment commits use one
+durable request ledger keyed by operation plus idempotency key. The same
+request replays its stored response; a changed payload with the same key fails
+with HTTP `409`. PostgreSQL transactions take one shared stock/allocation
+advisory lock, followed by deterministic `FOR UPDATE` locks on item aggregates
+and their item-location rows.
+
+Safety: Database checks independently reject negative stock, negative
+allocation, negative sellable, and allocation greater than stock. Woo order
+reconciliation uses the same lock path before releasing inventory.

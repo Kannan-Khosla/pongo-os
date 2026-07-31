@@ -30,7 +30,7 @@ from app.schemas.routes import (
     RouteUpdateRequest,
 )
 
-ROUTE_ELIGIBLE_STATUSES = {"fulfilled", "partially_fulfilled"}
+ROUTE_ELIGIBLE_STATUSES = {"completed", "fulfilled", "partially_fulfilled"}
 ROUTE_CSV_COLUMNS = [
     "Route Number",
     "Route Date",
@@ -485,7 +485,8 @@ def map_stop_from_read(stop: RouteStopRead) -> RouteMapStop:
 
 
 def order_to_candidate(order: Order) -> RouteCandidateRead:
-    fulfilled_lines = [line for line in order.items if (line.quantity_fulfilled or Decimal("0")) > 0]
+    line_quantities = [max(line.quantity_fulfilled or Decimal("0"), line.quantity_picked or Decimal("0")) for line in order.items]
+    fulfilled_lines = [quantity for quantity in line_quantities if quantity > 0]
     warning = "Order is partially fulfilled." if order.local_status == "partially_fulfilled" else None
     return RouteCandidateRead(
         order_id=order.id,
@@ -500,7 +501,7 @@ def order_to_candidate(order: Order) -> RouteCandidateRead:
         date_created=order.date_created,
         date_modified=order.date_modified,
         fulfilled_line_count=len(fulfilled_lines),
-        total_quantity_fulfilled=decimal_to_float(sum((line.quantity_fulfilled or Decimal("0")) for line in fulfilled_lines)),
+        total_quantity_fulfilled=decimal_to_float(sum(fulfilled_lines, Decimal("0"))),
         already_routed=order_has_active_route(order),
         route_warning=warning,
     )

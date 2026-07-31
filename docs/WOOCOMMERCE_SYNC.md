@@ -38,6 +38,11 @@ remain at their disabled safe defaults until those paths are intentionally used:
 - `WOOCOMMERCE_PAGE_SIZE`
 - `WOOCOMMERCE_ORDER_SYNC_PAGE_SIZE`
 - `WOOCOMMERCE_ORDER_SYNC_DEFAULT_STATUSES`
+- `WOOCOMMERCE_ORDER_RECONCILIATION_ENABLED`
+- `WOOCOMMERCE_ORDER_RECONCILIATION_INTERVAL_SECONDS`
+- `WOOCOMMERCE_ORDER_RECONCILIATION_STALE_AFTER_SECONDS`
+- `WOOCOMMERCE_ORDER_RECONCILIATION_LOOKBACK_HOURS`
+- `WOOCOMMERCE_ORDER_RECONCILIATION_STATUSES`
 - `WOOCOMMERCE_WEBHOOK_ENABLED`
 - `WOOCOMMERCE_WEBHOOK_SECRET`
 - `WOOCOMMERCE_WEBHOOK_MAX_BODY_BYTES`
@@ -47,22 +52,38 @@ The webhook secret is independent from the REST API consumer secret and must be
 at least 32 bytes. The status API may report that it is present/configured but
 must never return its value.
 The frontend never receives the consumer key or secret. Status responses expose
-only the base URL host and boolean/flag metadata.
+only the base URL, host, and boolean/flag metadata.
+
+Settings → Connection can verify and replace the REST store URL, consumer key,
+and consumer secret through the backend. Settings → Sync & Mapping owns
+catalog, order, remap, and sync-history workflows. Settings → Writeback owns
+guarded stock/order-status previews and the paginated writeback queue. The
+backend performs a read-only connection check before saving credentials to
+`backend/.env`; blank credential fields preserve existing values. The
+connection form never changes writeback flags. When a new store URL differs
+from `WOOCOMMERCE_ALLOWED_HOST`, the operator must explicitly authorize the
+exact replacement host; Pongo verifies the read-only connection before saving
+the base URL and allowed host together. Deployment secret configuration remains
+the durable source for hosts whose filesystem is ephemeral.
 
 ## Read-Only Sync First
 
-The first WooCommerce integration phases are read-only product/variation sync
-and read-only order sync. Staging writeback testing exists only behind preview,
-queue, approval, allowlisted operations, and dry-run. Do not update production
-WooCommerce stock or order statuses until:
+Product/variation and order ingestion are read-only. Writeback exists only
+behind preview, queue, approval, allowlisted operations, and dry-run. Do not
+enable the production stock-authority policy until:
 - product/variation mapping is stable;
 - local item workflows are stable;
 - stock movement auditing is verified;
 - Pongo explicitly approves stock writeback behavior.
 
-## Staging Writeback Safety
+REST credentials are sent with HTTPS Basic Auth. They are never placed in URL
+query strings, application logs, frontend state, or API responses.
 
-Writeback testing is staging-only. Production writeback is not enabled.
+## Writeback Safety
+
+Staging live tests require staging mode. Production stock writes require
+`WOOCOMMERCE_PRODUCTION_STOCK_AUTHORITY=pongo`; without that exact policy they
+fail closed.
 
 The inbound webhook is configured separately from writeback. It can remain
 read-only against WooCommerce while `WOOCOMMERCE_READ_ONLY=true`,
@@ -298,6 +319,7 @@ Use cases:
 ## Order Sync Behavior
 
 Implemented endpoints:
+- `GET /api/integrations/woocommerce/status`
 - `POST /api/integrations/woocommerce/orders/preview`
 - `POST /api/integrations/woocommerce/orders/commit`
 - `POST /api/integrations/woocommerce/orders/quick-sync`
@@ -330,14 +352,24 @@ non-processing snapshots do not reserve new stock and do not appear in Open
 Orders, Allocate, or Pick Orders. They can still feed sync history, the Business
 Dashboard, and Pongo Insights.
 
-The frontend retains `orders/quick-sync` every 10 seconds while Dashboard,
-Orders, or Settings is visible, and once when the tab regains focus. The
-background loop fetches the newest `processing` orders. Fetch order does not set
-reservation priority: after snapshots are stored, local FIFO allocation always
-evaluates processing orders oldest `date_created` first. Full manual order sync
-can still include pending, on-hold, completed, failed, cancelled, and refunded
-snapshots. After phase-1 webhook enablement this polling is a recovery and
-reconciliation fallback, not the primary new-order path.
+The backend owns periodic order reconciliation. It is enabled by default when
+WooCommerce credentials and reads are configured, runs every 60 seconds, and
+fetches every page of active processing/on-hold/pending orders on every pass.
+It separately fetches terminal orders modified since the last successful run
+with a five-minute overlap. The default terminal set includes completed,
+failed, cancelled, and refunded orders. A PostgreSQL advisory lease prevents
+multiple web workers from running the job at once.
+
+Every scheduler attempt is stored in the existing WooCommerce sync ledger.
+`GET /api/integrations/woocommerce/status` exposes whether the scheduler is
+running, healthy, stale, or degraded, plus its last attempt, success, failure,
+error count, and safe error message. `completed_with_errors` advances the
+modified-time cursor but remains degraded until a clean pass succeeds.
+
+The browser no longer posts `orders/quick-sync` on a timer. It may refresh local
+Pongo order views with GET requests, while the signed webhooks and server job
+remain responsible for ingestion. The quick-sync endpoint remains available
+for an explicit operator-triggered import.
 
 ## Signed Order Webhook: Phase 1
 
@@ -414,12 +446,11 @@ commit, so an earlier cursor cannot skip it.
 
 The frontend establishes its baseline with `initialize=true`, polls the feed
 every 2 seconds while visible and on focus/visibility changes, and deduplicates
-events by immutable outbox ID. Later events create a persistent dismissible toast and a
-session-only Bell history/unread badge. The 10-second quick sync also turns a
-nonzero `created_count` into a fallback notice, deduplicated by sync-run
-identity, so a delayed or disabled webhook still reaches staff. These notices
-do not acknowledge events globally, call WooCommerce, or send a customer-facing
-notification.
+events by immutable outbox ID. Later `order_created` events create a persistent
+dismissible toast and session-only Bell history/unread badge. Update and
+cancellation events refresh local order data but are never announced as new
+customer orders. These notices do not acknowledge events globally, call
+WooCommerce, or send a customer-facing notification.
 
 Order sync is read-only against WooCommerce:
 - no WooCommerce order status writes;
@@ -609,9 +640,8 @@ Route creation:
 ## Stock Update Safety
 
 Stock-changing local actions must always create stock movement rows.
-WooCommerce stock updates remain staging-only test operations until read-only
-sync and local workflows are stable. Writeback must happen through the backend
-only, from queued previews, with dry-run true by default and no DELETE support.
+WooCommerce stock updates must happen through the backend only, from guarded
+jobs or queued previews, with dry-run true by default and no DELETE support.
 
 ## Local Remap Metadata
 
@@ -686,3 +716,34 @@ does not update local order or inventory state.
 Subscription cards remain empty with a data quality warning until subscription
 snapshots are synced locally. Map markers use exact local coordinates only when
 already stored; otherwise supported cities use approximate city-level markers.
+
+## Import Mappings Identity And Ownership
+
+Import Mappings matches exact variation ID first, exact simple product ID with a
+null variation ID second, an existing explicit mapping third, and exact unique
+SKU only when Woo IDs are absent. Otherwise it reports a conflict. It never
+matches by name or chooses silently between duplicate SKUs.
+
+A simple product becomes one stock item. Every purchasable variation becomes an
+independent item with the parent in `woo_product_id` and the exact child in
+`woo_variation_id`. Variable parents are skipped reference containers and
+cannot hold inventory, allocate, pick, receive a barcode, or receive stock
+writeback. An independently purchasable variable parent requires manual review.
+
+Woo owns storefront IDs/type, names/descriptions, variation attributes, SKU,
+categories/image, Woo prices, Woo dimensions/weight, publication/stock status,
+stock snapshot, and sync timestamps. Pongo owns barcode, cost, brand override,
+manufacturer data, UOM, warehouse/location, operational and allocated stock,
+reorder data, local metadata, and all operational history. Repeated runs are
+idempotent and refresh only Woo-owned fields.
+
+Before stock queue approval/send, mapping is revalidated. Missing, ambiguous,
+inactive, incomplete variation, duplicate-target, or stale queue targets fail
+closed. Pending/failed stock rows may be explicitly revalidated, which rebuilds
+the current target and absolute quantity and returns the row to pending
+approval. Completed and dry-run history is never changed or automatically sent.
+Remap remains preview-first, local-only, stock-neutral, and audited.
+
+For later catalog additions, run Import Mappings again: a new simple product
+creates one item; a new purchasable variation creates one item; existing items
+receive only allowed Woo-owned refreshes.

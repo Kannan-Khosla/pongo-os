@@ -1,0 +1,31 @@
+.auth-page { --auth-ink:#111326; --auth-indigo:#10136f; --auth-orange:#ef6738; min-height:100vh; display:grid; grid-template-columns:minmax(0,1.08fr) minmax(420px,.92fr); background:#f4f5f9; color:var(--auth-ink); }
+.auth-brand { position:relative; display:flex; flex-direction:column; justify-content:center; min-height:100vh; padding:clamp(48px,8vw,120px); overflow:hidden; background:var(--auth-indigo); color:white; }
+.auth-brand::after { content:''; position:absolute; inset:0; pointer-events:none; background:repeating-linear-gradient(135deg,transparent 0 42px,rgba(255,255,255,.035) 42px 43px); }
+.auth-brand-mark { width:58px; height:58px; display:grid; place-items:center; margin-bottom:56px; border-radius:14px 14px 14px 4px; background:white; color:var(--auth-indigo); font-size:30px; font-weight:900; box-shadow:8px 8px 0 var(--auth-orange); }
+.auth-eyebrow,.auth-step small { letter-spacing:.16em; text-transform:uppercase; font-size:12px; font-weight:850; }
+.auth-brand h1 { max-width:720px; margin:14px 0 22px; font-size:clamp(44px,6vw,84px); line-height:.96; letter-spacing:-.055em; }
+.auth-brand-copy { max-width:620px; color:#c8cbff; font-size:18px; line-height:1.65; }
+.auth-proof-grid { display:flex; flex-wrap:wrap; gap:12px; margin-top:36px; }
+.auth-proof-grid span { display:inline-flex; align-items:center; gap:9px; padding:12px 14px; border:1px solid rgba(255,255,255,.22); border-radius:9px; font-weight:700; }
+.auth-panel { align-self:center; width:min(520px,calc(100% - 48px)); margin:48px auto; padding:clamp(28px,5vw,56px); border:1px solid #dfe1ea; border-top:5px solid var(--auth-orange); border-radius:16px; background:#fffdfa; box-shadow:0 26px 70px rgba(15,20,80,.12); }
+.auth-step { display:flex; align-items:center; gap:12px; color:#5d6177; }
+.auth-step span { display:grid; place-items:center; width:34px; height:34px; border:1px solid var(--auth-orange); border-radius:8px; color:#b93f15; font-family:monospace; font-weight:800; }
+.auth-panel h2 { margin:28px 0 8px; font-size:clamp(32px,4vw,48px); line-height:1; letter-spacing:-.045em; }
+.auth-panel>p { margin:0 0 28px; color:#65687e; line-height:1.6; }
+.auth-mode { display:grid; grid-template-columns:1fr 1fr; margin-bottom:24px; padding:4px; border-radius:10px; background:#eff0f7; }
+.auth-mode button { min-height:42px; border:0; border-radius:7px; background:transparent; color:#63667d; font-weight:800; cursor:pointer; }
+.auth-mode button[aria-selected='true'] { background:white; color:var(--auth-indigo); box-shadow:0 2px 9px rgba(17,19,38,.08); }
+.auth-panel form { display:grid; gap:18px; }
+.auth-panel label { display:grid; gap:8px; color:#494d66; font-size:12px; font-weight:850; letter-spacing:.06em; text-transform:uppercase; }
+.auth-panel label small { color:#85889a; font-weight:600; letter-spacing:0; text-transform:none; }
+.auth-panel input { width:100%; min-height:50px; padding:0 14px; border:1px solid #d8dae5; border-radius:8px; background:white; color:#17182b; }
+.auth-panel input:focus { border-color:var(--auth-indigo); box-shadow:0 0 0 3px rgba(16,19,111,.12); outline:none; }
+.auth-error { padding:12px 14px; border-left:3px solid #c4322a; background:#fee9e7; color:#9e241e; font-weight:700; }
+.auth-submit { min-height:52px; display:inline-flex; align-items:center; justify-content:center; gap:9px; border:0; border-radius:8px; background:var(--auth-indigo); color:white; font-weight:850; cursor:pointer; }
+.auth-submit:hover { background:#090c55; }
+.auth-submit:disabled { opacity:.6; cursor:wait; }
+.auth-loading { min-height:100vh; display:grid; place-items:center; background:#10136f; color:white; font-weight:800; letter-spacing:.08em; }
+.auth-account { position:fixed; right:16px; bottom:16px; z-index:80; display:flex; align-items:center; gap:12px; padding:8px 9px 8px 14px; border:1px solid #dfe1ea; border-radius:999px; background:rgba(255,255,255,.96); box-shadow:0 10px 28px rgba(15,20,80,.14); font-size:12px; font-weight:800; }
+.auth-account button { display:inline-flex; align-items:center; gap:6px; min-height:34px; padding:0 11px; border:0; border-radius:999px; background:#10136f; color:white; cursor:pointer; font-weight:800; }
+@media (max-width:860px) { .auth-page{grid-template-columns:1fr}.auth-brand{min-height:auto;padding:44px 24px 64px}.auth-brand-mark{margin-bottom:38px}.auth-brand h1{font-size:clamp(42px,13vw,66px)}.auth-panel{margin:-28px auto 32px;position:relative} }
+@media (prefers-reduced-motion:reduce) { .auth-page *,.auth-account *{scroll-behavior:auto;transition:none!important} }

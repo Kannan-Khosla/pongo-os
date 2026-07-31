@@ -77,7 +77,7 @@ def test_fulfillment_report_rows_summary_csv_and_read_only(client, monkeypatch):
     assert row["in_stock_after"] == 4
     assert row["allocated_before"] == 1
     assert row["allocated_after"] == 1
-    assert row["created_by"] == "reporter"
+    assert row["created_by"] == "pytest@example.com"
     assert row["fulfillment_notes"] == "Report fulfillment"
 
     summary = summary_response.json()
@@ -126,7 +126,7 @@ def test_fulfillment_report_filters(client, monkeypatch):
         "woo_order_id": 801,
         "customer_email": "avery@example.invalid",
         "local_status": "fulfilled",
-        "created_by": "reporter",
+        "created_by": "pytest@example.com",
     }
     for key, value in matching_filters.items():
         filtered = client.get("/api/reports/fulfillments", params={key: value})

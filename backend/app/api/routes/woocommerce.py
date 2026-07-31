@@ -19,6 +19,8 @@ from app.schemas.woocommerce import (
     WooCommerceOrderCommitResponse,
     WooCommerceOrderPreviewResponse,
     WooCommerceOrderSyncRequest,
+    WooCommerceConfigurationRequest,
+    WooCommerceConfigurationResponse,
     WooCommerceProductCommitResponse,
     WooCommerceProductPreviewResponse,
     WooCommerceStatusResponse,
@@ -35,11 +37,15 @@ from app.schemas.woocommerce import (
     WooWritebackQueueListResponse,
     WooWritebackQueueRead,
     WooStockSyncRequest,
-    WooStockSyncResponse,
+    WooStockSyncJobListResponse,
+    WooStockSyncJobRead,
     WooWritebackStockPreviewRequest,
 )
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
+from app.services.auth import authenticated_actor
+from app.services.woocommerce_configuration import save_woocommerce_configuration
 from app.services.woocommerce_orders import commit_order_sync, commit_recent_order_sync, preview_order_sync
+from app.services.woocommerce_order_reconciliation import reconciliation_health
 from app.services.woocommerce_remap import commit_remap, deactivate_mapping, list_mappings, list_remap_candidates, mapping_to_read, preview_remap
 from app.services.woocommerce_sync import commit_product_sync, preview_product_sync
 from app.services.woocommerce_webhooks import (
@@ -60,9 +66,10 @@ from app.services.woocommerce_writeback import (
     preview_order_status_writeback,
     preview_stock_writeback,
     queue_to_read,
+    revalidate_queue_item,
     send_queue_item,
-    sync_inventory_stock,
 )
+from app.services.woocommerce_stock_sync_jobs import cancel_stock_sync_job, create_stock_sync_job, list_stock_sync_jobs, resume_stock_sync_job, stock_sync_job_read
 
 router = APIRouter(prefix="/integrations/woocommerce", tags=["woocommerce"])
 
@@ -71,15 +78,40 @@ def create_woocommerce_client() -> WooCommerceClient:
     return WooCommerceClient(get_settings())
 
 
+@router.post("/configuration", response_model=WooCommerceConfigurationResponse)
+def configure_woocommerce(payload: WooCommerceConfigurationRequest) -> WooCommerceConfigurationResponse:
+    try:
+        settings = save_woocommerce_configuration(
+            payload.base_url,
+            payload.consumer_key,
+            payload.consumer_secret,
+            allow_host_change=payload.allow_host_change,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except WooCommerceClientError as error:
+        raise HTTPException(status_code=400, detail=f"WooCommerce connection failed: {error.message}") from error
+    client = WooCommerceClient(settings)
+    return WooCommerceConfigurationResponse(
+        connected=True,
+        base_url=settings.woocommerce_base_url,
+        base_url_host=client.base_url_host or "",
+        consumer_key_present=True,
+        consumer_secret_present=True,
+        message="WooCommerce credentials were verified and saved in the backend environment.",
+    )
+
+
 @router.get("/status", response_model=WooCommerceStatusResponse)
-def woocommerce_status(check: bool = False, db: Session = Depends(get_db)) -> WooCommerceStatusResponse:
+def woocommerce_status(request: Request, check: bool = False, db: Session = Depends(get_db)) -> WooCommerceStatusResponse:
     settings = get_settings()
     client = create_woocommerce_client()
     base_url_present = bool(settings.woocommerce_base_url)
     consumer_key_present = bool(settings.woocommerce_consumer_key)
     consumer_secret_present = bool(settings.woocommerce_consumer_secret)
     configured = base_url_present and consumer_key_present and consumer_secret_present
-    base_status = woo_status_payload(settings, client, db)
+    scheduler_task = getattr(request.app.state, "order_reconciliation_task", None)
+    base_status = woo_status_payload(settings, client, db, scheduler_running=scheduler_task is not None and not scheduler_task.done())
     if not configured:
         return WooCommerceStatusResponse(
             **base_status,
@@ -112,8 +144,9 @@ def preview_woocommerce_products(payload: WooCommerceSyncRequest | None = None, 
 
 
 @router.post("/products/commit", response_model=WooCommerceProductCommitResponse)
-def commit_woocommerce_products(payload: WooCommerceSyncRequest | None = None, db: Session = Depends(get_db)) -> WooCommerceProductCommitResponse:
-    sync_run, summary = commit_product_sync(db, create_woocommerce_client(), payload or WooCommerceSyncRequest())
+def commit_woocommerce_products(payload: WooCommerceSyncRequest | None = None, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> WooCommerceProductCommitResponse:
+    request_payload = (payload or WooCommerceSyncRequest()).model_copy(update={"created_by": actor})
+    sync_run, summary = commit_product_sync(db, create_woocommerce_client(), request_payload)
     return WooCommerceProductCommitResponse(
         sync_run_id=sync_run.id if sync_run else None,
         status=sync_run.status if sync_run else "not_configured",
@@ -131,6 +164,7 @@ def commit_woocommerce_products(payload: WooCommerceSyncRequest | None = None, d
         has_more=summary.has_more,
         unmatched_local_count=summary.unmatched_local_count,
         unmatched_local_skus=summary.unmatched_local_skus,
+        unchanged_count=summary.unchanged_count,
     )
 
 
@@ -140,14 +174,16 @@ def preview_woocommerce_orders(payload: WooCommerceOrderSyncRequest | None = Non
 
 
 @router.post("/orders/commit", response_model=WooCommerceOrderCommitResponse)
-def commit_woocommerce_orders(payload: WooCommerceOrderSyncRequest | None = None, db: Session = Depends(get_db)) -> WooCommerceOrderCommitResponse:
-    sync_run, summary = commit_order_sync(db, create_woocommerce_client(), payload or WooCommerceOrderSyncRequest())
+def commit_woocommerce_orders(payload: WooCommerceOrderSyncRequest | None = None, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> WooCommerceOrderCommitResponse:
+    request_payload = (payload or WooCommerceOrderSyncRequest()).model_copy(update={"created_by": actor})
+    sync_run, summary = commit_order_sync(db, create_woocommerce_client(), request_payload)
     return order_commit_response(sync_run, summary)
 
 
 @router.post("/orders/quick-sync", response_model=WooCommerceOrderCommitResponse)
-def quick_sync_woocommerce_orders(payload: WooCommerceOrderSyncRequest | None = None, per_status_limit: int = 10, db: Session = Depends(get_db)) -> WooCommerceOrderCommitResponse:
-    sync_run, summary = commit_recent_order_sync(db, create_woocommerce_client(), payload or WooCommerceOrderSyncRequest(created_by="auto-order-poll", limit=50), per_status_limit=max(1, min(per_status_limit, 25)))
+def quick_sync_woocommerce_orders(payload: WooCommerceOrderSyncRequest | None = None, per_status_limit: int = 10, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> WooCommerceOrderCommitResponse:
+    request_payload = (payload or WooCommerceOrderSyncRequest(limit=50)).model_copy(update={"created_by": actor})
+    sync_run, summary = commit_recent_order_sync(db, create_woocommerce_client(), request_payload, per_status_limit=max(1, min(per_status_limit, 25)))
     return order_commit_response(sync_run, summary)
 
 
@@ -263,7 +299,10 @@ def remap_preview(payload: WooRemapPreviewRequest, db: Session = Depends(get_db)
 
 @router.post("/remap/commit", response_model=WooRemapCommitResponse)
 def remap_commit(payload: WooRemapCommitRequest, db: Session = Depends(get_db)) -> WooRemapCommitResponse:
-    result = commit_remap(db, payload)
+    try:
+        result = commit_remap(db, payload)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if result is None:
         raise HTTPException(status_code=404, detail="Local item not found")
     return result
@@ -291,22 +330,58 @@ def remap_deactivate(payload: WooRemapDeactivateRequest, db: Session = Depends(g
 
 @router.post("/writeback/stock/preview", response_model=WooWritebackPreviewResponse)
 def writeback_stock_preview(payload: WooWritebackStockPreviewRequest, db: Session = Depends(get_db)) -> WooWritebackPreviewResponse:
-    result = preview_stock_writeback(db, get_settings(), create_woocommerce_client(), payload)
+    try:
+        result = preview_stock_writeback(db, get_settings(), create_woocommerce_client(), payload)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if result is None:
         raise HTTPException(status_code=404, detail="Local item not found")
     return result
 
 
-@router.post("/writeback/stock/sync", response_model=WooStockSyncResponse)
-def writeback_stock_sync(payload: WooStockSyncRequest, db: Session = Depends(get_db)) -> WooStockSyncResponse:
-    settings = get_settings()
-    return sync_inventory_stock(
-        db,
-        settings,
-        create_woocommerce_client(),
-        force=payload.force,
-        requested_by=payload.requested_by or "inventory-page",
-    )
+@router.post("/writeback/stock/sync", response_model=WooStockSyncJobRead, status_code=202)
+def writeback_stock_sync(payload: WooStockSyncRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> WooStockSyncJobRead:
+    try:
+        return stock_sync_job_read(create_stock_sync_job(db, payload.model_copy(update={"requested_by": actor})))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.get("/writeback/stock/jobs", response_model=WooStockSyncJobListResponse)
+def writeback_stock_jobs(limit: int = 25, db: Session = Depends(get_db)) -> WooStockSyncJobListResponse:
+    return list_stock_sync_jobs(db, max(1, min(limit, 100)))
+
+
+@router.get("/writeback/stock/jobs/{job_id}", response_model=WooStockSyncJobRead)
+def writeback_stock_job(job_id: int, db: Session = Depends(get_db)) -> WooStockSyncJobRead:
+    from app.models.woocommerce import WooStockSyncJob
+
+    job = db.get(WooStockSyncJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Stock sync job not found")
+    return stock_sync_job_read(job)
+
+
+@router.post("/writeback/stock/jobs/{job_id}/resume", response_model=WooStockSyncJobRead)
+def writeback_stock_job_resume(job_id: int, db: Session = Depends(get_db)) -> WooStockSyncJobRead:
+    try:
+        job = resume_stock_sync_job(db, job_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if job is None:
+        raise HTTPException(status_code=404, detail="Stock sync job not found")
+    return stock_sync_job_read(job)
+
+
+@router.post("/writeback/stock/jobs/{job_id}/cancel", response_model=WooStockSyncJobRead)
+def writeback_stock_job_cancel(job_id: int, db: Session = Depends(get_db)) -> WooStockSyncJobRead:
+    try:
+        job = cancel_stock_sync_job(db, job_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if job is None:
+        raise HTTPException(status_code=404, detail="Stock sync job not found")
+    return stock_sync_job_read(job)
 
 
 @router.post("/writeback/order-status/preview", response_model=WooWritebackPreviewResponse)
@@ -318,9 +393,9 @@ def writeback_order_status_preview(payload: WooWritebackOrderStatusPreviewReques
 
 
 @router.post("/writeback/queue", response_model=WooWritebackQueueRead)
-def writeback_queue_create(payload: WooWritebackQueueCreateRequest, db: Session = Depends(get_db)) -> WooWritebackQueueRead:
+def writeback_queue_create(payload: WooWritebackQueueCreateRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> WooWritebackQueueRead:
     try:
-        row = create_queue_item(db, get_settings(), payload)
+        row = create_queue_item(db, get_settings(), payload.model_copy(update={"requested_by": actor}))
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return queue_to_read(row)
@@ -354,8 +429,11 @@ def writeback_queue_detail(queue_id: int, db: Session = Depends(get_db)) -> WooW
 
 
 @router.post("/writeback/queue/{queue_id}/approve", response_model=WooWritebackQueueRead)
-def writeback_queue_approve(queue_id: int, approved_by: str | None = None, db: Session = Depends(get_db)) -> WooWritebackQueueRead:
-    row = approve_queue_item(db, queue_id, approved_by=approved_by)
+def writeback_queue_approve(queue_id: int, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> WooWritebackQueueRead:
+    try:
+        row = approve_queue_item(db, queue_id, approved_by=actor)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if row is None:
         raise HTTPException(status_code=404, detail="WooCommerce writeback queue item not found")
     return queue_to_read(row)
@@ -364,6 +442,17 @@ def writeback_queue_approve(queue_id: int, approved_by: str | None = None, db: S
 @router.post("/writeback/queue/{queue_id}/send", response_model=WooWritebackQueueRead)
 def writeback_queue_send(queue_id: int, db: Session = Depends(get_db)) -> WooWritebackQueueRead:
     row = send_queue_item(db, create_woocommerce_client(), get_settings(), queue_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="WooCommerce writeback queue item not found")
+    return queue_to_read(row)
+
+
+@router.post("/writeback/queue/{queue_id}/revalidate", response_model=WooWritebackQueueRead)
+def writeback_queue_revalidate(queue_id: int, db: Session = Depends(get_db)) -> WooWritebackQueueRead:
+    try:
+        row = revalidate_queue_item(db, create_woocommerce_client(), get_settings(), queue_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if row is None:
         raise HTTPException(status_code=404, detail="WooCommerce writeback queue item not found")
     return queue_to_read(row)
@@ -378,8 +467,8 @@ def writeback_queue_cancel(queue_id: int, db: Session = Depends(get_db)) -> WooW
 
 
 @router.post("/writeback/{queue_id}/approve", response_model=WooWritebackQueueRead)
-def writeback_queue_approve_legacy(queue_id: int, db: Session = Depends(get_db)) -> WooWritebackQueueRead:
-    return writeback_queue_approve(queue_id, db=db)
+def writeback_queue_approve_legacy(queue_id: int, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> WooWritebackQueueRead:
+    return writeback_queue_approve(queue_id, db=db, actor=actor)
 
 
 @router.post("/writeback/{queue_id}/send", response_model=WooWritebackQueueRead)
@@ -411,7 +500,7 @@ def sync_run_to_read(run: WooCommerceSyncRun) -> WooCommerceSyncRunRead:
     )
 
 
-def woo_status_payload(settings, client: WooCommerceClient, db: Session) -> dict:
+def woo_status_payload(settings, client: WooCommerceClient, db: Session, *, scheduler_running: bool = False) -> dict:
     host = client.base_url_host
     allowed_host = getattr(settings, "woocommerce_allowed_host", "")
     last_product_sync = latest_sync(db, "products")
@@ -419,6 +508,7 @@ def woo_status_payload(settings, client: WooCommerceClient, db: Session) -> dict
     latest_error = db.scalars(select(WooCommerceSyncError).order_by(WooCommerceSyncError.created_at.desc(), WooCommerceSyncError.id.desc())).first()
     latest_webhook = db.scalars(select(WooCommerceWebhookDelivery).order_by(WooCommerceWebhookDelivery.received_at.desc(), WooCommerceWebhookDelivery.id.desc())).first()
     return {
+        "base_url": settings.woocommerce_base_url or None,
         "base_url_host": host,
         "environment": getattr(settings, "woocommerce_environment", "development"),
         "read_enabled": getattr(settings, "woocommerce_read_enabled", True),
@@ -427,6 +517,7 @@ def woo_status_payload(settings, client: WooCommerceClient, db: Session) -> dict
         "dry_run": getattr(settings, "woocommerce_writeback_dry_run", True),
         "staging_live_test_mode": getattr(settings, "woocommerce_staging_live_test_mode", False),
         "stock_write_allowed": getattr(settings, "woocommerce_allow_stock_write", False),
+        "production_stock_authority": getattr(settings, "woocommerce_production_stock_authority", "disabled"),
         "order_status_write_allowed": getattr(settings, "woocommerce_allow_order_status_write", False),
         "product_metadata_write_allowed": getattr(settings, "woocommerce_allow_product_metadata_write", False),
         "customer_write_allowed": getattr(settings, "woocommerce_allow_customer_write", False),
@@ -448,6 +539,7 @@ def woo_status_payload(settings, client: WooCommerceClient, db: Session) -> dict
         } if latest_webhook else None,
         "last_product_sync": sync_run_to_read(last_product_sync).model_dump(mode="json") if last_product_sync else None,
         "last_order_sync": sync_run_to_read(last_order_sync).model_dump(mode="json") if last_order_sync else None,
+        "order_reconciliation": reconciliation_health(db, settings, running=scheduler_running),
         "last_error": latest_error.error_message if latest_error else None,
     }
 

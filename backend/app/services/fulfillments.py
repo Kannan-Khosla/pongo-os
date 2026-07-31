@@ -111,6 +111,7 @@ def commit_fulfillment(db: Session, payload: FulfillmentRequest) -> FulfillmentC
                 quantity_picked=picked,
                 quantity_previously_fulfilled=previously_fulfilled,
                 quantity_to_fulfill=quantity_to_fulfill,
+                unit_cost=item.unit_cost,
                 quantity_fulfilled_after=fulfilled_after,
                 remaining_to_fulfill=remaining_after,
                 in_stock_before=in_stock_before,

@@ -2,11 +2,14 @@ import csv
 from datetime import date
 from io import StringIO
 
-from fastapi import APIRouter, Depends
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
-from sqlalchemy import select
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.inventory import InventoryItem, InventoryItemLocation, StockAdjustment, StockAdjustmentLine, StockMovement
 from app.models.orders import OrderItem
@@ -27,13 +30,148 @@ from app.services.received_inventory_report import (
     received_inventory_row_to_csv,
 )
 from app.services.sku_orders_report import SkuOrdersFilters, build_sku_orders_summary, export_sku_orders_csv, get_sku_order_rows
+from app.services.reporting import (
+    ReportIntegrityError,
+    create_report_run,
+    email_report,
+    get_report_run,
+    google_sheets_status,
+    list_report_catalog,
+    publish_report_to_google_sheets,
+    report_csv_bytes,
+    report_pdf_bytes,
+    report_run_to_dict,
+)
+from app.services.auth import authenticated_actor
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
+class ReportRunCreate(BaseModel):
+    filters: dict[str, object] = Field(default_factory=dict)
+    generated_by: str | None = Field(default="reporting-ui", max_length=120)
+
+
+class GoogleSheetShareRequest(BaseModel):
+    share_with: list[EmailStr] = Field(default_factory=list, max_length=50)
+
+
+class EmailReportRequest(BaseModel):
+    recipients: list[EmailStr] = Field(min_length=1, max_length=50)
+    formats: list[str] = Field(default_factory=lambda: ["pdf", "csv"], max_length=2)
+    subject: str | None = Field(default=None, max_length=240)
+    message: str | None = Field(default=None, max_length=4000)
+    google_sheet_url: str | None = Field(default=None, max_length=1000)
+
+
 @router.get("")
-def list_reports_placeholder() -> dict[str, str]:
-    return {"module": "reports", "status": "placeholder"}
+def list_reports() -> dict[str, object]:
+    return list_report_catalog(get_settings())
+
+
+@router.get("/sharing/status")
+def report_sharing_status() -> dict[str, object]:
+    settings = get_settings()
+    return {
+        "google_sheets": google_sheets_status(settings),
+        "email": {"configured": bool(settings.smtp_host and settings.smtp_from_email)},
+    }
+
+
+@router.post("/runs/{report_key}")
+def run_report(report_key: str, payload: ReportRunCreate, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict[str, object]:
+    try:
+        return create_report_run(db, report_key, payload.filters, actor)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Report not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/runs/{run_id}")
+def read_report_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    run = require_report_run(db, run_id)
+    return report_run_to_dict(run)
+
+
+@router.get("/runs/{run_id}/csv")
+def download_report_csv(run_id: str, db: Session = Depends(get_db)) -> Response:
+    run = require_report_run(db, run_id)
+    return Response(
+        report_csv_bytes(run),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="pongo-{run.report_key}-{run.id}.csv"'},
+    )
+
+
+@router.get("/runs/{run_id}/pdf")
+def download_report_pdf(run_id: str, db: Session = Depends(get_db)) -> Response:
+    run = require_report_run(db, run_id)
+    try:
+        pdf = report_pdf_bytes(run)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return Response(
+        pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="pongo-{run.report_key}-{run.id}.pdf"'},
+    )
+
+
+@router.post("/runs/{run_id}/google-sheets")
+def open_report_in_google_sheets(
+    run_id: str,
+    payload: GoogleSheetShareRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    run = require_report_run(db, run_id)
+    try:
+        return publish_report_to_google_sheets(
+            db,
+            run,
+            get_settings(),
+            [str(recipient) for recipient in payload.share_with],
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Google Sheets rejected the report request. Check the backend Google connection and scopes.") from exc
+
+
+@router.post("/runs/{run_id}/email")
+def share_report_by_email(
+    run_id: str,
+    payload: EmailReportRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    run = require_report_run(db, run_id)
+    try:
+        return email_report(
+            db,
+            run,
+            get_settings(),
+            [str(recipient) for recipient in payload.recipients],
+            payload.formats,
+            payload.subject,
+            payload.message,
+            payload.google_sheet_url,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail="The configured mail server could not send this report.") from exc
+
+
+def require_report_run(db: Session, run_id: str):
+    try:
+        run = get_report_run(db, run_id)
+    except ReportIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if run is None:
+        raise HTTPException(status_code=404, detail="Report run not found.")
+    return run
 
 
 @router.get("/received-inventory", response_model=list[ReceivedInventoryReportRow])
@@ -239,7 +377,10 @@ def inventory_valuation_report(warehouse: str | None = None, inventory_location:
 @router.get("/inventory-valuation/summary")
 def inventory_valuation_summary(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: str | None = None, category: str | None = None, db: Session = Depends(get_db)) -> dict:
     rows = inventory_valuation_rows(db, warehouse, inventory_location, sku, barcode, brand, category, None, 0)
-    return summarize_inventory_rows(rows)
+    return {
+        **inventory_valuation_count_metadata(db, warehouse, inventory_location, sku, barcode, brand, category, rows),
+        **summarize_inventory_rows(rows),
+    }
 
 
 @router.get("/inventory-valuation/export")
@@ -287,14 +428,14 @@ def item_activity_report(start_date: date | None = None, end_date: date | None =
 
 
 @router.get("/item-activity/summary")
-def item_activity_summary(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, barcode: str | None = None, db: Session = Depends(get_db)) -> dict:
-    rows = movement_ledger_rows(db, start_date, end_date, sku, barcode, None, None, None)
+def item_activity_summary(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, barcode: str | None = None, movement_type: str | None = None, db: Session = Depends(get_db)) -> dict:
+    rows = movement_ledger_rows(db, start_date, end_date, sku, barcode, None, None, movement_type)
     return {"total_rows": len(rows), "stock_increase": sum(row["quantity_change"] for row in rows if row["quantity_change"] > 0), "stock_decrease": sum(row["quantity_change"] for row in rows if row["quantity_change"] < 0)}
 
 
 @router.get("/item-activity/export")
-def item_activity_export(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, barcode: str | None = None, db: Session = Depends(get_db)) -> Response:
-    return csv_response("pongo-item-activity-report.csv", movement_ledger_rows(db, start_date, end_date, sku, barcode, None, None, None))
+def item_activity_export(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, barcode: str | None = None, movement_type: str | None = None, db: Session = Depends(get_db)) -> Response:
+    return csv_response("pongo-item-activity-report.csv", movement_ledger_rows(db, start_date, end_date, sku, barcode, None, None, movement_type))
 
 
 @router.get("/location-utilization")
@@ -308,7 +449,7 @@ def location_utilization_report(warehouse: str | None = None, inventory_location
         group["total_units"] += row["in_stock"]
         group["allocated_units"] += row["allocated"]
         group["sellable_units"] += row["sellable"]
-        group["inventory_value"] += row["inventory_value"]
+        group["inventory_value"] += row["inventory_value"] or 0
         group["under_par_skus"] += 1 if row["under_par"] else 0
     return list(grouped.values())
 
@@ -358,14 +499,14 @@ def margin_by_sku_report(start_date: date | None = None, end_date: date | None =
 
 
 @router.get("/margin-by-sku/summary")
-def margin_by_sku_summary(db: Session = Depends(get_db)) -> dict:
-    rows = margin_by_sku_report(db=db)
+def margin_by_sku_summary(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, brand: str | None = None, category: str | None = None, db: Session = Depends(get_db)) -> dict:
+    rows = margin_by_sku_report(start_date, end_date, sku, brand, category, db)
     return {"total_skus": len(rows), "revenue": sum(row["revenue"] for row in rows), "estimated_cost": sum(row["estimated_cost"] for row in rows), "estimated_margin": sum(row["estimated_margin"] for row in rows)}
 
 
 @router.get("/margin-by-sku/export")
-def margin_by_sku_export(db: Session = Depends(get_db)) -> Response:
-    return csv_response("pongo-margin-by-sku-report.csv", margin_by_sku_report(db=db))
+def margin_by_sku_export(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, brand: str | None = None, category: str | None = None, db: Session = Depends(get_db)) -> Response:
+    return csv_response("pongo-margin-by-sku-report.csv", margin_by_sku_report(start_date, end_date, sku, brand, category, db))
 
 
 @router.get("/receiving-cost")
@@ -388,14 +529,14 @@ def receiving_cost_report(start_date: date | None = None, end_date: date | None 
 
 
 @router.get("/receiving-cost/summary")
-def receiving_cost_summary(db: Session = Depends(get_db)) -> dict:
-    rows = receiving_cost_report(db=db)
+def receiving_cost_summary(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, warehouse: str | None = None, inventory_location: str | None = None, db: Session = Depends(get_db)) -> dict:
+    rows = receiving_cost_report(start_date, end_date, sku, warehouse, inventory_location, db)
     return {"total_rows": len(rows), "total_quantity": sum(row["quantity"] for row in rows), "total_cost": sum(row["total_cost"] for row in rows)}
 
 
 @router.get("/receiving-cost/export")
-def receiving_cost_export(db: Session = Depends(get_db)) -> Response:
-    return csv_response("pongo-receiving-cost-report.csv", receiving_cost_report(db=db))
+def receiving_cost_export(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, warehouse: str | None = None, inventory_location: str | None = None, db: Session = Depends(get_db)) -> Response:
+    return csv_response("pongo-receiving-cost-report.csv", receiving_cost_report(start_date, end_date, sku, warehouse, inventory_location, db))
 
 
 @router.get("/adjustments")
@@ -417,18 +558,18 @@ def adjustments_report(adjustment_type: str | None = None, sku: str | None = Non
 
 
 @router.get("/adjustments/summary")
-def adjustments_summary(db: Session = Depends(get_db)) -> dict:
-    rows = adjustments_report(db=db)
+def adjustments_summary(adjustment_type: str | None = None, sku: str | None = None, warehouse: str | None = None, inventory_location: str | None = None, db: Session = Depends(get_db)) -> dict:
+    rows = adjustments_report(adjustment_type, sku, warehouse, inventory_location, db)
     return {"total_rows": len(rows), "total_quantity_change": sum(row["quantity_change"] for row in rows), "estimated_value_impact": sum(row["estimated_value_impact"] for row in rows)}
 
 
 @router.get("/adjustments/export")
-def adjustments_export(db: Session = Depends(get_db)) -> Response:
-    return csv_response("pongo-adjustments-report.csv", adjustments_report(db=db))
+def adjustments_export(adjustment_type: str | None = None, sku: str | None = None, warehouse: str | None = None, inventory_location: str | None = None, db: Session = Depends(get_db)) -> Response:
+    return csv_response("pongo-adjustments-report.csv", adjustments_report(adjustment_type, sku, warehouse, inventory_location, db))
 
 
 def inventory_valuation_rows(db: Session, warehouse: str | None, inventory_location: str | None, sku: str | None, barcode: str | None, brand: str | None, category: str | None, limit: int | None, offset: int) -> list[dict]:
-    statement = select(InventoryItemLocation, InventoryItem).join(InventoryItem, InventoryItemLocation.inventory_item_id == InventoryItem.id)
+    statement = select(InventoryItemLocation, InventoryItem).join(InventoryItem, InventoryItemLocation.inventory_item_id == InventoryItem.id).where(usable_item_location_predicate())
     if warehouse:
         statement = statement.where(InventoryItemLocation.warehouse == warehouse)
     if inventory_location:
@@ -448,18 +589,100 @@ def inventory_valuation_rows(db: Session, warehouse: str | None, inventory_locat
         statement = statement.limit(limit)
     rows = []
     for location, item in db.execute(statement).all():
-        unit_cost = float(item.unit_cost or 0)
-        sales_price = float(item.sales_price or 0)
+        unit_cost = float(item.unit_cost) if item.unit_cost is not None else None
+        sales_price = float(item.sales_price) if item.sales_price is not None else None
         in_stock = float(location.in_stock or 0)
         allocated = float(location.allocated or 0)
         sellable = float(location.sellable or (location.in_stock or 0) - (location.allocated or 0))
         par_level = float(location.par_level if location.par_level is not None else item.par_level or 0)
-        rows.append({"sku": item.sku, "barcode": item.barcode, "description": item.description, "brand": item.brand, "category": item.category, "warehouse": location.warehouse, "inventory_location": location.inventory_location, "location_code": location.location_code, "location_name": location.location_name, "in_stock": in_stock, "allocated": allocated, "sellable": sellable, "unit_cost": unit_cost, "inventory_value": in_stock * unit_cost, "sales_price": sales_price, "retail_value": in_stock * sales_price, "margin_estimate": sales_price - unit_cost, "par_level": par_level, "under_par": bool(location.under_par), "reorder_enabled": bool(item.reorder), "default_econ_order": float(item.default_econ_order or 0), "suggested_order_qty": max(0, par_level - in_stock)})
+        rows.append({"sku": item.sku, "barcode": item.barcode, "description": item.woo_name or item.description, "brand": item.brand, "category": item.category, "warehouse": location.warehouse, "inventory_location": location.inventory_location, "location_code": location.location_code, "location_name": location.location_name, "in_stock": in_stock, "allocated": allocated, "sellable": sellable, "unit_cost": unit_cost, "inventory_value": in_stock * unit_cost if unit_cost is not None else None, "sales_price": sales_price, "retail_value": in_stock * sales_price if sales_price is not None else None, "margin_estimate": sales_price - unit_cost if sales_price is not None and unit_cost is not None else None, "par_level": par_level, "under_par": bool(location.under_par), "reorder_enabled": bool(item.reorder), "default_econ_order": float(item.default_econ_order or 0), "suggested_order_qty": max(0, par_level - in_stock)})
     return rows
 
 
 def summarize_inventory_rows(rows: list[dict]) -> dict:
-    return {"total_skus": len({row["sku"] for row in rows}), "total_units": sum(row["in_stock"] for row in rows), "total_inventory_value": sum(row["inventory_value"] for row in rows), "total_retail_value": sum(row["retail_value"] for row in rows), "locations_count": len({(row["warehouse"], row["inventory_location"]) for row in rows}), "under_par_count": sum(1 for row in rows if row["under_par"])}
+    inventory_values = [row["inventory_value"] for row in rows if row["inventory_value"] is not None]
+    retail_values = [row["retail_value"] for row in rows if row["retail_value"] is not None]
+    return {"total_skus": len({sku for row in rows if (sku := normalize_sku(row.get("sku")))}), "total_units": sum(row["in_stock"] for row in rows), "total_inventory_value": sum(inventory_values) if inventory_values else None, "total_retail_value": sum(retail_values) if retail_values else None, "locations_count": len({(row["warehouse"], row["inventory_location"]) for row in rows}), "under_par_count": sum(1 for row in rows if row["under_par"])}
+
+
+def normalize_sku(value: object) -> str | None:
+    normalized = str(value or "").strip().casefold()
+    return normalized or None
+
+
+def usable_item_location_predicate():
+    return and_(
+        InventoryItemLocation.active.is_(True),
+        func.trim(func.coalesce(InventoryItemLocation.warehouse, "")) != "",
+        func.trim(func.coalesce(InventoryItemLocation.inventory_location, "")) != "",
+    )
+
+
+def inventory_valuation_count_metadata(
+    db: Session,
+    warehouse: str | None,
+    inventory_location: str | None,
+    sku: str | None,
+    barcode: str | None,
+    brand: str | None,
+    category: str | None,
+    rows: list[dict],
+) -> dict:
+    statement = select(InventoryItem)
+    if sku:
+        statement = statement.where(InventoryItem.sku == sku)
+    if barcode:
+        statement = statement.where(InventoryItem.barcode == barcode)
+    if brand:
+        statement = statement.where(InventoryItem.brand == brand)
+    if category:
+        statement = statement.where(InventoryItem.category == category)
+    items = list(db.scalars(statement).all())
+    item_ids = {item.id for item in items}
+    all_location_item_ids: set[int] = set()
+    reported_item_ids: set[int] = set()
+    if item_ids:
+        all_location_item_ids = set(db.scalars(select(InventoryItemLocation.inventory_item_id).where(InventoryItemLocation.inventory_item_id.in_(item_ids), usable_item_location_predicate())).all())
+        location_statement = select(InventoryItemLocation.inventory_item_id).where(InventoryItemLocation.inventory_item_id.in_(item_ids), usable_item_location_predicate())
+        if warehouse:
+            location_statement = location_statement.where(InventoryItemLocation.warehouse == warehouse)
+        if inventory_location:
+            location_statement = location_statement.where(InventoryItemLocation.inventory_location == inventory_location)
+        reported_item_ids = set(db.scalars(location_statement).all())
+    reported_skus = {sku for row in rows if (sku := normalize_sku(row.get("sku")))}
+    valued_skus = {sku for item in items if item.id in reported_item_ids and item.unit_cost is not None and (sku := normalize_sku(item.sku))}
+    catalog_skus = [sku for item in items if (sku := normalize_sku(item.sku))]
+    missing_location_count = len(item_ids - all_location_item_ids)
+    location_filter_exclusion_count = len((item_ids & all_location_item_ids) - reported_item_ids)
+    missing_cost_count = sum(1 for item in items if item.unit_cost is None)
+    reported_missing_cost_count = sum(1 for item in items if item.id in reported_item_ids and item.unit_cost is None)
+    missing_sku_count = sum(1 for item in items if normalize_sku(item.sku) is None)
+    duplicate_sku_record_count = len(catalog_skus) - len(set(catalog_skus))
+    exclusion_summary = []
+    if missing_location_count:
+        exclusion_summary.append({"reason": "missing_location", "label": "Location missing", "count": missing_location_count, "message": f"{missing_location_count} inventory record(s) are excluded because they have no active location row with both warehouse and location populated."})
+    if location_filter_exclusion_count:
+        exclusion_summary.append({"reason": "location_filter", "label": "Outside selected location", "count": location_filter_exclusion_count, "message": f"{location_filter_exclusion_count} inventory record(s) are excluded because their location rows do not match the selected warehouse or location."})
+    if missing_cost_count:
+        exclusion_summary.append({"reason": "missing_cost", "label": "Cost missing", "count": missing_cost_count, "message": f"{missing_cost_count} inventory record(s) cannot be counted as valued SKUs because unit cost is unavailable; {reported_missing_cost_count} appear in the current report."})
+    if missing_sku_count:
+        exclusion_summary.append({"reason": "missing_sku", "label": "SKU missing", "count": missing_sku_count, "message": f"{missing_sku_count} inventory record(s) are omitted from SKU counts because SKU is blank."})
+    if duplicate_sku_record_count:
+        exclusion_summary.append({"reason": "duplicate_sku", "label": "Duplicate SKU records", "count": duplicate_sku_record_count, "message": f"{duplicate_sku_record_count} inventory record(s) share an existing SKU and are collapsed in unique SKU counts."})
+    return {
+        "inventory_record_count": len(items),
+        "unique_sku_count": len(set(catalog_skus)),
+        "reported_sku_count": len(reported_skus),
+        "valued_sku_count": len(valued_skus),
+        "missing_sku_count": missing_sku_count,
+        "duplicate_sku_record_count": duplicate_sku_record_count,
+        "missing_location_count": missing_location_count,
+        "missing_cost_count": missing_cost_count,
+        "reported_missing_cost_count": reported_missing_cost_count,
+        "excluded_record_count": len(item_ids - reported_item_ids),
+        "location_filter_exclusion_count": location_filter_exclusion_count,
+        "exclusion_summary": exclusion_summary,
+    }
 
 
 def movement_ledger_rows(db: Session, start_date: date | None, end_date: date | None, sku: str | None, barcode: str | None, warehouse: str | None, inventory_location: str | None, movement_type: str | None) -> list[dict]:

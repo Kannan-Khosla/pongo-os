@@ -1,10 +1,11 @@
 import csv
 from io import StringIO
 from datetime import datetime, timezone
+from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -15,13 +16,40 @@ from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.orders import Order, OrderItem
 from app.schemas.imports import ImportCommitResponse, ImportPreviewResponse
 from app.schemas.inventory import InventoryItemLocationCreate, InventoryItemLocationListResponse, InventoryItemLocationRead, InventoryItemLocationUpdate
-from app.schemas.items import InventoryItemCreate, InventoryItemListResponse, InventoryItemRead, InventoryItemUpdate
+from app.schemas.items import InventoryItemCreate, InventoryItemListResponse, InventoryItemRead, InventoryItemUpdate, InventoryOpeningBalanceRequest
 from app.services.item_import import create_payload_from_row, parse_items_csv, preview_from_parsed, read_upload_text
-from app.services.item_control import build_item_activity, build_item_detail, commit_bulk_item_update, preview_bulk_item_update, search_items
+from app.services.auth import authenticated_actor
+from app.services.item_enrichment import commit_enrichment, enrichment_csv, parse_enrichment_csv, preview_enrichment
+from app.services.item_control import build_item_activity, build_item_detail, commit_bulk_item_update, item_keyword_predicates, preview_bulk_item_update, search_items
 from app.services.items import CANONICAL_ITEM_COLUMNS, apply_calculated_fields, apply_item_payload, item_to_csv_row
-from app.services.location_inventory import ensure_default_item_location_from_item, get_or_create_item_location, recalculate_item_location, recalculate_item_totals, set_default_item_location, to_decimal
+from app.services.location_inventory import ensure_default_item_location_from_item, get_or_create_item_location, lock_inventory_stock, recalculate_item_location, recalculate_item_totals, set_default_item_location, set_opening_balance, to_decimal
+from app.services.stock_mutation_guard import IdempotencyConflict
 
 router = APIRouter(prefix="/items", tags=["items"])
+
+
+ITEM_SORT_COLUMNS = {
+    "sku": InventoryItem.sku,
+    "barcode": InventoryItem.barcode,
+    "description": func.coalesce(InventoryItem.woo_name, InventoryItem.description),
+    "brand": InventoryItem.brand,
+    "category": InventoryItem.category,
+    "in_stock": InventoryItem.in_stock,
+    "allocated": InventoryItem.allocated,
+    "sellable": InventoryItem.sellable,
+    "unit_cost": InventoryItem.unit_cost,
+    "sales_price": InventoryItem.sales_price,
+    "updated_at": InventoryItem.updated_at,
+}
+
+DATA_QUALITY_FILTERS = {
+    "missing_barcode",
+    "missing_brand",
+    "missing_cost",
+    "unmapped",
+    "receiving",
+    "missing_location",
+}
 
 
 def build_items_statement(
@@ -37,22 +65,11 @@ def build_items_statement(
     woo_sync_status: str | None = None,
     woo_product_id: int | None = None,
     woo_variation_id: int | None = None,
+    data_quality: str | None = None,
 ):
     statement = select(InventoryItem)
     if search:
-        pattern = f"%{search}%"
-        statement = statement.where(
-            or_(
-                InventoryItem.sku.ilike(pattern),
-                InventoryItem.barcode.ilike(pattern),
-                InventoryItem.description.ilike(pattern),
-                InventoryItem.category.ilike(pattern),
-                InventoryItem.brand.ilike(pattern),
-                InventoryItem.manufacturer.ilike(pattern),
-                InventoryItem.warehouse.ilike(pattern),
-                InventoryItem.inventory_location.ilike(pattern),
-            )
-        )
+        statement = statement.where(*item_keyword_predicates(search))
     if sku:
         statement = statement.where(InventoryItem.sku == sku)
     if barcode:
@@ -75,7 +92,47 @@ def build_items_statement(
         statement = statement.where(InventoryItem.woo_product_id == woo_product_id)
     if woo_variation_id is not None:
         statement = statement.where(InventoryItem.woo_variation_id == woo_variation_id)
+    quality_filters = parse_data_quality_filters(data_quality)
+    if quality_filters:
+        predicates = []
+        if "missing_barcode" in quality_filters:
+            predicates.append(func.trim(func.coalesce(InventoryItem.barcode, "")) == "")
+        if "missing_brand" in quality_filters:
+            predicates.append(func.trim(func.coalesce(InventoryItem.brand, "")) == "")
+        if "missing_cost" in quality_filters:
+            predicates.append(InventoryItem.unit_cost.is_(None))
+        if "unmapped" in quality_filters:
+            predicates.append(InventoryItem.woo_product_id.is_(None))
+        if "receiving" in quality_filters:
+            receiving_location = and_(
+                InventoryItemLocation.active.is_(True),
+                func.lower(func.trim(func.coalesce(InventoryItemLocation.inventory_location, ""))) == "receiving",
+            )
+            predicates.append(
+                or_(
+                    func.lower(func.trim(func.coalesce(InventoryItem.inventory_location, ""))) == "receiving",
+                    InventoryItem.locations.any(receiving_location),
+                )
+            )
+        if "missing_location" in quality_filters:
+            usable_location = and_(
+                InventoryItemLocation.active.is_(True),
+                func.trim(func.coalesce(InventoryItemLocation.warehouse, "")) != "",
+                func.trim(func.coalesce(InventoryItemLocation.inventory_location, "")) != "",
+            )
+            predicates.append(~InventoryItem.locations.any(usable_location))
+        statement = statement.where(or_(*predicates))
     return statement.order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())
+
+
+def parse_data_quality_filters(value: str | None) -> set[str]:
+    if not value or not value.strip():
+        return set()
+    filters = {part.strip().lower() for part in value.split(",") if part.strip()}
+    invalid = filters - DATA_QUALITY_FILTERS
+    if invalid:
+        raise HTTPException(status_code=422, detail=f"Unsupported data_quality filter: {', '.join(sorted(invalid))}")
+    return filters
 
 
 def get_open_order_totals(db: Session, item_ids: list[int]) -> dict[int, dict[str, float | int]]:
@@ -102,6 +159,22 @@ def get_open_order_totals(db: Session, item_ids: list[int]) -> dict[int, dict[st
     }
 
 
+def get_item_facets(db: Session) -> dict[str, list[str]]:
+    def values_for(column) -> list[str]:
+        statement = (
+            select(column)
+            .where(column.is_not(None), func.trim(column) != "")
+            .distinct()
+            .order_by(column.asc())
+        )
+        return [str(value) for value in db.scalars(statement).all()]
+
+    return {
+        "categories": values_for(InventoryItem.category),
+        "brands": values_for(InventoryItem.brand),
+    }
+
+
 @router.get("/search")
 def search_items_endpoint(
     q: str | None = None,
@@ -121,8 +194,8 @@ def preview_items_bulk_update(payload: dict, db: Session = Depends(get_db)) -> d
 
 
 @router.post("/bulk/commit")
-def commit_items_bulk_update(payload: dict, db: Session = Depends(get_db)) -> dict:
-    return commit_bulk_item_update(db, payload.get("item_ids") or [], payload.get("updates") or {})
+def commit_items_bulk_update(payload: dict, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
+    return commit_bulk_item_update(db, payload.get("item_ids") or [], payload.get("updates") or {}, created_by=actor)
 
 
 @router.get("", response_model=InventoryItemListResponse)
@@ -139,9 +212,38 @@ def list_items(
     woo_sync_status: str | None = None,
     woo_product_id: int | None = None,
     woo_variation_id: int | None = None,
+    data_quality: str | None = None,
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=100),
+    sort_by: Literal["sku", "barcode", "description", "brand", "category", "in_stock", "allocated", "sellable", "unit_cost", "sales_price", "updated_at"] = "sku",
+    sort_direction: Literal["asc", "desc"] = "asc",
     db: Session = Depends(get_db),
 ) -> InventoryItemListResponse:
-    statement = build_items_statement(search, sku, barcode, category, warehouse, inventory_location, brand, active, include_non_inventory, woo_sync_status, woo_product_id, woo_variation_id)
+    statement = build_items_statement(
+        search=search,
+        sku=sku,
+        barcode=barcode,
+        category=category,
+        warehouse=warehouse,
+        inventory_location=inventory_location,
+        brand=brand,
+        active=active,
+        include_non_inventory=include_non_inventory,
+        woo_sync_status=woo_sync_status,
+        woo_product_id=woo_product_id,
+        woo_variation_id=woo_variation_id,
+        data_quality=data_quality,
+    )
+    total = int(db.scalar(select(func.count()).select_from(statement.order_by(None).subquery())) or 0)
+    sort_column = ITEM_SORT_COLUMNS[sort_by]
+    sort_expression = sort_column.desc().nullslast() if sort_direction == "desc" else sort_column.asc().nullslast()
+    statement = statement.order_by(None).order_by(sort_expression, InventoryItem.id.asc())
+    pagination_requested = page is not None or page_size is not None
+    effective_page_size = page_size or 20
+    total_pages = (total + effective_page_size - 1) // effective_page_size if effective_page_size else 0
+    effective_page = min(page or 1, max(total_pages, 1)) if pagination_requested else 1
+    if pagination_requested:
+        statement = statement.offset((effective_page - 1) * effective_page_size).limit(effective_page_size)
     items = list(db.scalars(statement).all())
     open_order_totals = get_open_order_totals(db, [item.id for item in items])
     for item in items:
@@ -149,7 +251,20 @@ def list_items(
         totals = open_order_totals.get(item.id, {"count": 0, "quantity": 0})
         item.open_orders_count = totals["count"]
         item.open_order_quantity = totals["quantity"]
-    return InventoryItemListResponse(items=items, total=len(items))
+    if not pagination_requested:
+        effective_page_size = len(items)
+        total_pages = (total + effective_page_size - 1) // effective_page_size if effective_page_size else 0
+    return InventoryItemListResponse(
+        items=items,
+        total=total,
+        page=effective_page,
+        page_size=effective_page_size,
+        total_pages=total_pages,
+        returned_count=len(items),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+        facets=get_item_facets(db),
+    )
 
 
 @router.get("/export")
@@ -166,9 +281,24 @@ def export_items(
     woo_sync_status: str | None = None,
     woo_product_id: int | None = None,
     woo_variation_id: int | None = None,
+    data_quality: str | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
-    statement = build_items_statement(search, sku, barcode, category, warehouse, inventory_location, brand, active, include_non_inventory, woo_sync_status, woo_product_id, woo_variation_id)
+    statement = build_items_statement(
+        search=search,
+        sku=sku,
+        barcode=barcode,
+        category=category,
+        warehouse=warehouse,
+        inventory_location=inventory_location,
+        brand=brand,
+        active=active,
+        include_non_inventory=include_non_inventory,
+        woo_sync_status=woo_sync_status,
+        woo_product_id=woo_product_id,
+        woo_variation_id=woo_variation_id,
+        data_quality=data_quality,
+    )
     items = list(db.scalars(statement).all())
     buffer = StringIO()
     writer = csv.DictWriter(buffer, fieldnames=CANONICAL_ITEM_COLUMNS)
@@ -182,6 +312,41 @@ def export_items(
     )
 
 
+@router.get("/enrichment/export")
+def export_items_enrichment(db: Session = Depends(get_db)) -> Response:
+    items = list(db.scalars(
+        select(InventoryItem)
+        .where(InventoryItem.woo_product_id.is_not(None))
+        .order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())
+    ).all())
+    return Response(
+        content=enrichment_csv(items),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="pongo-woo-enrichment-template.csv"'},
+    )
+
+
+@router.post("/enrichment/preview")
+async def preview_items_enrichment(
+    file: UploadFile = File(...),
+    import_opening_stock: bool = Form(False),
+    db: Session = Depends(get_db),
+) -> dict:
+    csv_text = await read_upload_text(file)
+    return preview_enrichment(parse_enrichment_csv(csv_text, db, import_opening_stock=import_opening_stock))
+
+
+@router.post("/enrichment/commit")
+async def commit_items_enrichment(
+    file: UploadFile = File(...),
+    import_opening_stock: bool = Form(False),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> dict:
+    csv_text = await read_upload_text(file)
+    return commit_enrichment(csv_text, db, file_name=file.filename, import_opening_stock=import_opening_stock, created_by=actor)
+
+
 @router.post("/import/preview", response_model=ImportPreviewResponse)
 async def preview_items_import(file: UploadFile = File(...), db: Session = Depends(get_db)) -> ImportPreviewResponse:
     csv_text = await read_upload_text(file)
@@ -190,7 +355,7 @@ async def preview_items_import(file: UploadFile = File(...), db: Session = Depen
 
 
 @router.post("/import/commit", response_model=ImportCommitResponse)
-async def commit_items_import(file: UploadFile = File(...), db: Session = Depends(get_db)) -> ImportCommitResponse:
+async def commit_items_import(file: UploadFile = File(...), db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> ImportCommitResponse:
     csv_text = await read_upload_text(file)
     parsed = parse_items_csv(csv_text, db)
     created_count = 0
@@ -203,7 +368,7 @@ async def commit_items_import(file: UploadFile = File(...), db: Session = Depend
         successful_rows=0,
         failed_rows=len(parsed.errors),
         status="completed",
-        created_by="system",
+        created_by=actor,
         completed_at=datetime.now(timezone.utc),
     )
     db.add(import_job)
@@ -363,11 +528,11 @@ def list_item_notes(item_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/{item_id}/notes", status_code=201)
-def create_item_note(item_id: int, payload: dict, db: Session = Depends(get_db)) -> dict:
+def create_item_note(item_id: int, payload: dict, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
     item = db.get(InventoryItem, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Item not found")
-    note = ItemNote(inventory_item_id=item_id, note=payload.get("note") or "", note_type=payload.get("note_type") or "general", created_by=payload.get("created_by") or "system")
+    note = ItemNote(inventory_item_id=item_id, note=payload.get("note") or "", note_type=payload.get("note_type") or "general", created_by=actor)
     if not note.note.strip():
         raise HTTPException(status_code=400, detail="Note is required")
     db.add(note)
@@ -434,8 +599,9 @@ def create_item_location(item_id: int, payload: InventoryItemLocationCreate, db:
 
 @router.patch("/{item_id}/locations/{item_location_id}", response_model=InventoryItemLocationRead)
 def update_item_location(item_id: int, item_location_id: int, payload: InventoryItemLocationUpdate, db: Session = Depends(get_db)) -> InventoryItemLocationRead:
-    item = db.get(InventoryItem, item_id)
-    row = db.get(InventoryItemLocation, item_location_id)
+    lock_inventory_stock(db, {item_id})
+    item = db.get(InventoryItem, item_id, populate_existing=True)
+    row = db.get(InventoryItemLocation, item_location_id, populate_existing=True)
     if item is None or row is None or row.inventory_item_id != item_id:
         raise HTTPException(status_code=404, detail="Item location not found")
     if payload.location_code is not None:
@@ -445,6 +611,12 @@ def update_item_location(item_id: int, item_location_id: int, payload: Inventory
     if payload.par_level is not None:
         row.par_level = to_decimal(payload.par_level)
     if payload.active is not None:
+        if payload.active is False and (
+            to_decimal(row.in_stock) != 0
+            or to_decimal(row.allocated) != 0
+            or to_decimal(row.on_order) != 0
+        ):
+            raise HTTPException(status_code=409, detail="Transfer or adjust this location to zero before deactivating it.")
         row.active = payload.active
     if payload.is_default_location is not None:
         if payload.is_default_location:
@@ -460,6 +632,8 @@ def update_item_location(item_id: int, item_location_id: int, payload: Inventory
 
 @router.post("", response_model=InventoryItemRead, status_code=201)
 def create_item(payload: InventoryItemCreate, db: Session = Depends(get_db)) -> InventoryItem:
+    if {"in_stock", "allocated"} & payload.model_fields_set and (to_decimal(payload.in_stock) != 0 or to_decimal(payload.allocated) != 0):
+        raise HTTPException(status_code=422, detail="Create the item first, then use its explicit opening-balance endpoint for In Stock or Allocated quantities.")
     item = apply_item_payload(InventoryItem(), payload)
     db.add(item)
     db.flush()
@@ -474,6 +648,8 @@ def update_item(item_id: int, payload: InventoryItemUpdate, db: Session = Depend
     item = db.get(InventoryItem, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Item not found")
+    if {"in_stock", "allocated"} & payload.model_fields_set:
+        raise HTTPException(status_code=422, detail="In Stock and Allocated can only change through audited stock workflows.")
     apply_item_payload(item, payload, partial=True)
     db.add(item)
     db.flush()
@@ -481,6 +657,27 @@ def update_item(item_id: int, payload: InventoryItemUpdate, db: Session = Depend
     db.commit()
     db.refresh(item)
     return item
+
+
+@router.post("/{item_id}/opening-balance")
+def create_item_opening_balance(item_id: int, payload: InventoryOpeningBalanceRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
+    try:
+        return set_opening_balance(
+            db,
+            item_id,
+            in_stock=to_decimal(payload.in_stock),
+            allocated=to_decimal(payload.allocated),
+            warehouse=payload.warehouse,
+            inventory_location=payload.inventory_location,
+            idempotency_key=payload.idempotency_key,
+            created_by=actor,
+        )
+    except IdempotencyConflict as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 def item_location_to_read(row: InventoryItemLocation, item: InventoryItem | None = None) -> InventoryItemLocationRead:

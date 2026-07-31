@@ -22,13 +22,22 @@ from app.schemas.woocommerce import (
     WooCommerceOrderSyncRequest,
 )
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
-from app.services.order_workflow import auto_allocate_processing_orders_fifo, release_unpicked_allocations, sync_order_workflow_statuses, workflow_flags
+from app.services.location_inventory import lock_inventory_stock
+from app.services.order_workflow import (
+    append_note,
+    auto_allocate_processing_orders_fifo,
+    release_line_allocations,
+    release_unpicked_allocations,
+    sync_order_workflow_statuses,
+    workflow_flags,
+)
 
 OPEN_WOO_STATUSES = {"processing", "on-hold", "pending"}
 BARCODE_META_KEYS = {"barcode", "_barcode", "_ywbc_barcode", "upc", "gtin"}
 LOCAL_TERMINAL_STATUSES = {"completed", "closed", "fulfilled", "partially_fulfilled", "archived"}
 LOCAL_TERMINAL_COMPLETION_STATUSES = {"completed", "completed_without_picking"}
 WOO_QUANTITY_BELOW_ALLOCATED_REASON = "woo_quantity_below_allocated"
+RETIRED_WOO_LINE_STATUS = "removed_from_woocommerce"
 POSTGRES_ORDER_IMPORT_LOCK_KEY = int.from_bytes(b"PONGOORD", byteorder="big")
 
 
@@ -185,6 +194,15 @@ def commit_remote_order_records(
     normalized_orders = [normalize_order(order) for order in remote_orders]
     preview_rows = [build_order_preview(db, order, requested_statuses) for order in normalized_orders]
     preview = build_order_preview_response(True, preview_rows)
+    lock_inventory_stock(
+        db,
+        {
+            line.item_id
+            for preview_order in preview_rows
+            for line in preview_order.lines
+            if line.item_id is not None
+        },
+    )
     sync_run = WooCommerceSyncRun(sync_type="orders", status="completed", started_at=started_at, created_by=created_by, total_remote_records=preview.total_remote_records)
     db.add(sync_run)
     db.flush()
@@ -199,48 +217,68 @@ def commit_remote_order_records(
             store_order_sync_error(db, sync_run.id, preview_order, None, preview_order.warnings or preview_order.errors or ["Order status was not requested for this sync."])
             continue
         try:
-            order = db.scalars(select(Order).where(Order.woo_order_id == record.woo_order_id).options(selectinload(Order.items))).one_or_none()
-            preserve_local_workflow = order is not None and is_locally_terminal_order(order)
-            if order is None:
-                order = Order(woo_order_id=record.woo_order_id)
-                db.add(order)
-                created_count += 1
-            else:
-                updated_count += 1
-            update_local_order(order, record, preview_order, now, preserve_local_workflow=preserve_local_workflow)
-            db.flush()
+            issue_messages: list[str] = []
+            with db.begin_nested():
+                order = db.scalars(select(Order).where(Order.woo_order_id == record.woo_order_id).options(selectinload(Order.items))).one_or_none()
+                is_new_order = order is None
+                preserve_local_workflow = order is not None and is_locally_terminal_order(order)
+                previous_woo_status = order.woo_status if order is not None else None
+                if order is None:
+                    order = Order(woo_order_id=record.woo_order_id)
+                    db.add(order)
+                update_local_order(order, record, preview_order, now, preserve_local_workflow=preserve_local_workflow)
+                db.flush()
+                line_sync_issues, reconciliation_notes = upsert_order_lines(db, order, record, preview_order)
+                if previous_woo_status and previous_woo_status != record.woo_status:
+                    reconciliation_notes.append(
+                        f"WooCommerce status changed from {previous_woo_status} to {record.woo_status}."
+                    )
+                for note in reconciliation_notes:
+                    order.workflow_notes = append_note(order.workflow_notes, f"Woo reconciliation: {note}")
+                if line_sync_issues:
+                    issue_messages = [issue.message for issue in line_sync_issues]
+                    order.sync_status = "needs_review"
+                    order.sync_error = " ".join(issue_messages)
+                    order.allocation_status = "exception"
+                    order.allocation_exception_reason = WOO_QUANTITY_BELOW_ALLOCATED_REASON
+                    for issue in line_sync_issues:
+                        store_order_sync_error(db, sync_run.id, preview_order, issue.preview_line, [issue.message])
+                elif order.allocation_exception_reason == WOO_QUANTITY_BELOW_ALLOCATED_REASON:
+                    order.allocation_exception_reason = None
+                db.flush()
+                db.expire(order, ["items"])
+                if record.woo_status != "processing":
+                    released_quantity = release_unpicked_allocations(
+                        db,
+                        order,
+                        f"WooCommerce status changed to {record.woo_status}; released unpicked allocation.",
+                        "woocommerce_status_change",
+                    )
+                    if released_quantity > 0:
+                        order.workflow_notes = append_note(
+                            order.workflow_notes,
+                            f"Woo reconciliation: released {released_quantity} unpicked units after status changed to {record.woo_status}.",
+                        )
+                    order.local_status = record.local_status
+                    if not preserve_local_workflow:
+                        order.completion_status = record.local_status
+                sync_order_workflow_statuses(order)
+                for line in preview_order.lines:
+                    if line.matched_status in {"unmatched", "conflict"}:
+                        store_order_sync_error(db, sync_run.id, preview_order, line, line.errors or line.warnings or [f"Order line is {line.matched_status}."])
+            created_count += int(is_new_order)
+            updated_count += int(not is_new_order)
             matched_count += sum(1 for line in preview_order.lines if line.matched_status == "matched")
             conflict_count += sum(1 for line in preview_order.lines if line.matched_status == "conflict")
             error_count += sum(1 for line in preview_order.lines if line.matched_status in {"unmatched", "conflict"})
-            line_sync_issues = upsert_order_lines(db, order, record, preview_order)
-            if line_sync_issues:
-                issue_messages = [issue.message for issue in line_sync_issues]
-                error_count += len(line_sync_issues)
-                allocation_exception_count += 1
-                commit_errors.extend(issue_messages)
-                order.sync_status = "needs_review"
-                order.sync_error = " ".join(issue_messages)
-                order.allocation_status = "exception"
-                order.allocation_exception_reason = WOO_QUANTITY_BELOW_ALLOCATED_REASON
-                for issue in line_sync_issues:
-                    store_order_sync_error(db, sync_run.id, preview_order, issue.preview_line, [issue.message])
-            db.flush()
-            db.expire(order, ["items"])
-            if record.woo_status != "processing" and not preserve_local_workflow:
-                release_unpicked_allocations(
-                    db,
-                    order,
-                    f"WooCommerce status changed to {record.woo_status}; released unpicked allocation.",
-                    "woocommerce_status_change",
-                )
-                order.local_status = record.local_status
-                order.completion_status = record.local_status
-            sync_order_workflow_statuses(order)
-            for line in preview_order.lines:
-                if line.matched_status in {"unmatched", "conflict"}:
-                    store_order_sync_error(db, sync_run.id, preview_order, line, line.errors or line.warnings or [f"Order line is {line.matched_status}."])
+            error_count += len(issue_messages)
+            allocation_exception_count += int(bool(issue_messages))
+            commit_errors.extend(issue_messages)
         except Exception as exc:
+            if not commit:
+                raise
             error_count += 1
+            commit_errors.append(str(exc))
             store_order_sync_error(db, sync_run.id, preview_order, None, [str(exc)])
 
     fifo_summary = auto_allocate_processing_orders_fifo(db, source=created_by or "order-sync")
@@ -485,17 +523,23 @@ def normalize_line(line: dict[str, Any]) -> NormalizedWooOrderLine:
 
 def find_matching_item_for_line(db: Session, line: NormalizedWooOrderLine, errors: list[str]) -> InventoryItem | None:
     candidates: list[InventoryItem] = []
-    woo_match = None
+    matches: list[tuple[str, list[InventoryItem]]] = []
     if line.woo_product_id:
         statement = select(InventoryItem).where(InventoryItem.woo_product_id == line.woo_product_id)
         if line.woo_variation_id:
             statement = statement.where(InventoryItem.woo_variation_id == line.woo_variation_id)
         else:
             statement = statement.where(InventoryItem.woo_variation_id.is_(None))
-        woo_match = db.scalars(statement).first()
-    sku_match = db.scalars(select(InventoryItem).where(InventoryItem.sku == line.sku)).first() if line.sku else None
-    barcode_match = db.scalars(select(InventoryItem).where(InventoryItem.barcode == line.barcode)).first() if line.barcode else None
-    candidates.extend(candidate for candidate in [woo_match, sku_match, barcode_match] if candidate is not None)
+        matches.append(("WooCommerce identity", list(db.scalars(statement.limit(2)).all())))
+    if line.sku:
+        matches.append(("SKU", list(db.scalars(select(InventoryItem).where(InventoryItem.sku == line.sku).limit(2)).all())))
+    if line.barcode:
+        matches.append(("Barcode", list(db.scalars(select(InventoryItem).where(InventoryItem.barcode == line.barcode).limit(2)).all())))
+    for label, key_matches in matches:
+        if len(key_matches) > 1:
+            errors.append(f"Duplicate {label} matches multiple local items; allocation was blocked.")
+            return None
+        candidates.extend(key_matches)
     if len({candidate.id for candidate in candidates}) > 1:
         errors.append("WooCommerce IDs, SKU, or Barcode match different local items.")
         return None
@@ -563,19 +607,79 @@ def update_local_order(
     order.raw_woo_payload = record.raw_payload
 
 
-def upsert_order_lines(db: Session, order: Order, record: NormalizedWooOrder, preview: WooCommerceOrderPreviewOrder) -> list[OrderLineSyncIssue]:
+def upsert_order_lines(
+    db: Session,
+    order: Order,
+    record: NormalizedWooOrder,
+    preview: WooCommerceOrderPreviewOrder,
+) -> tuple[list[OrderLineSyncIssue], list[str]]:
     existing_by_line_id = {line.woo_order_item_id: line for line in order.items if line.woo_order_item_id is not None}
     preview_by_line_id = {line.woo_line_item_id: line for line in preview.lines}
+    remote_line_ids = {line.woo_line_item_id for line in record.lines}
     issues: list[OrderLineSyncIssue] = []
+    reconciliation_notes: list[str] = []
     for index, record_line in enumerate(record.lines, start=1):
         preview_line = preview_by_line_id.get(record_line.woo_line_item_id)
         local_line = existing_by_line_id.get(record_line.woo_line_item_id)
         if local_line is None:
             local_line = OrderItem(order=order, woo_order_item_id=record_line.woo_line_item_id)
             db.add(local_line)
+        previous_ordered = local_line.quantity_ordered or Decimal("0")
+        previous_allocated = local_line.quantity_allocated or Decimal("0")
+        previous_picked = local_line.quantity_picked or Decimal("0")
+        previous_fulfilled = local_line.quantity_fulfilled or Decimal("0")
+        previous_stock_reduced = local_line.quantity_stock_reduced or Decimal("0")
+        protected_quantity = max(previous_picked, previous_fulfilled, previous_stock_reduced)
+        incoming_item_id = preview_line.item_id if preview_line else None
+        mapping_changed = (
+            local_line.inventory_item_id is not None
+            and incoming_item_id is not None
+            and local_line.inventory_item_id != incoming_item_id
+        )
+        allocation_floor = protected_quantity if mapping_changed else max(record_line.quantity_ordered, protected_quantity)
+        release_requested = max(previous_allocated - allocation_floor, Decimal("0"))
+        released = Decimal("0")
+        if release_requested > 0:
+            released = release_line_allocations(
+                db,
+                order,
+                local_line,
+                release_requested,
+                (
+                    f"WooCommerce order line {record_line.woo_line_item_id} changed; "
+                    "released its unpicked excess allocation."
+                ),
+                "woocommerce_line_change",
+            )
+            if released > 0:
+                if mapping_changed:
+                    reconciliation_notes.append(
+                        f"Line {record_line.woo_line_item_id} changed inventory item from "
+                        f"{local_line.inventory_item_id} to {incoming_item_id}; released {released} unpicked units."
+                    )
+                else:
+                    reconciliation_notes.append(
+                        f"Line {record_line.woo_line_item_id} quantity changed from {previous_ordered} to "
+                        f"{record_line.quantity_ordered}; released {released} unpicked units."
+                    )
+        elif previous_ordered != record_line.quantity_ordered:
+            reconciliation_notes.append(
+                f"Line {record_line.woo_line_item_id} quantity changed from {previous_ordered} to "
+                f"{record_line.quantity_ordered}; FIFO allocation will reconcile any additional requirement."
+            )
+        if mapping_changed and released == 0:
+            reconciliation_notes.append(
+                f"Line {record_line.woo_line_item_id} changed inventory item from "
+                f"{local_line.inventory_item_id} to {incoming_item_id}; no unpicked allocation was released."
+            )
         local_line.woo_product_id = record_line.woo_product_id
         local_line.woo_variation_id = record_line.woo_variation_id
-        local_line.inventory_item_id = preview_line.item_id if preview_line else None
+        mapping_change_requires_review = mapping_changed and (
+            protected_quantity > 0 or (local_line.quantity_allocated or Decimal("0")) > protected_quantity
+        )
+        local_line.inventory_item_id = (
+            local_line.inventory_item_id if mapping_change_requires_review else incoming_item_id
+        )
         local_line.line_number = index
         local_line.sku = record_line.sku
         local_line.barcode = record_line.barcode
@@ -585,7 +689,9 @@ def upsert_order_lines(db: Session, order: Order, record: NormalizedWooOrder, pr
         existing_picked = local_line.quantity_picked or Decimal("0")
         existing_fulfilled = local_line.quantity_fulfilled or Decimal("0")
         existing_stock_reduced = local_line.quantity_stock_reduced or Decimal("0")
-        quantity_below_allocated = existing_allocated > record_line.quantity_ordered
+        protected_quantity = max(existing_picked, existing_fulfilled, existing_stock_reduced)
+        quantity_below_processed = protected_quantity > record_line.quantity_ordered
+        allocation_still_exceeds_order = existing_allocated > max(record_line.quantity_ordered, protected_quantity)
         local_line.quantity_ordered = record_line.quantity_ordered
         local_line.quantity_allocated = existing_allocated
         local_line.quantity_picked = existing_picked
@@ -609,11 +715,29 @@ def upsert_order_lines(db: Session, order: Order, record: NormalizedWooOrder, pr
         local_line.shortage_quantity = max(remaining_after_allocation - local_line.sellable_snapshot, Decimal("0")) if preview_line else remaining_after_allocation
         local_line.sync_status = "synced" if preview_line and preview_line.matched_status == "matched" else "needs_review"
         local_line.sync_error = " ".join((preview_line.errors or preview_line.warnings) if preview_line else ["Preview line missing."])
-        if quantity_below_allocated:
-            message = (
-                f"WooCommerce quantity decreased to {record_line.quantity_ordered} while {existing_allocated} "
-                "is already allocated; allocation was preserved and requires review."
-            )
+        if quantity_below_processed or allocation_still_exceeds_order or mapping_change_requires_review:
+            if mapping_change_requires_review:
+                if protected_quantity > 0:
+                    message = (
+                        f"WooCommerce changed line {record_line.woo_line_item_id} to another inventory item after "
+                        f"{protected_quantity} units were picked, fulfilled, or stock-reduced; the original item "
+                        "history was preserved and requires review."
+                    )
+                else:
+                    message = (
+                        f"WooCommerce changed line {record_line.woo_line_item_id} to another inventory item, but its "
+                        "old allocation could not be fully released; the original item mapping was preserved for review."
+                    )
+            elif quantity_below_processed:
+                message = (
+                    f"WooCommerce quantity decreased to {record_line.quantity_ordered} after {protected_quantity} "
+                    "was already picked, fulfilled, or stock-reduced; history was preserved and requires review."
+                )
+            else:
+                message = (
+                    f"WooCommerce quantity decreased to {record_line.quantity_ordered}, but "
+                    f"{existing_allocated} units remain allocated because the allocation could not be fully released."
+                )
             local_line.allocation_status = "exception"
             local_line.allocation_exception_reason = WOO_QUANTITY_BELOW_ALLOCATED_REASON
             local_line.sync_status = "needs_review"
@@ -622,7 +746,50 @@ def upsert_order_lines(db: Session, order: Order, record: NormalizedWooOrder, pr
         elif local_line.allocation_exception_reason == WOO_QUANTITY_BELOW_ALLOCATED_REASON:
             local_line.allocation_exception_reason = None
         local_line.status = record.local_status
-    return issues
+
+    for local_line in order.items:
+        if local_line.woo_order_item_id is None or local_line.woo_order_item_id in remote_line_ids:
+            continue
+        previous_ordered = local_line.quantity_ordered or Decimal("0")
+        previous_allocated = local_line.quantity_allocated or Decimal("0")
+        protected_quantity = max(
+            local_line.quantity_picked or Decimal("0"),
+            local_line.quantity_fulfilled or Decimal("0"),
+            local_line.quantity_stock_reduced or Decimal("0"),
+        )
+        released = release_line_allocations(
+            db,
+            order,
+            local_line,
+            max(previous_allocated - protected_quantity, Decimal("0")),
+            f"WooCommerce removed order line {local_line.woo_order_item_id}; released its unpicked allocation.",
+            "woocommerce_line_removed",
+        )
+        local_line.quantity_ordered = Decimal("0")
+        local_line.ordered_qty = Decimal("0")
+        local_line.shortage_quantity = Decimal("0")
+        local_line.matched_status = "removed"
+        local_line.availability_status = "removed"
+        local_line.allocation_status = "removed" if protected_quantity == 0 and local_line.quantity_allocated == 0 else "exception"
+        local_line.pick_status = "picked" if protected_quantity > 0 else "not_ready"
+        local_line.status = RETIRED_WOO_LINE_STATUS
+        local_line.sync_status = "needs_review" if protected_quantity > 0 or local_line.quantity_allocated > 0 else "synced"
+        local_line.sync_error = (
+            f"WooCommerce removed this line after {protected_quantity} units were already picked, fulfilled, or "
+            "stock-reduced; history was preserved and requires review."
+            if protected_quantity > 0
+            else "WooCommerce removed this line; its unpicked allocation was released and the local history was retained."
+        )
+        reconciliation_notes.append(
+            f"Line {local_line.woo_order_item_id} was removed from WooCommerce; retained local history and released "
+            f"{released} of {previous_allocated} allocated units."
+        )
+        if protected_quantity > 0 or local_line.quantity_allocated > 0:
+            local_line.allocation_exception_reason = WOO_QUANTITY_BELOW_ALLOCATED_REASON
+            issues.append(OrderLineSyncIssue(preview_line=None, message=local_line.sync_error))
+        else:
+            local_line.allocation_exception_reason = None
+    return issues, reconciliation_notes
 
 
 def list_open_orders(
@@ -685,6 +852,7 @@ def get_open_order_detail(db: Session, order_id: int) -> OpenOrderDetail | None:
             "discount_total": decimal_to_float(order.discount_total),
             "shipping_total": decimal_to_float(order.shipping_total),
             "tax_total": decimal_to_float(order.tax_total),
+            "workflow_notes": order.workflow_notes,
             "lines": [line_to_read(line) for line in sorted(order.items, key=lambda item: item.line_number or item.id)],
         }
     )

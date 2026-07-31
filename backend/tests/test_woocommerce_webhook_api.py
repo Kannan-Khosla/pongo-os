@@ -4,6 +4,11 @@ import hmac
 import json
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
+from app.db.session import get_db
+from app.main import app
+from app.models.inventory import InventoryItemLocation
 from app.services import woocommerce_webhooks as webhook_service
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
@@ -109,7 +114,9 @@ def test_valid_signed_order_created_imports_and_emits_staff_event(client, monkey
     item = client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]
     assert item["In Stock"] == 6
     assert item["Allocated"] == 3
-    assert client.get("/api/stock-movements").json()["total"] == 0
+    movements = client.get("/api/stock-movements").json()
+    assert movements["total"] == 1
+    assert movements["movements"][0]["movement_type"] == "opening_balance_import"
     events = client.get("/api/integrations/woocommerce/webhooks/events").json()
     assert events["latest_event_id"] == body["event_id"]
     assert events["events"][0]["woo_order_number"] == "1601"
@@ -195,7 +202,7 @@ def test_event_feed_initialization_and_pagination_do_not_skip_deliveries(client,
     assert third_page["has_more"] is False
 
 
-def test_stale_order_created_delivery_cannot_regress_newer_poll_data(client, monkeypatch):
+def test_stale_supported_delivery_cannot_regress_newer_poll_data(client, monkeypatch):
     patch_webhook_settings(monkeypatch)
     seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 10, "Allocated": 0})
     newer = woo_order(id=623, number="1623", total="35.00", date_modified_gmt="2026-07-07T13:00:00")
@@ -215,7 +222,13 @@ def test_stale_order_created_delivery_cannot_regress_newer_poll_data(client, mon
     assert client.get("/api/integrations/woocommerce/webhooks/events").json()["events"] == []
 
     equal_timestamp = woo_order(id=623, number="1623", total="31.00", date_modified_gmt="2026-07-07T13:00:00")
-    equal_response = post_delivery(client, equal_timestamp, delivery_id="equal-timestamp-delivery")
+    equal_response = post_delivery(
+        client,
+        equal_timestamp,
+        topic="order.updated",
+        event="updated",
+        delivery_id="equal-timestamp-delivery",
+    )
 
     assert equal_response.status_code == 200
     assert equal_response.json()["status"] == "ignored"
@@ -249,10 +262,10 @@ def test_wrong_source_and_mismatched_headers_are_rejected(client, monkeypatch):
     assert client.get("/api/orders/open").json()["total"] == 0
 
 
-def test_signed_non_created_topic_is_audited_and_ignored(client, monkeypatch):
+def test_signed_unsupported_topic_is_audited_and_ignored(client, monkeypatch):
     patch_webhook_settings(monkeypatch)
 
-    response = post_delivery(client, woo_order(id=608), topic="order.updated", event="updated")
+    response = post_delivery(client, woo_order(id=608), topic="order.deleted", event="deleted")
 
     assert response.status_code == 200
     assert response.json()["status"] == "ignored"
@@ -262,6 +275,170 @@ def test_signed_non_created_topic_is_audited_and_ignored(client, monkeypatch):
     assert events["events"] == []
     assert events["latest_event_id"] == 0
     assert response.json()["event_id"] is None
+
+
+def test_signed_order_updated_cancellation_releases_allocation_and_emits_event(client, monkeypatch):
+    patch_webhook_settings(monkeypatch)
+    item = seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 8, "Allocated": 0})
+    created = post_delivery(client, woo_order(id=608, number="1608"), delivery_id="created-608")
+    assert created.status_code == 200
+    assert client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]["Allocated"] == 2
+
+    db_override = app.dependency_overrides[get_db]()
+    db = next(db_override)
+    location = db.scalar(
+        select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == item["id"])
+    )
+    location.active = False
+    db.commit()
+    db_override.close()
+
+    cancelled_payload = woo_order(
+        id=608,
+        number="1608",
+        status="cancelled",
+        date_modified_gmt="2026-07-07T13:30:00",
+    )
+    response = post_delivery(
+        client,
+        cancelled_payload,
+        topic="order.updated",
+        event="updated",
+        delivery_id="updated-608",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "processed"
+    assert response.json()["created_order"] is False
+    assert client.get("/api/orders/open").json()["total"] == 0
+    item = client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]
+    assert item["Allocated"] == 0
+    detail = client.get(f"/api/orders/{created.json()['local_order_id']}").json()
+    assert detail["woo_status"] == "cancelled"
+    assert detail["local_status"] == "cancelled"
+    assert "released 2.000 unpicked units" in detail["workflow_notes"]
+    events = client.get("/api/integrations/woocommerce/webhooks/events").json()["events"]
+    assert response.json()["event_id"] is not None
+    assert [row["event_type"] for row in events] == ["order_created"]
+
+
+def test_cancellation_after_partial_pick_and_fulfillment_releases_remaining_allocation(client, monkeypatch):
+    patch_webhook_settings(monkeypatch)
+    seed_item(client, sku="PARTIAL-CANCEL", Barcode="PARTIAL-CANCEL-BAR", wooProductId=101, **{"In Stock": 8, "Allocated": 0})
+    created = post_delivery(client, woo_order(id=618, number="1618"), delivery_id="created-618")
+    order_id = created.json()["local_order_id"]
+    line_id = client.get(f"/api/orders/{order_id}").json()["lines"][0]["id"]
+    picked = client.post(
+        "/api/picks/commit",
+        json={"idempotency_key": "partial-cancel-pick", "lines": [{"order_line_id": line_id, "quantity_to_pick": 1}], "allow_partial": True},
+    )
+    fulfilled = client.post(
+        "/api/fulfillments/commit",
+        json={"lines": [{"order_line_id": line_id, "quantity_to_fulfill": 1}], "allow_partial": True},
+    )
+    assert picked.json()["status"] == "posted"
+    assert fulfilled.json()["status"] == "posted"
+    assert client.get("/api/items", params={"sku": "PARTIAL-CANCEL"}).json()["items"][0]["Allocated"] == 1
+
+    response = post_delivery(
+        client,
+        woo_order(id=618, number="1618", status="cancelled", date_modified_gmt="2026-07-07T13:40:00"),
+        topic="order.updated",
+        event="updated",
+        delivery_id="cancelled-618",
+    )
+
+    assert response.status_code == 200, response.text
+    assert client.get("/api/items", params={"sku": "PARTIAL-CANCEL"}).json()["items"][0]["Allocated"] == 0
+    detail = client.get(f"/api/orders/{order_id}").json()
+    assert detail["local_status"] == "cancelled"
+    assert detail["lines"][0]["quantity_picked"] == 1
+    assert detail["lines"][0]["quantity_fulfilled"] == 1
+    assert "released 1.000 unpicked units" in detail["workflow_notes"]
+
+
+def test_signed_order_updated_safely_retires_removed_line_and_replay_is_idempotent(client, monkeypatch):
+    patch_webhook_settings(monkeypatch)
+    seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 8, "Allocated": 0})
+    seed_item(client, sku="SECOND-SKU", Barcode="SECOND-BAR", wooProductId=102, **{"In Stock": 5, "Allocated": 0})
+    second_line = {
+        **woo_order()["line_items"][0],
+        "id": 9002,
+        "product_id": 102,
+        "sku": "SECOND-SKU",
+        "name": "Second Item",
+        "quantity": 1,
+        "subtotal": "10.00",
+        "total": "10.00",
+        "meta_data": [{"key": "barcode", "value": "SECOND-BAR"}],
+    }
+    created_payload = woo_order(id=609, number="1609", line_items=[woo_order()["line_items"][0], second_line])
+    created = post_delivery(client, created_payload, delivery_id="created-609")
+    assert created.status_code == 200
+
+    updated_payload = woo_order(
+        id=609,
+        number="1609",
+        date_modified_gmt="2026-07-07T13:30:00",
+        line_items=[woo_order()["line_items"][0]],
+    )
+    first = post_delivery(
+        client,
+        updated_payload,
+        topic="order.updated",
+        event="updated",
+        delivery_id="updated-609",
+    )
+    replay = post_delivery(
+        client,
+        updated_payload,
+        topic="order.updated",
+        event="updated",
+        delivery_id="updated-609",
+    )
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "processed"
+    assert replay.status_code == 200
+    assert replay.json()["status"] == "duplicate"
+    detail = client.get(f"/api/orders/{created.json()['local_order_id']}").json()
+    assert len(detail["lines"]) == 2
+    retired = next(line for line in detail["lines"] if line["woo_line_item_id"] == 9002)
+    assert retired["quantity_ordered"] == 0
+    assert retired["quantity_allocated"] == 0
+    assert retired["matched_status"] == "removed"
+    assert retired["sync_status"] == "synced"
+    assert "local history was retained" in retired["sync_error"]
+    assert "retained local history" in detail["workflow_notes"]
+    second_item = client.get("/api/items", params={"sku": "SECOND-SKU"}).json()["items"][0]
+    assert second_item["Allocated"] == 0
+
+    restored_payload = woo_order(
+        id=609,
+        number="1609",
+        date_modified_gmt="2026-07-07T14:00:00",
+        line_items=[woo_order()["line_items"][0], second_line],
+    )
+    restored = post_delivery(
+        client,
+        restored_payload,
+        topic="order.updated",
+        event="updated",
+        delivery_id="restored-609",
+    )
+
+    assert restored.status_code == 200
+    restored_detail = client.get(f"/api/orders/{created.json()['local_order_id']}").json()
+    reactivated = next(line for line in restored_detail["lines"] if line["woo_line_item_id"] == 9002)
+    assert reactivated["quantity_ordered"] == 1
+    assert reactivated["quantity_allocated"] == 1
+    assert reactivated["matched_status"] == "matched"
+    assert reactivated["sync_status"] == "synced"
+    events = client.get("/api/integrations/woocommerce/webhooks/events").json()["events"]
+    assert first.json()["event_id"] is not None
+    assert restored.json()["event_id"] is not None
+    assert first.json()["event_id"] != restored.json()["event_id"]
+    assert [row["event_type"] for row in events] == ["order_created"]
 
 
 def test_failed_delivery_retry_gets_a_new_immutable_event_cursor(client, monkeypatch):

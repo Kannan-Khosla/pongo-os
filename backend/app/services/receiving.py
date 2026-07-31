@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.inventory import InventoryItem, InventoryItemLocation, InventoryLocation
 from app.models.receipts import Receipt, ReceiptItem
@@ -18,8 +18,9 @@ from app.schemas.receipts import (
 )
 from app.services.calculations import calculate_inventory_value
 from app.services.items import apply_calculated_fields
-from app.services.location_inventory import find_item_location, receive_to_location
+from app.services.location_inventory import find_item_location, lock_inventory_stock, receive_to_location
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
+from app.services.stock_mutation_guard import begin_stock_mutation, complete_stock_mutation
 
 
 @dataclass
@@ -150,10 +151,25 @@ def build_direct_receipt_preview(payload: DirectReceiptRequest, db: Session) -> 
 
 
 def commit_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple[Receipt, int, Decimal, Decimal, list[str]]:
+    mutation, replay = begin_stock_mutation(db, "direct_receipt", payload.idempotency_key, payload)
+    if replay is not None:
+        receipt = db.scalars(
+            select(Receipt).where(Receipt.id == replay["receipt_id"]).options(selectinload(Receipt.items))
+        ).one()
+        return (
+            receipt,
+            replay["movement_count"],
+            Decimal(replay["total_quantity"]),
+            Decimal(replay["total_value"]),
+            replay["warnings"],
+        )
+
     preview = build_direct_receipt_preview(payload, db)
     if preview.invalid_lines > 0:
         raise HTTPException(status_code=400, detail=preview.model_dump())
 
+    lines, _, warnings = validate_direct_receipt(payload, db)
+    lock_inventory_stock(db, {line.item.id for line in lines if line.item is not None})
     lines, _, warnings = validate_direct_receipt(payload, db)
     now = datetime.now(timezone.utc)
     received_date = date.today()
@@ -228,6 +244,16 @@ def commit_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple[R
         movement_count += 1
 
     auto_allocate_processing_orders_fifo(db, source=f"direct-receipt:{receipt.receipt_number}")
+    complete_stock_mutation(
+        mutation,
+        {
+            "receipt_id": receipt.id,
+            "movement_count": movement_count,
+            "total_quantity": str(total_quantity),
+            "total_value": str(total_value),
+            "warnings": warnings,
+        },
+    )
     db.commit()
     db.refresh(receipt)
     return receipt, movement_count, total_quantity, total_value, warnings
@@ -236,8 +262,12 @@ def commit_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple[R
 def find_receiving_item(db: Session, item_id: int | None, sku: str | None, barcode: str | None) -> tuple[InventoryItem | None, list[str]]:
     errors: list[str] = []
     id_match = db.get(InventoryItem, item_id) if item_id is not None else None
-    sku_match = db.scalars(select(InventoryItem).where(InventoryItem.sku == sku)).first() if sku else None
-    barcode_match = db.scalars(select(InventoryItem).where(InventoryItem.barcode == barcode)).first() if barcode else None
+    sku_matches = list(db.scalars(select(InventoryItem).where(InventoryItem.sku == sku)).all()) if sku else []
+    barcode_matches = list(db.scalars(select(InventoryItem).where(InventoryItem.barcode == barcode)).all()) if barcode else []
+    if len(sku_matches) > 1 or len(barcode_matches) > 1:
+        return None, ["SKU or Barcode matches multiple existing items; receiving was blocked."]
+    sku_match = sku_matches[0] if sku_matches else None
+    barcode_match = barcode_matches[0] if barcode_matches else None
     matches = [match for match in [id_match, sku_match, barcode_match] if match is not None]
     if len({match.id for match in matches}) > 1:
         errors.append("Item identifiers match different existing items.")

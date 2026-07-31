@@ -94,6 +94,8 @@ def parse_items_csv(csv_text: str, db: Session) -> ParsedImport:
     errors: list[ImportRowError] = []
     warnings = [f"Extra column ignored: {column}" for column in extra_columns]
     existing_by_sku, existing_by_barcode = load_existing_item_maps(db)
+    seen_skus: set[str] = set()
+    seen_barcodes: set[str] = set()
 
     for physical_row_number, raw_values in enumerate(reader, start=2):
         row = {column: "" for column in header}
@@ -116,8 +118,20 @@ def parse_items_csv(csv_text: str, db: Session) -> ParsedImport:
                 errors.append(row_error(physical_row_number, sku, barcode, message, canonical_row))
             continue
 
-        sku_match = existing_by_sku.get(sku)
-        barcode_match = existing_by_barcode.get(barcode) if barcode else None
+        if sku in seen_skus or (barcode and barcode in seen_barcodes):
+            errors.append(row_error(physical_row_number, sku, barcode, "SKU or Barcode is repeated in this import file.", canonical_row))
+            continue
+        seen_skus.add(sku)
+        if barcode:
+            seen_barcodes.add(barcode)
+
+        sku_matches = existing_by_sku.get(sku, [])
+        barcode_matches = existing_by_barcode.get(barcode, []) if barcode else []
+        if len(sku_matches) > 1 or len(barcode_matches) > 1:
+            errors.append(row_error(physical_row_number, sku, barcode, "SKU or Barcode matches multiple existing items.", canonical_row))
+            continue
+        sku_match = sku_matches[0] if sku_matches else None
+        barcode_match = barcode_matches[0] if barcode_matches else None
         if sku_match is not None and barcode_match is not None and sku_match.id != barcode_match.id:
             errors.append(row_error(physical_row_number, sku, barcode, "SKU and Barcode match different existing items.", canonical_row))
             continue
@@ -208,6 +222,8 @@ def parse_row_values(row: dict[str, str]) -> tuple[dict[str, object], list[str],
         warnings.append("Imported Under Par differed from calculated value and was replaced.")
     if parsed["Storage Volume"] != storage_volume:
         warnings.append("Imported Storage Volume differed from calculated value and was replaced.")
+    if parsed["In Stock"] or parsed["Allocated"]:
+        warnings.append("In Stock and Allocated are not committed by metadata import; use the audited opening-balance workflow.")
     parsed["Sellable"] = sellable
     parsed["Under Par"] = under_par
     parsed["Storage Volume"] = storage_volume
@@ -232,10 +248,15 @@ def parse_bool(value: str) -> tuple[bool, str | None]:
     return False, f"invalid boolean value {value!r}"
 
 
-def load_existing_item_maps(db: Session) -> tuple[dict[str, InventoryItem], dict[str, InventoryItem]]:
+def load_existing_item_maps(db: Session) -> tuple[dict[str, list[InventoryItem]], dict[str, list[InventoryItem]]]:
     items = list(db.scalars(select(InventoryItem)).all())
-    by_sku = {item.sku: item for item in items if item.sku}
-    by_barcode = {item.barcode: item for item in items if item.barcode}
+    by_sku: dict[str, list[InventoryItem]] = {}
+    by_barcode: dict[str, list[InventoryItem]] = {}
+    for item in items:
+        if item.sku:
+            by_sku.setdefault(item.sku, []).append(item)
+        if item.barcode:
+            by_barcode.setdefault(item.barcode, []).append(item)
     return by_sku, by_barcode
 
 
@@ -244,7 +265,11 @@ def row_error(row_number: int, sku: str | None, barcode: str | None, message: st
 
 
 def create_payload_from_row(row: ParsedImportRow) -> InventoryItemCreate:
-    return InventoryItemCreate.model_validate(row.values)
+    values = dict(row.values)
+    values["In Stock"] = 0
+    values["Allocated"] = 0
+    values["Sellable"] = 0
+    return InventoryItemCreate.model_validate(values)
 
 
 def serialize_preview_row(row: dict[str, object]) -> dict[str, object]:

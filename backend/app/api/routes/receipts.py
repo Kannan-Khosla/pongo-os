@@ -7,9 +7,11 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.models.receipts import Receipt, ReceiptItem
-from app.schemas.receipts import DirectReceiptCommitResponse, DirectReceiptPreviewResponse, DirectReceiptRequest, ReceiptDetail, ReceiptListResponse
+from app.schemas.receipts import BulkReceiptCommitRequest, BulkReceiptRequest, DirectReceiptCommitRequest, DirectReceiptCommitResponse, DirectReceiptPreviewResponse, DirectReceiptRequest, ReceiptDetail, ReceiptListResponse
 from app.services.bulk_receiving import commit_bulk_receipt, export_receipt_csv, preview_bulk_receipt
+from app.services.auth import authenticated_actor
 from app.services.receiving import build_direct_receipt_preview, commit_direct_receipt, receipt_to_detail, receipt_to_read
+from app.services.stock_mutation_guard import IdempotencyConflict
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 
@@ -20,8 +22,12 @@ def preview_direct_receipt(payload: DirectReceiptRequest, db: Session = Depends(
 
 
 @router.post("/direct/commit", response_model=DirectReceiptCommitResponse)
-def commit_direct_receipt_endpoint(payload: DirectReceiptRequest, db: Session = Depends(get_db)) -> DirectReceiptCommitResponse:
-    receipt, movement_count, total_quantity, total_value, warnings = commit_direct_receipt(payload, db)
+def commit_direct_receipt_endpoint(payload: DirectReceiptCommitRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> DirectReceiptCommitResponse:
+    try:
+        receipt, movement_count, total_quantity, total_value, warnings = commit_direct_receipt(payload.model_copy(update={"created_by": actor}), db)
+    except IdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return DirectReceiptCommitResponse(
         receipt_id=receipt.id,
         receipt_number=receipt.receipt_number,
@@ -35,13 +41,17 @@ def commit_direct_receipt_endpoint(payload: DirectReceiptRequest, db: Session = 
 
 
 @router.post("/bulk/preview")
-def preview_bulk_receipt_endpoint(payload: dict, db: Session = Depends(get_db)) -> dict:
-    return preview_bulk_receipt(payload, db)
+def preview_bulk_receipt_endpoint(payload: BulkReceiptRequest, db: Session = Depends(get_db)) -> dict:
+    return preview_bulk_receipt(payload.model_dump(), db)
 
 
 @router.post("/bulk/commit")
-def commit_bulk_receipt_endpoint(payload: dict, db: Session = Depends(get_db)) -> dict:
-    return commit_bulk_receipt(payload, db)
+def commit_bulk_receipt_endpoint(payload: BulkReceiptCommitRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
+    try:
+        return commit_bulk_receipt({**payload.model_dump(), "created_by": actor}, db)
+    except IdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("", response_model=ReceiptListResponse)

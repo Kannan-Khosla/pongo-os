@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.schemas.allocations import AllocationCommitResponse, AllocationDetail, AllocationExceptionListResponse, AllocationListResponse, AllocationPreviewResponse, AllocationRequest, AutoAllocationQueueResponse
 from app.services.allocations import allocation_to_read, commit_allocation, export_allocation_csv, get_allocation_detail, list_allocation_exception_lines, list_allocations, preview_allocation
+from app.services.auth import authenticated_actor
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
 
 router = APIRouter(prefix="/allocations", tags=["allocations"])
@@ -17,13 +18,13 @@ def preview_allocation_request(payload: AllocationRequest, db: Session = Depends
 
 
 @router.post("/commit", response_model=AllocationCommitResponse)
-def commit_allocation_request(payload: AllocationRequest, db: Session = Depends(get_db)) -> AllocationCommitResponse:
-    return commit_allocation(db, payload)
+def commit_allocation_request(payload: AllocationRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> AllocationCommitResponse:
+    return commit_allocation(db, payload.model_copy(update={"created_by": actor}))
 
 
 @router.post("/auto/commit", response_model=AutoAllocationQueueResponse)
-def commit_fifo_auto_allocation(db: Session = Depends(get_db)) -> AutoAllocationQueueResponse:
-    return AutoAllocationQueueResponse.model_validate(auto_allocate_processing_orders_fifo(db, source="manual-fifo-reconcile", commit=True))
+def commit_fifo_auto_allocation(db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> AutoAllocationQueueResponse:
+    return AutoAllocationQueueResponse.model_validate(auto_allocate_processing_orders_fifo(db, source=actor, commit=True))
 
 
 @router.get("/exceptions", response_model=AllocationExceptionListResponse)

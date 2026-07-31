@@ -1,5 +1,6 @@
 from app.db.base import Base
 from app.models.allocations import Allocation, AllocationLine
+from app.models.auth import AuthThrottle, User, UserSession
 from app.models.cycle_counts import CycleCount, CycleCountLine
 from app.models.fulfillments import Fulfillment, FulfillmentLine
 from app.models.imports import ImportError, ImportJob
@@ -19,15 +20,20 @@ from app.models.inventory import (
 from app.models.orders import Order, OrderItem
 from app.models.picks import Pick, PickLine
 from app.models.receipts import Receipt, ReceiptItem
+from app.models.reporting import ReportDelivery, ReportRun
 from app.models.routes import Route, RouteStop
 from app.models.scanner import ScannerEvent, ScannerSession
+from app.models.stock_mutations import StockMutationRequest
 from app.models.ui import UISavedView
-from app.models.woocommerce import WooCommerceOrderEvent, WooCommerceSyncError, WooCommerceSyncRun, WooCommerceWebhookDelivery, WooItemMapping, WooWritebackQueue
+from app.models.woocommerce import WooCommerceOrderEvent, WooCommerceSyncError, WooCommerceSyncRun, WooCommerceWebhookDelivery, WooItemMapping, WooStockSyncJob, WooWritebackQueue
 
 __all__ = [
     "Base",
     "Allocation",
     "AllocationLine",
+    "AuthThrottle",
+    "User",
+    "UserSession",
     "CycleCount",
     "CycleCountLine",
     "Fulfillment",
@@ -48,6 +54,8 @@ __all__ = [
     "PickLine",
     "Receipt",
     "ReceiptItem",
+    "ReportDelivery",
+    "ReportRun",
     "Route",
     "RouteStop",
     "ScannerEvent",
@@ -55,6 +63,7 @@ __all__ = [
     "StockMovement",
     "StockAdjustment",
     "StockAdjustmentLine",
+    "StockMutationRequest",
     "UISavedView",
     "WooCommerceSyncError",
     "WooCommerceSyncRun",
@@ -62,4 +71,5 @@ __all__ = [
     "WooCommerceOrderEvent",
     "WooItemMapping",
     "WooWritebackQueue",
+    "WooStockSyncJob",
 ]

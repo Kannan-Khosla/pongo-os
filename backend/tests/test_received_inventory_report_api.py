@@ -97,7 +97,7 @@ def test_received_inventory_csv_export_returns_expected_headers_and_rows(client)
         ({"brand": "North Paw"}, {"RPT-001"}),
         ({"category": "Cats"}, {"RPT-002"}),
         ({"reference_number": "BOL-777"}, {"RPT-001", "RPT-002"}),
-        ({"created_by": "report-user"}, {"RPT-001", "RPT-002"}),
+        ({"created_by": "pytest@example.com"}, {"RPT-001", "RPT-002"}),
     ],
 )
 def test_received_inventory_report_filters(client, params, expected_skus):

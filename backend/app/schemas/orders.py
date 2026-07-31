@@ -94,6 +94,7 @@ class OpenOrderDetail(OpenOrderRead):
     discount_total: float | None = None
     shipping_total: float | None = None
     tax_total: float | None = None
+    workflow_notes: str | None = None
     lines: list[OpenOrderLineRead]
 
 
@@ -110,6 +111,10 @@ class BulkOrderActionRequest(BaseModel):
     order_ids: list[int] = Field(min_length=1)
     created_by: str | None = "system"
     reason: str | None = None
+
+
+class BulkUnpickRequest(BulkOrderActionRequest):
+    idempotency_key: str = Field(min_length=1, max_length=120)
 
 
 class BulkOrderActionResult(BaseModel):

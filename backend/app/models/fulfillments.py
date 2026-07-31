@@ -53,6 +53,7 @@ class FulfillmentLine(TimestampMixin, Base):
     quantity_picked: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
     quantity_previously_fulfilled: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
     quantity_to_fulfill: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
+    unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     quantity_fulfilled_after: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
     remaining_to_fulfill: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
     in_stock_before: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)

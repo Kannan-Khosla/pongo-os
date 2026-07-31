@@ -56,7 +56,7 @@ def test_auto_allocation_on_sync_creates_allocation_and_does_not_reduce_stock(cl
     allocations = client.get("/api/allocations").json()
     assert allocations["total"] == 1
     assert allocations["allocations"][0]["auto_allocated"] is True
-    assert client.get("/api/stock-movements").json()["total"] == 0
+    assert client.get("/api/stock-movements").json()["total"] == 1
 
 
 def test_allocation_preview_partial_zero_sellable_and_already_allocated(client, monkeypatch):
@@ -114,7 +114,7 @@ def test_manual_allocation_commit_partial_updates_allocated_and_audit_only(clien
     assert order_after["lines"][0]["remaining_to_allocate"] == 2
     assert order_after["lines"][0]["shortage_quantity"] == 2
     assert order_after["lines"][0]["local_sellable"] == 0
-    assert client.get("/api/stock-movements").json()["total"] == 0
+    assert client.get("/api/stock-movements").json()["total"] == 1
     assert line["woo_product_id"] == order_after["lines"][0]["woo_product_id"]
 
 

@@ -156,7 +156,11 @@ def test_commit_creates_new_items(client):
     body = response.json()
     assert body["created_count"] == 1
     list_response = client.get("/api/items", params={"search": "IMPORT-001"})
-    assert list_response.json()["items"][0]["SKU"] == "IMPORT-001"
+    item = list_response.json()["items"][0]
+    assert item["SKU"] == "IMPORT-001"
+    assert item["In Stock"] == 0
+    assert item["Allocated"] == 0
+    assert client.get("/api/stock-movements", params={"item_id": item["id"]}).json()["total"] == 0
 
 
 def test_commit_updates_existing_items_by_sku(client):
@@ -168,6 +172,8 @@ def test_commit_updates_existing_items_by_sku(client):
     assert response.json()["updated_count"] == 1
     item = client.get("/api/items", params={"search": "IMPORT-UPDATE"}).json()["items"][0]
     assert item["Description"] == "Updated"
+    assert item["In Stock"] == 10
+    assert item["Allocated"] == 3
 
 
 def test_commit_updates_existing_items_by_barcode_when_sku_does_not_match(client):
@@ -192,6 +198,27 @@ def test_conflict_when_sku_and_barcode_match_different_items(client):
     body = response.json()
     assert body["invalid_rows"] == 1
     assert "different existing items" in body["errors"][0]["error_message"]
+
+
+def test_import_fails_closed_for_duplicate_database_and_file_identifiers(client):
+    seed_item(client, sku="DUPLICATE-DB", Barcode="DUPLICATE-DB-A")
+    seed_item(client, sku="DUPLICATE-DB", Barcode="DUPLICATE-DB-B")
+
+    database_conflict = upload_csv(
+        client,
+        "/api/items/import/preview",
+        csv_text([base_row(sku="DUPLICATE-DB", barcode="")]),
+    ).json()
+    file_conflict = upload_csv(
+        client,
+        "/api/items/import/preview",
+        csv_text([base_row(sku="FILE-DUP", barcode="FILE-DUP-A"), base_row(sku="FILE-DUP", barcode="FILE-DUP-B")]),
+    ).json()
+
+    assert database_conflict["invalid_rows"] == 1
+    assert "multiple existing items" in database_conflict["errors"][0]["error_message"]
+    assert file_conflict["invalid_rows"] == 1
+    assert "repeated" in file_conflict["errors"][0]["error_message"]
 
 
 def test_calculated_fields_override_imported_values(client):

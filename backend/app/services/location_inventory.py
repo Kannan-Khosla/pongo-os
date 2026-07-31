@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models.inventory import (
@@ -20,6 +20,9 @@ from app.models.inventory import (
     StockAdjustmentLine,
     StockMovement,
 )
+from app.services.stock_mutation_guard import begin_stock_mutation, complete_stock_mutation
+
+STOCK_MUTATION_LOCK_KEY = int.from_bytes(b"PONGOFIF", byteorder="big")
 
 
 @dataclass
@@ -60,6 +63,60 @@ def find_item_location(db: Session, item_id: int, warehouse: str | None, invento
     if inventory_location:
         statement = statement.where(InventoryItemLocation.inventory_location == inventory_location)
     return db.scalars(statement.order_by(InventoryItemLocation.is_default_location.desc(), InventoryItemLocation.id.asc())).first()
+
+
+def lock_inventory_stock(db: Session, item_ids: list[int] | set[int]) -> None:
+    ids = sorted({int(item_id) for item_id in item_ids})
+    if not ids:
+        return
+    lock_stock_mutation_scope(db)
+    db.scalars(
+        select(InventoryItem)
+        .where(InventoryItem.id.in_(ids))
+        .order_by(InventoryItem.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    db.scalars(
+        select(InventoryItemLocation)
+        .where(InventoryItemLocation.inventory_item_id.in_(ids))
+        .order_by(InventoryItemLocation.inventory_item_id, InventoryItemLocation.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+
+
+def lock_stock_mutation_scope(db: Session) -> None:
+    db.flush()
+    # ponytail: one transaction lock keeps stock/allocation ordering deterministic;
+    # replace with per-item advisory locks only if measured write throughput requires it.
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": STOCK_MUTATION_LOCK_KEY})
+
+
+def assert_stock_location_active(db: Session, row: InventoryItemLocation) -> None:
+    if not row.active:
+        raise ValueError("Inventory location is inactive and cannot be changed.")
+    statement = select(InventoryLocation)
+    if row.location_id is not None:
+        statement = statement.where(InventoryLocation.id == row.location_id)
+    elif row.warehouse and row.inventory_location:
+        statement = statement.where(
+            InventoryLocation.warehouse == row.warehouse,
+            or_(
+                InventoryLocation.location_code == row.inventory_location,
+                InventoryLocation.location_name == row.inventory_location,
+            ),
+        )
+    else:
+        return
+    locations = list(db.scalars(statement.order_by(InventoryLocation.id).with_for_update().execution_options(populate_existing=True).limit(2)).all())
+    if row.location_id is not None and not locations:
+        raise ValueError("Inventory location no longer exists.")
+    if len(locations) > 1:
+        raise ValueError("Inventory location mapping is ambiguous.")
+    if locations and not locations[0].active:
+        raise ValueError("Physical inventory location is inactive and cannot be changed.")
 
 
 def get_or_create_item_location(
@@ -137,15 +194,18 @@ def resolve_or_create_physical_location(db: Session, client: str | None, warehou
         location = db.get(InventoryLocation, location_id)
         if location is None:
             raise HTTPException(status_code=404, detail="Inventory location not found.")
+        if not location.active:
+            raise HTTPException(status_code=409, detail="Inventory location is inactive.")
         return location
     location = db.scalars(
         select(InventoryLocation).where(
             InventoryLocation.warehouse == warehouse,
-            InventoryLocation.active.is_(True),
             or_(InventoryLocation.location_code == inventory_location, InventoryLocation.location_name == inventory_location),
         )
     ).first()
     if location is not None:
+        if not location.active:
+            raise HTTPException(status_code=409, detail="Inventory location is inactive.")
         return location
     if not create:
         return None
@@ -197,20 +257,27 @@ def recalculate_item_totals(db: Session, item_id: int) -> InventoryItem:
 
 
 def ensure_default_item_location_from_item(db: Session, item: InventoryItem, *, create_physical_location: bool = False) -> InventoryItemLocation:
-    row = find_item_location(db, item.id, item.warehouse, item.inventory_location or item.default_location)
-    if row is None:
-        row = get_or_create_item_location(db, item, item.warehouse, item.inventory_location or item.default_location, is_default_location=True, create_physical_location=create_physical_location)
-    else:
-        row.in_stock = item.in_stock or Decimal("0")
-        row.allocated = item.allocated or Decimal("0")
-        row.sellable = (item.sellable if item.sellable is not None else row.in_stock - row.allocated) or Decimal("0")
-        row.on_order = item.on_order or Decimal("0")
-        row.par_level = row.par_level if row.par_level is not None else item.par_level
-        row.is_default_location = True
-        recalculate_item_location(row, item)
-        set_default_item_location(db, item.id, row)
+    rows = list(
+        db.scalars(
+            select(InventoryItemLocation)
+            .where(InventoryItemLocation.inventory_item_id == item.id)
+            .order_by(InventoryItemLocation.is_default_location.desc(), InventoryItemLocation.id.asc())
+        ).all()
+    )
+    if rows:
+        row = next((candidate for candidate in rows if candidate.is_default_location), rows[0])
+        if not row.is_default_location:
+            set_default_item_location(db, item.id, row)
         recalculate_item_totals(db, item.id)
-    return row
+        return row
+    return get_or_create_item_location(
+        db,
+        item,
+        item.warehouse,
+        item.inventory_location or item.default_location,
+        is_default_location=True,
+        create_physical_location=create_physical_location,
+    )
 
 
 def assert_location_invariants(row: InventoryItemLocation) -> None:
@@ -280,6 +347,97 @@ def receive_to_location(
         created_by=created_by,
     )
     return LocationStockChange(item, row, old_location_stock, row.in_stock, old_item_stock, item.in_stock, old_location_allocated, row.allocated, old_item_allocated, item.allocated)
+
+
+def set_opening_balance(
+    db: Session,
+    item_id: int,
+    *,
+    in_stock: Decimal,
+    allocated: Decimal,
+    warehouse: str,
+    inventory_location: str,
+    idempotency_key: str,
+    created_by: str | None = "system",
+) -> dict:
+    payload = {
+        "item_id": item_id,
+        "in_stock": in_stock,
+        "allocated": allocated,
+        "warehouse": warehouse,
+        "inventory_location": inventory_location,
+        "created_by": created_by,
+    }
+    mutation, replay = begin_stock_mutation(db, "opening_balance", idempotency_key, payload)
+    if replay is not None:
+        return replay
+    if in_stock < 0 or allocated < 0 or allocated > in_stock:
+        raise ValueError("Opening balance requires 0 <= Allocated <= In Stock.")
+    lock_inventory_stock(db, {item_id})
+    item = db.get(InventoryItem, item_id)
+    if item is None:
+        raise ValueError("Item not found.")
+    history_exists = bool(db.scalar(select(func.count(StockMovement.id)).where(StockMovement.inventory_item_id == item_id)))
+    if to_decimal(item.in_stock) != 0 or to_decimal(item.allocated) != 0 or history_exists:
+        raise ValueError("Opening balance is only allowed before any operational stock or movement history exists.")
+    row = get_or_create_item_location(db, item, warehouse, inventory_location, is_default_location=True)
+    old_location_stock = to_decimal(row.in_stock)
+    old_item_stock = to_decimal(item.in_stock)
+    old_item_allocated = to_decimal(item.allocated)
+    old_item_sellable = to_decimal(item.sellable)
+    row.in_stock = in_stock
+    row.allocated = allocated
+    recalculate_item_location(row, item)
+    recalculate_item_totals(db, item.id)
+    create_stock_movement(
+        db,
+        item,
+        MovementType.opening_balance_import,
+        in_stock - old_location_stock,
+        row,
+        old_location_stock,
+        in_stock,
+        old_item_stock,
+        to_decimal(item.in_stock),
+        unit_cost=item.unit_cost,
+        reason="Explicit opening balance",
+        reference_type="opening_balance",
+        reference_number=idempotency_key,
+        created_by=created_by,
+    )
+    from app.models.inventory import InventoryAuditEvent
+
+    db.add(
+        InventoryAuditEvent(
+            item_id=item.id,
+            sku=item.sku,
+            barcode=item.barcode,
+            event_type="opening_balance",
+            quantity_delta=in_stock - old_item_stock,
+            previous_in_stock=old_item_stock,
+            new_in_stock=to_decimal(item.in_stock),
+            previous_allocated=old_item_allocated,
+            new_allocated=to_decimal(item.allocated),
+            previous_sellable=old_item_sellable,
+            new_sellable=to_decimal(item.sellable),
+            warehouse=row.warehouse,
+            inventory_location=row.inventory_location,
+            reference_type="opening_balance",
+            reference_number=idempotency_key,
+            notes="Explicit audited opening balance",
+            created_by=created_by or "system",
+        )
+    )
+    response = {
+        "status": "completed",
+        "item_id": item.id,
+        "in_stock": float(item.in_stock),
+        "allocated": float(item.allocated),
+        "sellable": float(item.sellable),
+    }
+    complete_stock_mutation(mutation, response)
+    db.commit()
+    return response
 
 
 def cycle_count_location(
@@ -552,7 +710,9 @@ def transfer_between_locations(
         raise ValueError("Transfer quantity must be greater than zero.")
     if from_row.inventory_item_id != item.id:
         raise ValueError("Transfer source location does not belong to the item.")
+    assert_stock_location_active(db, from_row)
     to_row = get_or_create_item_location(db, item, to_warehouse, to_inventory_location)
+    assert_stock_location_active(db, to_row)
     old_item_stock = item.in_stock or Decimal("0")
     from_old_stock, from_old_allocated = from_row.in_stock or Decimal("0"), from_row.allocated or Decimal("0")
     to_old_stock, to_old_allocated = to_row.in_stock or Decimal("0"), to_row.allocated or Decimal("0")
@@ -591,6 +751,7 @@ def adjust_location_stock(
         raise ValueError("Stock adjustment reason is required.")
     if adjustment_type not in {"correction", "damage", "loss", "found", "manual_increase", "manual_decrease"}:
         raise ValueError("Adjustment type is invalid.")
+    assert_stock_location_active(db, row)
     old_location_stock, old_item_stock = row.in_stock or Decimal("0"), item.in_stock or Decimal("0")
     old_location_allocated, old_item_allocated = row.allocated or Decimal("0"), item.allocated or Decimal("0")
     row.in_stock = old_location_stock + quantity_change
@@ -735,7 +896,23 @@ def create_committed_transfer(
     quantity: Decimal,
     notes: str | None = None,
     created_by: str | None = "system",
+    idempotency_key: str | None = None,
 ) -> InventoryTransfer:
+    request_payload = {
+        "item_id": item.id,
+        "from_inventory_item_location_id": from_row.id,
+        "to_warehouse": to_warehouse,
+        "to_inventory_location": to_inventory_location,
+        "quantity": quantity,
+        "notes": notes,
+        "created_by": created_by,
+    }
+    mutation, replay = begin_stock_mutation(db, "inventory_transfer", idempotency_key, request_payload)
+    if replay is not None:
+        transfer = db.get(InventoryTransfer, replay["transfer_id"])
+        setattr(transfer, "_idempotent_replay", True)
+        return transfer
+    lock_inventory_stock(db, {item.id})
     now = datetime.now(timezone.utc)
     transfer = InventoryTransfer(
         transfer_number=next_transfer_number(db, now),
@@ -768,12 +945,27 @@ def create_committed_transfer(
             notes=notes,
         )
     )
+    complete_stock_mutation(mutation, {"transfer_id": transfer.id})
     return transfer
 
 
-def create_committed_transfer_batch(db: Session, lines: list[dict], *, notes: str | None = None, created_by: str | None = "system") -> InventoryTransfer:
+def create_committed_transfer_batch(
+    db: Session,
+    lines: list[dict],
+    *,
+    notes: str | None = None,
+    created_by: str | None = "system",
+    idempotency_key: str | None = None,
+) -> InventoryTransfer:
     if not lines:
         raise ValueError("At least one transfer line is required.")
+    request_payload = {"lines": lines, "notes": notes, "created_by": created_by}
+    mutation, replay = begin_stock_mutation(db, "inventory_transfer", idempotency_key, request_payload)
+    if replay is not None:
+        transfer = db.get(InventoryTransfer, replay["transfer_id"])
+        setattr(transfer, "_idempotent_replay", True)
+        return transfer
+    lock_inventory_stock(db, {payload["item_id"] for payload in lines})
     now = datetime.now(timezone.utc)
     transfer = InventoryTransfer(
         transfer_number=next_transfer_number(db, now),
@@ -827,6 +1019,7 @@ def create_committed_transfer_batch(db: Session, lines: list[dict], *, notes: st
     if first_to is not None:
         transfer.to_warehouse = first_to.warehouse
         transfer.to_inventory_location = first_to.inventory_location
+    complete_stock_mutation(mutation, {"transfer_id": transfer.id})
     return transfer
 
 
@@ -840,7 +1033,23 @@ def create_committed_adjustment(
     reason: str,
     notes: str | None = None,
     created_by: str | None = "system",
+    idempotency_key: str | None = None,
 ) -> StockAdjustment:
+    request_payload = {
+        "item_id": item.id,
+        "inventory_item_location_id": row.id,
+        "quantity_change": quantity_change,
+        "adjustment_type": adjustment_type,
+        "reason": reason,
+        "notes": notes,
+        "created_by": created_by,
+    }
+    mutation, replay = begin_stock_mutation(db, "stock_adjustment", idempotency_key, request_payload)
+    if replay is not None:
+        adjustment = db.get(StockAdjustment, replay["adjustment_id"])
+        setattr(adjustment, "_idempotent_replay", True)
+        return adjustment
+    lock_inventory_stock(db, {item.id})
     now = datetime.now(timezone.utc)
     adjustment = StockAdjustment(
         adjustment_number=next_adjustment_number(db, now),
@@ -872,6 +1081,7 @@ def create_committed_adjustment(
             notes=notes,
         )
     )
+    complete_stock_mutation(mutation, {"adjustment_id": adjustment.id})
     return adjustment
 
 
@@ -883,9 +1093,23 @@ def create_committed_adjustment_batch(
     reason: str,
     notes: str | None = None,
     created_by: str | None = "system",
+    idempotency_key: str | None = None,
 ) -> StockAdjustment:
     if not lines:
         raise ValueError("At least one adjustment line is required.")
+    request_payload = {
+        "lines": lines,
+        "adjustment_type": adjustment_type,
+        "reason": reason,
+        "notes": notes,
+        "created_by": created_by,
+    }
+    mutation, replay = begin_stock_mutation(db, "stock_adjustment", idempotency_key, request_payload)
+    if replay is not None:
+        adjustment = db.get(StockAdjustment, replay["adjustment_id"])
+        setattr(adjustment, "_idempotent_replay", True)
+        return adjustment
+    lock_inventory_stock(db, {payload["item_id"] for payload in lines})
     now = datetime.now(timezone.utc)
     adjustment = StockAdjustment(
         adjustment_number=next_adjustment_number(db, now),
@@ -933,4 +1157,5 @@ def create_committed_adjustment_batch(
                 notes=payload.get("notes"),
             )
         )
+    complete_stock_mutation(mutation, {"adjustment_id": adjustment.id})
     return adjustment

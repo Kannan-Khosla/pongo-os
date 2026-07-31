@@ -24,8 +24,15 @@
 - Dashboard is now the Command Center with live local backend data, inventory
   health cards, order operation cards, route cards, data quality warnings,
   recent activity, and quick actions.
-- Settings includes WooCommerce remap controls for local-only mapping preview
-  and commit.
+- Settings separates WooCommerce operations into Connection, Sync & Mapping,
+  and Writeback routes while preserving existing preview/commit safeguards.
+- Connection shows the current authorized WooCommerce host. Replacing it
+  requires an explicit confirmation when the entered store URL differs, and
+  verification must succeed before the host is saved.
+- Connection feedback reports only the current check/save request. Historical
+  catalog or order sync failures stay in Sync & Mapping and its run history.
+- Settings uses document scrolling. Tables may scroll horizontally, but panels
+  do not own nested vertical scrollbars; long writeback queues are paginated.
 - Orders includes scanner-style Pick Orders controls for SKU/barcode entry.
 - Orders now follows a Zenventory-style sidebar sub-navigation pattern instead
   of showing all workflows on one page. The Orders children are Open Orders,
@@ -280,6 +287,10 @@ Current Pongo Inventory page:
   Inventory Value, and Under Par Items.
 - Filters: warehouse, inventory location, default location, category, brand,
   and under-par status.
+- Item Master and Inventory search as the operator types, with live local
+  suggestions showing product name, brand/category, SKU, and barcode. Search
+  terms are matched independently across item identifiers and metadata; SKU
+  prefix matches rank first.
 - Grouped table: Warehouse, Inventory Location, Item Count, In Stock, Allocated,
   Sellable, On Order, Inventory Value, Under Par Count.
 - Export CSV calls the backend inventory-by-location export.
@@ -454,8 +465,9 @@ Reference table columns:
 
 Pongo Open Orders:
 - Order source is WooCommerce.
-- Import new orders through the signed backend `order.created` webhook, with
-  manual and 10-second REST quick sync retained for recovery/reconciliation.
+- Import and reconcile orders through signed backend `order.created` and
+  `order.updated` webhooks, with backend periodic REST reconciliation retained
+  for missed deliveries.
 - Show active orders whose latest stored WooCommerce status is `processing`.
 - Show active order review and completion controls only.
 - Do not show route, shipping label, PO, supplier, outbound/customer
@@ -549,8 +561,8 @@ Current Settings WooCommerce Order Sync section:
   WooCommerce.
 - Shows webhook enabled/configured state and the last safe delivery summary, but
   never shows or edits `WOOCOMMERCE_WEBHOOK_SECRET`.
-- Explains that the webhook is the phase-1 new-order path and 10-second quick
-  sync remains the recovery path.
+- Explains that created/updated webhooks are the primary order path and backend
+  periodic reconciliation covers missed deliveries.
 
 ## Allocate Orders
 

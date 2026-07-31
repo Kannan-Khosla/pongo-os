@@ -1,4 +1,7 @@
 from app.core.config import get_settings
+from app.db.session import get_db
+from app.main import app
+from app.models.orders import Order
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
 
@@ -58,7 +61,7 @@ def test_complete_picked_order_does_not_reduce_stock_again(client, monkeypatch):
         lambda self, operation_type, method, path, payload: {"id": 851, "status": payload["status"]},
     )
     order = sync_auto_allocated_order(client, monkeypatch, sku="COMPLETE-PICK-SKU", barcode="COMPLETE-PICK-BAR", woo_id=851, product_id=851)
-    pick = client.post("/api/picks/commit", json={"order_ids": [order["id"]], "allow_partial": True})
+    pick = client.post("/api/picks/commit", json={"idempotency_key": "workflow-complete-pick", "order_ids": [order["id"]], "allow_partial": True})
     assert pick.json()["status"] == "posted"
     before = client.get("/api/items", params={"sku": "COMPLETE-PICK-SKU"}).json()["items"][0]
 
@@ -74,6 +77,36 @@ def test_complete_picked_order_does_not_reduce_stock_again(client, monkeypatch):
     assert order["id"] not in {row["id"] for row in client.get("/api/orders/open").json()["orders"]}
     assert order["id"] in {row["id"] for row in client.get("/api/orders/completed").json()["orders"]}
     assert client.get("/api/stock-movements", params={"movement_type": "pick_stock_reduction"}).json()["total"] == 1
+
+
+def test_picked_completion_fails_closed_when_any_inventory_line_is_not_fully_picked(client, monkeypatch):
+    order = sync_auto_allocated_order(client, monkeypatch, sku="INCOMPLETE-PICK-SKU", barcode="INCOMPLETE-PICK-BAR", woo_id=859, product_id=859, quantity=2)
+
+    response = client.post(f"/api/orders/{order['id']}/complete/commit", json={"completion_mode": "complete_picked"})
+
+    assert response.status_code == 400
+    assert "fully picked" in response.text
+    assert client.get(f"/api/orders/{order['id']}").json()["local_status"] != "completed"
+
+
+def test_picked_completion_fails_closed_for_order_without_inventory_lines(client):
+    db_override = app.dependency_overrides[get_db]()
+    db = next(db_override)
+    try:
+        order = Order(order_number="EMPTY-PICKED", local_status="picked", woo_status="processing")
+        db.add(order)
+        db.commit()
+        order_id = order.id
+    finally:
+        db_override.close()
+
+    response = client.post(
+        f"/api/orders/{order_id}/complete/commit",
+        json={"completion_mode": "complete_picked", "queue_woo_status_update": False},
+    )
+
+    assert response.status_code == 400
+    assert "at least one inventory line" in response.text
 
 
 def test_complete_without_picking_releases_allocation_and_does_not_reduce_stock(client, monkeypatch):
@@ -92,7 +125,9 @@ def test_complete_without_picking_releases_allocation_and_does_not_reduce_stock(
     after = client.get("/api/items", params={"sku": "NO-PICK-COMPLETE-SKU"}).json()["items"][0]
     assert after["In Stock"] == 6
     assert after["Allocated"] == 1
-    assert client.get("/api/stock-movements").json()["total"] == 0
+    movements = client.get("/api/stock-movements").json()
+    assert movements["total"] == 1
+    assert movements["movements"][0]["movement_type"] == "opening_balance_import"
     completed = [row for row in client.get("/api/orders/completed").json()["orders"] if row["id"] == order["id"]][0]
     assert completed["completed_without_picking"] is True
     assert completed["total_quantity_stock_reduced"] == 0
@@ -187,6 +222,7 @@ def test_stock_adjustment_retries_fifo_waiting_orders_and_auto_endpoint_is_idemp
     adjustment = client.post(
         "/api/inventory/adjustments",
         json={
+            "idempotency_key": "fifo-restock-adjustment",
             "adjustment_type": "manual_increase",
             "reason": "FIFO restock test",
             "created_by": "pytest",

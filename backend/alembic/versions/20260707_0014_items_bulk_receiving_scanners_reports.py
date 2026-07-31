@@ -158,3 +158,26 @@ def create_scanner_tables() -> None:
     }.items():
         for column in indexed_columns:
             create_index_if_missing(table_name, f"ix_{table_name}_{column}", [column])
+
+
+def downgrade() -> None:
+    for table_name in ["scanner_events", "scanner_sessions", "item_notes", "ui_saved_views"]:
+        if table_exists(table_name):
+            op.drop_table(table_name)
+
+    if table_exists("receipt_items"):
+        if index_exists("receipt_items", "ix_receipt_items_line_status"):
+            op.drop_index("ix_receipt_items_line_status", table_name="receipt_items")
+        with op.batch_alter_table("receipt_items") as batch:
+            for column_name in ["scan_input", "line_status"]:
+                if column_exists("receipt_items", column_name):
+                    batch.drop_column(column_name)
+
+    if table_exists("receipts"):
+        for index_name in ["ix_receipts_cancelled_at", "ix_receipts_committed_at", "ix_receipts_source"]:
+            if index_exists("receipts", index_name):
+                op.drop_index(index_name, table_name="receipts")
+        with op.batch_alter_table("receipts") as batch:
+            for column_name in ["cancelled_at", "committed_at", "source"]:
+                if column_exists("receipts", column_name):
+                    batch.drop_column(column_name)

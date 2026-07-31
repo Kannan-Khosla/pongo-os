@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.allocations import AllocationLine
@@ -55,6 +55,24 @@ ITEM_BULK_BLOCKED_FIELDS = {
     "woo_stock_quantity_snapshot",
     "woo_stock_status",
 }
+ITEM_SEARCH_COLUMNS = (
+    InventoryItem.sku,
+    InventoryItem.barcode,
+    InventoryItem.woo_name,
+    InventoryItem.description,
+    InventoryItem.category,
+    InventoryItem.brand,
+    InventoryItem.manufacturer,
+    InventoryItem.warehouse,
+    InventoryItem.inventory_location,
+)
+
+
+def item_keyword_predicates(query: str) -> list:
+    return [
+        or_(*(column.ilike(f"%{keyword}%") for column in ITEM_SEARCH_COLUMNS))
+        for keyword in query.split()
+    ]
 
 
 def as_float(value: Any) -> float | None:
@@ -70,6 +88,7 @@ def item_summary(item: InventoryItem | None) -> dict[str, Any] | None:
         "id": item.id,
         "sku": item.sku,
         "barcode": item.barcode,
+        "product_name": item.woo_name or item.description,
         "description": item.description,
         "category": item.category,
         "brand": item.brand,
@@ -259,9 +278,25 @@ def build_item_activity(
 
 def search_items(db: Session, *, q: str | None = None, sku: str | None = None, barcode: str | None = None, brand: str | None = None, category: str | None = None, limit: int = 25) -> dict[str, Any]:
     statement = select(InventoryItem)
+    ordering = [InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc()]
     if q:
-        pattern = f"%{q}%"
-        statement = statement.where(or_(InventoryItem.sku.ilike(pattern), InventoryItem.barcode.ilike(pattern), InventoryItem.description.ilike(pattern), InventoryItem.brand.ilike(pattern), InventoryItem.category.ilike(pattern)))
+        statement = statement.where(*item_keyword_predicates(q))
+        term = q.strip()
+        if term:
+            contains = f"%{term}%"
+            prefix = f"{term}%"
+            ordering.insert(
+                0,
+                case(
+                    (InventoryItem.sku.ilike(prefix), 0),
+                    (InventoryItem.sku.ilike(contains), 1),
+                    (InventoryItem.barcode.ilike(prefix), 2),
+                    (InventoryItem.barcode.ilike(contains), 3),
+                    (InventoryItem.woo_name.ilike(contains), 4),
+                    (InventoryItem.description.ilike(contains), 4),
+                    else_=5,
+                ),
+            )
     if sku:
         statement = statement.where(InventoryItem.sku.ilike(f"%{sku}%"))
     if barcode:
@@ -270,7 +305,7 @@ def search_items(db: Session, *, q: str | None = None, sku: str | None = None, b
         statement = statement.where(InventoryItem.brand == brand)
     if category:
         statement = statement.where(InventoryItem.category == category)
-    items = list(db.scalars(statement.order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc()).limit(max(1, min(limit, 100)))).all())
+    items = list(db.scalars(statement.order_by(*ordering).limit(max(1, min(limit, 100)))).all())
     return {
         "items": [
             {
@@ -307,7 +342,7 @@ def preview_bulk_item_update(db: Session, item_ids: list[int], updates: dict[str
     }
 
 
-def commit_bulk_item_update(db: Session, item_ids: list[int], updates: dict[str, Any]) -> dict[str, Any]:
+def commit_bulk_item_update(db: Session, item_ids: list[int], updates: dict[str, Any], *, created_by: str = "system") -> dict[str, Any]:
     preview = preview_bulk_item_update(db, item_ids, updates)
     if any(key in ITEM_BULK_BLOCKED_FIELDS for key in updates):
         raise HTTPException(status_code=400, detail=preview)
@@ -336,7 +371,7 @@ def commit_bulk_item_update(db: Session, item_ids: list[int], updates: dict[str,
                 inventory_location=item.inventory_location,
                 reference_type="item_bulk_edit",
                 notes=", ".join(sorted(allowed_updates)),
-                created_by="system",
+                created_by=created_by,
             )
         )
     db.commit()

@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pongo OS — Design Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============ TOKENS ============ */
+:root {
+  /* brand */
+  --pongo-blue-50:#EEF4FE; --pongo-blue-100:#D8E6FC; --pongo-blue-300:#7FAAF0;
+  --pongo-blue-500:#1863DC; --pongo-blue-600:#1252BC; --pongo-blue-700:#0F429A;
+  --pongo-blue-900:#0F149A;
+  --orange-100:#FFEEDD; --orange-300:#FFB26B; --orange-500:#FD9B4D;
+  --orange-600:#EF7937; --orange-700:#C95B22;
+  /* ink chrome */
+  --ink-950:#070A1F; --ink-900:#0B0F2E; --ink-800:#131A45;
+  --ink-700:#1C2560; --ink-400:#6B74A8; --ink-200:#B9BFDE;
+  /* neutrals */
+  --n-0:#FFFFFF; --n-50:#F7F8FC; --n-100:#EEF0F7; --n-200:#DFE3EE;
+  --n-400:#9AA1B8; --n-500:#6E7690; --n-700:#3E4560; --n-900:#171B2E;
+  /* status */
+  --success-500:#16A26B; --success-50:#E7F7F0; --success-700:#0E7A4F;
+  --warning-500:#D9820B; --warning-50:#FDF3E3; --warning-700:#A05E04;
+  --danger-500:#DE3B4B;  --danger-50:#FDEBED;  --danger-700:#B22432;
+  --info-500:#0E93B4;    --info-50:#E5F6FA;
+
+  /* semantic (Direction 1: Tech Command Center) */
+  --surface-app:var(--n-50);
+  --surface-card:var(--n-0);
+  --surface-inset:var(--n-100);
+  --border-default:var(--n-200);
+  --border-strong:#C4CADB;
+  --text-primary:var(--n-900);
+  --text-secondary:var(--n-500);
+  --text-disabled:var(--n-400);
+
+  --surface-chrome:var(--ink-900);
+  --surface-chrome-deep:var(--ink-950);
+  --chrome-hover:var(--ink-800);
+  --chrome-active:var(--ink-700);
+  --chrome-border:rgba(255,255,255,.08);
+  --chrome-text:#FFFFFF;
+  --chrome-text-dim:var(--ink-200);
+  --chrome-text-faint:var(--ink-400);
+
+  --shadow-1:0 1px 2px rgba(11,15,46,.06);
+  --shadow-2:0 4px 12px rgba(11,15,46,.08);
+  --shadow-3:0 12px 32px rgba(11,15,46,.14);
+  --glow-live:0 0 0 3px rgba(253,155,77,.22);
+
+  --font-display:"Space Grotesk",sans-serif;
+  --font-ui:"Inter",sans-serif;
+  --font-mono:"JetBrains Mono",monospace;
+
+  --radius-control:8px; --radius-card:12px; --radius-overlay:16px; --radius-pill:999px;
+  --ease-out:cubic-bezier(.16,1,.3,1);
+}
+
+/* Direction 2: Premium Operations Cloud (all light, warm) */
+body[data-dir="cloud"] {
+  --surface-app:#FBF8F3;
+  --surface-card:#FFFFFF;
+  --surface-inset:#F3EEE6;
+  --border-default:#E8E2D6;
+  --border-strong:#D6CEBE;
+  --surface-chrome:#FFFDF9;
+  --surface-chrome-deep:#FBF8F3;
+  --chrome-hover:#F3EEE6;
+  --chrome-active:#FCE9D9;
+  --chrome-border:#E8E2D6;
+  --chrome-text:#171B2E;
+  --chrome-text-dim:#5A6076;
+  --chrome-text-faint:#9AA1B8;
+  --shadow-1:0 1px 2px rgba(84,74,50,.06);
+  --shadow-2:0 4px 14px rgba(84,74,50,.09);
+  --shadow-3:0 12px 32px rgba(84,74,50,.15);
+}
+
+/* Direction 3: Futuristic Commerce OS (full dark) */
+body[data-dir="dark"] {
+  --surface-app:var(--ink-950);
+  --surface-card:#101635;
+  --surface-inset:#0D1230;
+  --border-default:rgba(255,255,255,.09);
+  --border-strong:rgba(255,255,255,.16);
+  --text-primary:#EDEFFA;
+  --text-secondary:#8E96BF;
+  --text-disabled:#5A6288;
+  --surface-chrome:#05071A;
+  --surface-chrome-deep:#04061442;
+  --chrome-hover:#101635;
+  --chrome-active:#1C2560;
+  --pongo-blue-50:#14204D;
+  --pongo-blue-100:#1B2C66;
+  --success-50:rgba(22,162,107,.16); --success-700:#3ED598;
+  --warning-50:rgba(217,130,11,.16); --warning-700:#F0A83C;
+  --danger-50:rgba(222,59,75,.16);   --danger-700:#F2707C;
+  --orange-100:rgba(253,155,77,.15); --orange-700:#FFB26B;
+  --shadow-1:0 1px 2px rgba(0,0,0,.4);
+  --shadow-2:0 4px 12px rgba(0,0,0,.45);
+  --shadow-3:0 12px 32px rgba(0,0,0,.6);
+}
+body[data-dir="dark"] .stat-num, body[data-dir="dark"] .kpi-delta.up { text-shadow:0 0 24px rgba(24,99,220,.35); }
+
+/* ============ BASE ============ */
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { height:100%; }
+body {
+  font-family:var(--font-ui); font-size:14px; line-height:1.5;
+  color:var(--text-primary); background:var(--surface-app);
+  -webkit-font-smoothing:antialiased; overflow:hidden;
+}
+button { font-family:inherit; cursor:pointer; border:none; background:none; color:inherit; }
+::selection { background:var(--pongo-blue-100); }
+
+.app { display:flex; height:100vh; }
+
+/* ============ SIDEBAR ============ */
+.sidebar {
+  width:240px; flex-shrink:0; background:var(--surface-chrome-deep);
+  border-right:1px solid var(--chrome-border);
+  display:flex; flex-direction:column; padding:0 12px 12px;
+  transition:background .3s var(--ease-out);
+}
+.logo-row { display:flex; align-items:center; gap:10px; padding:18px 10px 20px; }
+.logo-mark {
+  width:30px; height:30px; border-radius:9px; flex-shrink:0;
+  background:linear-gradient(135deg,var(--pongo-blue-500) 0%,var(--pongo-blue-900) 70%);
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:0 2px 8px rgba(24,99,220,.4);
+}
+.logo-mark svg { width:17px; height:17px; }
+.logo-name { font-family:var(--font-display); font-weight:600; font-size:16px; color:var(--chrome-text); letter-spacing:.01em; }
+.logo-name span { color:var(--orange-500); }
+
+.nav-group { margin-top:14px; }
+.nav-eyebrow {
+  font-size:10.5px; font-weight:600; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--chrome-text-faint); padding:0 10px 6px;
+}
+.nav-item {
+  display:flex; align-items:center; gap:10px; width:100%;
+  padding:7px 10px; border-radius:8px; margin-bottom:1px;
+  color:var(--chrome-text-dim); font-size:13.5px; font-weight:500;
+  position:relative; transition:background .12s,color .12s; text-align:left;
+}
+.nav-item svg { width:17px; height:17px; flex-shrink:0; stroke:currentColor; }
+.nav-item:hover { background:var(--chrome-hover); color:var(--chrome-text); }
+.nav-item.active { background:var(--chrome-active); color:var(--chrome-text); }
+.nav-item.active::before {
+  content:""; position:absolute; left:-12px; top:6px; bottom:6px; width:2.5px;
+  background:var(--orange-500); border-radius:0 2px 2px 0;
+}
+.nav-item.active svg { color:var(--orange-300); }
+body[data-dir="cloud"] .nav-item.active svg { color:var(--orange-600); }
+.nav-badge {
+  margin-left:auto; font-size:11px; font-weight:600; font-family:var(--font-mono);
+  background:var(--chrome-active); color:var(--chrome-text); padding:1px 7px; border-radius:999px;
+}
+.nav-badge.live { background:var(--orange-600); color:#fff; }
+body[data-dir="cloud"] .nav-badge { background:#EDE6DA; color:#3E4560; }
+body[data-dir="cloud"] .nav-badge.live { background:var(--orange-600); color:#fff; }
+
+.sidebar-foot { margin-top:auto; padding-top:12px; border-top:1px solid var(--chrome-border); }
+
+/* ============ MAIN / TOPBAR ============ */
+.main { flex:1; display:flex; flex-direction:column; min-width:0; }
+.topbar {
+  height:56px; flex-shrink:0; background:var(--surface-chrome);
+  border-bottom:1px solid var(--chrome-border);
+  display:flex; align-items:center; gap:16px; padding:0 20px;
+  transition:background .3s var(--ease-out);
+}
+.crumbs { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--chrome-text-faint); white-space:nowrap; }
+.crumbs .sep { opacity:.5; }
+.crumbs .cur { color:var(--chrome-text); font-weight:550; }
+
+.cmdbar {
+  flex:1; max-width:520px; margin:0 auto;
+  display:flex; align-items:center; gap:9px;
+  background:var(--chrome-hover); border:1px solid var(--chrome-border);
+  border-radius:9px; padding:7px 12px; color:var(--chrome-text-faint);
+  font-size:13px; transition:border-color .15s, box-shadow .15s;
+}
+.cmdbar:hover { border-color:var(--pongo-blue-500); box-shadow:0 0 0 3px rgba(24,99,220,.15); }
+.cmdbar svg { width:15px; height:15px; }
+.kbd {
+  margin-left:auto; font-family:var(--font-mono); font-size:11px;
+  border:1px solid var(--chrome-border); border-radius:5px; padding:1px 6px;
+  color:var(--chrome-text-dim);
+}
+
+.topbar-right { display:flex; align-items:center; gap:10px; }
+.sync-chip {
+  display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:500;
+  color:var(--chrome-text-dim); background:var(--chrome-hover);
+  border:1px solid var(--chrome-border); border-radius:999px; padding:5px 12px;
+  position:relative; overflow:hidden;
+}
+.sync-chip .pulse-track {
+  position:absolute; left:0; right:0; top:0; height:2px;
+  background:linear-gradient(90deg,transparent,var(--pongo-blue-500),var(--orange-500),transparent);
+  background-size:200% 100%; animation:pulseSlide 2.2s linear infinite;
+}
+@keyframes pulseSlide { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+.dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+.dot.ok { background:var(--success-500); box-shadow:0 0 6px rgba(22,162,107,.7); }
+.dot.live { background:var(--orange-500); box-shadow:0 0 8px rgba(253,155,77,.9); animation:blink 1.6s ease-in-out infinite; }
+.dot.warn { background:var(--warning-500); }
+.dot.bad { background:var(--danger-500); }
+@keyframes blink { 50%{opacity:.45} }
+
+.icon-btn {
+  width:34px; height:34px; border-radius:8px; display:flex; align-items:center; justify-content:center;
+  color:var(--chrome-text-dim); position:relative; transition:background .12s;
+}
+.icon-btn:hover { background:var(--chrome-hover); color:var(--chrome-text); }
+.icon-btn svg { width:17px; height:17px; }
+.icon-btn .noti { position:absolute; top:7px; right:7px; width:7px; height:7px; border-radius:50%; background:var(--orange-500); border:1.5px solid var(--surface-chrome); }
+.avatar {
+  width:30px; height:30px; border-radius:50%; flex-shrink:0;
+  background:linear-gradient(135deg,var(--orange-500),var(--orange-700));
+  color:#fff; font-size:12px; font-weight:650; display:flex; align-items:center; justify-content:center;
+}
+.workspace-chip { display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:8px; }
+.workspace-chip:hover { background:var(--chrome-hover); }
+.workspace-chip .ws-name { font-size:12.5px; font-weight:550; color:var(--chrome-text-dim); }
+
+/* direction switcher */
+.dir-switch { display:flex; background:var(--chrome-hover); border:1px solid var(--chrome-border); border-radius:8px; padding:2px; gap:2px; }
+.dir-switch button { font-size:11px; font-weight:600; padding:4px 9px; border-radius:6px; color:var(--chrome-text-faint); letter-spacing:.02em; }
+.dir-switch button.on { background:var(--pongo-blue-500); color:#fff; }
+
+/* ============ WORKSPACE ============ */
+.workspace { flex:1; overflow-y:auto; padding:24px 28px 48px; }
+.page { display:none; max-width:1400px; margin:0 auto; }
+.page.visible { display:block; animation:pageIn .25s var(--ease-out); }
+@keyframes pageIn { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none} }
+
+.page-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:6px; }
+.page-title { font-family:var(--font-display); font-size:24px; font-weight:600; letter-spacing:-.01em; display:flex; align-items:center; gap:12px; }
+.page-meta { font-size:13px; color:var(--text-secondary); margin-top:3px; }
+.page-actions { display:flex; gap:8px; align-items:center; }
+
+.btn {
+  display:inline-flex; align-items:center; gap:7px; font-size:13px; font-weight:550;
+  padding:8px 14px; border-radius:var(--radius-control); transition:all .12s;
+  border:1px solid transparent;
+}
+.btn svg { width:15px; height:15px; }
+.btn-primary { background:var(--pongo-blue-500); color:#fff; }
+.btn-primary:hover { background:var(--pongo-blue-600); }
+.btn-primary:active { background:var(--pongo-blue-700); transform:scale(.99); }
+.btn-secondary { background:var(--surface-card); border-color:var(--border-default); color:var(--text-primary); box-shadow:var(--shadow-1); }
+.btn-secondary:hover { background:var(--surface-inset); }
+.btn-live { background:var(--orange-600); color:#fff; }
+.btn-live:hover { background:var(--orange-700); }
+.btn-ghost { color:var(--text-secondary); }
+.btn-ghost:hover { background:var(--surface-inset); color:var(--text-primary); }
+
+/* tabs */
+.tabs { display:flex; gap:2px; border-bottom:1px solid var(--border-default); margin:14px 0 18px; }
+.tab { font-size:13.5px; font-weight:550; color:var(--text-secondary); padding:9px 14px; border-radius:8px 8px 0 0; position:relative; }
+.tab:hover { color:var(--text-primary); background:var(--surface-inset); }
+.tab.on { color:var(--pongo-blue-500); }
+.tab.on::after { content:""; position:absolute; left:10px; right:10px; bottom:-1px; height:2px; background:var(--pongo-blue-500); border-radius:2px 2px 0 0; }
+.tab .count { font-family:var(--font-mono); font-size:11px; margin-left:6px; color:var(--text-disabled); }
+.tab.on .count { color:var(--pongo-blue-300); }
+
+/* toolbar */
+.toolbar { display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+.search-inline {
+  display:flex; align-items:center; gap:8px; background:var(--surface-card);
+  border:1px solid var(--border-default); border-radius:8px; padding:7px 11px;
+  font-size:13px; color:var(--text-disabled); width:230px; box-shadow:var(--shadow-1);
+}
+.search-inline svg { width:14px; height:14px; }
+.fchip {
+  display:inline-flex; align-items:center; gap:6px; font-size:12.5px; font-weight:500;
+  background:var(--pongo-blue-50); color:var(--pongo-blue-500);
+  border:1px solid var(--pongo-blue-100); border-radius:999px; padding:5px 11px;
+}
+.fchip .x { opacity:.6; font-size:13px; cursor:pointer; }
+.fchip .x:hover { opacity:1; }
+.toolbar-right { margin-left:auto; display:flex; gap:6px; }
+
+/* ============ CARDS / GRID ============ */
+.grid { display:grid; grid-template-columns:repeat(12,1fr); gap:16px; }
+.card {
+  background:var(--surface-card); border:1px solid var(--border-default);
+  border-radius:var(--radius-card); box-shadow:var(--shadow-1);
+  transition:box-shadow .18s var(--ease-out), transform .18s var(--ease-out), border-color .18s;
+}
+.card.hoverable:hover { box-shadow:var(--shadow-2); transform:translateY(-1px); border-color:var(--border-strong); cursor:pointer; }
+.card-pad { padding:18px 20px; }
+.card-title-row { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+.card-title { font-size:14px; font-weight:600; }
+.card-link { font-size:12.5px; font-weight:550; color:var(--pongo-blue-500); }
+.card-link:hover { text-decoration:underline; }
+
+/* stat cards */
+.stat-label { font-size:11.5px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:var(--text-secondary); }
+.stat-num { font-family:var(--font-display); font-size:34px; font-weight:650; letter-spacing:-.01em; line-height:1.15; margin-top:6px; font-variant-numeric:tabular-nums; }
+.kpi-row { display:flex; align-items:flex-end; justify-content:space-between; gap:8px; }
+.kpi-delta { font-size:12px; font-weight:600; display:flex; align-items:center; gap:3px; margin-top:4px; }
+.kpi-delta.up { color:var(--success-700); }
+.kpi-delta.down { color:var(--danger-700); }
+.kpi-delta.flat { color:var(--text-secondary); }
+.spark { width:88px; height:34px; flex-shrink:0; }
+.spark polyline { fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.spark .area { opacity:.12; stroke:none; }
+
+/* pipeline */
+.pipeline-card { display:flex; flex-direction:column; }
+.pipeline-card .pipeline { margin:auto 0; }
+.pipeline-card .pipe-note { margin-top:auto; padding-top:14px; }
+.pipeline { display:flex; gap:6px; margin-top:4px; }
+.pipe-seg { border-radius:8px; padding:12px 14px; min-width:0; cursor:pointer; border:1px solid var(--border-default); background:var(--surface-inset); transition:all .15s; position:relative; }
+.pipe-seg:hover { border-color:var(--pongo-blue-300); background:var(--pongo-blue-50); }
+.pipe-seg .pn { font-family:var(--font-display); font-size:22px; font-weight:650; }
+.pipe-seg .pl { font-size:11.5px; font-weight:550; color:var(--text-secondary); margin-top:1px; white-space:nowrap; }
+.pipe-seg.hot { border-color:var(--orange-300); background:var(--orange-100); }
+.pipe-seg.hot .pn { color:var(--orange-700); }
+.pipe-seg.stuck::after { content:""; position:absolute; left:12px; right:12px; bottom:6px; height:2.5px; border-radius:2px; background:var(--warning-500); }
+.pipe-arrow { align-self:center; color:var(--text-disabled); flex-shrink:0; }
+
+/* pulse card edge */
+.pulse-top { position:relative; overflow:hidden; }
+.pulse-top::before {
+  content:""; position:absolute; top:0; left:0; right:0; height:2.5px; z-index:1;
+  background:linear-gradient(90deg,transparent,var(--pongo-blue-500) 30%,var(--orange-500) 60%,transparent);
+  background-size:220% 100%; animation:pulseSlide 2.2s linear infinite;
+}
+
+/* alerts */
+.alert-row { display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--border-default); font-size:13px; }
+.alert-row:last-child { border-bottom:none; }
+.alert-row .go { margin-left:auto; color:var(--pongo-blue-500); font-weight:550; font-size:12.5px; white-space:nowrap; cursor:pointer; }
+.alert-row .go:hover { text-decoration:underline; }
+
+/* donut */
+.donut-wrap { display:flex; gap:20px; align-items:center; }
+.donut { width:110px; height:110px; border-radius:50%; flex-shrink:0;
+  background:conic-gradient(var(--success-500) 0 71%, var(--warning-500) 71% 89%, var(--danger-500) 89% 100%);
+  display:flex; align-items:center; justify-content:center; }
+.donut-hole { width:74px; height:74px; border-radius:50%; background:var(--surface-card); display:flex; flex-direction:column; align-items:center; justify-content:center; }
+.donut-hole b { font-family:var(--font-display); font-size:19px; }
+.donut-hole span { font-size:10px; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.05em; }
+.legend { font-size:12.5px; display:flex; flex-direction:column; gap:7px; }
+.legend .li { display:flex; align-items:center; gap:8px; color:var(--text-secondary); }
+.legend .li b { color:var(--text-primary); font-family:var(--font-mono); font-size:12px; margin-left:auto; padding-left:14px; }
+.sw { width:9px; height:9px; border-radius:3px; }
+
+/* activity feed */
+.feed-row { display:flex; gap:11px; padding:9px 0; border-bottom:1px solid var(--border-default); font-size:13px; align-items:flex-start; }
+.feed-row:last-child { border-bottom:none; }
+.feed-ico { width:26px; height:26px; border-radius:7px; background:var(--surface-inset); display:flex; align-items:center; justify-content:center; flex-shrink:0; color:var(--text-secondary); }
+.feed-ico svg { width:13px; height:13px; }
+.feed-body .t { color:var(--text-primary); }
+.feed-body .ts { font-size:11.5px; color:var(--text-disabled); margin-top:1px; }
+.mono { font-family:var(--font-mono); font-size:.93em; font-weight:500; }
+
+/* intelligence */
+.intel { border:1px solid var(--pongo-blue-100); }
+.intel-tag { display:inline-flex; align-items:center; gap:6px; font-size:10.5px; font-weight:650; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--pongo-blue-500); background:var(--pongo-blue-50); padding:3px 9px; border-radius:999px; margin-bottom:10px; }
+.intel-item { display:flex; gap:10px; padding:8px 0; font-size:13px; align-items:flex-start; border-bottom:1px solid var(--border-default); }
+.intel-item:last-child { border:none; }
+.intel-item .spark-ico { color:var(--orange-600); flex-shrink:0; margin-top:1px; }
+
+/* ============ TABLES ============ */
+.table-card { overflow:hidden; }
+table { width:100%; border-collapse:collapse; font-size:13.5px; }
+thead th {
+  text-align:left; font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--text-secondary); background:var(--surface-inset);
+  padding:9px 14px; border-bottom:1px solid var(--border-default); white-space:nowrap;
+}
+tbody td { padding:10px 14px; border-bottom:1px solid var(--border-default); vertical-align:middle; }
+tbody tr { transition:background .1s; cursor:pointer; }
+tbody tr:hover { background:var(--surface-inset); }
+tbody tr.selected { background:var(--pongo-blue-50); box-shadow:inset 2.5px 0 0 var(--pongo-blue-500); }
+tbody tr:last-child td { border-bottom:none; }
+.num { font-variant-numeric:tabular-nums; text-align:right; }
+th.num { text-align:right; }
+
+.pill { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; padding:3px 10px; border-radius:999px; white-space:nowrap; }
+.pill .dot { width:6px; height:6px; }
+.pill-new { background:var(--pongo-blue-50); color:var(--pongo-blue-500); }
+.pill-alloc { background:transparent; color:var(--pongo-blue-500); border:1px solid var(--pongo-blue-300); }
+.pill-pick { background:var(--orange-100); color:var(--orange-700); }
+.pill-packed { background:var(--info-50); color:var(--info-500); }
+.pill-shipped,.pill-ok { background:var(--success-50); color:var(--success-700); }
+.pill-done { background:var(--surface-inset); color:var(--text-secondary); }
+.pill-exc,.pill-out { background:var(--danger-50); color:var(--danger-700); }
+.pill-low { background:var(--warning-50); color:var(--warning-700); }
+.pill-unmapped { background:transparent; color:var(--text-secondary); border:1px dashed var(--border-strong); }
+
+.item-cell { display:flex; align-items:center; gap:11px; }
+.thumb { width:34px; height:34px; border-radius:8px; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:15px; background:var(--surface-inset); border:1px solid var(--border-default); }
+.item-cell .nm { font-weight:550; line-height:1.3; }
+.item-cell .sku { font-family:var(--font-mono); font-size:11.5px; color:var(--text-secondary); }
+.avail-ok { color:var(--success-700); font-weight:600; }
+.avail-low { color:var(--warning-700); font-weight:600; }
+.avail-out { color:var(--danger-700); font-weight:600; }
+.age-warn { color:var(--warning-700); font-weight:550; }
+.mini-avatar { width:24px; height:24px; border-radius:50%; font-size:10px; font-weight:650; color:#fff; display:inline-flex; align-items:center; justify-content:center; }
+
+.checkbox { width:15px; height:15px; border-radius:4px; border:1.5px solid var(--border-strong); display:inline-block; vertical-align:middle; background:var(--surface-card); }
+tr.selected .checkbox { background:var(--pongo-blue-500); border-color:var(--pongo-blue-500); position:relative; }
+tr.selected .checkbox::after { content:"✓"; color:#fff; font-size:10px; position:absolute; top:-1px; left:2px; }
+
+/* bulk bar */
+.bulkbar {
+  position:sticky; bottom:12px; margin:14px auto 0; width:fit-content;
+  display:flex; align-items:center; gap:4px; background:var(--ink-900); color:#fff;
+  border-radius:12px; padding:8px 10px 8px 16px; box-shadow:var(--shadow-3);
+  font-size:13px; border:1px solid rgba(255,255,255,.1);
+}
+.bulkbar b { font-family:var(--font-mono); margin-right:8px; }
+.bulkbar button { color:var(--ink-200); font-weight:550; font-size:12.5px; padding:5px 10px; border-radius:7px; }
+.bulkbar button:hover { background:var(--ink-700); color:#fff; }
+
+/* ============ PICKING ============ */
+.queue-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
+.pick-card { padding:16px 18px; position:relative; overflow:hidden; }
+.pick-card.mine::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px;
+  background:linear-gradient(180deg,var(--pongo-blue-500),var(--orange-500)); background-size:100% 220%; animation:pulseV 2.2s linear infinite; }
+@keyframes pulseV { 0%{background-position:0 220%} 100%{background-position:0 -220%} }
+.pick-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:9px; }
+.pick-id { font-family:var(--font-mono); font-weight:600; font-size:16px; }
+.pick-meta { font-size:12.5px; color:var(--text-secondary); display:flex; gap:14px; margin-bottom:14px; }
+.pick-meta b { color:var(--text-primary); font-weight:600; }
+.prio { font-size:10.5px; font-weight:700; letter-spacing:.06em; color:var(--danger-700); background:var(--danger-50); padding:2px 8px; border-radius:999px; }
+
+/* active pick */
+.activepick { max-width:760px; margin:0 auto; }
+.ap-top { display:flex; align-items:center; gap:16px; margin-bottom:22px; }
+.ap-progress { flex:1; height:7px; border-radius:99px; background:var(--surface-inset); overflow:hidden; }
+.ap-progress i { display:block; height:100%; width:37%; border-radius:99px;
+  background:linear-gradient(90deg,var(--pongo-blue-500),var(--orange-500)); transition:width .3s var(--ease-out); }
+.ap-count { font-family:var(--font-mono); font-size:13px; color:var(--text-secondary); white-space:nowrap; }
+.ap-card { padding:34px 38px; text-align:center; }
+.ap-imgbox { width:104px; height:104px; margin:0 auto 18px; border-radius:16px; background:var(--surface-inset);
+  border:1px solid var(--border-default); display:flex; align-items:center; justify-content:center; font-size:44px; }
+.ap-name { font-size:19px; font-weight:600; }
+.ap-sku { font-family:var(--font-mono); font-size:13px; color:var(--text-secondary); margin-top:3px; }
+.ap-binrow { display:flex; gap:14px; justify-content:center; margin:24px 0; }
+.ap-bin { background:var(--surface-inset); border:1px solid var(--border-default); border-radius:14px; padding:14px 26px; }
+.ap-bin .lbl { font-size:10.5px; font-weight:650; letter-spacing:.08em; text-transform:uppercase; color:var(--text-secondary); }
+.ap-bin .val { font-family:var(--font-mono); font-size:29px; font-weight:600; margin-top:2px; }
+.ap-bin.qty .val { color:var(--orange-700); font-family:var(--font-display); font-size:32px; }
+.scanline {
+  display:flex; align-items:center; gap:10px; justify-content:center; margin:6px auto 22px; max-width:380px;
+  border:1.5px dashed var(--border-strong); border-radius:11px; padding:12px 18px;
+  color:var(--text-secondary); font-size:13.5px; position:relative; overflow:hidden;
+}
+.scanline::after { content:""; position:absolute; top:0; bottom:0; width:34%; left:-40%;
+  background:linear-gradient(90deg,transparent,rgba(253,155,77,.14),transparent); animation:scan 2.4s ease-in-out infinite; }
+@keyframes scan { 0%{left:-40%} 100%{left:110%} }
+.ap-actions { display:flex; gap:10px; justify-content:center; }
+
+/* ============ DRAWER ============ */
+.drawer-backdrop {
+  position:fixed; inset:0; background:rgba(7,10,31,.4); opacity:0; pointer-events:none;
+  transition:opacity .25s; z-index:40; backdrop-filter:blur(2px);
+}
+.drawer {
+  position:fixed; top:0; right:0; bottom:0; width:520px; max-width:92vw; z-index:50;
+  background:var(--surface-card); box-shadow:var(--shadow-3);
+  transform:translateX(105%); transition:transform .28s var(--ease-out);
+  display:flex; flex-direction:column; border-left:1px solid var(--border-default);
+}
+body.drawer-open .drawer { transform:none; }
+body.drawer-open .drawer-backdrop { opacity:1; pointer-events:auto; }
+.drawer-head { padding:18px 22px 14px; border-bottom:1px solid var(--border-default); display:flex; align-items:center; gap:12px; }
+.drawer-title { font-family:var(--font-mono); font-size:17px; font-weight:600; }
+.drawer-body { flex:1; overflow-y:auto; padding:18px 22px; }
+.drawer-foot { padding:14px 22px; border-top:1px solid var(--border-default); display:flex; gap:9px; justify-content:flex-end; background:var(--surface-inset); }
+.dl { display:grid; grid-template-columns:120px 1fr; gap:7px 14px; font-size:13px; margin-bottom:20px; }
+.dl dt { color:var(--text-secondary); }
+.dl dd { font-weight:500; }
+.line-row { display:flex; align-items:center; gap:11px; padding:9px 0; border-bottom:1px solid var(--border-default); font-size:13px; }
+.line-row:last-child { border:none; }
+.line-qty { margin-left:auto; font-family:var(--font-mono); color:var(--text-secondary); white-space:nowrap; }
+.sect-label { font-size:11px; font-weight:650; letter-spacing:.07em; text-transform:uppercase; color:var(--text-secondary); margin:4px 0 8px; }
+.tl { border-left:2px solid var(--border-default); margin-left:5px; padding-left:16px; display:flex; flex-direction:column; gap:12px; font-size:12.5px; }
+.tl .ev { position:relative; }
+.tl .ev::before { content:""; position:absolute; left:-21.5px; top:4px; width:9px; height:9px; border-radius:50%; background:var(--pongo-blue-500); border:2px solid var(--surface-card); }
+.tl .ev .ts { color:var(--text-disabled); font-size:11.5px; }
+
+/* empty state */
+.empty { text-align:center; padding:90px 20px; }
+.empty .glyph { width:64px; height:64px; margin:0 auto 18px; border-radius:18px; background:var(--surface-inset);
+  border:1px solid var(--border-default); display:flex; align-items:center; justify-content:center; color:var(--text-disabled); }
+.empty h3 { font-family:var(--font-display); font-size:19px; font-weight:600; margin-bottom:6px; }
+.empty p { color:var(--text-secondary); font-size:13.5px; max-width:380px; margin:0 auto 20px; }
+
+/* misc layout helpers */
+.col-3{grid-column:span 3} .col-4{grid-column:span 4} .col-5{grid-column:span 5}
+.col-6{grid-column:span 6} .col-7{grid-column:span 7} .col-8{grid-column:span 8} .col-12{grid-column:span 12}
+.mt16{margin-top:16px} .mb16{margin-bottom:16px}
+@media (max-width:1100px){ .col-3,.col-4,.col-5{grid-column:span 6} .col-7,.col-8{grid-column:span 12} }
+</style>
+</head>
+<body data-dir="command">
+<div class="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+    <div class="logo-row">
+      <div class="logo-mark">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M8.5 9.5c1.1 0 2-1.12 2-2.5s-.9-2.5-2-2.5-2 1.12-2 2.5.9 2.5 2 2.5Zm7 0c1.1 0 2-1.12 2-2.5s-.9-2.5-2-2.5-2 1.12-2 2.5.9 2.5 2 2.5ZM4.5 14c1.1 0 2-1.12 2-2.5S5.6 9 4.5 9s-2 1.12-2 2.5.9 2.5 2 2.5Zm15 0c1.1 0 2-1.12 2-2.5S20.6 9 19.5 9s-2 1.12-2 2.5.9 2.5 2 2.5ZM12 11c-2.8 0-5.5 3.2-5.5 5.7 0 1.6 1.2 2.8 2.8 2.8 1 0 1.8-.5 2.7-.5s1.7.5 2.7.5c1.6 0 2.8-1.2 2.8-2.8 0-2.5-2.7-5.7-5.5-5.7Z" fill="#fff"/></svg>
+      </div>
+      <div class="logo-name">Pongo<span>OS</span></div>
+    </div>
+
+    <nav>
+      <button class="nav-item active" data-page="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Command Center
+      </button>
+
+      <div class="nav-group">
+        <div class="nav-eyebrow">Commerce</div>
+        <button class="nav-item" data-page="orders">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><path d="M21 8v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8"/><path d="M2 4h20v4H2z"/><path d="M10 12h4"/></svg>
+          Orders <span class="nav-badge">128</span>
+        </button>
+        <button class="nav-item" data-page="picking">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><path d="M9 11l3 3 8-8"/><path d="M21 12v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/></svg>
+          Picking <span class="nav-badge live">7</span>
+        </button>
+        <button class="nav-item" data-page="routes">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="5" r="2.5"/><path d="M8.5 19H15a3.5 3.5 0 0 0 0-7H9a3.5 3.5 0 0 1 0-7h6.5"/></svg>
+          Routes
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-eyebrow">Inventory</div>
+        <button class="nav-item" data-page="inventory">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7L12 12l8.7-5"/><path d="M12 22V12"/></svg>
+          Inventory <span class="nav-badge">12</span>
+        </button>
+        <button class="nav-item" data-page="locations">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+          Locations
+        </button>
+        <button class="nav-item" data-page="catalog">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></svg>
+          Catalog
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-eyebrow">Insight</div>
+        <button class="nav-item" data-page="reports">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
+          Reports
+        </button>
+        <button class="nav-item" data-page="analytics">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><path d="M12 2v10l7 4"/><circle cx="12" cy="12" r="10"/></svg>
+          Analytics
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-eyebrow">Relationships</div>
+        <button class="nav-item" data-page="customers">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          Customers
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-eyebrow">System</div>
+        <button class="nav-item" data-page="integrations">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><path d="M9 3v4a2 2 0 0 1-2 2H3"/><path d="M15 21v-4a2 2 0 0 1 2-2h4"/><path d="M21 9h-4a2 2 0 0 1-2-2V3"/><path d="M3 15h4a2 2 0 0 1 2 2v4"/></svg>
+          Integrations <span class="nav-badge live" style="width:7px;height:7px;padding:0;border-radius:50%"></span>
+        </button>
+        <button class="nav-item" data-page="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+          Settings
+        </button>
+      </div>
+    </nav>
+
+    <div class="sidebar-foot">
+      <button class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+        Help &amp; docs
+      </button>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+    <header class="topbar">
+      <div class="crumbs"><span>Pongo</span><span class="sep">/</span><span class="cur" id="crumb-page">Command Center</span></div>
+
+      <button class="cmdbar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        Search or type a command...
+        <span class="kbd">⌘K</span>
+      </button>
+
+      <div class="topbar-right">
+        <div class="dir-switch" title="Preview design direction">
+          <button data-dir="command" class="on">Command</button>
+          <button data-dir="cloud">Cloud</button>
+          <button data-dir="dark">Dark</button>
+        </div>
+        <div class="sync-chip"><span class="pulse-track"></span><span class="dot live"></span>Woo · syncing 34/120</div>
+        <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="noti"></span></button>
+        <button class="workspace-chip"><span class="avatar">KK</span><span class="ws-name">Toronto WH</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--chrome-text-faint)"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="workspace">
+
+      <!-- ============ COMMAND CENTER ============ -->
+      <section class="page visible" id="page-dashboard">
+        <div class="page-head">
+          <div>
+            <div class="page-title">Command Center</div>
+            <div class="page-meta">Wednesday, July 16 · All systems operational</div>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-secondary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M21 8v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8"/><path d="M2 4h20v4H2z"/><path d="M10 12h4"/></svg>Receive stock</button>
+            <button class="btn btn-primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>New order</button>
+          </div>
+        </div>
+
+        <div class="grid mt16">
+          <!-- KPI row -->
+          <div class="card hoverable card-pad col-3">
+            <div class="stat-label">Open orders</div>
+            <div class="kpi-row">
+              <div><div class="stat-num">128</div><div class="kpi-delta up">▲ 12% vs last week</div></div>
+              <svg class="spark" viewBox="0 0 88 34"><polyline class="area" points="2,26 14,22 26,24 38,16 50,18 62,10 74,12 86,6 86,34 2,34" fill="#1863DC"/><polyline points="2,26 14,22 26,24 38,16 50,18 62,10 74,12 86,6" stroke="#1863DC"/></svg>
+            </div>
+          </div>
+          <div class="card hoverable card-pad col-3">
+            <div class="stat-label">Ready to pick</div>
+            <div class="kpi-row">
+              <div><div class="stat-num" style="color:var(--orange-700)">23</div><div class="kpi-delta flat">7 claimed · 16 waiting</div></div>
+              <svg class="spark" viewBox="0 0 88 34"><polyline class="area" points="2,20 14,24 26,18 38,22 50,14 62,18 74,8 86,12 86,34 2,34" fill="#FD9B4D"/><polyline points="2,20 14,24 26,18 38,22 50,14 62,18 74,8 86,12" stroke="#EF7937"/></svg>
+            </div>
+          </div>
+          <div class="card hoverable card-pad col-3">
+            <div class="stat-label">Low stock items</div>
+            <div class="kpi-row">
+              <div><div class="stat-num">12</div><div class="kpi-delta down">▲ 4 new this week</div></div>
+              <svg class="spark" viewBox="0 0 88 34"><polyline class="area" points="2,24 14,22 26,20 38,20 50,16 62,14 74,10 86,8 86,34 2,34" fill="#DE3B4B"/><polyline points="2,24 14,22 26,20 38,20 50,16 62,14 74,10 86,8" stroke="#DE3B4B"/></svg>
+            </div>
+          </div>
+          <div class="card hoverable card-pad col-3">
+            <div class="stat-label">Shipped today</div>
+            <div class="kpi-row">
+              <div><div class="stat-num">86</div><div class="kpi-delta up">▲ On pace for 140</div></div>
+              <svg class="spark" viewBox="0 0 88 34"><polyline class="area" points="2,30 14,28 26,24 38,20 50,18 62,14 74,10 86,6 86,34 2,34" fill="#16A26B"/><polyline points="2,30 14,28 26,24 38,20 50,18 62,14 74,10 86,6" stroke="#16A26B"/></svg>
+            </div>
+          </div>
+
+          <!-- Pipeline -->
+          <div class="card card-pad col-8 pipeline-card">
+            <div class="card-title-row"><span class="card-title">Fulfillment pipeline</span><span class="card-link">View orders →</span></div>
+            <div class="pipeline">
+              <div class="pipe-seg" style="flex:2.4"><div class="pn">48</div><div class="pl">New</div></div>
+              <svg class="pipe-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+              <div class="pipe-seg stuck" style="flex:1.8"><div class="pn">34</div><div class="pl">Allocated</div></div>
+              <svg class="pipe-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+              <div class="pipe-seg hot" style="flex:1.4"><div class="pn">23</div><div class="pl">Picking</div></div>
+              <svg class="pipe-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+              <div class="pipe-seg" style="flex:1.2"><div class="pn">15</div><div class="pl">Packed</div></div>
+              <svg class="pipe-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+              <div class="pipe-seg" style="flex:2"><div class="pn">86</div><div class="pl">Shipped</div></div>
+            </div>
+            <div class="pipe-note" style="font-size:12px;color:var(--text-secondary);display:flex;gap:6px;align-items:center;border-top:1px solid var(--border-default)">
+              <span class="dot warn"></span>8 allocated orders aging beyond 24h · <span class="card-link" style="font-size:12px">Review</span>
+            </div>
+          </div>
+
+          <!-- Sync + Alerts -->
+          <div class="col-4" style="display:flex;flex-direction:column;gap:16px">
+            <div class="card card-pad pulse-top">
+              <div class="card-title-row"><span class="card-title">Sync status</span><span class="card-link">Integrations →</span></div>
+              <div class="alert-row"><span class="dot live"></span>WooCommerce import<span class="go mono" style="color:var(--orange-700)">34 / 120</span></div>
+              <div class="alert-row"><span class="dot ok"></span>Stock writeback<span class="go mono" style="color:var(--text-secondary)">2m ago</span></div>
+              <div class="alert-row"><span class="dot ok"></span>Order pull<span class="go mono" style="color:var(--text-secondary)">6m ago</span></div>
+            </div>
+            <div class="card card-pad">
+              <div class="card-title-row"><span class="card-title">Alerts</span><span class="pill pill-exc">3</span></div>
+              <div class="alert-row"><span class="dot bad"></span>2 orders blocked · no stock<span class="go">Resolve</span></div>
+              <div class="alert-row"><span class="dot warn"></span>5 SKUs unmapped from Woo<span class="go">Map</span></div>
+              <div class="alert-row"><span class="dot warn"></span>Writeback failed · <span class="mono">PON-2210</span><span class="go">Retry</span></div>
+            </div>
+          </div>
+
+          <!-- Row 3 -->
+          <div class="card card-pad col-4">
+            <div class="card-title-row"><span class="card-title">Inventory health</span><span class="card-link">Inventory →</span></div>
+            <div class="donut-wrap">
+              <div class="donut"><div class="donut-hole"><b>412</b><span>SKUs</span></div></div>
+              <div class="legend">
+                <div class="li"><span class="sw" style="background:var(--success-500)"></span>In stock <b>293</b></div>
+                <div class="li"><span class="sw" style="background:var(--warning-500)"></span>Low <b>74</b></div>
+                <div class="li"><span class="sw" style="background:var(--danger-500)"></span>Out <b>45</b></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card card-pad col-4">
+            <div class="card-title-row"><span class="card-title">Recent activity</span><span class="card-link">All →</span></div>
+            <div class="feed-row"><div class="feed-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3 8-8"/></svg></div>
+              <div class="feed-body"><div class="t"><span class="mono">#1042</span> picked by Maya · 4 items</div><div class="ts">2 minutes ago</div></div></div>
+            <div class="feed-row"><div class="feed-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></div>
+              <div class="feed-body"><div class="t"><span class="mono">+48</span> Acana Pacifica received to <span class="mono">A-04</span></div><div class="ts">18 minutes ago</div></div></div>
+            <div class="feed-row"><div class="feed-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
+              <div class="feed-body"><div class="t"><span class="mono">#1038</span> shipped · Route 4 · Etobicoke</div><div class="ts">31 minutes ago</div></div></div>
+            <div class="feed-row"><div class="feed-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5"/><path d="M21 3 9 15"/><path d="M21 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h6"/></svg></div>
+              <div class="feed-body"><div class="t">Cycle count adjusted <span class="mono">PON-0871</span> by <span class="mono">−2</span></div><div class="ts">1 hour ago</div></div></div>
+          </div>
+
+          <div class="card card-pad col-4 intel">
+            <span class="intel-tag"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>Pongo Intelligence</span>
+            <div class="intel-item"><span class="spark-ico">◆</span><div>Reorder point reached for <b>3 SKUs</b> in the Raw Food category. Suggested PO drafted.</div></div>
+            <div class="intel-item"><span class="spark-ico">◆</span><div><span class="mono">PON-1204</span> is selling 2.4x faster than its 30-day average.</div></div>
+            <div class="intel-item"><span class="spark-ico">◆</span><div>Route 2 averages 12 min per stop, 30% over target. Consider resequencing.</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ ORDERS ============ -->
+      <section class="page" id="page-orders">
+        <div class="page-head">
+          <div>
+            <div class="page-title">Orders</div>
+            <div class="page-meta">128 open · synced with WooCommerce 2 minutes ago</div>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-secondary">Export</button>
+            <button class="btn btn-primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>New order</button>
+          </div>
+        </div>
+
+        <div class="tabs">
+          <button class="tab on">Open <span class="count">128</span></button>
+          <button class="tab">Picking <span class="count">23</span></button>
+          <button class="tab">Completed <span class="count">1,842</span></button>
+          <button class="tab">Exceptions <span class="count">3</span></button>
+          <button class="tab">Print</button>
+        </div>
+
+        <div class="toolbar">
+          <div class="search-inline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search orders...</div>
+          <span class="fchip">Channel: WooCommerce <span class="x">×</span></span>
+          <span class="fchip">Age: &gt; 24h <span class="x">×</span></span>
+          <button class="btn btn-ghost">+ Filter</button>
+          <div class="toolbar-right">
+            <button class="btn btn-ghost">Columns</button>
+            <button class="btn btn-ghost">Density</button>
+          </div>
+        </div>
+
+        <div class="card table-card">
+          <table>
+            <thead><tr>
+              <th style="width:36px"></th><th>Order</th><th>Customer</th><th>Channel</th>
+              <th class="num">Items</th><th class="num">Total</th><th>Age</th><th>Status</th><th>Health</th><th>Assignee</th>
+            </tr></thead>
+            <tbody>
+              <tr class="order-row"><td><span class="checkbox"></span></td>
+                <td class="mono" style="font-weight:600">#1051</td><td>Sarah Chen</td><td>Woo</td>
+                <td class="num">6</td><td class="num mono">$214.50</td><td>14m</td>
+                <td><span class="pill pill-new">New</span></td><td><span class="dot ok"></span></td><td>—</td></tr>
+              <tr class="order-row selected"><td><span class="checkbox"></span></td>
+                <td class="mono" style="font-weight:600">#1049</td><td>Marcus Webb</td><td>Woo</td>
+                <td class="num">3</td><td class="num mono">$96.20</td><td>1h</td>
+                <td><span class="pill pill-alloc">Allocated</span></td><td><span class="dot ok"></span></td><td>—</td></tr>
+              <tr class="order-row"><td><span class="checkbox"></span></td>
+                <td class="mono" style="font-weight:600">#1047</td><td>Priya Patel</td><td>Woo</td>
+                <td class="num">9</td><td class="num mono">$342.80</td><td>2h</td>
+                <td><span class="pill pill-pick"><span class="dot live"></span>Picking</span></td><td><span class="dot ok"></span></td>
+                <td><span class="mini-avatar" style="background:var(--pongo-blue-500)">MJ</span></td></tr>
+              <tr class="order-row"><td><span class="checkbox"></span></td>
+                <td class="mono" style="font-weight:600">#1044</td><td>Golden Paws Daycare</td><td>Woo</td>
+                <td class="num">24</td><td class="num mono">$1,208.00</td><td class="age-warn">26h</td>
+                <td><span class="pill pill-alloc">Allocated</span></td><td><span class="dot warn"></span></td><td>—</td></tr>
+              <tr class="order-row"><td><span class="checkbox"></span></td>
+                <td class="mono" style="font-weight:600">#1042</td><td>James O'Neill</td><td>Woo</td>
+                <td class="num">4</td><td class="num mono">$128.75</td><td>3h</td>
+                <td><span class="pill pill-packed">Packed</span></td><td><span class="dot ok"></span></td>
+                <td><span class="mini-avatar" style="background:var(--orange-600)">MA</span></td></tr>
+              <tr class="order-row"><td><span class="checkbox"></span></td>
+                <td class="mono" style="font-weight:600">#1041</td><td>Lena Fischer</td><td>Woo</td>
+                <td class="num">2</td><td class="num mono">$54.99</td><td class="age-warn">31h</td>
+                <td><span class="pill pill-exc">Exception</span></td><td><span class="dot bad"></span></td><td>—</td></tr>
+              <tr class="order-row"><td><span class="checkbox"></span></td>
+                <td class="mono" style="font-weight:600">#1039</td><td>Ravi Krishnan</td><td>Woo</td>
+                <td class="num">7</td><td class="num mono">$276.40</td><td>5h</td>
+                <td><span class="pill pill-shipped">Shipped</span></td><td><span class="dot ok"></span></td>
+                <td><span class="mini-avatar" style="background:#7B5EC6">TW</span></td></tr>
+              <tr class="order-row"><td><span class="checkbox"></span></td>
+                <td class="mono" style="font-weight:600">#1038</td><td>Amelia Board</td><td>Woo</td>
+                <td class="num">5</td><td class="num mono">$189.30</td><td>6h</td>
+                <td><span class="pill pill-done">Completed</span></td><td><span class="dot ok"></span></td>
+                <td><span class="mini-avatar" style="background:#0E93B4">MJ</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="bulkbar"><b>1 selected</b><button>Allocate</button><button>Send to picking</button><button>Print</button><button>Export</button><button style="color:#F2707C">Cancel</button></div>
+      </section>
+
+      <!-- ============ INVENTORY ============ -->
+      <section class="page" id="page-inventory">
+        <div class="page-head">
+          <div>
+            <div class="page-title">Inventory</div>
+            <div class="page-meta">412 SKUs across 2 warehouses · $184,220 total value</div>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-secondary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>Scan</button>
+            <button class="btn btn-secondary">Adjust stock</button>
+            <button class="btn btn-primary">Receive</button>
+          </div>
+        </div>
+
+        <div class="tabs">
+          <button class="tab on">All items <span class="count">412</span></button>
+          <button class="tab">By location</button>
+          <button class="tab">Low stock <span class="count">74</span></button>
+          <button class="tab">Unmapped <span class="count">5</span></button>
+        </div>
+
+        <div class="toolbar">
+          <div class="search-inline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search name, SKU, or scan...</div>
+          <span class="fchip">Category: Dog Food <span class="x">×</span></span>
+          <button class="btn btn-ghost">+ Filter</button>
+          <div class="toolbar-right"><button class="btn btn-ghost">Columns</button></div>
+        </div>
+
+        <div class="card table-card">
+          <table>
+            <thead><tr>
+              <th style="width:36px"></th><th>Item</th><th class="num">On hand</th><th class="num">Allocated</th>
+              <th class="num">Available</th><th class="num">Reorder pt</th><th>Locations</th><th>Status</th><th class="num">Value</th>
+            </tr></thead>
+            <tbody>
+              <tr><td><span class="checkbox"></span></td>
+                <td><div class="item-cell"><div class="thumb">🦴</div><div><div class="nm">Acana Pacifica Dog 11.4kg</div><div class="sku">PON-1042</div></div></div></td>
+                <td class="num mono">64</td><td class="num mono">12</td><td class="num mono avail-ok">52</td><td class="num mono">20</td>
+                <td class="mono" style="font-size:12px">A-04 · A-05</td><td><span class="pill pill-ok">In stock</span></td><td class="num mono">$5,760</td></tr>
+              <tr><td><span class="checkbox"></span></td>
+                <td><div class="item-cell"><div class="thumb">🐟</div><div><div class="nm">Orijen Six Fish 10.8kg</div><div class="sku">PON-1204</div></div></div></td>
+                <td class="num mono">18</td><td class="num mono">11</td><td class="num mono avail-low">7</td><td class="num mono">15</td>
+                <td class="mono" style="font-size:12px">A-06</td><td><span class="pill pill-low">Low</span></td><td class="num mono">$2,340</td></tr>
+              <tr class="selected"><td><span class="checkbox"></span></td>
+                <td><div class="item-cell"><div class="thumb">🥩</div><div><div class="nm">Big Country Raw Beef 4lb</div><div class="sku">PON-0871</div></div></div></td>
+                <td class="num mono">42</td><td class="num mono">8</td><td class="num mono avail-ok">34</td><td class="num mono">24</td>
+                <td class="mono" style="font-size:12px">FRZ-01 · FRZ-02</td><td><span class="pill pill-ok">In stock</span></td><td class="num mono">$1,470</td></tr>
+              <tr><td><span class="checkbox"></span></td>
+                <td><div class="item-cell"><div class="thumb">🐱</div><div><div class="nm">Weruva Cat Variety 24pk</div><div class="sku">PON-2210</div></div></div></td>
+                <td class="num mono">0</td><td class="num mono">6</td><td class="num mono avail-out">−6</td><td class="num mono">12</td>
+                <td class="mono" style="font-size:12px">B-02</td><td><span class="pill pill-out">Out</span></td><td class="num mono">$0</td></tr>
+              <tr><td><span class="checkbox"></span></td>
+                <td><div class="item-cell"><div class="thumb">🦮</div><div><div class="nm">Kong Classic L (Red)</div><div class="sku">PON-3305</div></div></div></td>
+                <td class="num mono">96</td><td class="num mono">4</td><td class="num mono avail-ok">92</td><td class="num mono">30</td>
+                <td class="mono" style="font-size:12px">C-11</td><td><span class="pill pill-ok">In stock</span></td><td class="num mono">$1,824</td></tr>
+              <tr><td><span class="checkbox"></span></td>
+                <td><div class="item-cell"><div class="thumb">🪥</div><div><div class="nm">Tropiclean Dental Gel</div><div class="sku">PON-4118</div></div></div></td>
+                <td class="num mono">27</td><td class="num mono">0</td><td class="num mono avail-ok">27</td><td class="num mono">10</td>
+                <td class="mono" style="font-size:12px">C-04</td><td><span class="pill pill-unmapped">Unmapped</span></td><td class="num mono">$486</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============ PICKING ============ -->
+      <section class="page" id="page-picking">
+        <div class="page-head">
+          <div>
+            <div class="page-title">Picking</div>
+            <div class="page-meta">7 in progress · 16 waiting · avg 4.2 min per order today</div>
+          </div>
+          <div class="page-actions"><button class="btn btn-live">Start next pick</button></div>
+        </div>
+
+        <div class="tabs">
+          <button class="tab on" id="tab-queue">Queue <span class="count">23</span></button>
+          <button class="tab" id="tab-active">Active pick · <span class="mono" style="font-size:12px">#1047</span></button>
+        </div>
+
+        <div id="pick-queue">
+          <div class="queue-grid">
+            <div class="card hoverable pick-card mine">
+              <div class="pick-top"><span class="pick-id">#1047</span><span class="pill pill-pick"><span class="dot live"></span>Picking</span></div>
+              <div class="pick-meta"><span><b>9</b> items</span><span>Zones <b>A–C</b></span><span><b>2h</b> old</span></div>
+              <button class="btn btn-live" style="width:100%;justify-content:center" id="resume-pick">Resume pick →</button>
+            </div>
+            <div class="card hoverable pick-card">
+              <div class="pick-top"><span class="pick-id">#1051</span><span class="prio">PRIORITY</span></div>
+              <div class="pick-meta"><span><b>6</b> items</span><span>Zone <b>A</b></span><span><b>14m</b> old</span></div>
+              <button class="btn btn-secondary" style="width:100%;justify-content:center">Claim</button>
+            </div>
+            <div class="card hoverable pick-card">
+              <div class="pick-top"><span class="pick-id">#1049</span><span></span></div>
+              <div class="pick-meta"><span><b>3</b> items</span><span>Zone <b>B</b></span><span><b>1h</b> old</span></div>
+              <button class="btn btn-secondary" style="width:100%;justify-content:center">Claim</button>
+            </div>
+            <div class="card hoverable pick-card">
+              <div class="pick-top"><span class="pick-id">#1044</span><span></span></div>
+              <div class="pick-meta"><span><b>24</b> items</span><span>Zones <b>A–F</b></span><span class="age-warn"><b>26h</b> old</span></div>
+              <button class="btn btn-secondary" style="width:100%;justify-content:center">Claim</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="pick-active" style="display:none">
+          <div class="activepick">
+            <div class="ap-top">
+              <button class="btn btn-ghost" id="exit-pick">← Queue</button>
+              <div class="ap-progress"><i></i></div>
+              <span class="ap-count">3 of 8 items · #1047</span>
+            </div>
+            <div class="card ap-card pulse-top">
+              <div class="ap-imgbox">🐟</div>
+              <div class="ap-name">Orijen Six Fish 10.8kg</div>
+              <div class="ap-sku">PON-1204</div>
+              <div class="ap-binrow">
+                <div class="ap-bin"><div class="lbl">Bin location</div><div class="val">A-06-3</div></div>
+                <div class="ap-bin qty"><div class="lbl">Pick qty</div><div class="val">2</div></div>
+              </div>
+              <div class="scanline">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>
+                Scan bin, then item barcode to confirm
+              </div>
+              <div class="ap-actions">
+                <button class="btn btn-secondary">Short</button>
+                <button class="btn btn-secondary">Skip</button>
+                <button class="btn btn-live" style="padding:8px 28px">Confirm pick</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ GENERIC EMPTY PAGES ============ -->
+      <section class="page" id="page-generic">
+        <div class="page-head"><div><div class="page-title" id="generic-title">Module</div></div></div>
+        <div class="card mt16">
+          <div class="empty">
+            <div class="glyph"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M8 12h8M12 8v8"/></svg></div>
+            <h3 id="generic-head">Designed in the brief</h3>
+            <p>This module follows the same shell, table, card, and status patterns you see in Command Center, Orders, Inventory, and Picking. Full layout spec is in the design brief.</p>
+            <button class="btn btn-primary">View design spec</button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<!-- ============ ORDER DRAWER ============ -->
+<div class="drawer-backdrop" id="backdrop"></div>
+<aside class="drawer">
+  <div class="drawer-head">
+    <span class="drawer-title">#1049</span>
+    <span class="pill pill-alloc">Allocated</span>
+    <span class="dot ok" title="Healthy"></span>
+    <button class="btn btn-ghost" style="margin-left:auto">Open full page ↗</button>
+    <button class="icon-btn" id="drawer-close" style="color:var(--text-secondary)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="drawer-body">
+    <dl class="dl">
+      <dt>Customer</dt><dd>Marcus Webb</dd>
+      <dt>Channel</dt><dd>WooCommerce · <span class="mono">wc-8841</span></dd>
+      <dt>Placed</dt><dd>Today, 1:14 PM</dd>
+      <dt>Ship to</dt><dd>212 Ossington Ave, Toronto</dd>
+      <dt>Total</dt><dd class="mono">$96.20</dd>
+    </dl>
+    <div class="sect-label">Line items · 3</div>
+    <div class="line-row"><div class="thumb">🥩</div><div><div style="font-weight:550">Big Country Raw Beef 4lb</div><div class="mono" style="font-size:11.5px;color:var(--text-secondary)">PON-0871 · FRZ-01</div></div><span class="line-qty">2 / 2 allocated</span></div>
+    <div class="line-row"><div class="thumb">🦴</div><div><div style="font-weight:550">Acana Pacifica Dog 11.4kg</div><div class="mono" style="font-size:11.5px;color:var(--text-secondary)">PON-1042 · A-04</div></div><span class="line-qty">1 / 1 allocated</span></div>
+    <div class="line-row"><div class="thumb">🪥</div><div><div style="font-weight:550">Tropiclean Dental Gel</div><div class="mono" style="font-size:11.5px;color:var(--text-secondary)">PON-4118 · C-04</div></div><span class="line-qty">1 / 1 allocated</span></div>
+    <div class="sect-label" style="margin-top:22px">Timeline</div>
+    <div class="tl">
+      <div class="ev"><div>Stock allocated from Toronto WH</div><div class="ts">1:16 PM · system</div></div>
+      <div class="ev"><div>Imported from WooCommerce</div><div class="ts">1:14 PM · sync</div></div>
+      <div class="ev"><div>Order placed online</div><div class="ts">1:13 PM · Marcus Webb</div></div>
+    </div>
+  </div>
+  <div class="drawer-foot">
+    <button class="btn btn-secondary">Print slip</button>
+    <button class="btn btn-primary">Send to picking →</button>
+  </div>
+</aside>
+
+<script>
+// ---- navigation ----
+const pageTitles = { dashboard:"Command Center", orders:"Orders", inventory:"Inventory", picking:"Picking",
+  routes:"Routes", locations:"Locations", catalog:"Catalog", reports:"Reports", analytics:"Analytics",
+  customers:"Customers", integrations:"Integrations", settings:"Settings" };
+const builtPages = ["dashboard","orders","inventory","picking"];
+
+document.querySelectorAll(".nav-item[data-page]").forEach(item => {
+  item.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+    item.classList.add("active");
+    const key = item.dataset.page;
+    document.querySelectorAll(".page").forEach(p => p.classList.remove("visible"));
+    if (builtPages.includes(key)) {
+      document.getElementById("page-" + key).classList.add("visible");
+    } else {
+      document.getElementById("generic-title").textContent = pageTitles[key];
+      document.getElementById("generic-head").textContent = pageTitles[key] + " module";
+      document.getElementById("page-generic").classList.add("visible");
+    }
+    document.getElementById("crumb-page").textContent = pageTitles[key];
+    document.querySelector(".workspace").scrollTop = 0;
+  });
+});
+
+// ---- direction switcher ----
+document.querySelectorAll(".dir-switch button").forEach(b => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".dir-switch button").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    document.body.dataset.dir = b.dataset.dir;
+  });
+});
+
+// ---- order drawer ----
+const openDrawer = () => document.body.classList.add("drawer-open");
+const closeDrawer = () => document.body.classList.remove("drawer-open");
+document.querySelectorAll(".order-row").forEach(r => r.addEventListener("click", openDrawer));
+document.getElementById("backdrop").addEventListener("click", closeDrawer);
+document.getElementById("drawer-close").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+
+// ---- picking tabs ----
+const showQueue = q => {
+  document.getElementById("pick-queue").style.display = q ? "" : "none";
+  document.getElementById("pick-active").style.display = q ? "none" : "";
+  document.getElementById("tab-queue").classList.toggle("on", q);
+  document.getElementById("tab-active").classList.toggle("on", !q);
+};
+document.getElementById("tab-queue").addEventListener("click", () => showQueue(true));
+document.getElementById("tab-active").addEventListener("click", () => showQueue(false));
+document.getElementById("resume-pick").addEventListener("click", e => { e.stopPropagation(); showQueue(false); });
+document.getElementById("exit-pick").addEventListener("click", () => showQueue(true));
+</script>
+</body>
+</html>

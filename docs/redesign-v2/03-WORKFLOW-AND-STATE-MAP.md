@@ -1,0 +1,57 @@
+# Workflow and state map
+
+## Workflow principles that must survive the redesign
+
+- Pongo OS is the operational stock source of truth; WooCommerce remains the storefront.
+- Every local stock change is previewed or confirmed where appropriate and creates an audit record.
+- Allocation reserves stock, picking reduces stock, and completion must not reduce it again.
+- WooCommerce reads and writes remain backend-only; writeback safety and environment state must stay visible.
+- Keyboard scanners are fast text input. Scan workflows cannot depend on pointer-only interaction.
+
+## Journey map
+
+| # | Workflow: entry → sequence → completion | Intermediate, failure, and must-keep states | Current friction | Proposed treatment and recognition anchor |
+| ---: | --- | --- | --- | --- |
+| 1 | **Business health:** Dashboard → review KPIs, open orders, subscriptions, map, revenue → open relevant module | Loading, no snapshot, data-quality warning, negative comparison | Urgent and informational cards have similar weight | Command Center priority lanes; preserve business KPI labels and direct module links |
+| 2 | **Operational health:** Inventory Overview → scan inventory/order/route metrics → warning/activity → quick action | Backend error, empty activity, warning samples | 20 metrics create a wall of equal importance | Exception-first rail plus collapsible metric groups; preserve health domains |
+| 3 | **Review open orders:** Orders / Open → search/filter → select row → view detail | Loading, no results, availability/pick state, API error | Search vocabulary and row detail use a separate Zen-style layout | Unified order grid with persistent filter chips; same Open Orders name and order identifiers |
+| 4 | **Import orders:** Open Orders → Import → confirm → quick sync → refreshed queue | Not configured, import error, created/updated counts | Native confirm lacks environment/scope context | Guarded dialog naming environment, statuses and read-only behavior |
+| 5 | **Order detail:** Open Orders → row action/double-click → dialog → inspect customer, address, lines → print/close | Missing fields, line status, Escape close | Detail is a large centered dialog and omits event context | Right drawer with summary, lines, fulfilment and activity tabs; preserve order facts |
+| 6 | **Bulk order action:** select rows → Actions → complete/print/unpick → confirm → result | Ineligible selection, partial errors, Woo sync warning | Selection state is far from action consequences | Sticky bulk dock with eligibility count and explicit outcome summary |
+| 7 | **Allocate shortages:** Orders / Allocate → exceptions → items/orders tab → run FIFO or inspect | Available/out-of-stock, partial reservation, unmatched item, loading/error | Several panels and menus compete | Exception workbench ranked by resolvability; keep FIFO language and item/order switch |
+| 8 | **Correct stock from allocation:** exception → Update Stock → choose/create location → reason/quantity → commit → FIFO retry | Required reason, negative quantity, no location, API error | Modal detaches action from affected orders | Side sheet shows stock edit and impacted order queue together |
+| 9 | **Pick queue:** Orders / Pick → search/select order → open pick workspace | Not ready, empty queue, picked quantity already present | Queue and work area replace each other without route context | Split queue/workspace on desktop, drill-in on mobile; preserve Pick Orders label |
+| 10 | **Manual pick:** open order → enter line quantities or mark allocated → confirm → posted pick | Clamp to recommended max, zero selection, API error, stock-reduction warning | No scanner feedback in the main pick workflow | Large scan field + manual quantity fallback; audible-independent success/error banner |
+| 11 | **Unpick:** selected order(s) → Unpick → confirm → restore stock/allocation → refreshed queue | No picked quantity, partial bulk error | Consequence is only in confirmation text | Guarded action summary names restored quantities and locations |
+| 12 | **Complete order:** open order → Complete → warn if unpicked → local completion + guarded Woo status write → result | Woo send not sent, queue review needed, completed without picking | Local and Woo outcomes share one success/error strip | Two-stage result: local completion and Woo delivery status with audit link |
+| 13 | **Review completed orders:** Orders / Completed → date/status/search filters → inspect/export | Empty, loading, read-only, partially fulfilled | Too many visible filters and columns | Date presets + filter drawer; retain read-only explanation and export |
+| 14 | **Order audit:** Orders / History → choose allocation, pick or fulfilment → inspect/export | No selection, no history, detail error | Three vertical master-detail blocks | Unified chronological event ledger with record-type filter |
+| 15 | **Search items:** Items → scanner/search Enter or filters → saved view/columns → open item | Empty, loading, saved-view message, backend error | Commands, filters, view controls and columns occupy separate bands | One command bar, query tokens and saved-view selector; preserve scanner Enter |
+| 16 | **Import/mapping enrichment:** Items → Import Mappings → preview remote products/variations → import/map → enrichment export/import | Variable parent skipped, protected fields, opening stock off, errors/conflicts | Modal carries a long multi-step process without clear step hierarchy | Four-step wizard with protected-field callouts and persistent validation summary |
+| 17 | **Manual item create/edit:** Items / New or detail → edit sections → save/clone → return | Required fields, backend error, calculated/stock fields protected | Long form and duplicate page/drawer detail patterns | Entity workspace with section index and sticky save state |
+| 18 | **Item control center:** item row → detail drawer → overview/stock/activity/history/metadata | Detail loading, no history, metadata save | Drawer tabs and dedicated detail route diverge | Shared entity drawer with stable tabs and deep link |
+| 19 | **Bulk edit items:** select → Bulk Edit → enter allowed metadata → preview → commit | No fields, validation warnings, affected count | Selected rows are visually distant from modal | Sticky bulk dock opens side sheet; preview remains mandatory |
+| 20 | **Review all inventory:** Inventory / All → search SKU/barcode/name/brand → filter → row action | Loading, low/negative stock, no location, sync error | Sync/writeback actions dominate routine browsing | Inventory command surface with writeback status in utility rail |
+| 21 | **Inventory by location:** Inventory / By Location → search/filter → choose group → inspect rows/value | No locations, empty group, API error | Repeated full tables create long page | Location navigator + selected location table and summary |
+| 22 | **Stock adjustment:** inventory row → Edit Current Stock → location/mode/quantity/reason → confirm → audit + writeback | Required reason, below allocated, cancel, Woo retry message | Modal is safe but consequence context is limited | Guarded side sheet with before/after, allocation floor and audit destination |
+| 23 | **Low stock/par:** Inventory / Low Stock or Par → inspect risk → edit par or stock → save | Under-par delta, reorder enabled, no matches | Suggested reorder is not contextualized by demand | Risk queue with days-left/sales signal where existing Insights data exists |
+| 24 | **Stock movements:** Inventory / Movements → filter/search → inspect/export → view item | Empty ledger, loading, date/type filters | Immutable audit data looks like ordinary editable tables | Ledger treatment, event icons, immutable labels, detail drawer |
+| 25 | **Manage locations:** Locations → filter → add/edit/import/export → save | Active/inactive, default, validation, empty | Flat master table hides physical hierarchy | Warehouse tree with live location-path preview and linked inventory |
+| 26 | **Direct receiving:** Receiving → scan/add lines → location/qty/cost → preview → commit → receipt/movements | Invalid line, missing location, commit loading, receipt success | Entry and histories create a very long page | Dedicated receiving session with sticky cart/progress; history in side rail |
+| 27 | **Bulk receiving:** Receiving / Bulk → scan cart → optional lot fields → preview → commit one receipt | No lines, line errors, `can_commit`, export success | Optional fields and cart have weak hierarchy | Scan-first composer; progressive optional lot panel; commit summary screen |
+| 28 | **Scanner console:** Scanner → choose lookup/receiving/count/adjustment → scan → preview/commit → recent history | Match/no match, can/cannot commit, API error | Form and result have equal visual weight; raw JSON is exposed | Full-width scan stage with unmistakable success/failure and diagnostics disclosure |
+| 29 | **Cycle count:** Cycle Count → choose location/type → scan/add counts → preview variance → post → history/detail | Invalid lines, variance, reason, post summary | Count session, preview, history and detail compete | Step-based count workspace with sticky variance and deliberate final commit |
+| 30 | **Reports/Insights:** Reports or Insights → choose domain → configure filters → inspect chart/table → export/drill down | No data, data-quality warning, loading/error, read-only | Report taxonomy and 13 insight tabs overload horizontal space | Report library and contextual subnav; preserve report names and export availability |
+| 31 | **Woo catalog/order sync:** Settings → check connection → preview → commit → inspect run | Not configured, conflicts, environment, last run, webhook state | Buried in a long Settings page | Dedicated Integrations / WooCommerce workspace with read-only banner and run timeline |
+| 32 | **Writeback queue:** Settings → preview stock/order status → queue → approve/revalidate → send/dry-run/cancel | Blocked guard, pending, approved, sent, failed, cancelled | Raw IDs and many peer actions heighten risk | Audit-oriented queue with explicit environment, staged approval and single next action |
+| 33 | **Remap:** Items or Settings → select candidate/search local item → preview local link → commit → refresh | Conflict, unmatched, local-only assurance | Two different remap experiences | One mapping workspace opened contextually from Items or Integration |
+| 34 | **Route planning:** Routes → filter candidates → select orders → preview/create draft → edit stops → finalize/cancel/export | Invalid address, provider disabled, draft/final/cancelled | Creation, history and detail stack vertically | Three-pane planner; keep provider-disabled boundary visible and never imply live optimization |
+
+## Cross-workflow state contract for v2
+
+1. **Loading:** skeleton for known structure after 300 ms; inline progress on the initiating control.
+2. **Empty:** state names why it is empty and offers one valid next action; future capability is explicitly labeled.
+3. **Error:** announce with `role="alert"`, locate field errors inline, retain entered work, and provide retry/recovery.
+4. **Success:** update the affected region and send a concise `aria-live="polite"` toast; stock-changing success links to its audit record.
+5. **Live:** orange pulse is supplemental; text such as “Live”, “Scanning”, or “Syncing” remains visible.
+6. **Guarded mutation:** show environment, entity count, before/after consequence, audit result, and cancel path before commit.

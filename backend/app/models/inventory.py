@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -42,6 +42,7 @@ class MovementType(str, Enum):
     order_completion = "order_completion"
     fulfill_order = "fulfill_order"
     import_update = "import_update"
+    opening_balance_import = "opening_balance_import"
     woocommerce_sync = "woocommerce_sync"
 
 
@@ -61,6 +62,9 @@ class InventoryItem(TimestampMixin, Base):
     woo_product_id: Mapped[int | None] = mapped_column(Integer, index=True)
     woo_variation_id: Mapped[int | None] = mapped_column(Integer, index=True)
     woo_product_type: Mapped[str | None] = mapped_column(String(40), index=True)
+    woo_name: Mapped[str | None] = mapped_column(String(500))
+    woo_parent_name: Mapped[str | None] = mapped_column(String(500))
+    woo_variation_attributes: Mapped[list[dict] | None] = mapped_column(JSON)
     woo_permalink: Mapped[str | None] = mapped_column(String(1000))
     woo_status: Mapped[str | None] = mapped_column(String(80), index=True)
     woo_manage_stock: Mapped[bool | None] = mapped_column(Boolean)
@@ -112,6 +116,10 @@ class InventoryItem(TimestampMixin, Base):
     order_items: Mapped[list["OrderItem"]] = relationship(back_populates="inventory_item")
 
     __table_args__ = (
+        CheckConstraint("in_stock >= 0", name="ck_inventory_items_in_stock_nonnegative"),
+        CheckConstraint("allocated >= 0", name="ck_inventory_items_allocated_nonnegative"),
+        CheckConstraint("allocated <= in_stock", name="ck_inventory_items_allocated_lte_stock"),
+        CheckConstraint("sellable >= 0", name="ck_inventory_items_sellable_nonnegative"),
         Index("ix_inventory_items_woo_product_variation", "woo_product_id", "woo_variation_id"),
     )
 
@@ -166,6 +174,10 @@ class InventoryItemLocation(TimestampMixin, Base):
     location: Mapped[InventoryLocation | None] = relationship(back_populates="item_locations")
 
     __table_args__ = (
+        CheckConstraint("in_stock >= 0", name="ck_inventory_item_locations_in_stock_nonnegative"),
+        CheckConstraint("allocated >= 0", name="ck_inventory_item_locations_allocated_nonnegative"),
+        CheckConstraint("allocated <= in_stock", name="ck_inventory_item_locations_allocated_lte_stock"),
+        CheckConstraint("sellable >= 0", name="ck_inventory_item_locations_sellable_nonnegative"),
         UniqueConstraint("inventory_item_id", "location_id", name="uq_inventory_item_locations_item_location"),
         Index("ix_inventory_item_locations_item_warehouse_location", "inventory_item_id", "warehouse", "inventory_location"),
     )

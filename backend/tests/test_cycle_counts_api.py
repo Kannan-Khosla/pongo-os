@@ -3,7 +3,7 @@ from io import StringIO
 
 from app.services.cycle_counts import CYCLE_COUNT_EXPORT_COLUMNS
 from tests.test_items_api import client, seed_item  # noqa: F401
-from tests.test_locations_api import seed_location
+from tests.test_locations_api import force_location_active_for_legacy_test, seed_location
 
 
 def cycle_payload(**overrides):
@@ -33,7 +33,10 @@ def setup_cycle_item_and_location(client, sku="CC-001", barcode="CC-001-BAR", in
         Barcode=barcode,
         **{"In Stock": in_stock, "Allocated": allocated, "Unit Cost": 4, "Par Level": par_level, "Inventory Location": location_code},
     )
-    location = seed_location(client, code=location_code, name=location_code, isActive=active)
+    location = seed_location(client, code=location_code, name=location_code, isActive=True)
+    if not active:
+        force_location_active_for_legacy_test(location["id"], False)
+        location["isActive"] = False
     return item, location
 
 
@@ -181,7 +184,7 @@ def test_cycle_count_negative_counted_quantity_rejects_line(client):
 
 
 def test_multiple_valid_cycle_count_lines_commit_atomically(client):
-    setup_cycle_item_and_location(client, sku="CC-A", barcode="BAR-A", in_stock=1)
+    setup_cycle_item_and_location(client, sku="CC-A", barcode="BAR-A", in_stock=1, allocated=0)
     seed_item(client, sku="CC-B", Barcode="BAR-B", **{"In Stock": 2, "Allocated": 0, "Unit Cost": 2, "Inventory Location": "CC-01"})
     payload = cycle_payload(lines=[{"sku": "CC-A", "counted_quantity": 4}, {"sku": "CC-B", "counted_quantity": 5}])
 
@@ -193,8 +196,8 @@ def test_multiple_valid_cycle_count_lines_commit_atomically(client):
 
 
 def test_invalid_cycle_count_line_prevents_all_stock_updates(client):
-    setup_cycle_item_and_location(client, sku="CC-A", barcode="BAR-A", in_stock=1)
-    seed_item(client, sku="CC-B", Barcode="BAR-B", **{"In Stock": 2, "Inventory Location": "CC-01"})
+    setup_cycle_item_and_location(client, sku="CC-A", barcode="BAR-A", in_stock=1, allocated=0)
+    seed_item(client, sku="CC-B", Barcode="BAR-B", **{"In Stock": 2, "Allocated": 0, "Inventory Location": "CC-01"})
     payload = cycle_payload(lines=[{"sku": "CC-A", "counted_quantity": 4}, {"sku": "UNKNOWN", "counted_quantity": 5}])
 
     response = client.post("/api/cycle-counts/commit", json=payload)

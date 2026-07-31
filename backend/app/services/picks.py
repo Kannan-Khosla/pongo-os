@@ -25,13 +25,14 @@ from app.schemas.picks import (
     PickScannerLine,
     PickScannerOrder,
 )
-from app.services.location_inventory import reduce_pick_from_location, restore_unpick_to_location
+from app.services.location_inventory import lock_inventory_stock, reduce_pick_from_location, restore_unpick_to_location
 from app.services.order_workflow import (
     add_audit_event,
     allocation_remaining_by_location,
     is_pickable as workflow_order_is_pickable,
     sync_order_workflow_statuses,
 )
+from app.services.stock_mutation_guard import IdempotencyConflict, begin_stock_mutation, complete_stock_mutation
 
 
 def preview_pick(db: Session, payload: PickRequest) -> PickPreviewResponse:
@@ -75,25 +76,58 @@ def preview_scan(db: Session, order_id: int, payload: PickScanRequest) -> PickSc
 
 
 def commit_scan(db: Session, order_id: int, payload: PickScanRequest) -> PickScanResponse | None:
+    matched_line = None
     if payload.idempotency_key:
-        existing = db.scalars(select(PickLine).where(PickLine.order_id == order_id, PickLine.idempotency_key == payload.idempotency_key)).first()
-        if existing is not None:
-            refreshed = db.get(OrderItem, existing.order_line_id)
-            return PickScanResponse(
-                status="posted",
-                matched_line=scanner_line(refreshed) if refreshed else None,
-                proposed_picked_quantity=decimal_to_float(existing.quantity_picked_after),
-                warnings=["Duplicate scan ignored; stock was already reduced for this idempotency key."],
-                errors=[],
-            )
-    preview = preview_scan(db, order_id, payload)
-    if preview is None or preview.status != "valid" or preview.matched_line is None:
-        return preview
-    commit = commit_pick(db, PickRequest(lines=[{"order_line_id": preview.matched_line.order_line_id, "quantity_to_pick": payload.quantity, "idempotency_key": payload.idempotency_key}], allow_partial=True, created_by=payload.created_by, notes=payload.note))
-    refreshed = db.get(OrderItem, preview.matched_line.order_line_id)
+        existing_lines = list(
+            db.scalars(
+                select(PickLine).where(
+                    PickLine.order_id == order_id,
+                    PickLine.idempotency_key == payload.idempotency_key,
+                )
+            ).all()
+        )
+        if existing_lines:
+            matched_line = db.get(OrderItem, existing_lines[0].order_line_id)
+            expected_quantity = sum((line.quantity_to_pick for line in existing_lines), Decimal("0"))
+            scan_values = {
+                str(value or "").strip().casefold()
+                for value in (
+                    matched_line.sku if matched_line else None,
+                    matched_line.barcode if matched_line else None,
+                    matched_line.inventory_item.sku if matched_line and matched_line.inventory_item else None,
+                    matched_line.inventory_item.barcode if matched_line and matched_line.inventory_item else None,
+                )
+                if value
+            }
+            if (
+                matched_line is None
+                or (payload.sku_or_barcode or "").strip().casefold() not in scan_values
+                or to_decimal(payload.quantity) != expected_quantity
+            ):
+                raise IdempotencyConflict("Idempotency key was already used with a different scan request.")
+    if matched_line is None:
+        preview = preview_scan(db, order_id, payload)
+        if preview is None or preview.status != "valid" or preview.matched_line is None:
+            return preview
+        matched_line = db.get(OrderItem, preview.matched_line.order_line_id)
+    request = PickRequest(
+        idempotency_key=payload.idempotency_key,
+        lines=[
+            {
+                "order_line_id": matched_line.id,
+                "quantity_to_pick": payload.quantity,
+                "idempotency_key": payload.idempotency_key,
+            }
+        ],
+        allow_partial=True,
+        created_by=payload.created_by,
+        notes=payload.note,
+    )
+    commit = commit_pick(db, request)
+    refreshed = db.get(OrderItem, matched_line.id)
     return PickScanResponse(
         status=commit.status,
-        matched_line=scanner_line(refreshed) if refreshed else preview.matched_line,
+        matched_line=scanner_line(refreshed) if refreshed else scanner_line(matched_line),
         proposed_picked_quantity=commit.total_quantity_picked,
         warnings=commit.warnings,
         errors=commit.errors,
@@ -102,6 +136,10 @@ def commit_scan(db: Session, order_id: int, payload: PickScanRequest) -> PickSca
 
 
 def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
+    mutation, replay = begin_stock_mutation(db, "pick", payload.idempotency_key, payload)
+    if replay is not None:
+        return PickCommitResponse.model_validate(replay)
+    lock_pick_scope(db, payload)
     preview = preview_pick(db, payload)
     blocking_errors = list(preview.errors)
     if not payload.allow_partial:
@@ -110,7 +148,7 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
                 if line.pick_status != "picked":
                     blocking_errors.append(f"Order line {line.order_line_id} cannot be fully picked.")
     if blocking_errors:
-        return PickCommitResponse(
+        return persist_rejected_pick(db, mutation, PickCommitResponse(
             status="rejected",
             total_orders=preview.total_orders,
             total_lines=preview.total_lines,
@@ -121,11 +159,11 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
             created_audit_events=0,
             warnings=preview.warnings,
             errors=blocking_errors,
-        )
+        ))
 
     pickable_preview_lines = [line for order in preview.preview_orders for line in order.lines if line.recommended_pick_quantity > 0 and line.pick_status in {"picked", "partial"}]
     if not pickable_preview_lines:
-        return PickCommitResponse(
+        return persist_rejected_pick(db, mutation, PickCommitResponse(
             status="rejected",
             total_orders=preview.total_orders,
             total_lines=preview.total_lines,
@@ -136,7 +174,7 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
             created_audit_events=0,
             warnings=preview.warnings,
             errors=["No order lines are eligible for picking."],
-        )
+        ))
 
     now = datetime.now(timezone.utc)
     first_order = preview.preview_orders[0] if len(preview.preview_orders) == 1 else None
@@ -254,9 +292,8 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
         for order_id in touched_order_ids:
             order = db.scalars(select(Order).where(Order.id == order_id).options(selectinload(Order.items))).one()
             update_order_picking_status(order)
-        db.commit()
-        db.refresh(pick)
-        return PickCommitResponse(
+        db.flush()
+        response = PickCommitResponse(
             pick_id=pick.id,
             pick_number=pick.pick_number,
             status=pick.status,
@@ -271,6 +308,9 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
             warnings=preview.warnings,
             errors=[],
         )
+        complete_stock_mutation(mutation, response)
+        db.commit()
+        return response
     except Exception as exc:
         db.rollback()
         return PickCommitResponse(
@@ -287,10 +327,51 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
         )
 
 
-def unpick_orders(db: Session, order_ids: list[int], *, created_by: str | None = "system", reason: str | None = None) -> dict:
+def unpick_orders(
+    db: Session,
+    order_ids: list[int],
+    *,
+    created_by: str | None = "system",
+    reason: str | None = None,
+    idempotency_key: str | None = None,
+) -> dict:
     selected_ids = list(dict.fromkeys(order_ids))
     notes = (reason or "Bulk unpick from order workflow.").strip()
-    orders = list(db.scalars(select(Order).where(Order.id.in_(selected_ids)).options(selectinload(Order.items))).all())
+    mutation, replay = begin_stock_mutation(
+        db,
+        "unpick",
+        idempotency_key,
+        {"order_ids": selected_ids, "created_by": created_by, "reason": notes},
+    )
+    if replay is not None:
+        return replay
+    item_ids = set(
+        db.scalars(
+            select(PickLine.item_id).where(
+                PickLine.order_id.in_(selected_ids),
+                PickLine.status != "reversed",
+                PickLine.quantity_stock_reduced > 0,
+            )
+        ).all()
+    )
+    lock_inventory_stock(db, item_ids)
+    db.scalars(
+        select(OrderItem)
+        .where(OrderItem.order_id.in_(selected_ids))
+        .order_by(OrderItem.order_id, OrderItem.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    orders = list(
+        db.scalars(
+            select(Order)
+            .where(Order.id.in_(selected_ids))
+            .options(selectinload(Order.items))
+            .order_by(Order.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
     orders_by_id = {order.id: order for order in orders}
     errors = [f"Order {order_id} was not found." for order_id in selected_ids if order_id not in orders_by_id]
     for order in orders:
@@ -307,6 +388,8 @@ def unpick_orders(db: Session, order_ids: list[int], *, created_by: str | None =
             .where(PickLine.order_id.in_(selected_ids), PickLine.status != "reversed", PickLine.quantity_stock_reduced > 0)
             .options(selectinload(PickLine.pick))
             .order_by(PickLine.id.desc())
+            .with_for_update()
+            .execution_options(populate_existing=True)
         ).all()
     )
     lines_by_order: dict[int, list[PickLine]] = {}
@@ -331,7 +414,7 @@ def unpick_orders(db: Session, order_ids: list[int], *, created_by: str | None =
         reversal_plan.append((pick_line, order_line, item, location_row, quantity))
 
     if errors:
-        return {
+        response = {
             "status": "rejected",
             "requested_count": len(selected_ids),
             "succeeded_count": 0,
@@ -339,6 +422,10 @@ def unpick_orders(db: Session, order_ids: list[int], *, created_by: str | None =
             "results": [],
             "errors": errors,
         }
+        complete_stock_mutation(mutation, response)
+        if mutation is not None:
+            db.commit()
+        return response
 
     now = datetime.now(timezone.utc)
     restored_by_order = {order_id: Decimal("0") for order_id in selected_ids}
@@ -395,7 +482,6 @@ def unpick_orders(db: Session, order_ids: list[int], *, created_by: str | None =
                 pick.cancelled_at = now
         for order in orders:
             sync_order_workflow_statuses(order)
-        db.commit()
     except Exception:
         db.rollback()
         raise
@@ -408,7 +494,7 @@ def unpick_orders(db: Session, order_ids: list[int], *, created_by: str | None =
         }
         for order_id in selected_ids
     ]
-    return {
+    response = {
         "status": "completed",
         "requested_count": len(selected_ids),
         "succeeded_count": len(selected_ids),
@@ -419,6 +505,9 @@ def unpick_orders(db: Session, order_ids: list[int], *, created_by: str | None =
         "results": results,
         "errors": [],
     }
+    complete_stock_mutation(mutation, response)
+    db.commit()
+    return response
 
 
 def build_preview_orders(db: Session, payload: PickRequest) -> list[PickPreviewOrder]:
@@ -474,6 +563,39 @@ def selected_order_lines(db: Session, payload: PickRequest) -> list[OrderItem]:
             ).all()
         )
     return [] 
+
+
+def lock_pick_scope(db: Session, payload: PickRequest) -> None:
+    lines = selected_order_lines(db, payload)
+    lock_inventory_stock(
+        db,
+        {line.inventory_item_id for line in lines if line.inventory_item_id is not None},
+    )
+    order_ids = sorted({line.order_id for line in lines})
+    line_ids = sorted({line.id for line in lines})
+    if order_ids:
+        db.scalars(
+            select(Order)
+            .where(Order.id.in_(order_ids))
+            .order_by(Order.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    if line_ids:
+        db.scalars(
+            select(OrderItem)
+            .where(OrderItem.id.in_(line_ids))
+            .order_by(OrderItem.order_id, OrderItem.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+
+
+def persist_rejected_pick(db: Session, mutation, response: PickCommitResponse) -> PickCommitResponse:
+    complete_stock_mutation(mutation, response)
+    if mutation is not None:
+        db.commit()
+    return response
 
 
 def find_scan_line(db: Session, order_id: int, payload: PickScanRequest) -> tuple[OrderItem | None, PickScanResponse | None]:

@@ -16,9 +16,9 @@ def test_dashboard_empty_db(client):
 
 
 def test_dashboard_seeded_summary_warnings_and_activity(client, monkeypatch):
-    seed_item(client, sku="DASH-WARN", **{"In Stock": 1, "Allocated": 2, "Unit Cost": None, "Sales Price": None, "Default Location": ""})
+    seed_item(client, sku="DASH-WARN", **{"In Stock": 1, "Allocated": 1, "Unit Cost": None, "Sales Price": None, "Default Location": ""})
     order, _ = allocated_order(client, monkeypatch, sku="DASH-PICK", barcode="DASH-BAR")
-    client.post(f"/api/picks/orders/{order['id']}/scan/commit", json={"sku_or_barcode": "DASH-PICK", "quantity": 1})
+    client.post(f"/api/picks/orders/{order['id']}/scan/commit", json={"idempotency_key": "dashboard-scan-pick", "sku_or_barcode": "DASH-PICK", "quantity": 1})
 
     response = client.get("/api/dashboard/activity", params={"limit": 10})
     warnings = client.get("/api/dashboard/warnings").json()
@@ -26,8 +26,8 @@ def test_dashboard_seeded_summary_warnings_and_activity(client, monkeypatch):
 
     assert response.status_code == 200
     assert len(response.json()) >= 1
-    assert summary["inventory_health"]["allocated_greater_than_stock_count"] >= 1
-    assert any(group["code"] == "items_allocated_gt_stock" for group in warnings)
+    assert summary["inventory_health"]["missing_unit_cost_count"] >= 1
+    assert any(group["code"] == "items_missing_unit_cost" for group in warnings)
 
 
 def test_woo_remap_candidates_preview_commit(client):
@@ -46,13 +46,32 @@ def test_woo_remap_candidates_preview_commit(client):
     assert mappings.json()["total"] == 1
 
 
+def test_woo_remap_blocks_duplicate_target_preserves_stock_and_audits(client):
+    first = seed_item(client, sku="REMAP-FIRST", wooProductId=9301, **{"In Stock": 7, "Allocated": 2})
+    second = seed_item(client, sku="REMAP-SECOND", **{"In Stock": 4, "Allocated": 1})
+    committed = client.post("/api/integrations/woocommerce/remap/commit", json={"woo_product_id": 9301, "woo_variation_id": None, "item_id": first["id"], "note": "authoritative"})
+    preview = client.post("/api/integrations/woocommerce/remap/preview", json={"woo_product_id": 9301, "woo_variation_id": None, "item_id": second["id"]})
+    blocked = client.post("/api/integrations/woocommerce/remap/commit", json={"woo_product_id": 9301, "woo_variation_id": None, "item_id": second["id"]})
+
+    assert committed.status_code == 200
+    assert preview.status_code == 200
+    assert preview.json()["errors"]
+    assert blocked.status_code == 409
+    first_after = client.get(f"/api/items/{first['id']}").json()
+    second_after = client.get(f"/api/items/{second['id']}").json()
+    assert (first_after["In Stock"], first_after["Allocated"]) == (7, 2)
+    assert (second_after["In Stock"], second_after["Allocated"]) == (4, 1)
+    activity = client.get("/api/dashboard/activity", params={"limit": 20}).json()
+    assert any(row["title"] == "Audit: woocommerce_remap" for row in activity)
+
+
 def test_pick_scanner_match_no_match_and_overpick(client, monkeypatch):
     order, _ = allocated_order(client, monkeypatch, sku="SCAN-SKU", barcode="SCAN-BAR", quantity=2)
 
     scanner = client.get(f"/api/picks/orders/{order['id']}/scanner")
     no_match = client.post(f"/api/picks/orders/{order['id']}/scan/preview", json={"sku_or_barcode": "NOPE", "quantity": 1})
     overpick = client.post(f"/api/picks/orders/{order['id']}/scan/preview", json={"sku_or_barcode": "SCAN-SKU", "quantity": 99})
-    commit = client.post(f"/api/picks/orders/{order['id']}/scan/commit", json={"sku_or_barcode": "SCAN-BAR", "quantity": 1})
+    commit = client.post(f"/api/picks/orders/{order['id']}/scan/commit", json={"idempotency_key": "hardening-scan-pick", "sku_or_barcode": "SCAN-BAR", "quantity": 1})
 
     assert scanner.status_code == 200
     assert scanner.json()["line_count"] == 1
@@ -68,7 +87,7 @@ def test_pick_scanner_match_no_match_and_overpick(client, monkeypatch):
 
 def test_sku_orders_report_rows_summary_export(client, monkeypatch):
     order, _ = allocated_order(client, monkeypatch, sku="SKU-ORDERS", barcode="SKU-ORDERS-BAR", quantity=3)
-    client.post(f"/api/picks/orders/{order['id']}/scan/commit", json={"sku_or_barcode": "SKU-ORDERS", "quantity": 1})
+    client.post(f"/api/picks/orders/{order['id']}/scan/commit", json={"idempotency_key": "orders-scan-pick", "sku_or_barcode": "SKU-ORDERS", "quantity": 1})
 
     rows = client.get("/api/reports/sku-orders", params={"sku": "SKU-ORDERS"})
     summary = client.get("/api/reports/sku-orders/summary", params={"sku": "SKU-ORDERS"})

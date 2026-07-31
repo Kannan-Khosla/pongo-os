@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.ui import UISavedView
+from app.services.auth import authenticated_actor
 
 router = APIRouter(prefix="/ui", tags=["ui"])
 
@@ -36,7 +37,7 @@ def list_saved_views(page: str | None = None, db: Session = Depends(get_db)) -> 
 
 
 @router.post("/saved-views", status_code=201)
-def create_saved_view(payload: dict, db: Session = Depends(get_db)) -> dict:
+def create_saved_view(payload: dict, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
     row = UISavedView(
         view_key=payload.get("view_key") or f"{payload.get('page') or 'items'}:{payload.get('name') or 'view'}",
         name=payload.get("name") or "Saved view",
@@ -45,7 +46,7 @@ def create_saved_view(payload: dict, db: Session = Depends(get_db)) -> dict:
         columns_json=json.dumps(payload.get("columns") or payload.get("columns_json") or []),
         sort_json=json.dumps(payload.get("sort") if "sort" in payload else payload.get("sort_json")),
         is_default=bool(payload.get("is_default")),
-        created_by=payload.get("created_by"),
+        created_by=actor,
     )
     db.add(row)
     db.commit()
@@ -54,11 +55,12 @@ def create_saved_view(payload: dict, db: Session = Depends(get_db)) -> dict:
 
 
 @router.patch("/saved-views/{view_id}")
-def update_saved_view(view_id: int, payload: dict, db: Session = Depends(get_db)) -> dict:
+def update_saved_view(view_id: int, payload: dict, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
     row = db.get(UISavedView, view_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Saved view not found")
-    for field in ["view_key", "name", "page", "is_default", "created_by"]:
+    row.created_by = row.created_by or actor
+    for field in ["view_key", "name", "page", "is_default"]:
         if field in payload:
             setattr(row, field, payload[field])
     if "filters" in payload:

@@ -13,9 +13,8 @@ Vitest/Testing Library coverage.
 
 Safety notes:
 - WooCommerce read sync is backend-only.
-- WooCommerce writeback is staging-only, queued, allowlisted, audited, and
-  blocked unless explicit live staging test flags are enabled.
-- No production WooCommerce writes.
+- WooCommerce writeback is queued, allowlisted, and audited. Production stock
+  writes additionally require the explicit Pongo stock-authority policy.
 - No frontend WooCommerce calls.
 - No external map/geocoding/routing calls.
 - No visible frontend action should be fake: actions must work, navigate to a
@@ -23,8 +22,8 @@ Safety notes:
 - Dashboard, reports, remap, route metadata, route map, and route provider
   preview/disabled endpoints do not mutate stock, allocation, picked,
   fulfilled, or order status quantities.
-- Scanner picking reuses the existing pick commit path and still does not
-  reduce In Stock, Allocated, or Sellable.
+- Scanner picking reuses the audited pick commit path and reduces In Stock and
+  Allocated exactly once.
 - `inventory_item_locations` is now the operational source for stock
   quantities; `inventory_items` stock fields are cached aggregates.
 
@@ -321,16 +320,16 @@ Goal: Pull eligible WooCommerce orders into local tables.
 Status: Completed for backend-only WooCommerce order sync foundation. The
 backend supports WooCommerce order preview, local commit, sync run history, open
 order list/detail/export endpoints, line-level matching/availability snapshots,
-safe local auto-allocation for active open orders, and a 10-second quick-sync
-recovery path. Phase 1 also adds a signed event-driven `order.created` receiver,
-durable delivery ledger, immutable order-event outbox, and cursor feed for an
-internal staff new-order notice.
+safe local auto-allocation for active open orders, and backend periodic
+reconciliation. Signed event-driven `order.created` and `order.updated`
+deliveries use a durable ledger and immutable order-event audit; the cursor feed
+remains new-order-only.
 The frontend Settings page exposes WooCommerce Order Sync controls and the
 Orders page shows the local Open Orders queue.
 
 Deliverables:
 - Order sync endpoint
-- Signed `order.created` webhook receiver
+- Signed `order.created` and `order.updated` webhook receiver
 - Durable webhook delivery/idempotency ledger
 - Immutable successful new-order event outbox
 - Internal staff new-order event cursor
@@ -345,8 +344,8 @@ Acceptance criteria:
 - Webhook receiver is disabled by default and requires an explicit enable flag,
   a separate secret of at least 32 bytes, raw-body HMAC verification, source
   host validation, and a public HTTPS delivery URL.
-- Only authenticated `order.created` imports in phase 1; other authenticated
-  topics are durably audited and ignored.
+- Authenticated `order.created` and `order.updated` deliveries import or
+  reconcile orders; other topics are durably audited and ignored.
 - Replayed webhook deliveries do not repeat order import, allocation, or staff
   notification.
 - Order sync does not pick, route, fulfill, complete, reduce local In Stock,
@@ -542,9 +541,9 @@ Acceptance criteria:
 - App deploys with no committed secrets.
 
 Safety notes:
-- Production writeback is restricted to explicitly enabled, allowlisted order
-  status updates. Product and stock writes remain staging-only. All writeback
-  stays behind operation, payload, approval, dry-run/live, and host guards.
+- Production writeback stays behind operation, payload, approval, dry-run,
+  host, and explicit stock-authority guards. Metadata, customer, coupon,
+  refund, and DELETE writes remain blocked.
 
 ## Phase 18: Items Control Center, Bulk Receiving, Scanners, Reports
 
@@ -626,8 +625,8 @@ Deliverables:
 - Exact raw-body base64 HMAC-SHA256 verification
 - WooCommerce source-host and delivery-header validation
 - Exact unsigned setup-ping no-op support
-- Phase-1 `order.created` import only
-- Authenticated non-phase-1 topic audit/ignore behavior
+- `order.created` and `order.updated` import/reconciliation
+- Authenticated unsupported-topic audit/ignore behavior
 - Migration `20260710_0018_woocommerce_order_webhooks.py`
 - Migration `20260710_0019_woocommerce_order_event_outbox.py`
 - Durable `woocommerce_webhook_deliveries` idempotency/audit ledger
@@ -636,18 +635,20 @@ Deliverables:
   initialization and safe paginated `next_after_id` advancement
 - Global 2-second event polling while visible, with a dismissible toast,
   session-only Bell history/unread badge, and Open Orders action
-- Quick-sync `created_count` fallback notice deduplicated by sync-run identity
-- 10-second REST quick-sync recovery/reconciliation fallback
+- Backend periodic reconciliation for missed active and terminal order changes
+- Explicit operator quick sync remains available; browser timers only refresh
+  local Pongo views
 
 Acceptance criteria:
-- A valid signed `order.created` payload is committed atomically through the
-  existing local order import and auto-allocation workflow.
+- A valid signed `order.created` or `order.updated` payload is committed
+  atomically through the existing local order import, reconciliation, and
+  auto-allocation workflow.
 - Invalid signatures, disallowed source hosts, oversized bodies, malformed
   payloads, disabled/misconfigured receivers, and inconsistent delivery headers
   fail closed without order mutation.
 - Replaying the same webhook ID, delivery ID, and raw payload hash cannot create
   a duplicate order, allocation, or staff notice.
-- A stale `order.created` snapshot cannot regress a newer local order and is
+- A stale supported snapshot cannot regress a newer local order and is
   audited as ignored without a staff event.
 - The frontend initializes without announcing historical events, advances only
   by `next_after_id`, drains every page while `has_more` is true, and does not
@@ -659,11 +660,31 @@ Safety notes:
 - No raw customer payload is duplicated in the delivery ledger.
 - No WooCommerce write, stock movement, customer email/SMS/push, or browser
   notification permission is introduced.
-- Quick sync remains available if webhook delivery is delayed, disabled, or
-  unavailable.
+- The server reconciliation job remains the recovery path if webhook delivery
+  is delayed, disabled, or unavailable.
 
 Deferred:
-- `order.updated` and `order.deleted` processing
+- `order.deleted` processing; cancelled/refunded/failed status updates are
+  already reconciled through webhooks and the server job
 - Server-sent events or WebSocket push
 - Per-user notification acknowledgement after auth/RBAC
 - Outbound/customer notifications
+
+## Phase 22: Woo Mapping Import And CSV Enrichment
+
+Status: Completed locally.
+
+Delivered:
+
+- Items-level Import Mappings preview/commit with simple/variation identity and
+  variable-parent exclusion
+- idempotent Woo-owned refresh with Pongo-owned field preservation
+- protected-identity enrichment template and preview-first, update-only import
+- optional guarded, audited location-level opening stock
+- searchable remap exception workflow with audit/order-line reprocessing
+- fail-closed mapping validation and pending/failed queue revalidation
+- guarded development database reset and location seed commands
+- backend/frontend regression coverage and first-time migration runbook
+
+Not included: expiry, scanner picking, auth/RBAC, deployment, production Woo
+writes, or a second mapping/writeback architecture.

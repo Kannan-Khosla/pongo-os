@@ -13,7 +13,7 @@ Column source values:
 
 ## Canonical Inventory Item CSV
 
-Current reference: `docs/CSV_templates_with_data/items.csv`.
+Synthetic reference: `docs/csv-reference/sample-items-import.csv`.
 
 Canonical header order:
 
@@ -25,14 +25,14 @@ Client,SKU,Description,Category,Unit of Measurement,Warehouse,Inventory Location
 | ---: | --- | --- | --- |
 | 1 | Client | Pongo OS/manual/CSV | Usually Pongo or a client/account value. |
 | 2 | SKU | WooCommerce/CSV | Required unique item identifier. |
-| 3 | Description | WooCommerce/CSV | Product or item description/name. |
+| 3 | Description | WooCommerce/CSV | Legacy CSV field containing the product title. The UI labels this as Product Title; Woo long descriptions are not imported or displayed. |
 | 4 | Category | WooCommerce/CSV | Product category. |
 | 5 | Unit of Measurement | manual/CSV | Example: EA, bag, case, unit. |
 | 6 | Warehouse | manual/CSV/location | Example: Main Warehouse. |
 | 7 | Inventory Location | manual/CSV/location | Physical location where stock exists. |
 | 8 | Default Location | manual/CSV/location | Primary/default location for the item. |
-| 9 | In Stock | CSV/WooCommerce later/location totals | Current physical stock quantity. |
-| 10 | Allocated | Pongo OS | Quantity allocated to open orders. |
+| 9 | In Stock | audited stock workflows/location totals | Retained in the canonical format, but ordinary metadata import never commits it. |
+| 10 | Allocated | Pongo OS | Retained in the canonical format; allocation is automatic and ordinary imports never commit it. |
 | 11 | Sellable | calculated | In Stock minus Allocated. |
 | 12 | Under Par | calculated | In Stock <= Par Level. |
 | 13 | On Order | manual/CSV/future | Kept for future planning even though Pongo does not currently use POs. |
@@ -130,16 +130,18 @@ Import rules:
 - Show failed rows.
 - Allow failed rows CSV download.
 
-Calculated import fields:
-- Sellable is recalculated as `In Stock - Allocated`.
-- Under Par is recalculated as `In Stock <= Par Level`.
+Calculated preview fields:
+- Sellable and Under Par are shown from the parsed row for compatibility, but
+  ordinary metadata import commits new items with zero stock and preserves
+  existing item/location quantities.
 - Storage Volume is recalculated as `Storage Length x Storage Width x Storage Height`.
 - If imported calculated values differ, the calculated values are used and warnings are returned.
 
 Current CSV import is a migration/local item upsert path only. It must not call
 WooCommerce, receiving, cycle count, allocation, picking, or route workflows.
-Future operational imports that perform stock-changing actions must create stock
-movement/audit rows.
+Nonzero `In Stock` or `Allocated` values produce a warning and are not committed.
+Opening stock must use the explicit audited opening-balance workflow, which
+creates stock movement/audit rows.
 
 ## Product Export / Inventory Export
 
@@ -321,3 +323,32 @@ Relationship to item fields:
   receiving, cycle count, stock-by-location, and export-by-location workflows.
 - Foreign keys from item CSV fields to `inventory_locations` are intentionally
   not enforced yet.
+
+## Woo-Mapped Item Enrichment CSV
+
+The separate enrichment export begins with protected columns in this exact
+order: `Pongo Item ID`, `Woo Product ID`, `Woo Variation ID`, `Woo Mapping
+Type`, and `Woo Mapping Status`.
+
+Editable local columns follow: `SKU`, `Description` (the legacy CSV name for
+Product Title), `Category`, `Unit of
+Measurement`, `Barcode`, `Brand`, `Manufacturer`, `Manufacturer Website`,
+`Recommended Retail Price`, `Sales Price`, `Unit Cost`, `Weight`,
+`Warehouse`, `Inventory Location`, `Default Location`, `In Stock`, `On
+Order`, `Par Level`, `Default Econ Order`, `Default Lead Time Days`,
+`Assembly`, `Serializable`, `Re-Order`, `Storage Length`, `Storage Width`,
+`Storage Height`, and `Active`. Expiry is not exported or required.
+
+Rows match by Pongo Item ID, exact Woo product/variation identity, unique SKU,
+then unique barcode. Variations require both parent and variation IDs.
+Conflicting identifiers reject the row and enrichment never creates an item.
+Empty cells preserve values. `__CLEAR__` applies only to approved local optional
+metadata and cannot clear mapping identity, SKU, history, writeback identity, or
+sync metadata.
+
+`Import opening stock` defaults off, in which case `In Stock` is ignored with
+a warning. When enabled, nonnegative stock requires active warehouse/location
+records and a safe history-free item. Commit updates
+`inventory_item_locations`, writes an `opening_balance_import` movement, and
+recalculates cached In Stock and Sellable. Imported Sellable/Under Par are never
+trusted, and the same opening-stock file cannot be applied twice.
