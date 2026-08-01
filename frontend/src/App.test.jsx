@@ -285,6 +285,9 @@ function mockFetch(url) {
     base_url: 'https://staging32.pongo.ca',
     base_url_host: 'staging32.pongo.ca',
     environment: 'staging',
+    access_mode: 'read_write',
+    access_mode_updated_by: 'Pytest',
+    access_mode_updated_at: '2026-07-31T18:00:00Z',
     read_only: false,
     writeback_enabled: true,
     dry_run: false,
@@ -306,6 +309,12 @@ function mockFetch(url) {
     last_order_sync: { status: 'completed', total_remote_records: 8 },
     order_reconciliation: mockWooHealth,
     last_error: mockWooLastError,
+  });
+  if (target.includes('/api/integrations/woocommerce/access-mode')) return json({
+    access_mode: 'read_only',
+    changed_by: 'Pytest',
+    changed_at: '2026-07-31T18:00:00Z',
+    message: 'WooCommerce access changed to Read only.',
   });
   if (target.includes('/api/integrations/woocommerce/configuration')) return json({
     connected: true,
@@ -1495,6 +1504,22 @@ describe('App shell and workflows', () => {
       });
     });
     expect(await screen.findByText(/verified and saved in the backend environment/i)).toBeInTheDocument();
+  });
+
+  it('changes WooCommerce access mode from the connection page', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/settings/connection';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Store connection & operations' });
+    expect(screen.getByRole('button', { name: /Read & writeEnable Pongo/i })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByRole('button', { name: /Read onlyGET requests only/i }));
+
+    await waitFor(() => {
+      const call = fetch.mock.calls.find(([url]) => String(url).includes('/api/integrations/woocommerce/access-mode'));
+      expect(call).toBeTruthy();
+      expect(JSON.parse(call[1].body)).toEqual({ access_mode: 'read_only' });
+    });
   });
 
   it('blocks a WooCommerce host replacement until it is explicitly authorized', async () => {

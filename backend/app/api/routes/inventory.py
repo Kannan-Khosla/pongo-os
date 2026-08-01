@@ -30,6 +30,7 @@ from app.services.location_inventory import create_committed_adjustment_batch, c
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
 from app.services.stock_mutation_guard import IdempotencyConflict
 from app.services.woocommerce_client import WooCommerceClient
+from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_writeback import sync_inventory_stock
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
@@ -190,7 +191,7 @@ def commit_stock_adjustment(payload: StockAdjustmentRequest, db: Session = Depen
         db.commit()
         adjustment = db.scalars(select(StockAdjustment).where(StockAdjustment.id == adjustment.id).options(selectinload(StockAdjustment.lines))).one()
         if not replayed:
-            settings = get_settings()
+            settings = effective_woocommerce_settings(db, get_settings())
             sync_inventory_stock(
                 db,
                 settings,

@@ -19,6 +19,8 @@ from app.schemas.woocommerce import (
     WooCommerceOrderCommitResponse,
     WooCommerceOrderPreviewResponse,
     WooCommerceOrderSyncRequest,
+    WooCommerceAccessModeRequest,
+    WooCommerceAccessModeResponse,
     WooCommerceConfigurationRequest,
     WooCommerceConfigurationResponse,
     WooCommerceProductCommitResponse,
@@ -43,6 +45,7 @@ from app.schemas.woocommerce import (
 )
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.auth import authenticated_actor
+from app.services.woocommerce_access import change_access_mode, effective_woocommerce_settings, latest_access_mode_change
 from app.services.woocommerce_configuration import save_woocommerce_configuration
 from app.services.woocommerce_orders import commit_order_sync, commit_recent_order_sync, preview_order_sync
 from app.services.woocommerce_order_reconciliation import reconciliation_health
@@ -78,6 +81,25 @@ def create_woocommerce_client() -> WooCommerceClient:
     return WooCommerceClient(get_settings())
 
 
+@router.post("/access-mode", response_model=WooCommerceAccessModeResponse)
+def update_woocommerce_access_mode(
+    payload: WooCommerceAccessModeRequest,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> WooCommerceAccessModeResponse:
+    try:
+        row = change_access_mode(db, payload.access_mode, actor)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    label = "Read & write" if row.access_mode == "read_write" else "Read only"
+    return WooCommerceAccessModeResponse(
+        access_mode=row.access_mode,
+        changed_by=row.changed_by,
+        changed_at=row.created_at,
+        message=f"WooCommerce access changed to {label}.",
+    )
+
+
 @router.post("/configuration", response_model=WooCommerceConfigurationResponse)
 def configure_woocommerce(payload: WooCommerceConfigurationRequest) -> WooCommerceConfigurationResponse:
     try:
@@ -104,8 +126,8 @@ def configure_woocommerce(payload: WooCommerceConfigurationRequest) -> WooCommer
 
 @router.get("/status", response_model=WooCommerceStatusResponse)
 def woocommerce_status(request: Request, check: bool = False, db: Session = Depends(get_db)) -> WooCommerceStatusResponse:
-    settings = get_settings()
-    client = create_woocommerce_client()
+    settings = effective_woocommerce_settings(db, get_settings())
+    client = WooCommerceClient(settings)
     base_url_present = bool(settings.woocommerce_base_url)
     consumer_key_present = bool(settings.woocommerce_consumer_key)
     consumer_secret_present = bool(settings.woocommerce_consumer_secret)
@@ -331,7 +353,8 @@ def remap_deactivate(payload: WooRemapDeactivateRequest, db: Session = Depends(g
 @router.post("/writeback/stock/preview", response_model=WooWritebackPreviewResponse)
 def writeback_stock_preview(payload: WooWritebackStockPreviewRequest, db: Session = Depends(get_db)) -> WooWritebackPreviewResponse:
     try:
-        result = preview_stock_writeback(db, get_settings(), create_woocommerce_client(), payload)
+        settings = effective_woocommerce_settings(db, get_settings())
+        result = preview_stock_writeback(db, settings, create_woocommerce_client(), payload)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     if result is None:
@@ -386,7 +409,8 @@ def writeback_stock_job_cancel(job_id: int, db: Session = Depends(get_db)) -> Wo
 
 @router.post("/writeback/order-status/preview", response_model=WooWritebackPreviewResponse)
 def writeback_order_status_preview(payload: WooWritebackOrderStatusPreviewRequest, db: Session = Depends(get_db)) -> WooWritebackPreviewResponse:
-    result = preview_order_status_writeback(db, get_settings(), create_woocommerce_client(), payload)
+    settings = effective_woocommerce_settings(db, get_settings())
+    result = preview_order_status_writeback(db, settings, create_woocommerce_client(), payload)
     if result is None:
         raise HTTPException(status_code=404, detail="Local order not found")
     return result
@@ -441,7 +465,7 @@ def writeback_queue_approve(queue_id: int, db: Session = Depends(get_db), actor:
 
 @router.post("/writeback/queue/{queue_id}/send", response_model=WooWritebackQueueRead)
 def writeback_queue_send(queue_id: int, db: Session = Depends(get_db)) -> WooWritebackQueueRead:
-    row = send_queue_item(db, create_woocommerce_client(), get_settings(), queue_id)
+    row = send_queue_item(db, create_woocommerce_client(), effective_woocommerce_settings(db, get_settings()), queue_id)
     if row is None:
         raise HTTPException(status_code=404, detail="WooCommerce writeback queue item not found")
     return queue_to_read(row)
@@ -450,7 +474,7 @@ def writeback_queue_send(queue_id: int, db: Session = Depends(get_db)) -> WooWri
 @router.post("/writeback/queue/{queue_id}/revalidate", response_model=WooWritebackQueueRead)
 def writeback_queue_revalidate(queue_id: int, db: Session = Depends(get_db)) -> WooWritebackQueueRead:
     try:
-        row = revalidate_queue_item(db, create_woocommerce_client(), get_settings(), queue_id)
+        row = revalidate_queue_item(db, create_woocommerce_client(), effective_woocommerce_settings(db, get_settings()), queue_id)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     if row is None:
@@ -503,6 +527,7 @@ def sync_run_to_read(run: WooCommerceSyncRun) -> WooCommerceSyncRunRead:
 def woo_status_payload(settings, client: WooCommerceClient, db: Session, *, scheduler_running: bool = False) -> dict:
     host = client.base_url_host
     allowed_host = getattr(settings, "woocommerce_allowed_host", "")
+    access_change = latest_access_mode_change(db)
     last_product_sync = latest_sync(db, "products")
     last_order_sync = latest_sync(db, "orders")
     latest_error = db.scalars(select(WooCommerceSyncError).order_by(WooCommerceSyncError.created_at.desc(), WooCommerceSyncError.id.desc())).first()
@@ -511,6 +536,9 @@ def woo_status_payload(settings, client: WooCommerceClient, db: Session, *, sche
         "base_url": settings.woocommerce_base_url or None,
         "base_url_host": host,
         "environment": getattr(settings, "woocommerce_environment", "development"),
+        "access_mode": "read_only" if getattr(settings, "woocommerce_read_only", True) else "read_write",
+        "access_mode_updated_by": access_change.changed_by if access_change else None,
+        "access_mode_updated_at": access_change.created_at if access_change else None,
         "read_enabled": getattr(settings, "woocommerce_read_enabled", True),
         "read_only": getattr(settings, "woocommerce_read_only", True),
         "writeback_enabled": getattr(settings, "woocommerce_writeback_enabled", False),

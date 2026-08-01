@@ -2,7 +2,7 @@
 
 ## Stock authority
 
-Pongo OS is the production stock authority. Production stock writes remain blocked unless `WOOCOMMERCE_PRODUCTION_STOCK_AUTHORITY=pongo`, writeback and stock/order-status permissions are enabled, and dry-run is off. Product metadata, customers, coupons, refunds, and deletes remain blocked.
+Pongo OS is the production stock authority. Settings → Connection exposes an audited access mode: **Read only** permits WooCommerce GET operations, while **Read & write** activates the existing queued stock and completed-order writeback workflows. Every mode change records the staff identity and timestamp in `woocommerce_access_mode_changes`. Product metadata, customer, coupon, refund, and delete workflows are not exposed by Pongo OS.
 
 ## Staff access
 
@@ -17,7 +17,7 @@ cookie is never sent over plaintext transport.
 1. Put workers into maintenance mode and stop background jobs.
 2. Create a custom PostgreSQL backup: `make backup-postgres BACKUP=/secure/path/pongo-before-release.dump`.
 3. Verify the backup against a disposable database whose name ends in `_restore_verify`: `RESTORE_VERIFY_DATABASE_URL=... make verify-postgres-backup BACKUP=/secure/path/pongo-before-release.dump`.
-4. Run `alembic upgrade head` (expected revision `20260731_0027`), then `/ready` and the release smoke tests.
+4. Run `alembic upgrade head` (expected revision `20260801_0028`), then `/ready` and the release smoke tests.
 5. If a migration fails, stop the release and restore the verified pre-release backup. Do not improvise a production downgrade; migration downgrades are validated for development recovery, while the database backup is the production rollback boundary.
 
 Keep encrypted backups outside the application host, apply a retention policy, and run a restore verification at least monthly and before every schema release.

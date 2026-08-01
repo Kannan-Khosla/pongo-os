@@ -1,9 +1,22 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+
+class WooCommerceAccessModeChange(Base):
+    __tablename__ = "woocommerce_access_mode_changes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    access_mode: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    changed_by: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    __table_args__ = (
+        CheckConstraint("access_mode in ('read_only', 'read_write')", name="ck_woo_access_mode_value"),
+    )
 
 
 class WooCommerceSyncRun(Base):

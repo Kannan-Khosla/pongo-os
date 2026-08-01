@@ -55,7 +55,6 @@ Implemented locally:
 
 Not implemented yet:
 - Real map/geocoding/routing provider calls
-- Heroku production deployment files
 - Supplier management, purchase orders, delivery issue logs, customer notifications, and shipping labels
 
 ## Safety Boundaries
@@ -69,6 +68,9 @@ Not implemented yet:
 - WooCommerce writeback is allowlisted, queued, and audited. Production stock
   writes require the explicit `WOOCOMMERCE_PRODUCTION_STOCK_AUTHORITY=pongo`
   policy plus the normal host, operation, payload, dry-run, and permission guards.
+- Settings → Connection provides an audited `read_only` / `read_write` switch.
+  Read-only mode permits WooCommerce GET operations; read-write mode enables the
+  supported stock and completed-order writeback workflows.
 - WooCommerce DELETE is always blocked.
 - WooCommerce stock is stored only as a read-only snapshot.
 - Completing an order sends a guarded, audited `completed` status update through

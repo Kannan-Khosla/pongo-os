@@ -15,6 +15,7 @@ from app.models.inventory import InventoryItem
 from app.models.woocommerce import WooStockSyncJob
 from app.schemas.woocommerce import WooStockSyncJobListResponse, WooStockSyncJobRead, WooStockSyncRequest
 from app.services.woocommerce_client import WooCommerceClient
+from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_writeback import sync_inventory_stock
 from app.services.operations_alerts import send_operations_alert
 
@@ -87,6 +88,7 @@ def process_next_stock_sync_job(settings: Settings, *, db_factory=SessionLocal, 
 
 
 def _process_next_stock_sync_job(db: Session, settings: Settings, client_factory) -> WooStockSyncJob | None:
+    settings = effective_woocommerce_settings(db, settings)
     now = datetime.now(timezone.utc)
     stale_before = now - timedelta(seconds=getattr(settings, "woocommerce_stock_sync_job_stale_seconds", 900))
     job = db.scalar(

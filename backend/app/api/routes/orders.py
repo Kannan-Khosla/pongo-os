@@ -17,6 +17,7 @@ from app.services.picks import list_picks, pick_to_read, unpick_orders
 from app.services.stock_mutation_guard import IdempotencyConflict
 from app.services.woocommerce_orders import export_open_orders_csv, get_open_order_detail, list_open_orders
 from app.services.woocommerce_client import WooCommerceClient
+from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_writeback import sync_completed_order_status, sync_inventory_stock
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -124,7 +125,7 @@ def bulk_complete_orders(payload: BulkOrderActionRequest, db: Session = Depends(
     selected_ids = list(dict.fromkeys(payload.order_ids))
     results = []
     errors = []
-    settings = get_settings()
+    settings = effective_woocommerce_settings(db, get_settings())
     woo_client = WooCommerceClient(settings)
     for order_id in selected_ids:
         try:
@@ -253,7 +254,7 @@ def commit_order_completion(order_id: int, payload: OrderCompletionRequest, db: 
             raise ValueError("Invalid completion mode.")
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    settings = get_settings()
+    settings = effective_woocommerce_settings(db, get_settings())
     woo_client = WooCommerceClient(settings)
     stock_sync = sync_completed_picked_stock(db, settings, woo_client, order_id, actor) if completion_mode == "complete_picked" else None
     writeback = None

@@ -1718,6 +1718,22 @@ export default function App({ currentUser = null }) {
     }
   }
 
+  async function changeWooAccessMode(accessMode) {
+    if (accessMode === 'read_write' && !window.confirm('Read & write lets Pongo update WooCommerce stock and completed order statuses. Continue?')) return null;
+    setWooLoading(true);
+    setWooError('');
+    try {
+      const result = await postJson('/api/integrations/woocommerce/access-mode', { access_mode: accessMode });
+      await loadWooStatus(false, { silent: true });
+      return result;
+    } catch (error) {
+      setWooError(error.message || 'Unable to change WooCommerce access mode.');
+      return null;
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
   async function syncWooStockFromSettings(force) {
     const confirmed = !force || window.confirm('Update all sends every mapped inventory stock level through the existing WooCommerce writeback rules. Continue?');
     if (!confirmed) return null;
@@ -2756,6 +2772,7 @@ export default function App({ currentUser = null }) {
             wooError={wooError}
             onLoadWooStatus={loadWooStatus}
             onSaveWooConfiguration={saveWooConfiguration}
+            onChangeWooAccessMode={changeWooAccessMode}
             onPreviewWooProductSync={previewWooProductSync}
             onCommitWooProductSync={commitWooProductSync}
             onPreviewWooOrderSync={previewWooOrderSync}
@@ -3268,6 +3285,7 @@ function PageBody({
   wooError,
   onLoadWooStatus,
   onSaveWooConfiguration,
+  onChangeWooAccessMode,
   onPreviewWooProductSync,
   onCommitWooProductSync,
   onPreviewWooOrderSync,
@@ -3509,6 +3527,7 @@ function PageBody({
         error={wooError}
         onCheckConnection={() => onLoadWooStatus(true)}
         onSaveConfiguration={onSaveWooConfiguration}
+        onChangeAccessMode={onChangeWooAccessMode}
         onPreview={onPreviewWooProductSync}
         onCommit={onCommitWooProductSync}
         onPreviewOrders={onPreviewWooOrderSync}
@@ -10011,7 +10030,7 @@ function StatusText(value, context = '') {
   return <span className={`status-pill status-${presentation.tone} order-status-${key.replace(/[^a-z0-9-]/g, '-')}`} aria-label={presentation.help ? `${presentation.label}: ${presentation.help}` : presentation.label} title={presentation.help || undefined}>{presentation.label}</span>;
 }
 
-function WooCommerceSettingsPage({ view = 'connection', status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, remapCandidates, remapMappings, remapPreview, remapMessage, writebackQueue, stockSyncJobs, writebackPreview, writebackMessage, loading, error, onCheckConnection, onSaveConfiguration, onPreview, onCommit, onPreviewOrders, onCommitOrders, onPreviewRemap, onCommitRemap, onLoadRemap, onPreviewStockWriteback, onPreviewOrderStatusWriteback, onQueueWriteback, onApproveWriteback, onSendWriteback, onCancelWriteback, onRevalidateWriteback, onSyncStock, onResumeStockJob, onCancelStockJob }) {
+function WooCommerceSettingsPage({ view = 'connection', status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, remapCandidates, remapMappings, remapPreview, remapMessage, writebackQueue, stockSyncJobs, writebackPreview, writebackMessage, loading, error, onCheckConnection, onSaveConfiguration, onChangeAccessMode, onPreview, onCommit, onPreviewOrders, onCommitOrders, onPreviewRemap, onCommitRemap, onLoadRemap, onPreviewStockWriteback, onPreviewOrderStatusWriteback, onQueueWriteback, onApproveWriteback, onSendWriteback, onCancelWriteback, onRevalidateWriteback, onSyncStock, onResumeStockJob, onCancelStockJob }) {
   const latestRun = syncRuns.find((run) => run.sync_type === 'products') || syncRuns[0];
   const latestOrderRun = syncRuns.find((run) => run.sync_type === 'orders');
   const reconciliation = status.order_reconciliation || {};
@@ -10171,6 +10190,37 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
             <nav className="integration-operations" aria-label="WooCommerce settings pages">
               <div className="integration-section-label">
                 <span>02</span>
+                <div><strong>Store access</strong><small>Choose what Pongo may do in WooCommerce</small></div>
+              </div>
+              <div className="integration-access-mode" role="group" aria-label="WooCommerce access mode">
+                <button
+                  type="button"
+                  className={status.access_mode !== 'read_write' ? 'is-active' : ''}
+                  aria-pressed={status.access_mode !== 'read_write'}
+                  disabled={loading}
+                  onClick={() => onChangeAccessMode('read_only')}
+                >
+                  <span>Read only</span>
+                  <small>GET requests only. Sync products and orders without changing WooCommerce.</small>
+                </button>
+                <button
+                  type="button"
+                  className={status.access_mode === 'read_write' ? 'is-active is-write' : ''}
+                  aria-pressed={status.access_mode === 'read_write'}
+                  disabled={loading}
+                  onClick={() => onChangeAccessMode('read_write')}
+                >
+                  <span>Read &amp; write</span>
+                  <small>Enable Pongo stock updates, completed-order status writes, and background writeback jobs.</small>
+                </button>
+              </div>
+              <p className="integration-access-audit">
+                {status.access_mode_updated_by
+                  ? `Last changed by ${status.access_mode_updated_by} · ${formatDateTime(status.access_mode_updated_at)}`
+                  : 'Using the deployment default until a team member changes it.'}
+              </p>
+              <div className="integration-section-label integration-workflow-label">
+                <span>03</span>
                 <div><strong>Continue setup</strong><small>Each workflow has its own page</small></div>
               </div>
               <div className="integration-destination-list">
@@ -10187,8 +10237,8 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
               </div>
               <button className="muted-button integration-test-button" onClick={onCheckConnection} disabled={loading || !status.configured} type="button"><CheckCircle2 size={17} />Test current connection</button>
               <div className="integration-safety-line">
-                <span>Write guard</span>
-                <strong>{status.stock_write_allowed ? (status.dry_run ? 'Dry-run only' : 'Stock write enabled') : 'Stock writes blocked'}</strong>
+                <span>Effective access</span>
+                <strong>{status.access_mode === 'read_write' ? 'Live read & write' : 'GET requests only'}</strong>
               </div>
             </nav>
           </div>

@@ -12,6 +12,7 @@ from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.orders import Order, OrderItem
 from app.schemas.health import HealthResponse, ReadinessCheck, ReadinessResponse
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
+from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_order_reconciliation import reconciliation_health
 from app.services.woocommerce_webhooks import webhook_is_configured
 from app.services.woocommerce_stock_sync_jobs import stock_sync_worker_health, unresolved_stock_sync_job_count
@@ -92,6 +93,7 @@ def duplicate_value_count(db: Session, column) -> int:
 
 
 def production_checks(settings, dialect: str, db: Session, reconciliation_running: bool, stock_worker_running: bool) -> list[ReadinessCheck]:
+    settings = effective_woocommerce_settings(db, settings)
     woo_client = WooCommerceClient(settings)
     woo_host_matches = bool(woo_client.allowed_host and woo_client.base_url_host and woo_client.allowed_host == woo_client.base_url_host.lower())
     woo_url_is_https = urlparse(woo_client.base_url).scheme == "https"

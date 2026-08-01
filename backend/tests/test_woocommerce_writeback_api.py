@@ -2,11 +2,13 @@ import asyncio
 from types import SimpleNamespace
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+from app.core.config import Settings
 from app.db.session import get_db
 from app.main import app
-from app.models.woocommerce import WooStockSyncJob
+from app.models.woocommerce import WooCommerceAccessModeChange, WooStockSyncJob
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError, safe_woocommerce_error_message
 from app.services.woocommerce_stock_sync_jobs import cancel_stock_sync_job, process_next_stock_sync_job, run_stock_sync_job_scheduler, unresolved_stock_sync_job_count
 from tests.test_items_api import client, seed_item  # noqa: F401
@@ -68,6 +70,42 @@ def test_woocommerce_status_masks_credentials_and_shows_staging(client, monkeypa
     assert body["order_status_write_allowed"] is True
     assert "ck_test_secret_value" not in response.text
     assert "cs_test_secret_value" not in response.text
+
+
+def test_woocommerce_access_mode_is_audited_and_enforced(client, monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        woocommerce_base_url="https://store.example",
+        woocommerce_allowed_host="store.example",
+        woocommerce_consumer_key="ck_test_secret_value",
+        woocommerce_consumer_secret="cs_test_secret_value",
+        woocommerce_environment="production",
+    )
+    monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: settings)
+
+    read_only = client.post("/api/integrations/woocommerce/access-mode", json={"access_mode": "read_only"})
+    assert read_only.status_code == 200
+    assert read_only.json()["access_mode"] == "read_only"
+    assert client.get("/api/integrations/woocommerce/status").json()["writeback_enabled"] is False
+
+    read_write = client.post("/api/integrations/woocommerce/access-mode", json={"access_mode": "read_write"})
+    assert read_write.status_code == 200
+    status = client.get("/api/integrations/woocommerce/status").json()
+    assert status["access_mode"] == "read_write"
+    assert status["read_only"] is False
+    assert status["writeback_enabled"] is True
+    assert status["dry_run"] is False
+    assert status["stock_write_allowed"] is True
+    assert status["order_status_write_allowed"] is True
+
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        changes = list(db.scalars(select(WooCommerceAccessModeChange).order_by(WooCommerceAccessModeChange.id)).all())
+        assert [change.access_mode for change in changes] == ["read_only", "read_write"]
+        assert all(change.changed_by for change in changes)
+    finally:
+        db.close()
 
 
 def test_woocommerce_client_blocks_delete():

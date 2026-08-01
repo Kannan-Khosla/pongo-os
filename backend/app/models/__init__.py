@@ -25,7 +25,7 @@ from app.models.routes import Route, RouteStop
 from app.models.scanner import ScannerEvent, ScannerSession
 from app.models.stock_mutations import StockMutationRequest
 from app.models.ui import UISavedView
-from app.models.woocommerce import WooCommerceOrderEvent, WooCommerceSyncError, WooCommerceSyncRun, WooCommerceWebhookDelivery, WooItemMapping, WooStockSyncJob, WooWritebackQueue
+from app.models.woocommerce import WooCommerceAccessModeChange, WooCommerceOrderEvent, WooCommerceSyncError, WooCommerceSyncRun, WooCommerceWebhookDelivery, WooItemMapping, WooStockSyncJob, WooWritebackQueue
 
 __all__ = [
     "Base",
@@ -65,6 +65,7 @@ __all__ = [
     "StockAdjustmentLine",
     "StockMutationRequest",
     "UISavedView",
+    "WooCommerceAccessModeChange",
     "WooCommerceSyncError",
     "WooCommerceSyncRun",
     "WooCommerceWebhookDelivery",

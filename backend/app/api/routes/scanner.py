@@ -25,6 +25,7 @@ from app.services.location_inventory import (
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
 from app.services.stock_mutation_guard import IdempotencyConflict
 from app.services.woocommerce_client import WooCommerceClient
+from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_writeback import sync_inventory_stock
 
 router = APIRouter(prefix="/scanner", tags=["scanner"])
@@ -269,7 +270,7 @@ def adjustment_scan_commit(payload: dict, db: Session = Depends(get_db), actor: 
         auto_allocate_processing_orders_fifo(db, source=f"scanner-adjustment:{adjustment.adjustment_number}")
     db.commit()
     if not replayed:
-        settings = get_settings()
+        settings = effective_woocommerce_settings(db, get_settings())
         sync_inventory_stock(
             db,
             settings,

@@ -29,6 +29,9 @@ class WooCommerceStatusResponse(BaseModel):
     base_url: str | None = None
     base_url_host: str | None = None
     environment: str = "development"
+    access_mode: str = "read_only"
+    access_mode_updated_by: str | None = None
+    access_mode_updated_at: datetime | None = None
     read_enabled: bool = True
     read_only: bool = True
     writeback_enabled: bool = False
@@ -60,6 +63,17 @@ class WooCommerceConfigurationRequest(BaseModel):
     consumer_key: str | None = None
     consumer_secret: str | None = None
     allow_host_change: bool = False
+
+
+class WooCommerceAccessModeRequest(BaseModel):
+    access_mode: str
+
+
+class WooCommerceAccessModeResponse(BaseModel):
+    access_mode: str
+    changed_by: str
+    changed_at: datetime
+    message: str
 
 
 class WooCommerceConfigurationResponse(BaseModel):

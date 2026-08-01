@@ -228,6 +228,7 @@ def test_unconfigured_external_report_sharing_fails_closed(client, monkeypatch):
 
 
 def test_usage_report_reconciles_opening_movements_and_closing_stock(client):
+    report_date = datetime.now(ZoneInfo("America/Edmonton")).date().isoformat()
     item_payload = seed_item(client, sku="USAGE-LEGAL", **{"In Stock": 10, "Unit Cost": 2})
     override, db = database_session()
     try:
@@ -243,7 +244,7 @@ def test_usage_report_reconciles_opening_movements_and_closing_stock(client):
 
     response = client.post(
         "/api/reports/runs/inventory-usage",
-        json={"filters": {"start_date": "2026-07-01", "end_date": "2026-07-31", "sku": "USAGE-LEGAL"}},
+        json={"filters": {"start_date": report_date, "end_date": report_date, "sku": "USAGE-LEGAL"}},
     )
 
     assert response.status_code == 200
