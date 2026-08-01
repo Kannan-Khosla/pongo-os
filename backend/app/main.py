@@ -1,5 +1,3 @@
-import asyncio
-from contextlib import asynccontextmanager
 import json
 import logging
 from pathlib import Path
@@ -12,8 +10,6 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import allocations, auth, business_dashboard, cycle_counts, dashboard, fulfillments, health, import_jobs, insights, inventory, items, locations, orders, picks, receipts, reports, routes, scanner, stock_movements, ui, woocommerce
 from app.core.config import get_settings
-from app.services.woocommerce_order_reconciliation import reconciliation_should_start, run_order_reconciliation_scheduler
-from app.services.woocommerce_stock_sync_jobs import run_stock_sync_job_scheduler, stock_sync_scheduler_should_start
 from app.services.auth import require_authenticated_user
 
 logger = logging.getLogger("pongo.http")
@@ -25,34 +21,9 @@ if not logger.handlers:
 logger.propagate = False
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    settings = get_settings()
-    stop_event = asyncio.Event()
-    task = None
-    stock_sync_task = None
-    if reconciliation_should_start(settings):
-        task = asyncio.create_task(run_order_reconciliation_scheduler(settings, stop_event))
-    if stock_sync_scheduler_should_start(settings):
-        stock_sync_task = asyncio.create_task(run_stock_sync_job_scheduler(settings, stop_event))
-    app.state.order_reconciliation_task = task
-    app.state.stock_sync_task = stock_sync_task
-    try:
-        yield
-    finally:
-        if task is not None:
-            stop_event.set()
-            await task
-        if stock_sync_task is not None:
-            stop_event.set()
-            await stock_sync_task
-        app.state.order_reconciliation_task = None
-        app.state.stock_sync_task = None
-
-
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="Pongo Inventory OS API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Pongo Inventory OS API", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

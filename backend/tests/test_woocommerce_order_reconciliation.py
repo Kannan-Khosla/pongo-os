@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import Base
-from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun
+from app.models.woocommerce import WooCommerceSyncRun
 from app.services.woocommerce_client import WooCommerceClientError
 from app.services.woocommerce_order_reconciliation import (
     DEFAULT_STATUSES,
@@ -23,7 +23,7 @@ def reconciliation_settings(**overrides):
         "woocommerce_consumer_secret": "cs_placeholder",
         "woocommerce_read_enabled": True,
         "woocommerce_order_reconciliation_enabled": True,
-        "woocommerce_order_reconciliation_interval_seconds": 60,
+        "woocommerce_order_reconciliation_interval_seconds": 120,
         "woocommerce_order_reconciliation_stale_after_seconds": 300,
         "woocommerce_order_reconciliation_lookback_hours": 168,
         "order_reconciliation_statuses": DEFAULT_STATUSES,
@@ -62,11 +62,14 @@ def test_scheduler_fetches_all_active_orders_and_recent_terminal_changes():
         def __init__(self):
             self.calls = []
 
-        def fetch_all_orders(self, **kwargs):
+        def list_orders(self, **kwargs):
             self.calls.append(kwargs)
-            if kwargs.get("modified_after"):
+            if kwargs["status"] == "cancelled" and kwargs["page"] == 1:
                 return [{**remote_order(999), "status": "cancelled"}]
-            return [remote_order(order_id) for order_id in range(1, 121)]
+            if kwargs["status"] != "processing":
+                return []
+            start = (kwargs["page"] - 1) * kwargs["per_page"] + 1
+            return [remote_order(order_id) for order_id in range(start, min(start + kwargs["per_page"], 121))]
 
     fake = Client()
     result = run_order_reconciliation_once(
@@ -77,12 +80,10 @@ def test_scheduler_fetches_all_active_orders_and_recent_terminal_changes():
 
     assert result["status"] == "completed"
     assert result["total_remote_records"] == 121
-    assert len(fake.calls) == 2
-    active_call, terminal_call = fake.calls
-    assert active_call == {"statuses": ["processing", "on-hold", "pending"], "limit": None}
-    assert {"completed", "failed", "cancelled", "refunded"} <= set(terminal_call["statuses"])
-    assert terminal_call["limit"] is None
-    assert terminal_call["modified_after"].endswith("Z")
+    assert all(call["per_page"] == 25 for call in fake.calls)
+    assert all(call["modified_after"] is None for call in fake.calls if call["status"] in {"processing", "on-hold", "pending"})
+    assert all(call["modified_after"].endswith("Z") for call in fake.calls if call["status"] in {"completed", "failed", "cancelled", "refunded"})
+    assert [call["page"] for call in fake.calls if call["status"] == "processing"] == [1, 2, 3, 4, 5]
     with factory() as db:
         health = reconciliation_health(db, reconciliation_settings(), running=True)
         assert health["healthy"] is True
@@ -96,7 +97,7 @@ def test_scheduler_failure_is_durable_and_visible_in_health(caplog):
     class FailingClient:
         configured = True
 
-        def fetch_all_orders(self, **_kwargs):
+        def list_orders(self, **_kwargs):
             try:
                 raise RuntimeError("consumer_secret=must-not-reach-logs")
             except RuntimeError as error:
@@ -128,28 +129,27 @@ def test_health_reports_that_first_reconciliation_is_starting():
     assert health["message"] == "The first server order reconciliation is starting."
 
 
-def test_completed_with_errors_does_not_advance_success_cursor_and_reports_degraded_health():
+def test_completed_with_errors_advances_remote_cursor_and_reports_mapping_review():
     factory = session_factory()
     now = datetime.now(timezone.utc)
     with factory() as db:
         run = WooCommerceSyncRun(
-            sync_type="orders",
+            sync_type="order_job",
             status="completed_with_errors",
             started_at=now - timedelta(seconds=10),
             completed_at=now,
-            created_by="server-order-reconciliation",
             error_count=1,
+            notes="Order line needs mapping review.",
         )
         db.add(run)
-        db.flush()
-        db.add(WooCommerceSyncError(sync_run_id=run.id, error_message="Order line needs mapping review."))
         db.commit()
 
         health = reconciliation_health(db, reconciliation_settings(), running=True, now=now)
 
     assert health["healthy"] is False
     assert health["degraded"] is True
-    assert health["stale"] is True
+    assert health["stale"] is False
+    assert health["last_success_at"] == now
     assert health["last_error"] == "Order line needs mapping review."
 
 

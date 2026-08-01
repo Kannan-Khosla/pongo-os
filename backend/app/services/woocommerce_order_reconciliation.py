@@ -1,30 +1,29 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from sqlalchemy import select, text
+from sqlalchemy import case, select, text
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.db.session import SessionLocal
-from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun
+from app.models.woocommerce import WooCommerceSyncRun
+from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_client import WooCommerceClient
 from app.services.woocommerce_orders import commit_remote_order_records
-from app.services.operations_alerts import send_operations_alert
-from app.services.woocommerce_access import effective_woocommerce_settings
 
 logger = logging.getLogger(__name__)
 
 SCHEDULER_CREATED_BY = "server-order-reconciliation"
-POSTGRES_SCHEDULER_LOCK_KEY = int.from_bytes(b"PONGOREC", byteorder="big")
-SUCCESS_STATUSES = {"completed"}
+ORDER_JOB_SYNC_TYPE = "order_job"
+SUCCESS_STATUSES = {"completed", "completed_with_errors"}
 DEFAULT_STATUSES = ["processing", "on-hold", "pending", "completed", "failed", "cancelled", "refunded"]
 ACTIVE_STATUSES = {"processing", "on-hold", "pending"}
+BATCH_SIZE = 25
+POSTGRES_ORDER_JOB_QUEUE_LOCK_KEY = int.from_bytes(b"PONGOQOJ", byteorder="big")
 _PROCESS_LOCK = threading.Lock()
 
 
@@ -45,31 +44,122 @@ def reconciliation_should_start(settings: Any) -> bool:
     )
 
 
-async def run_order_reconciliation_scheduler(settings: Any, stop_event: asyncio.Event) -> None:
-    current_settings = settings
-    consecutive_failures = 0
-    while not stop_event.is_set():
-        interval = max(15, int(getattr(current_settings, "woocommerce_order_reconciliation_interval_seconds", 60)))
-        result = await asyncio.to_thread(run_order_reconciliation_once, current_settings)
-        if result.get("status") == "failed":
-            consecutive_failures += 1
-            threshold = int(getattr(current_settings, "operations_alert_failure_threshold", 3))
-            if consecutive_failures == threshold:
-                await asyncio.to_thread(
-                    send_operations_alert,
-                    current_settings,
-                    "woocommerce_order_reconciliation_failed",
-                    result.get("error") or "WooCommerce order reconciliation failed repeatedly.",
-                    consecutive_failures=consecutive_failures,
-                    sync_run_id=result.get("sync_run_id"),
-                )
-        elif result.get("status") not in {"skipped_overlap", "not_configured", "disabled"}:
-            consecutive_failures = 0
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=interval)
-        except TimeoutError:
-            pass
-        current_settings = get_settings()
+def enqueue_order_sync_job(
+    db: Session,
+    requested_by: str,
+    *,
+    automatic: bool = False,
+    now: datetime | None = None,
+) -> WooCommerceSyncRun:
+    current_time = as_utc(now or datetime.now(timezone.utc))
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": POSTGRES_ORDER_JOB_QUEUE_LOCK_KEY})
+    pending = db.scalars(
+        select(WooCommerceSyncRun)
+        .where(
+            WooCommerceSyncRun.sync_type == ORDER_JOB_SYNC_TYPE,
+            WooCommerceSyncRun.status.in_({"queued", "running"}),
+        )
+        .order_by(WooCommerceSyncRun.started_at, WooCommerceSyncRun.id)
+    ).first()
+    if pending is not None:
+        if not automatic and pending.status == "queued" and pending.created_by == SCHEDULER_CREATED_BY:
+            pending.created_by = requested_by[:120]
+            pending.notes = "Manual order fetch requested; this job has priority."
+            db.commit()
+            db.refresh(pending)
+        return pending
+
+    job = WooCommerceSyncRun(
+        sync_type=ORDER_JOB_SYNC_TYPE,
+        status="queued",
+        started_at=current_time,
+        created_by=SCHEDULER_CREATED_BY if automatic else requested_by[:120],
+        notes="Automatic two-minute reconciliation queued." if automatic else "Manual order fetch queued.",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def ensure_automatic_order_sync_job(db: Session, settings: Any, *, now: datetime | None = None) -> WooCommerceSyncRun | None:
+    settings = effective_woocommerce_settings(db, settings)
+    if not reconciliation_should_start(settings) or not reconciliation_is_configured(settings):
+        return None
+    current_time = as_utc(now or datetime.now(timezone.utc))
+    recover_stale_order_sync_jobs(db, settings, now=current_time)
+    pending = db.scalars(
+        select(WooCommerceSyncRun).where(
+            WooCommerceSyncRun.sync_type == ORDER_JOB_SYNC_TYPE,
+            WooCommerceSyncRun.status.in_({"queued", "running"}),
+        )
+    ).first()
+    if pending is not None:
+        return pending
+    latest = latest_scheduler_run(db)
+    interval = max(15, int(getattr(settings, "woocommerce_order_reconciliation_interval_seconds", 120)))
+    latest_at = run_time(latest)
+    if latest_at is not None and current_time - latest_at < timedelta(seconds=interval):
+        return None
+    return enqueue_order_sync_job(db, SCHEDULER_CREATED_BY, automatic=True, now=current_time)
+
+
+def recover_stale_order_sync_jobs(db: Session, settings: Any, *, now: datetime | None = None) -> int:
+    current_time = as_utc(now or datetime.now(timezone.utc))
+    stale_seconds = max(900, int(getattr(settings, "woocommerce_order_reconciliation_stale_after_seconds", 300)))
+    stale_before = current_time - timedelta(seconds=stale_seconds)
+    stale_jobs = list(
+        db.scalars(
+            select(WooCommerceSyncRun).where(
+                WooCommerceSyncRun.sync_type == ORDER_JOB_SYNC_TYPE,
+                WooCommerceSyncRun.status == "running",
+                WooCommerceSyncRun.started_at < stale_before,
+            )
+        ).all()
+    )
+    for job in stale_jobs:
+        job.status = "queued"
+        job.notes = "Recovered after the previous worker stopped before completing this job."
+    if stale_jobs:
+        db.commit()
+    return len(stale_jobs)
+
+
+def process_next_order_sync_job(
+    settings: Any,
+    *,
+    session_factory: Callable[[], Session] = SessionLocal,
+    client_factory: Callable[[Any], Any] = WooCommerceClient,
+) -> dict[str, Any] | None:
+    with session_factory() as db:
+        recover_stale_order_sync_jobs(db, settings)
+        priority = case((WooCommerceSyncRun.created_by == SCHEDULER_CREATED_BY, 1), else_=0)
+        statement = (
+            select(WooCommerceSyncRun)
+            .where(
+                WooCommerceSyncRun.sync_type == ORDER_JOB_SYNC_TYPE,
+                WooCommerceSyncRun.status == "queued",
+            )
+            .order_by(priority, WooCommerceSyncRun.started_at, WooCommerceSyncRun.id)
+        )
+        if db.get_bind().dialect.name == "postgresql":
+            statement = statement.with_for_update(skip_locked=True)
+        job = db.scalars(statement).first()
+        if job is None:
+            return None
+        job.status = "running"
+        job.started_at = datetime.now(timezone.utc)
+        job.completed_at = None
+        job.notes = "WooCommerce order fetch is running."
+        job_id = job.id
+        db.commit()
+    return run_order_reconciliation_once(
+        settings,
+        session_factory=session_factory,
+        client_factory=client_factory,
+        job_id=job_id,
+    )
 
 
 def run_order_reconciliation_once(
@@ -78,6 +168,7 @@ def run_order_reconciliation_once(
     session_factory: Callable[[], Session] = SessionLocal,
     client_factory: Callable[[Any], Any] = WooCommerceClient,
     now: datetime | None = None,
+    job_id: int | None = None,
 ) -> dict[str, Any]:
     if not getattr(settings, "woocommerce_order_reconciliation_enabled", False):
         return {"status": "disabled"}
@@ -86,74 +177,131 @@ def run_order_reconciliation_once(
     if not _PROCESS_LOCK.acquire(blocking=False):
         return {"status": "skipped_overlap"}
 
-    try:
-        db = session_factory()
-    except Exception as error:
-        _PROCESS_LOCK.release()
-        logger.exception("Could not open a database session for WooCommerce order reconciliation.")
-        return {"status": "failed", "sync_run_id": None, "error": str(error)[:1000]}
-    lease_acquired = False
     started_at = as_utc(now or datetime.now(timezone.utc))
     try:
-        settings = effective_woocommerce_settings(db, settings)
-        if not reconciliation_is_configured(settings):
-            return {"status": "not_configured"}
-        lease_acquired = acquire_scheduler_lease(db)
-        if not lease_acquired:
-            db.rollback()
-            return {"status": "skipped_overlap"}
+        with session_factory() as db:
+            effective_settings = effective_woocommerce_settings(db, settings)
+            if not reconciliation_is_configured(effective_settings):
+                if job_id is not None:
+                    finish_order_sync_job(db, job_id, "failed", notes="WooCommerce credentials are not configured.")
+                return {"status": "not_configured", "sync_run_id": job_id}
+            if job_id is None:
+                job = WooCommerceSyncRun(
+                    sync_type=ORDER_JOB_SYNC_TYPE,
+                    status="running",
+                    started_at=started_at,
+                    created_by=SCHEDULER_CREATED_BY,
+                    notes="WooCommerce order fetch is running.",
+                )
+                db.add(job)
+                db.commit()
+                db.refresh(job)
+                job_id = job.id
+            else:
+                job = db.get(WooCommerceSyncRun, job_id)
+                if job is None:
+                    return {"status": "failed", "sync_run_id": job_id, "error": "Order sync job was not found."}
+            requested_by = job.created_by or SCHEDULER_CREATED_BY
+            previous_success = latest_scheduler_run(db, SUCCESS_STATUSES, exclude_id=job.id)
+            modified_after = reconciliation_cursor(effective_settings, started_at, previous_success)
+            statuses = list(getattr(effective_settings, "order_reconciliation_statuses", None) or DEFAULT_STATUSES)
+            force_active = requested_by != SCHEDULER_CREATED_BY or previous_success is None
 
-        last_success = latest_scheduler_run(db, SUCCESS_STATUSES)
-        modified_after = reconciliation_cursor(settings, started_at, last_success)
-        statuses = list(getattr(settings, "order_reconciliation_statuses", None) or DEFAULT_STATUSES)
-        active_statuses = [status for status in statuses if status in ACTIVE_STATUSES]
-        recently_changed_statuses = [status for status in statuses if status not in ACTIVE_STATUSES]
-        client = client_factory(settings)
-        remote_by_id: dict[int, dict[str, Any]] = {}
-        if active_statuses:
-            for order in client.fetch_all_orders(statuses=active_statuses, limit=None):
-                remote_by_id[int(order["id"])] = order
-        if recently_changed_statuses:
-            for order in client.fetch_all_orders(
-                statuses=recently_changed_statuses,
-                limit=None,
-                modified_after=modified_after.isoformat().replace("+00:00", "Z"),
-            ):
-                # The terminal query runs second so a cancellation/refund that
-                # races the active-order query wins this reconciliation pass.
-                remote_by_id[int(order["id"])] = order
-        sync_run, summary = commit_remote_order_records(
-            db,
-            list(remote_by_id.values()),
-            statuses,
-            SCHEDULER_CREATED_BY,
-        )
-        return {
-            "status": sync_run.status,
-            "sync_run_id": sync_run.id,
-            "total_remote_records": sync_run.total_remote_records,
+        client = client_factory(effective_settings)
+        totals = {
+            "total_remote_records": 0,
+            "created_count": 0,
+            "updated_count": 0,
+            "matched_count": 0,
+            "skipped_count": 0,
+            "conflict_count": 0,
+            "error_count": 0,
         }
+        batch_count = 0
+        cursor_value = modified_after.isoformat().replace("+00:00", "Z")
+        for status in statuses:
+            page = 1
+            status_cursor = None if status in ACTIVE_STATUSES and force_active else cursor_value
+            while True:
+                remote_orders = client.list_orders(
+                    page=page,
+                    per_page=BATCH_SIZE,
+                    status=status,
+                    modified_after=status_cursor,
+                )
+                if not remote_orders:
+                    break
+                with session_factory() as db:
+                    sync_run, _summary = commit_remote_order_records(
+                        db,
+                        remote_orders,
+                        statuses,
+                        requested_by,
+                    )
+                    for key in totals:
+                        totals[key] += int(getattr(sync_run, key))
+                batch_count += 1
+                if len(remote_orders) < BATCH_SIZE:
+                    break
+                page += 1
+
+        final_status = "completed_with_errors" if totals["conflict_count"] or totals["error_count"] else "completed"
+        with session_factory() as db:
+            job = db.get(WooCommerceSyncRun, job_id)
+            if job is None:
+                raise RuntimeError("Order sync job disappeared before completion.")
+            for key, value in totals.items():
+                setattr(job, key, value)
+            job.status = final_status
+            job.completed_at = datetime.now(timezone.utc)
+            job.notes = f"Remote scan completed in {batch_count} batch(es); local mapping issues remain visible on affected orders."
+            db.commit()
+            db.refresh(job)
+            return {
+                "status": job.status,
+                "sync_run_id": job.id,
+                "total_remote_records": job.total_remote_records,
+                "error_count": job.error_count,
+            }
     except Exception as error:
-        db.rollback()
         message = str(error)[:1000] or error.__class__.__name__
-        failed_run = safe_record_failure(db, started_at, message)
         logger.error("WooCommerce server order reconciliation failed: %s", message)
-        return {"status": "failed", "sync_run_id": failed_run.id if failed_run else None, "error": message}
-    finally:
-        try:
-            release_scheduler_lease(db, lease_acquired)
-        finally:
+        if job_id is not None:
             try:
-                db.close()
-            finally:
-                _PROCESS_LOCK.release()
+                with session_factory() as db:
+                    finish_order_sync_job(db, job_id, "failed", notes=message, error_count=1)
+            except Exception:
+                logger.exception("Could not persist the WooCommerce order reconciliation failure.")
+        return {"status": "failed", "sync_run_id": job_id, "error": message}
+    finally:
+        _PROCESS_LOCK.release()
+
+
+def finish_order_sync_job(
+    db: Session,
+    job_id: int,
+    status: str,
+    *,
+    notes: str,
+    error_count: int = 0,
+) -> WooCommerceSyncRun | None:
+    job = db.get(WooCommerceSyncRun, job_id)
+    if job is None:
+        return None
+    job.status = status
+    job.completed_at = datetime.now(timezone.utc)
+    job.error_count = error_count
+    job.notes = notes[:1000]
+    db.commit()
+    db.refresh(job)
+    return job
 
 
 def reconciliation_health(db: Session, settings: Any, *, running: bool = False, now: datetime | None = None) -> dict[str, Any]:
     enabled = bool(getattr(settings, "woocommerce_order_reconciliation_enabled", False))
     configured = reconciliation_is_configured(settings)
     read_enabled = bool(getattr(settings, "woocommerce_read_enabled", True))
-    interval = max(15, int(getattr(settings, "woocommerce_order_reconciliation_interval_seconds", 60)))
+    interval = max(15, int(getattr(settings, "woocommerce_order_reconciliation_interval_seconds", 120)))
     stale_after = max(interval * 2, int(getattr(settings, "woocommerce_order_reconciliation_stale_after_seconds", 300)))
     latest_attempt = latest_scheduler_run(db)
     latest_success = latest_scheduler_run(db, SUCCESS_STATUSES)
@@ -164,7 +312,6 @@ def reconciliation_health(db: Session, settings: Any, *, running: bool = False, 
     latest_attempt_failed = bool(latest_attempt and latest_attempt.status == "failed")
     degraded = bool(latest_attempt and latest_attempt.status == "completed_with_errors")
     healthy = bool(enabled and configured and read_enabled and running and not stale and not latest_attempt_failed and not degraded)
-    latest_attempt_error = latest_sync_error(db, latest_attempt)
 
     if not enabled:
         message = "Server order reconciliation is disabled."
@@ -172,14 +319,16 @@ def reconciliation_health(db: Session, settings: Any, *, running: bool = False, 
         message = "Server order reconciliation is waiting for WooCommerce credentials."
     elif not read_enabled:
         message = "Server order reconciliation cannot run while WooCommerce reads are disabled."
-    elif not running:
-        message = "Server order reconciliation is not running."
     elif latest_attempt is None:
         message = "The first server order reconciliation is starting."
     elif latest_attempt_failed:
         message = "The last server order reconciliation failed."
+    elif latest_attempt.status == "queued":
+        message = "Order fetch is queued and waiting for the WooCommerce worker."
+    elif not running:
+        message = "WooCommerce worker has no recent heartbeat."
     elif degraded:
-        message = f"The last server order reconciliation completed with {latest_attempt.error_count} issue(s)."
+        message = f"Order fetch succeeded; {latest_attempt.error_count} local mapping issue(s) need review."
     elif stale:
         message = "Server order reconciliation is stale."
     else:
@@ -199,84 +348,42 @@ def reconciliation_health(db: Session, settings: Any, *, running: bool = False, 
         "last_attempt_at": run_time(latest_attempt),
         "last_success_at": success_at,
         "last_failure_at": run_time(latest_failure),
-        "last_error": latest_attempt_error or (latest_failure.notes if latest_failure else None),
+        "last_error": latest_attempt.notes if latest_attempt_failed or degraded else (latest_failure.notes if latest_failure else None),
         "message": message,
     }
+
+
+def order_worker_is_recent(db: Session, settings: Any, *, now: datetime | None = None) -> bool:
+    latest = latest_scheduler_run(db)
+    if latest is None:
+        return False
+    current_time = as_utc(now or datetime.now(timezone.utc))
+    stale_after = max(
+        int(getattr(settings, "woocommerce_order_reconciliation_interval_seconds", 120)) * 3,
+        int(getattr(settings, "woocommerce_order_reconciliation_stale_after_seconds", 300)),
+    )
+    return latest.status in {"running", *SUCCESS_STATUSES} and current_time - as_utc(latest.started_at) <= timedelta(seconds=stale_after)
 
 
 def reconciliation_cursor(settings: Any, now: datetime, last_success: WooCommerceSyncRun | None) -> datetime:
     fallback = now - timedelta(hours=max(1, int(getattr(settings, "woocommerce_order_reconciliation_lookback_hours", 168))))
     if last_success is None:
         return fallback
-    return max(fallback, run_time(last_success) - timedelta(minutes=5))
+    return max(fallback, as_utc(last_success.started_at) - timedelta(seconds=1))
 
 
-def latest_scheduler_run(db: Session, statuses: set[str] | None = None) -> WooCommerceSyncRun | None:
-    statement = select(WooCommerceSyncRun).where(
-        WooCommerceSyncRun.sync_type == "orders",
-        WooCommerceSyncRun.created_by == SCHEDULER_CREATED_BY,
-    )
+def latest_scheduler_run(
+    db: Session,
+    statuses: set[str] | None = None,
+    *,
+    exclude_id: int | None = None,
+) -> WooCommerceSyncRun | None:
+    statement = select(WooCommerceSyncRun).where(WooCommerceSyncRun.sync_type == ORDER_JOB_SYNC_TYPE)
     if statuses:
         statement = statement.where(WooCommerceSyncRun.status.in_(statuses))
+    if exclude_id is not None:
+        statement = statement.where(WooCommerceSyncRun.id != exclude_id)
     return db.scalars(statement.order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())).first()
-
-
-def latest_sync_error(db: Session, sync_run: WooCommerceSyncRun | None) -> str | None:
-    if sync_run is None:
-        return None
-    error = db.scalars(
-        select(WooCommerceSyncError)
-        .where(WooCommerceSyncError.sync_run_id == sync_run.id)
-        .order_by(WooCommerceSyncError.created_at.desc(), WooCommerceSyncError.id.desc())
-    ).first()
-    return error.error_message if error else sync_run.notes
-
-
-def record_failure(db: Session, started_at: datetime, message: str) -> WooCommerceSyncRun:
-    safe_message = message[:1000] or "WooCommerce order reconciliation failed."
-    sync_run = WooCommerceSyncRun(
-        sync_type="orders",
-        status="failed",
-        started_at=started_at,
-        completed_at=datetime.now(timezone.utc),
-        created_by=SCHEDULER_CREATED_BY,
-        error_count=1,
-        notes=safe_message,
-    )
-    db.add(sync_run)
-    db.flush()
-    db.add(WooCommerceSyncError(sync_run_id=sync_run.id, error_message=safe_message))
-    db.commit()
-    db.refresh(sync_run)
-    return sync_run
-
-
-def safe_record_failure(db: Session, started_at: datetime, message: str) -> WooCommerceSyncRun | None:
-    try:
-        return record_failure(db, started_at, message)
-    except Exception:
-        db.rollback()
-        logger.exception("Could not persist the WooCommerce order reconciliation failure.")
-        return None
-
-
-def acquire_scheduler_lease(db: Session) -> bool:
-    if db.get_bind().dialect.name != "postgresql":
-        return True
-    return bool(db.scalar(text("SELECT pg_try_advisory_lock(:lock_key)"), {"lock_key": POSTGRES_SCHEDULER_LOCK_KEY}))
-
-
-def release_scheduler_lease(db: Session, acquired: bool) -> None:
-    if not acquired:
-        return
-    try:
-        if db.get_bind().dialect.name != "postgresql":
-            return
-        db.execute(text("SELECT pg_advisory_unlock(:lock_key)"), {"lock_key": POSTGRES_SCHEDULER_LOCK_KEY})
-        db.commit()
-    except Exception:
-        db.rollback()
-        logger.exception("Could not release the WooCommerce order reconciliation scheduler lease.")
 
 
 def run_time(sync_run: WooCommerceSyncRun | None) -> datetime | None:

@@ -339,10 +339,10 @@ async def run_stock_sync_job_scheduler(settings: Settings, stop_event: asyncio.E
         current_settings = get_settings()
 
 
-def stock_sync_worker_health(settings: Settings, *, running: bool) -> dict:
+def stock_sync_worker_health(settings: Settings, *, running: bool, external_heartbeat: bool = False) -> dict:
     last_success = _worker_health["last_success_at"]
     stale_after = max(settings.woocommerce_stock_sync_job_interval_seconds * 3, 30)
-    stale = last_success is None or (datetime.now(timezone.utc) - last_success).total_seconds() > stale_after
+    stale = not external_heartbeat and (last_success is None or (datetime.now(timezone.utc) - last_success).total_seconds() > stale_after)
     healthy = bool(settings.woocommerce_stock_sync_jobs_enabled and running and not stale and _worker_health["error_count"] < settings.operations_alert_failure_threshold)
     if healthy:
         message = "WooCommerce stock-sync worker is healthy."

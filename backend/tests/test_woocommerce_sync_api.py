@@ -357,7 +357,7 @@ def test_woocommerce_configuration_never_reuses_credentials_across_hosts_without
 
 def test_woocommerce_configuration_response_never_exposes_keys(client, monkeypatch):
     saved_options = {}
-    initial_syncs = []
+    queued_syncs = []
     settings = Settings(
         _env_file=None,
         woocommerce_base_url="https://store.example",
@@ -370,7 +370,7 @@ def test_woocommerce_configuration_response_never_exposes_keys(client, monkeypat
         return settings
 
     monkeypatch.setattr("app.api.routes.woocommerce.save_woocommerce_configuration", save_configuration)
-    monkeypatch.setattr("app.api.routes.woocommerce.initial_order_sync", lambda saved_settings, actor: initial_syncs.append((saved_settings, actor)))
+    monkeypatch.setattr("app.api.routes.woocommerce.enqueue_order_sync_job", lambda _db, actor: queued_syncs.append(actor))
 
     response = client.post(
         "/api/integrations/woocommerce/configuration",
@@ -385,7 +385,7 @@ def test_woocommerce_configuration_response_never_exposes_keys(client, monkeypat
     assert response.status_code == 200
     assert response.json()["connected"] is True
     assert saved_options["allow_host_change"] is True
-    assert initial_syncs == [(settings, "pytest@example.com")]
+    assert queued_syncs == ["pytest@example.com:configuration"]
     assert "ck_private" not in response.text
     assert "cs_private" not in response.text
 
@@ -404,7 +404,6 @@ def test_frontend_configuration_endpoint_persists_for_backend_status(client, mon
     monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: settings)
     monkeypatch.setattr("app.services.woocommerce_configuration.get_settings", lambda: settings)
     monkeypatch.setattr("app.services.woocommerce_client.WooCommerceClient.check_connection", lambda _self: None)
-    monkeypatch.setattr("app.api.routes.woocommerce.initial_order_sync", lambda *_args: None)
 
     response = client.post(
         "/api/integrations/woocommerce/configuration",
@@ -424,6 +423,18 @@ def test_frontend_configuration_endpoint_persists_for_backend_status(client, mon
     assert status["base_url"] == "https://store.example"
     assert status["configuration_source"] == "pongo_database"
     assert status["configuration_updated_by"] == "pytest@example.com"
+
+
+def test_manual_order_fetch_is_queued_once(client):
+    first = client.post("/api/integrations/woocommerce/orders/fetch-now", json={})
+    second = client.post("/api/integrations/woocommerce/orders/fetch-now", json={})
+
+    assert first.status_code == 202
+    assert first.json()["status"] == "queued"
+    assert second.json()["id"] == first.json()["id"]
+    jobs = client.get("/api/integrations/woocommerce/orders/fetch-jobs").json()
+    assert jobs["total"] == 1
+    assert jobs["sync_runs"][0]["created_by"] == "pytest@example.com"
 
 
 def simple_product(**overrides):

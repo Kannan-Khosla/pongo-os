@@ -1,7 +1,6 @@
-import logging
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -49,7 +48,13 @@ from app.services.auth import authenticated_actor
 from app.services.woocommerce_access import change_access_mode, effective_woocommerce_settings, latest_access_mode_change
 from app.services.woocommerce_configuration import latest_woocommerce_configuration, save_woocommerce_configuration
 from app.services.woocommerce_orders import commit_order_sync, commit_recent_order_sync, preview_order_sync
-from app.services.woocommerce_order_reconciliation import reconciliation_health
+from app.services.woocommerce_order_reconciliation import (
+    ORDER_JOB_SYNC_TYPE,
+    enqueue_order_sync_job,
+    latest_scheduler_run,
+    order_worker_is_recent,
+    reconciliation_health,
+)
 from app.services.woocommerce_remap import commit_remap, deactivate_mapping, list_mappings, list_remap_candidates, mapping_to_read, preview_remap
 from app.services.woocommerce_sync import commit_product_sync, preview_product_sync
 from app.services.woocommerce_webhooks import (
@@ -76,25 +81,11 @@ from app.services.woocommerce_writeback import (
 from app.services.woocommerce_stock_sync_jobs import cancel_stock_sync_job, create_stock_sync_job, list_stock_sync_jobs, resume_stock_sync_job, stock_sync_job_read
 
 router = APIRouter(prefix="/integrations/woocommerce", tags=["woocommerce"])
-logger = logging.getLogger(__name__)
 
 
 def create_woocommerce_client() -> WooCommerceClient:
     with SessionLocal() as db:
         return WooCommerceClient(effective_woocommerce_settings(db, get_settings()))
-
-
-def initial_order_sync(settings, actor: str) -> None:
-    try:
-        with SessionLocal() as db:
-            commit_recent_order_sync(
-                db,
-                WooCommerceClient(settings),
-                WooCommerceOrderSyncRequest(limit=75, created_by=f"{actor}:configuration"[:120]),
-                per_status_limit=25,
-            )
-    except Exception:
-        logger.exception("Initial WooCommerce open-order sync failed after saving configuration.")
 
 
 @router.post("/access-mode", response_model=WooCommerceAccessModeResponse)
@@ -119,7 +110,6 @@ def update_woocommerce_access_mode(
 @router.post("/configuration", response_model=WooCommerceConfigurationResponse)
 def configure_woocommerce(
     payload: WooCommerceConfigurationRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     actor: str = Depends(authenticated_actor),
 ) -> WooCommerceConfigurationResponse:
@@ -136,7 +126,7 @@ def configure_woocommerce(
         raise HTTPException(status_code=422, detail=str(error)) from error
     except WooCommerceClientError as error:
         raise HTTPException(status_code=400, detail=f"WooCommerce connection failed: {error.message}") from error
-    background_tasks.add_task(initial_order_sync, settings, actor)
+    enqueue_order_sync_job(db, f"{actor}:configuration")
     client = WooCommerceClient(settings)
     return WooCommerceConfigurationResponse(
         connected=True,
@@ -144,20 +134,19 @@ def configure_woocommerce(
         base_url_host=client.base_url_host or "",
         consumer_key_present=True,
         consumer_secret_present=True,
-        message="WooCommerce credentials were verified and saved securely in Pongo. Initial open-order sync started.",
+        message="WooCommerce credentials were verified and saved securely in Pongo. Initial open-order sync was queued.",
     )
 
 
 @router.get("/status", response_model=WooCommerceStatusResponse)
-def woocommerce_status(request: Request, check: bool = False, db: Session = Depends(get_db)) -> WooCommerceStatusResponse:
+def woocommerce_status(check: bool = False, db: Session = Depends(get_db)) -> WooCommerceStatusResponse:
     settings = effective_woocommerce_settings(db, get_settings())
     client = WooCommerceClient(settings)
     base_url_present = bool(settings.woocommerce_base_url)
     consumer_key_present = bool(settings.woocommerce_consumer_key)
     consumer_secret_present = bool(settings.woocommerce_consumer_secret)
     configured = base_url_present and consumer_key_present and consumer_secret_present
-    scheduler_task = getattr(request.app.state, "order_reconciliation_task", None)
-    base_status = woo_status_payload(settings, client, db, scheduler_running=scheduler_task is not None and not scheduler_task.done())
+    base_status = woo_status_payload(settings, client, db, scheduler_running=order_worker_is_recent(db, settings))
     if not configured:
         return WooCommerceStatusResponse(
             **base_status,
@@ -233,6 +222,24 @@ def quick_sync_woocommerce_orders(payload: WooCommerceOrderSyncRequest | None = 
     return order_commit_response(sync_run, summary)
 
 
+@router.post("/orders/fetch-now", response_model=WooCommerceSyncRunRead, status_code=202)
+def fetch_woocommerce_orders_now(db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> WooCommerceSyncRunRead:
+    return sync_run_to_read(enqueue_order_sync_job(db, actor))
+
+
+@router.get("/orders/fetch-jobs", response_model=WooCommerceSyncRunListResponse)
+def list_woocommerce_order_fetch_jobs(limit: int = 20, db: Session = Depends(get_db)) -> WooCommerceSyncRunListResponse:
+    runs = list(
+        db.scalars(
+            select(WooCommerceSyncRun)
+            .where(WooCommerceSyncRun.sync_type == ORDER_JOB_SYNC_TYPE)
+            .order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())
+            .limit(max(1, min(limit, 100)))
+        ).all()
+    )
+    return WooCommerceSyncRunListResponse(sync_runs=[sync_run_to_read(run) for run in runs], total=len(runs))
+
+
 @router.post("/webhooks/orders", response_model=WooCommerceWebhookDeliveryResponse)
 async def receive_woocommerce_order_webhook(request: Request, db: Session = Depends(get_db)) -> WooCommerceWebhookDeliveryResponse:
     settings = effective_woocommerce_settings(db, get_settings())
@@ -296,6 +303,8 @@ def list_sync_runs(
     statement = select(WooCommerceSyncRun).order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())
     if sync_type:
         statement = statement.where(WooCommerceSyncRun.sync_type == sync_type)
+    else:
+        statement = statement.where(WooCommerceSyncRun.sync_type != ORDER_JOB_SYNC_TYPE)
     if status:
         statement = statement.where(WooCommerceSyncRun.status == status)
     if date_from:
@@ -556,7 +565,7 @@ def woo_status_payload(settings, client: WooCommerceClient, db: Session, *, sche
     access_change = latest_access_mode_change(db)
     saved_configuration = latest_woocommerce_configuration(db)
     last_product_sync = latest_sync(db, "products")
-    last_order_sync = latest_sync(db, "orders")
+    last_order_sync = latest_scheduler_run(db) or latest_sync(db, "orders")
     latest_error = db.scalars(select(WooCommerceSyncError).order_by(WooCommerceSyncError.created_at.desc(), WooCommerceSyncError.id.desc())).first()
     latest_webhook = db.scalars(select(WooCommerceWebhookDelivery).order_by(WooCommerceWebhookDelivery.received_at.desc(), WooCommerceWebhookDelivery.id.desc())).first()
     return {

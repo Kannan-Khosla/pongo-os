@@ -354,21 +354,26 @@ non-processing snapshots do not reserve new stock and do not appear in Open
 Orders, Allocate, or Pick Orders. They can still feed sync history, the Business
 Dashboard, and Pongo Insights.
 
-The backend owns periodic order reconciliation. It is enabled by default when
-WooCommerce credentials and reads are configured, runs every 60 seconds, and
-fetches every page of active processing/on-hold/pending orders on every pass.
-It separately fetches terminal orders modified since the last successful run
-with a five-minute overlap. The default terminal set includes completed,
-failed, cancelled, and refunded orders. A PostgreSQL advisory lease prevents
-multiple web workers from running the job at once.
+The dedicated worker dyno owns periodic order reconciliation. It is enabled by
+default when WooCommerce reads are configured and queues a pass every 120
+seconds. The first pass and manual fetches read every active order; later
+automatic passes request only orders modified since the previous remote scan.
+Active and terminal statuses are committed in batches of 25, so a large Woo
+history never lives in web-dyno memory. The default terminal set includes
+completed, failed, cancelled, and refunded orders.
 
-Every scheduler attempt is stored in the existing WooCommerce sync ledger.
+Every worker attempt is stored in the existing WooCommerce sync ledger.
 `GET /api/integrations/woocommerce/status` exposes whether the scheduler is
 running, healthy, stale, or degraded, plus its last attempt, success, failure,
 error count, and safe error message. `completed_with_errors` advances the
 modified-time cursor but remains degraded until a clean pass succeeds.
 Before the first ledger entry is committed, status reports that the first
 reconciliation is starting instead of incorrectly calling it stale.
+
+`POST /api/integrations/woocommerce/orders/fetch-now` queues one priority
+manual pass. Duplicate clicks reuse the queued/running job. The worker checks
+the queue every five seconds and restarts its Python interpreter after every
+order or stock job to return retained memory to the dyno.
 
 The browser no longer posts `orders/quick-sync` on a timer. It may refresh local
 Pongo order views with GET requests, while the signed webhooks and server job

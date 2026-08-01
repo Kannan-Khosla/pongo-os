@@ -1,6 +1,6 @@
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -13,7 +13,7 @@ from app.models.orders import Order, OrderItem
 from app.schemas.health import HealthResponse, ReadinessCheck, ReadinessResponse
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.woocommerce_access import effective_woocommerce_settings
-from app.services.woocommerce_order_reconciliation import reconciliation_health
+from app.services.woocommerce_order_reconciliation import order_worker_is_recent, reconciliation_health
 from app.services.woocommerce_webhooks import webhook_is_configured
 from app.services.woocommerce_stock_sync_jobs import stock_sync_worker_health, unresolved_stock_sync_job_count
 
@@ -26,7 +26,7 @@ def health_check() -> HealthResponse:
 
 
 @router.get("/ready", response_model=ReadinessResponse)
-def readiness_check(request: Request, db: Session = Depends(get_db)) -> ReadinessResponse | JSONResponse:
+def readiness_check(db: Session = Depends(get_db)) -> ReadinessResponse | JSONResponse:
     settings = get_settings()
     checks: list[ReadinessCheck] = []
     db.scalar(select(1))
@@ -71,11 +71,8 @@ def readiness_check(request: Request, db: Session = Depends(get_db)) -> Readines
     ])
 
     if settings.app_env.casefold() == "production":
-        reconciliation_task = getattr(request.app.state, "order_reconciliation_task", None)
-        reconciliation_running = bool(reconciliation_task is not None and not reconciliation_task.done())
-        stock_task = getattr(request.app.state, "stock_sync_task", None)
-        stock_worker_running = bool(stock_task is not None and not stock_task.done())
-        checks.extend(production_checks(settings, db.get_bind().dialect.name, db, reconciliation_running, stock_worker_running))
+        worker_running = order_worker_is_recent(db, settings)
+        checks.extend(production_checks(settings, db.get_bind().dialect.name, db, worker_running, worker_running))
 
     response = ReadinessResponse(
         status="ready" if all(check.ready for check in checks) else "not_ready",
@@ -103,7 +100,7 @@ def production_checks(settings, dialect: str, db: Session, reconciliation_runnin
     reconciliation = reconciliation_health(db, settings, running=reconciliation_running)
     alert_url = urlparse(settings.operations_alert_webhook_url)
     alerts_ready = alert_url.scheme == "https" and bool(alert_url.netloc)
-    stock_worker = stock_sync_worker_health(settings, running=stock_worker_running)
+    stock_worker = stock_sync_worker_health(settings, running=stock_worker_running, external_heartbeat=stock_worker_running)
     unresolved_stock_jobs = unresolved_stock_sync_job_count(db)
     return [
         ReadinessCheck(name="postgresql", ready=dialect == "postgresql", message="Production must use PostgreSQL."),

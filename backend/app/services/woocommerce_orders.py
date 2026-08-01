@@ -8,7 +8,7 @@ from io import StringIO
 from typing import Any
 
 from sqlalchemy import select, text
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, defer, selectinload
 
 from app.core.config import get_settings
 from app.models.inventory import InventoryItem
@@ -219,7 +219,7 @@ def commit_remote_order_records(
         try:
             issue_messages: list[str] = []
             with db.begin_nested():
-                order = db.scalars(select(Order).where(Order.woo_order_id == record.woo_order_id).options(selectinload(Order.items))).one_or_none()
+                order = db.scalars(select(Order).where(Order.woo_order_id == record.woo_order_id).options(defer(Order.raw_woo_payload), selectinload(Order.items))).one_or_none()
                 is_new_order = order is None
                 preserve_local_workflow = order is not None and is_locally_terminal_order(order)
                 previous_woo_status = order.woo_status if order is not None else None
@@ -289,7 +289,7 @@ def commit_remote_order_records(
     )
     pick_ready_count = sum(
         1
-        for order in db.scalars(select(Order).where(Order.woo_status == "processing").options(selectinload(Order.items))).all()
+        for order in db.scalars(select(Order).where(Order.woo_status == "processing").options(defer(Order.raw_woo_payload), selectinload(Order.items))).all()
         if order.pick_status in {"ready_to_pick", "partially_picked", "picked"}
     )
     if fifo_summary["errors"]:
@@ -800,7 +800,7 @@ def list_open_orders(
     matched_status: str | None = None,
     workflow_view: str = "open",
 ) -> OpenOrderListResponse:
-    orders = list(db.scalars(select(Order).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.date_created.desc().nullslast(), Order.id.desc())).all())
+    orders = list(db.scalars(select(Order).options(defer(Order.raw_woo_payload), selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.date_created.desc().nullslast(), Order.id.desc())).all())
     for order in orders:
         sync_order_workflow_statuses(order)
     if workflow_view == "allocate":
@@ -836,7 +836,7 @@ def list_open_orders(
 
 
 def get_open_order_detail(db: Session, order_id: int) -> OpenOrderDetail | None:
-    order = db.scalars(select(Order).where(Order.id == order_id).options(selectinload(Order.items).selectinload(OrderItem.inventory_item))).one_or_none()
+    order = db.scalars(select(Order).where(Order.id == order_id).options(defer(Order.raw_woo_payload), selectinload(Order.items).selectinload(OrderItem.inventory_item))).one_or_none()
     if order is None:
         return None
     sync_order_workflow_statuses(order)

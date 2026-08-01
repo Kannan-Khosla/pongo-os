@@ -2510,22 +2510,38 @@ export default function App({ currentUser = null }) {
   }
 
   async function commitWooOrderSync() {
-    const confirmed = window.confirm('This imports WooCommerce orders into local Pongo OS and attempts safe local auto-allocation for active orders. It does not pick orders, update WooCommerce, create labels, routes, or notifications.');
+    const confirmed = window.confirm('Fetch WooCommerce order changes now? The dedicated worker imports them in safe batches and attempts local auto-allocation.');
     if (!confirmed) {
       return;
     }
     setWooLoading(true);
     setWooError('');
     try {
-      const result = await postJson('/api/integrations/woocommerce/orders/commit', { include_statuses: wooOrderSyncStatuses, limit: 500, created_by: 'system' });
-      setWooOrderCommitSummary(result);
+      const job = await postJson('/api/integrations/woocommerce/orders/fetch-now', {});
+      setWooOrderCommitSummary(job);
       await loadWooSyncRuns();
-      await loadOpenOrders();
-      await loadBusinessDashboard();
+      trackWooOrderFetchJob(job.id);
     } catch (error) {
-      setWooError(error.message || 'Unable to commit WooCommerce order sync.');
+      setWooError(error.message || 'Unable to queue the WooCommerce order fetch.');
     } finally {
       setWooLoading(false);
+    }
+  }
+
+  async function trackWooOrderFetchJob(jobId) {
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/sync-runs/${jobId}`);
+      if (!response.ok) throw new Error(`Order fetch job returned ${response.status}`);
+      const job = await response.json();
+      setWooOrderCommitSummary(job);
+      const terminal = ['completed', 'completed_with_errors', 'failed'].includes(job.status);
+      if (terminal) {
+        await Promise.all([loadWooStatus(false, { silent: true }), loadWooSyncRuns(), loadOpenOrders(), loadBusinessDashboard()]);
+      } else {
+        window.setTimeout(() => trackWooOrderFetchJob(jobId), 2000);
+      }
+    } catch (error) {
+      setWooError(error.message || 'Unable to read WooCommerce order fetch progress.');
     }
   }
 
@@ -7936,17 +7952,15 @@ function OrdersPage({
   }
 
   async function importOpenOrders() {
-    if (!window.confirm('Import the latest processing orders from WooCommerce into Pongo OS now?')) return;
+    if (!window.confirm('Fetch the latest WooCommerce order changes now?')) return;
     setBulkActionLoading(true);
     setBulkActionError('');
     setBulkActionMessage('');
     try {
-      const result = await postJson('/api/integrations/woocommerce/orders/quick-sync', {});
-      if (result.status === 'not_configured') throw new Error((result.errors || []).join(' ') || 'WooCommerce is not configured.');
-      setBulkActionMessage(`WooCommerce import complete: ${result.created_count ?? 0} created, ${result.updated_count ?? 0} updated.`);
-      await onLoadOpenOrders({});
+      const job = await postJson('/api/integrations/woocommerce/orders/fetch-now', {});
+      setBulkActionMessage(`WooCommerce fetch job #${job.id} is ${job.status}. Orders will refresh automatically when the worker finishes.`);
     } catch (importError) {
-      setBulkActionError(importError.message || 'Unable to import WooCommerce orders.');
+      setBulkActionError(importError.message || 'Unable to queue the WooCommerce order fetch.');
     } finally {
       setBulkActionLoading(false);
     }
@@ -10038,7 +10052,6 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
   const latestOrderRun = syncRuns.find((run) => run.sync_type === 'orders');
   const reconciliation = status.order_reconciliation || {};
   const commitDisabled = !status.configured || !preview || preview.error_count > 0;
-  const orderCommitDisabled = !status.configured || !orderPreview;
   const [connectionForm, setConnectionForm] = useState({ base_url: status.base_url || '', consumer_key: '', consumer_secret: '' });
   const [connectionMessage, setConnectionMessage] = useState('');
   const [hostChangeAuthorized, setHostChangeAuthorized] = useState(false);
@@ -10311,16 +10324,16 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
         <div className="panel-title">
           <div>
             <h2>WooCommerce Order Sync</h2>
-            <p>Imports WooCommerce order snapshots into Pongo OS. Open statuses become local open orders; completed, failed, cancelled, and refunded orders stay read-only snapshots.</p>
+            <p>Checks automatically every two minutes. Use Fetch Orders Now for an immediate priority job; the worker imports in memory-safe batches.</p>
           </div>
           <div className="button-row compact">
             <button className="primary-button" disabled={loading || !status.configured} onClick={onPreviewOrders} type="button">
               <Search size={17} />
               Preview Order Sync
             </button>
-            <button className="action-button" disabled={loading || orderCommitDisabled} onClick={onCommitOrders} type="button">
+            <button className="action-button" disabled={loading || !status.configured} onClick={onCommitOrders} type="button">
               <RefreshCw size={17} />
-              Commit Order Sync
+              Fetch Orders Now
             </button>
           </div>
         </div>
@@ -10349,9 +10362,14 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
           </div>
         )}
         {orderPreview && <WooOrderPreviewSummary preview={orderPreview} />}
-        {orderCommitSummary && (
+        {orderCommitSummary && ['queued', 'running'].includes(orderCommitSummary.status) && (
           <div className="success-strip">
-            Order sync run {orderCommitSummary.sync_run_id || 'not created'} finished with status {orderCommitSummary.status}. Created {orderCommitSummary.created_count}, updated {orderCommitSummary.updated_count}, skipped {orderCommitSummary.skipped_count}.
+            Order fetch job #{orderCommitSummary.id} is {orderCommitSummary.status}. You can leave this page; the worker continues in the background.
+          </div>
+        )}
+        {orderCommitSummary && !['queued', 'running'].includes(orderCommitSummary.status) && (
+          <div className="success-strip">
+            Order fetch job #{orderCommitSummary.id || orderCommitSummary.sync_run_id} finished with status {orderCommitSummary.status}. Created {orderCommitSummary.created_count}, updated {orderCommitSummary.updated_count}, skipped {orderCommitSummary.skipped_count}.
           </div>
         )}
       </div>

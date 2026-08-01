@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
 from sqlalchemy import func, select, text
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, defer, selectinload
 
 from app.models.allocations import Allocation, AllocationLine
 from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation
@@ -338,7 +338,7 @@ def auto_allocate_processing_orders_fifo(db: Session, source: str = "fifo-auto-a
         db.scalars(
             select(Order)
             .where(Order.woo_status == "processing")
-            .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
+            .options(defer(Order.raw_woo_payload), selectinload(Order.items).selectinload(OrderItem.inventory_item))
             .order_by(Order.date_created.asc().nulls_last(), Order.id.asc())
         ).all()
     )
