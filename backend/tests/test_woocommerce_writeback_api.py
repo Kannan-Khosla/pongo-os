@@ -98,6 +98,11 @@ def test_woocommerce_access_mode_is_audited_and_enforced(client, monkeypatch):
     assert status["dry_run"] is False
     assert status["stock_write_allowed"] is True
     assert status["order_status_write_allowed"] is True
+    assert status["product_metadata_write_allowed"] is False
+    assert status["customer_write_allowed"] is False
+    assert status["coupon_write_allowed"] is False
+    assert status["refund_write_allowed"] is False
+    assert status["delete_allowed"] is False
 
     db = next(app.dependency_overrides[get_db]())
     try:
