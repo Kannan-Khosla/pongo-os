@@ -19,6 +19,20 @@ class WooCommerceAccessModeChange(Base):
     )
 
 
+class WooCommerceConfiguration(Base):
+    __tablename__ = "woocommerce_configuration"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    base_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    allowed_host: Mapped[str] = mapped_column(String(255), nullable=False)
+    consumer_key_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    consumer_secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False, index=True)
+
+    __table_args__ = (CheckConstraint("id = 1", name="ck_woo_configuration_singleton"),)
+
+
 class WooCommerceSyncRun(Base):
     __tablename__ = "woocommerce_sync_runs"
 

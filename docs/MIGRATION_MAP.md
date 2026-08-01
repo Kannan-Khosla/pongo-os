@@ -12,13 +12,14 @@ This document maps possible legacy WordPress plugin concepts to the new standalo
 | WooCommerce stock APIs in PHP | Backend WooCommerce REST calls |
 | Plugin audit rows | `stock_movements` table |
 | WordPress AJAX handlers | FastAPI endpoints |
-| Plugin settings page | Backend-managed settings and environment variables |
+| Plugin settings page | Authenticated Pongo settings backed by encrypted PostgreSQL values |
 | WordPress cron | Backend scheduled jobs or Heroku scheduler |
 
 ## Rebuild Principles
 
 - Rebuild concepts, not WordPress implementation details.
-- Keep WooCommerce credentials in backend environment variables.
+- Keep WooCommerce credentials encrypted and backend-only; keep only the
+  encryption key in deployment environment variables.
 - Preserve useful Pongo workflows and terminology.
 - Use PostgreSQL relationships rather than WordPress-specific data access.
 - Keep stock changes audited through `stock_movements`.

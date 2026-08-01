@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.models.woocommerce import WooCommerceAccessModeChange
+from app.services.woocommerce_configuration import settings_with_persisted_woocommerce_configuration
 
 READ_ONLY = "read_only"
 READ_WRITE = "read_write"
@@ -18,7 +19,7 @@ def latest_access_mode_change(db: Session) -> WooCommerceAccessModeChange | None
 
 
 def effective_woocommerce_settings(db: Session, settings: Settings | None = None) -> Settings:
-    current = settings or get_settings()
+    current = settings_with_persisted_woocommerce_configuration(db, settings or get_settings())
     if not hasattr(current, "model_copy"):
         return current
     change = latest_access_mode_change(db)

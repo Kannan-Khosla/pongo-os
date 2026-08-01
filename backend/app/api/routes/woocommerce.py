@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun, WooCommerceWebhookDelivery
 from app.schemas.woocommerce import (
     WooRemapCandidateListResponse,
@@ -46,7 +46,7 @@ from app.schemas.woocommerce import (
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.auth import authenticated_actor
 from app.services.woocommerce_access import change_access_mode, effective_woocommerce_settings, latest_access_mode_change
-from app.services.woocommerce_configuration import save_woocommerce_configuration
+from app.services.woocommerce_configuration import latest_woocommerce_configuration, save_woocommerce_configuration
 from app.services.woocommerce_orders import commit_order_sync, commit_recent_order_sync, preview_order_sync
 from app.services.woocommerce_order_reconciliation import reconciliation_health
 from app.services.woocommerce_remap import commit_remap, deactivate_mapping, list_mappings, list_remap_candidates, mapping_to_read, preview_remap
@@ -78,7 +78,8 @@ router = APIRouter(prefix="/integrations/woocommerce", tags=["woocommerce"])
 
 
 def create_woocommerce_client() -> WooCommerceClient:
-    return WooCommerceClient(get_settings())
+    with SessionLocal() as db:
+        return WooCommerceClient(effective_woocommerce_settings(db, get_settings()))
 
 
 @router.post("/access-mode", response_model=WooCommerceAccessModeResponse)
@@ -101,13 +102,19 @@ def update_woocommerce_access_mode(
 
 
 @router.post("/configuration", response_model=WooCommerceConfigurationResponse)
-def configure_woocommerce(payload: WooCommerceConfigurationRequest) -> WooCommerceConfigurationResponse:
+def configure_woocommerce(
+    payload: WooCommerceConfigurationRequest,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> WooCommerceConfigurationResponse:
     try:
         settings = save_woocommerce_configuration(
             payload.base_url,
             payload.consumer_key,
             payload.consumer_secret,
             allow_host_change=payload.allow_host_change,
+            db=db,
+            changed_by=actor,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -120,7 +127,7 @@ def configure_woocommerce(payload: WooCommerceConfigurationRequest) -> WooCommer
         base_url_host=client.base_url_host or "",
         consumer_key_present=True,
         consumer_secret_present=True,
-        message="WooCommerce credentials were verified and saved in the backend environment.",
+        message="WooCommerce credentials were verified and saved securely in Pongo.",
     )
 
 
@@ -211,7 +218,7 @@ def quick_sync_woocommerce_orders(payload: WooCommerceOrderSyncRequest | None = 
 
 @router.post("/webhooks/orders", response_model=WooCommerceWebhookDeliveryResponse)
 async def receive_woocommerce_order_webhook(request: Request, db: Session = Depends(get_db)) -> WooCommerceWebhookDeliveryResponse:
-    settings = get_settings()
+    settings = effective_woocommerce_settings(db, get_settings())
     max_body_bytes = max(1, min(int(getattr(settings, "woocommerce_webhook_max_body_bytes", 1_048_576)), 10_485_760))
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > max_body_bytes:
@@ -419,7 +426,7 @@ def writeback_order_status_preview(payload: WooWritebackOrderStatusPreviewReques
 @router.post("/writeback/queue", response_model=WooWritebackQueueRead)
 def writeback_queue_create(payload: WooWritebackQueueCreateRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> WooWritebackQueueRead:
     try:
-        row = create_queue_item(db, get_settings(), payload.model_copy(update={"requested_by": actor}))
+        row = create_queue_item(db, effective_woocommerce_settings(db, get_settings()), payload.model_copy(update={"requested_by": actor}))
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return queue_to_read(row)
@@ -465,7 +472,8 @@ def writeback_queue_approve(queue_id: int, db: Session = Depends(get_db), actor:
 
 @router.post("/writeback/queue/{queue_id}/send", response_model=WooWritebackQueueRead)
 def writeback_queue_send(queue_id: int, db: Session = Depends(get_db)) -> WooWritebackQueueRead:
-    row = send_queue_item(db, create_woocommerce_client(), effective_woocommerce_settings(db, get_settings()), queue_id)
+    settings = effective_woocommerce_settings(db, get_settings())
+    row = send_queue_item(db, create_woocommerce_client(), settings, queue_id)
     if row is None:
         raise HTTPException(status_code=404, detail="WooCommerce writeback queue item not found")
     return queue_to_read(row)
@@ -474,7 +482,8 @@ def writeback_queue_send(queue_id: int, db: Session = Depends(get_db)) -> WooWri
 @router.post("/writeback/queue/{queue_id}/revalidate", response_model=WooWritebackQueueRead)
 def writeback_queue_revalidate(queue_id: int, db: Session = Depends(get_db)) -> WooWritebackQueueRead:
     try:
-        row = revalidate_queue_item(db, create_woocommerce_client(), effective_woocommerce_settings(db, get_settings()), queue_id)
+        settings = effective_woocommerce_settings(db, get_settings())
+        row = revalidate_queue_item(db, create_woocommerce_client(), settings, queue_id)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     if row is None:
@@ -528,6 +537,7 @@ def woo_status_payload(settings, client: WooCommerceClient, db: Session, *, sche
     host = client.base_url_host
     allowed_host = getattr(settings, "woocommerce_allowed_host", "")
     access_change = latest_access_mode_change(db)
+    saved_configuration = latest_woocommerce_configuration(db)
     last_product_sync = latest_sync(db, "products")
     last_order_sync = latest_sync(db, "orders")
     latest_error = db.scalars(select(WooCommerceSyncError).order_by(WooCommerceSyncError.created_at.desc(), WooCommerceSyncError.id.desc())).first()
@@ -539,6 +549,9 @@ def woo_status_payload(settings, client: WooCommerceClient, db: Session, *, sche
         "access_mode": "read_only" if getattr(settings, "woocommerce_read_only", True) else "read_write",
         "access_mode_updated_by": access_change.changed_by if access_change else None,
         "access_mode_updated_at": access_change.created_at if access_change else None,
+        "configuration_source": "pongo_database" if saved_configuration else "backend_environment",
+        "configuration_updated_by": saved_configuration.updated_by if saved_configuration else None,
+        "configuration_updated_at": saved_configuration.updated_at if saved_configuration else None,
         "read_enabled": getattr(settings, "woocommerce_read_enabled", True),
         "read_only": getattr(settings, "woocommerce_read_only", True),
         "writeback_enabled": getattr(settings, "woocommerce_writeback_enabled", False),

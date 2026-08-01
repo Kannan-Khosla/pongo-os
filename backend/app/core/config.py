@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     woocommerce_base_url: str = Field(default="", validation_alias=AliasChoices("WOOCOMMERCE_BASE_URL", "woocommerce_base_url"))
     woocommerce_consumer_key: str = Field(default="", validation_alias=AliasChoices("WOOCOMMERCE_CONSUMER_KEY", "woocommerce_consumer_key"))
     woocommerce_consumer_secret: str = Field(default="", validation_alias=AliasChoices("WOOCOMMERCE_CONSUMER_SECRET", "woocommerce_consumer_secret"))
+    woocommerce_configuration_encryption_key: str = Field(default="", validation_alias=AliasChoices("WOOCOMMERCE_CONFIGURATION_ENCRYPTION_KEY", "woocommerce_configuration_encryption_key"))
     woocommerce_environment: str = Field(default="development", validation_alias=AliasChoices("WOOCOMMERCE_ENVIRONMENT", "woocommerce_environment"))
     woocommerce_read_enabled: bool = Field(default=True, validation_alias=AliasChoices("WOOCOMMERCE_READ_ENABLED", "woocommerce_read_enabled"))
     woocommerce_read_only: bool = Field(default=True, validation_alias=AliasChoices("WOOCOMMERCE_READ_ONLY", "woocommerce_read_only"))

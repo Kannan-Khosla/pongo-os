@@ -16,6 +16,7 @@ from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun
 from app.services.woocommerce_client import WooCommerceClient
 from app.services.woocommerce_orders import commit_remote_order_records
 from app.services.operations_alerts import send_operations_alert
+from app.services.woocommerce_access import effective_woocommerce_settings
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ def run_order_reconciliation_once(
 ) -> dict[str, Any]:
     if not getattr(settings, "woocommerce_order_reconciliation_enabled", False):
         return {"status": "disabled"}
-    if not getattr(settings, "woocommerce_read_enabled", True) or not reconciliation_is_configured(settings):
+    if not getattr(settings, "woocommerce_read_enabled", True):
         return {"status": "not_configured"}
     if not _PROCESS_LOCK.acquire(blocking=False):
         return {"status": "skipped_overlap"}
@@ -94,6 +95,9 @@ def run_order_reconciliation_once(
     lease_acquired = False
     started_at = as_utc(now or datetime.now(timezone.utc))
     try:
+        settings = effective_woocommerce_settings(db, settings)
+        if not reconciliation_is_configured(settings):
+            return {"status": "not_configured"}
         lease_acquired = acquire_scheduler_lease(db)
         if not lease_acquired:
             db.rollback()

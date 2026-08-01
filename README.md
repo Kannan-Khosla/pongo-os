@@ -60,11 +60,12 @@ Not implemented yet:
 ## Safety Boundaries
 
 - Do not commit credentials, API keys, secrets, or real customer data.
-- WooCommerce credentials live only in backend environment variables.
+- WooCommerce credentials are submitted only to the authenticated backend and
+  stored encrypted in PostgreSQL; the encryption key remains a backend environment secret.
 - The webhook receiver is disabled by default. Its separate secret must be at
   least 32 bytes and must never be committed, logged, or returned by the API.
 - Frontend code must never call WooCommerce directly.
-- WooCommerce sync reads staging/production data through backend env vars only.
+- WooCommerce sync reads staging/production data through the backend only.
 - WooCommerce writeback is allowlisted, queued, and audited. Production stock
   writes require the explicit `WOOCOMMERCE_PRODUCTION_STOCK_AUTHORITY=pongo`
   policy plus the normal host, operation, payload, dry-run, and permission guards.
@@ -155,11 +156,14 @@ Frontend QA checklist: `docs/FRONTEND_QA.md`.
 
 ## Environment
 
-Use placeholders only in `.env.example`. Real values belong in local or deployment environment variables.
+Use placeholders only in `.env.example`. Backend encryption and webhook secrets belong in local or deployment environment variables.
 
-WooCommerce credentials belong only in `backend/.env` or deployment secret
-configuration. Do not commit keys, print keys, put keys in docs, or expose keys
-to the frontend. Production credentials cannot be changed through the browser.
+Staff configure the WooCommerce store URL, consumer key, and consumer secret in
+Settings → Connection. The authenticated backend verifies them and stores them
+encrypted in PostgreSQL; responses expose only presence flags. Do not commit,
+print, document, or return real credentials. Set
+`WOOCOMMERCE_CONFIGURATION_ENCRYPTION_KEY` to a stable random value of at least
+32 bytes in production.
 
 The inbound order webhook is a separate, read-only integration and does not
 require writeback to be enabled. Its safe defaults are:

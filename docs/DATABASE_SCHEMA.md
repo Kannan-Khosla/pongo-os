@@ -1636,7 +1636,8 @@ Safety:
 - DELETE is not supported
 - arbitrary endpoint writes are not supported
 - customer, coupon, refund, and product metadata writes are not supported
-- credentials remain backend environment variables only
+- credentials remain backend-only and are stored encrypted in the singleton
+  `woocommerce_configuration` row
 
 ## Woo Mapping Enrichment Additions
 

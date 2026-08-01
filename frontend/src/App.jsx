@@ -184,6 +184,9 @@ const emptyWooStatus = {
   base_url: '',
   base_url_host: '',
   environment: 'development',
+  configuration_source: 'backend_environment',
+  configuration_updated_by: null,
+  configuration_updated_at: null,
   read_only: true,
   writeback_enabled: false,
   dry_run: true,
@@ -10084,8 +10087,8 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
             <span className={`integration-status-dot ${status.configured ? 'is-live' : ''}`} aria-hidden="true" />
           </button>
           <div className="integration-rail-note">
-            <span>Backend managed</span>
-            <p>Keys never return to the browser after saving.</p>
+            <span>Encrypted backend storage</span>
+            <p>Configure here. Keys never return to the browser after saving.</p>
           </div>
         </aside>
 
@@ -10178,7 +10181,11 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
                 </label>
               </div>
               <div className="integration-form-footer">
-                <p>Blank key fields keep the credentials already stored in the backend.</p>
+                <p>
+                  {status.configuration_source === 'pongo_database'
+                    ? `Encrypted in Pongo${status.configuration_updated_by ? ` · saved by ${status.configuration_updated_by}` : ''}. Blank key fields keep the saved credentials.`
+                    : 'Save once to move this connection into encrypted Pongo storage.'}
+                </p>
                 <button className="primary-button integration-connect-button" disabled={loading || !connectionForm.base_url || (hostMismatch && !hostChangeAuthorized)} type="submit">
                   <CheckCircle2 size={17} />
                   {loading ? 'Verifying…' : 'Save & verify connection'}
@@ -10285,7 +10292,7 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
           <Metric label="Live Test" value={status.staging_live_test_mode ? 'On' : 'Off'} />
           <Metric label="Last Sync" value={status.last_product_sync?.status || latestRun?.status || 'None'} />
         </div>
-        <div className="warning-strip">Staging connection only. Credentials stay in backend environment variables and are never shown in the browser.</div>
+        <div className="warning-strip">Credentials are encrypted in Pongo backend storage and are never returned to the browser after saving.</div>
         <div className="csv-note">{status.message}</div>
         {preview && <WooPreviewSummary preview={preview} />}
         {commitSummary && (

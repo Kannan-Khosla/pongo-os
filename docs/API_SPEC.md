@@ -16,7 +16,8 @@ local-only route creation/management.
 
 - Frontend calls only the Pongo Inventory OS backend.
 - Frontend never calls WooCommerce directly.
-- WooCommerce credentials live only in backend environment variables.
+- WooCommerce credentials are submitted to the authenticated backend, stored
+  encrypted in PostgreSQL, and never returned by the API.
 - Stock-changing endpoints must create stock movement/audit rows.
 - Pick, unpick, direct/bulk receipt, transfer, and adjustment commit requests
   require a nonblank `idempotency_key` (maximum 120 characters). Reusing the
@@ -465,15 +466,15 @@ retrying the import.
 ## WooCommerce Integration
 
 All WooCommerce integration endpoints are backend-only. The React frontend calls
-the Pongo backend and never calls WooCommerce directly. Credentials are read
-only from backend environment variables and are never returned in API responses.
+the Pongo backend and never calls WooCommerce directly. Authenticated staff may
+submit credentials to the backend, which encrypts them in PostgreSQL and never
+returns them in API responses.
 
-Backend environment variables used by WooCommerce integration. The webhook
-secret may remain blank while the receiver is disabled:
-- `WOOCOMMERCE_BASE_URL`
-- `WOOCOMMERCE_CONSUMER_KEY`
-- `WOOCOMMERCE_CONSUMER_SECRET`
-- `WOOCOMMERCE_ALLOWED_HOST`
+Backend environment variables used by WooCommerce integration. The REST
+credentials and exact allowed host may use these as a deployment fallback; UI
+values take precedence after a successful save. The webhook secret may remain
+blank while the receiver is disabled:
+- `WOOCOMMERCE_CONFIGURATION_ENCRYPTION_KEY` (required for UI-saved production credentials)
 - `WOOCOMMERCE_TIMEOUT_SECONDS`
 - `WOOCOMMERCE_PAGE_SIZE`
 - `WOOCOMMERCE_ORDER_SYNC_PAGE_SIZE`
@@ -496,6 +497,9 @@ Response:
 - `base_url_present`
 - `consumer_key_present`
 - `consumer_secret_present`
+- `configuration_source`
+- `configuration_updated_by`
+- `configuration_updated_at`
 - `webhook_enabled`
 - `webhook_configured`
 - `webhook_secret_present`
@@ -515,17 +519,17 @@ Optional query param:
 
 ### POST /api/integrations/woocommerce/configuration
 
-Verify and save the WooCommerce REST connection in the backend environment.
+Verify and save the WooCommerce REST connection in encrypted backend storage.
 
 Request:
 - `base_url`: required HTTPS store URL (`http` is accepted only for localhost)
 - `consumer_key`: required when no key is already configured; blank preserves it
 - `consumer_secret`: required when no secret is already configured; blank preserves it
 - `allow_host_change`: defaults to `false`; must be explicitly `true` when the
-  requested store host differs from the current `WOOCOMMERCE_ALLOWED_HOST`
+  requested store host differs from the currently authorized host
 
 The backend tests the supplied credentials with a read-only product request
-before atomically updating `backend/.env`. The response returns only the store
+before atomically updating the encrypted singleton configuration row. The response returns only the store
 URL, host, presence booleans, and a success message. It never returns either
 credential. A host mismatch fails before the connection request unless the
 operator explicitly authorizes replacement. An authorized replacement updates

@@ -1,10 +1,14 @@
 import httpx
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 from tests.test_items_api import client, seed_item  # noqa: F401
 from app.core.config import Settings
+from app.db.base import Base
+from app.models.woocommerce import WooCommerceConfiguration
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
-from app.services.woocommerce_configuration import save_woocommerce_configuration
+from app.services.woocommerce_configuration import save_woocommerce_configuration, settings_with_persisted_woocommerce_configuration
 
 
 class FakeWooClient:
@@ -231,6 +235,47 @@ def test_woocommerce_configuration_cannot_mutate_runtime_production_secrets(tmp_
         )
 
 
+def test_production_configuration_is_encrypted_in_database_and_reused(tmp_path):
+    class ConnectionCheck:
+        def __init__(self, settings):
+            self.settings = settings
+
+        def check_connection(self):
+            return None
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        woocommerce_configuration_encryption_key="test-encryption-key-that-is-longer-than-32-bytes",
+    )
+
+    with Session(engine) as db:
+        save_woocommerce_configuration(
+            "https://store.example",
+            "ck_private",
+            "cs_private",
+            allow_host_change=True,
+            env_path=tmp_path / ".env",
+            settings=settings,
+            client_type=ConnectionCheck,
+            db=db,
+            changed_by="pytest@example.com",
+        )
+        row = db.get(WooCommerceConfiguration, 1)
+        assert row is not None
+        assert row.updated_by == "pytest@example.com"
+        assert "ck_private" not in row.consumer_key_ciphertext
+        assert "cs_private" not in row.consumer_secret_ciphertext
+
+        persisted = settings_with_persisted_woocommerce_configuration(db, settings)
+        assert persisted.woocommerce_base_url == "https://store.example"
+        assert persisted.woocommerce_allowed_host == "store.example"
+        assert persisted.woocommerce_consumer_key == "ck_private"
+        assert persisted.woocommerce_consumer_secret == "cs_private"
+
+
 def test_woocommerce_configuration_binds_blank_allowed_host(tmp_path):
     checked = []
 
@@ -315,6 +360,41 @@ def test_woocommerce_configuration_response_never_exposes_keys(client, monkeypat
     assert saved_options["allow_host_change"] is True
     assert "ck_private" not in response.text
     assert "cs_private" not in response.text
+
+
+def test_frontend_configuration_endpoint_persists_for_backend_status(client, monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        woocommerce_environment="production",
+        woocommerce_base_url="",
+        woocommerce_allowed_host="",
+        woocommerce_consumer_key="",
+        woocommerce_consumer_secret="",
+        woocommerce_configuration_encryption_key="test-encryption-key-that-is-longer-than-32-bytes",
+    )
+    monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: settings)
+    monkeypatch.setattr("app.services.woocommerce_configuration.get_settings", lambda: settings)
+    monkeypatch.setattr("app.services.woocommerce_client.WooCommerceClient.check_connection", lambda _self: None)
+
+    response = client.post(
+        "/api/integrations/woocommerce/configuration",
+        json={
+            "base_url": "https://store.example",
+            "consumer_key": "ck_private",
+            "consumer_secret": "cs_private",
+            "allow_host_change": True,
+        },
+    )
+    assert response.status_code == 200
+    assert "ck_private" not in response.text
+    assert "cs_private" not in response.text
+
+    status = client.get("/api/integrations/woocommerce/status").json()
+    assert status["configured"] is True
+    assert status["base_url"] == "https://store.example"
+    assert status["configuration_source"] == "pongo_database"
+    assert status["configuration_updated_by"] == "pytest@example.com"
 
 
 def simple_product(**overrides):

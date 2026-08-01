@@ -265,7 +265,8 @@ If fulfillment is called for an unpicked order, it rejects the request instead o
 
 ## Safety Rules
 
-- WooCommerce credentials stay in backend environment variables.
+- WooCommerce credentials stay encrypted in backend PostgreSQL storage; the
+  encryption key remains in the backend environment.
 - The separate webhook secret stays backend-only and is never exposed in API
   responses or frontend code.
 - The frontend never calls WooCommerce directly.

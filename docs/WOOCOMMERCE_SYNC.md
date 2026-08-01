@@ -667,7 +667,8 @@ frontend never receives credentials and never calls WooCommerce directly.
 
 Current behavior:
 - Frontend still never calls WooCommerce directly.
-- WooCommerce credentials remain backend environment variables only.
+- WooCommerce credentials are configured through the authenticated Pongo UI and
+  remain encrypted in backend PostgreSQL storage.
 - A successful pick reduces local stock only; it does not change WooCommerce
   stock until that picked order is completed.
 - Completing a picked order creates, approves, and sends one stock writeback

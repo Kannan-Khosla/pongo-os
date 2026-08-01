@@ -16,7 +16,7 @@ The goal is to build a lightweight replacement customized for Pongo's workflows 
 
 ## Why Standalone
 
-The app must not be a WordPress or WooCommerce plugin. A standalone app keeps operational logic, credentials, and internal workflows separate from the public storefront. WooCommerce REST API credentials will live only in backend environment variables, and the React frontend will never call WooCommerce directly.
+The app must not be a WordPress or WooCommerce plugin. A standalone app keeps operational logic, credentials, and internal workflows separate from the public storefront. Staff may submit WooCommerce REST API credentials through authenticated settings; the backend encrypts them in PostgreSQL and the React frontend never calls WooCommerce directly or receives saved secrets.
 
 ## Target Users
 

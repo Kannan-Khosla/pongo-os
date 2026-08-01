@@ -138,8 +138,9 @@ local inventory items before order sync, allocation, picking, or stock writeback
 can be safely introduced. Preview lets staff inspect creates, updates, skips,
 and conflicts before any local database changes.
 
-Safety: WooCommerce credentials live only in backend environment variables and
-are never exposed in API responses or frontend code. The sync client only
+Safety: WooCommerce credentials are accepted only by the authenticated backend,
+encrypted in PostgreSQL with a backend environment key, and never exposed in
+API responses or frontend code. The sync client only
 implements read methods. Commit creates or updates local Pongo OS items only,
 preserves manual operational fields, stores Woo stock as a snapshot, creates no
 stock movements, and never writes WooCommerce products, orders, or stock.

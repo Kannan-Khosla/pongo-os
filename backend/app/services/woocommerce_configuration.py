@@ -1,11 +1,18 @@
+import base64
+import hashlib
 import json
 import os
+import secrets
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Lock
 from urllib.parse import urlparse
 
+from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy.orm import Session
+
 from app.core.config import Settings, get_settings
+from app.models.woocommerce import WooCommerceConfiguration
 from app.services.woocommerce_client import WooCommerceClient
 
 
@@ -22,9 +29,11 @@ def save_woocommerce_configuration(
     env_path: Path = ENV_PATH,
     settings: Settings | None = None,
     client_type=WooCommerceClient,
+    db: Session | None = None,
+    changed_by: str | None = None,
 ) -> Settings:
-    current = settings or get_settings()
-    if current.app_env.casefold() == "production":
+    current = settings_with_persisted_woocommerce_configuration(db, settings or get_settings()) if db else (settings or get_settings())
+    if db is None and current.app_env.casefold() == "production":
         raise ValueError("Production WooCommerce credentials must be changed in the deployment environment and applied by restarting the service.")
     normalized_url, requested_host = normalize_store_url(base_url)
     allowed_host = current.woocommerce_allowed_host.strip().lower()
@@ -54,6 +63,21 @@ def save_woocommerce_configuration(
     )
     client_type(candidate).check_connection()
 
+    if db is not None:
+        cipher = credential_cipher(current, env_path=env_path, create_for_local=True)
+        row = db.get(WooCommerceConfiguration, 1)
+        if row is None:
+            row = WooCommerceConfiguration(id=1)
+            db.add(row)
+        row.base_url = normalized_url
+        row.allowed_host = requested_host
+        row.consumer_key_ciphertext = cipher.encrypt(key.encode()).decode()
+        row.consumer_secret_ciphertext = cipher.encrypt(secret.encode()).decode()
+        row.updated_by = (changed_by or "authenticated-user")[:120]
+        db.commit()
+        db.refresh(row)
+        return candidate
+
     values = {
         "WOOCOMMERCE_BASE_URL": normalized_url,
         "WOOCOMMERCE_CONSUMER_KEY": key,
@@ -65,6 +89,45 @@ def save_woocommerce_configuration(
         os.environ.update(values)
         get_settings.cache_clear()
     return candidate
+
+
+def latest_woocommerce_configuration(db: Session) -> WooCommerceConfiguration | None:
+    return db.get(WooCommerceConfiguration, 1)
+
+
+def settings_with_persisted_woocommerce_configuration(db: Session | None, settings: Settings) -> Settings:
+    if db is None or not hasattr(settings, "model_copy"):
+        return settings
+    row = latest_woocommerce_configuration(db)
+    if row is None:
+        return settings
+    cipher = credential_cipher(settings)
+    try:
+        key = cipher.decrypt(row.consumer_key_ciphertext.encode()).decode()
+        secret = cipher.decrypt(row.consumer_secret_ciphertext.encode()).decode()
+    except InvalidToken as error:
+        raise ValueError("Stored WooCommerce credentials cannot be decrypted with the configured backend encryption key.") from error
+    return settings.model_copy(update={
+        "woocommerce_base_url": row.base_url,
+        "woocommerce_allowed_host": row.allowed_host,
+        "woocommerce_consumer_key": key,
+        "woocommerce_consumer_secret": secret,
+    })
+
+
+def credential_cipher(settings: Settings, *, env_path: Path = ENV_PATH, create_for_local: bool = False) -> Fernet:
+    secret = settings.woocommerce_configuration_encryption_key.strip()
+    if not secret and create_for_local and settings.app_env.casefold() != "production":
+        secret = secrets.token_urlsafe(48)
+        values = {"WOOCOMMERCE_CONFIGURATION_ENCRYPTION_KEY": secret}
+        with _save_lock:
+            update_env_file(env_path, values)
+            os.environ.update(values)
+            get_settings.cache_clear()
+    if len(secret.encode()) < 32:
+        raise ValueError("The backend WooCommerce configuration encryption key must be at least 32 bytes.")
+    derived = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
+    return Fernet(derived)
 
 
 def normalize_store_url(value: str) -> tuple[str, str]:

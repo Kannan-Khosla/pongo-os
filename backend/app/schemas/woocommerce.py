@@ -32,6 +32,9 @@ class WooCommerceStatusResponse(BaseModel):
     access_mode: str = "read_only"
     access_mode_updated_by: str | None = None
     access_mode_updated_at: datetime | None = None
+    configuration_source: str = "backend_environment"
+    configuration_updated_by: str | None = None
+    configuration_updated_at: datetime | None = None
     read_enabled: bool = True
     read_only: bool = True
     writeback_enabled: bool = False
