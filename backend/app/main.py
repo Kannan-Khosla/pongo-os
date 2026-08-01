@@ -2,11 +2,13 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 import logging
+from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import allocations, auth, business_dashboard, cycle_counts, dashboard, fulfillments, health, import_jobs, insights, inventory, items, locations, orders, picks, receipts, reports, routes, scanner, stock_movements, ui, woocommerce
 from app.core.config import get_settings
@@ -94,6 +96,9 @@ def create_app() -> FastAPI:
     app.include_router(routes.router, prefix="/api", dependencies=protected)
     app.include_router(scanner.router, prefix="/api", dependencies=protected)
     app.include_router(ui.router, prefix="/api", dependencies=protected)
+    frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    if frontend_dist.is_dir():
+        app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
     return app
 
 

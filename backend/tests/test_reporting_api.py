@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -258,7 +259,7 @@ def test_usage_report_applies_location_scope_to_balances_and_movements(client):
         lines=[{"sku": "SCOPED-USAGE", "inventory_location": "USAGE-B", "quantity_received": 3, "unit_cost": 2}],
     )
     assert client.post("/api/receipts/direct/commit", json=receipt).status_code == 200
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = datetime.now(ZoneInfo("America/Edmonton")).date().isoformat()
 
     first = client.post("/api/reports/runs/inventory-usage", json={"filters": {"start_date": today, "end_date": today, "inventory_location": "USAGE-A"}}).json()["rows"][0]
     second = client.post("/api/reports/runs/inventory-usage", json={"filters": {"start_date": today, "end_date": today, "inventory_location": "USAGE-B"}}).json()["rows"][0]

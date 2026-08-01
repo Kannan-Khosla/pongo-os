@@ -78,7 +78,7 @@ export default function AuthGate({ children }) {
         <section className="auth-panel" aria-labelledby="auth-form-title">
           <div className="auth-step"><span>01</span><small>STAFF ACCESS</small></div>
           <h2 id="auth-form-title">{mode === 'login' ? 'Welcome back' : 'Create your account'}</h2>
-          <p>{mode === 'login' ? 'Use your Pongo staff account to continue.' : 'The first account bootstraps access. Later production accounts require the registration code.'}</p>
+          <p>{mode === 'login' ? 'Use your Pongo staff account to continue.' : 'Use the staff registration code provided by an administrator.'}</p>
           <div className="auth-mode" role="tablist" aria-label="Account action">
             <button type="button" role="tab" aria-selected={mode === 'login'} onClick={() => { setMode('login'); setError(''); }}>Sign in</button>
             <button type="button" role="tab" aria-selected={mode === 'register'} onClick={() => { setMode('register'); setError(''); }}>Register</button>
@@ -87,7 +87,7 @@ export default function AuthGate({ children }) {
             {mode === 'register' && <label>Display name<input name="display_name" autoComplete="name" required maxLength="160" /></label>}
             <label>Email address<input name="email" type="email" autoComplete="email" required /></label>
             <label>Password<input name="password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'register' ? 12 : 1} required /></label>
-            {mode === 'register' && <label>Registration code <small>Optional for the first account</small><input name="registration_access_code" type="password" autoComplete="off" /></label>}
+            {mode === 'register' && <label>Registration code <small>{import.meta.env.PROD ? 'Required in production' : 'Optional outside production'}</small><input name="registration_access_code" type="password" autoComplete="off" required={import.meta.env.PROD} /></label>}
             {error && <div className="auth-error" role="alert">{error}</div>}
             <button className="auth-submit" type="submit" disabled={submitting}>{mode === 'login' ? <LogIn size={18} /> : <UserPlus size={18} />}{submitting ? 'Please wait…' : mode === 'login' ? 'Sign in to Pongo OS' : 'Create account'}</button>
           </form>

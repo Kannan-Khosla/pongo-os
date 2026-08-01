@@ -1,0 +1,10 @@
+{
+  "name": "pongo-inventory-os",
+  "private": true,
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "heroku-postbuild": "npm ci --include=dev --prefix frontend && npm run build --prefix frontend"
+  }
+}

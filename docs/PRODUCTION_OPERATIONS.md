@@ -28,3 +28,12 @@ Keep encrypted backups outside the application host, apply a retention policy, a
 - `/ready` returns HTTP 503 until the schema, login, inventory data, Woo webhook/reconciliation, production stock authority, CORS, and writeback guard are ready.
 - Set `OPERATIONS_ALERT_WEBHOOK_URL` to a private incident webhook. Pongo sends one alert after the configured number of consecutive server reconciliation failures.
 - Application request logs are JSON and include a request ID, method, path, status, and duration. Request bodies, credentials, and query strings are not logged.
+
+## Heroku deployment
+
+Pongo OS deploys as one Heroku app. The Node.js buildpack builds
+`frontend/dist`, the Python buildpack installs the FastAPI backend, the release
+process runs `alembic upgrade head`, and the web process serves both the API and
+the built frontend. Keep `heroku/nodejs` first and `heroku/python` last. Attach
+Heroku Postgres before the first release, set `APP_ENV=production`, and use the
+app's exact HTTPS origin for `BACKEND_CORS_ORIGINS`.

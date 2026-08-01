@@ -5,6 +5,12 @@ from app.db.session import init_db, make_engine
 from app.models.inventory import InventoryItem
 
 
+def test_heroku_postgres_url_uses_psycopg_driver():
+    engine = make_engine("postgres://user:password@localhost/pongo")
+
+    assert engine.url.drivername == "postgresql+psycopg"
+
+
 def test_database_connection_can_initialize():
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)

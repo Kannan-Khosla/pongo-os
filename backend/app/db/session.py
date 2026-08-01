@@ -8,8 +8,8 @@ from app.core.config import get_settings
 
 def make_engine(database_url: str | None = None):
     url = database_url or get_settings().database_url
-    if url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if url.startswith(("postgres://", "postgresql://")):
+        url = f"postgresql+psycopg://{url.split('://', 1)[1]}"
     connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
     return create_engine(url, pool_pre_ping=True, connect_args=connect_args)
 
