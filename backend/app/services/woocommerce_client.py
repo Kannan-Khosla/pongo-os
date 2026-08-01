@@ -154,6 +154,7 @@ class WooCommerceClient:
 
     def check_connection(self) -> None:
         self.list_products(page=1, per_page=1)
+        self.list_orders(page=1, per_page=1, status="processing")
 
     def guarded_write(self, operation_type: str, method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         method = method.upper()

@@ -59,12 +59,14 @@ and consumer secret through the backend. Settings → Sync & Mapping owns
 catalog, order, remap, and sync-history workflows. Settings → Writeback owns
 guarded stock/order-status previews and the paginated writeback queue. The
 backend performs a read-only connection check before saving credentials to
-`backend/.env`; blank credential fields preserve existing values. The
+encrypted PostgreSQL storage; the check requires both product-list and
+order-list access, and blank credential fields preserve existing values. The
 connection form never changes writeback flags. When a new store URL differs
 from `WOOCOMMERCE_ALLOWED_HOST`, the operator must explicitly authorize the
 exact replacement host; Pongo verifies the read-only connection before saving
-the base URL and allowed host together. Deployment secret configuration remains
-the durable source for hosts whose filesystem is ephemeral.
+the base URL and allowed host together. After saving, the backend starts a
+bounded open-order quick sync; periodic reconciliation remains the durable
+recovery path and imports any backlog beyond that first batch.
 
 ## Read-Only Sync First
 
@@ -365,11 +367,14 @@ Every scheduler attempt is stored in the existing WooCommerce sync ledger.
 running, healthy, stale, or degraded, plus its last attempt, success, failure,
 error count, and safe error message. `completed_with_errors` advances the
 modified-time cursor but remains degraded until a clean pass succeeds.
+Before the first ledger entry is committed, status reports that the first
+reconciliation is starting instead of incorrectly calling it stale.
 
 The browser no longer posts `orders/quick-sync` on a timer. It may refresh local
 Pongo order views with GET requests, while the signed webhooks and server job
 remain responsible for ingestion. The quick-sync endpoint remains available
-for an explicit operator-triggered import.
+for an explicit operator-triggered import and is also reused once by the backend
+immediately after credentials are saved.
 
 ## Signed Order Webhook: Phase 1
 

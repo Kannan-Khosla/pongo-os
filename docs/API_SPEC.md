@@ -514,7 +514,7 @@ writeback enablement. The response reports only enable/configuration/presence
 booleans and safe last-delivery metadata.
 
 Optional query param:
-- `check=true`: performs a safe read-only product request to verify
+- `check=true`: performs safe read-only product and processing-order requests to verify
   connectivity when credentials are configured.
 
 ### POST /api/integrations/woocommerce/configuration
@@ -528,8 +528,11 @@ Request:
 - `allow_host_change`: defaults to `false`; must be explicitly `true` when the
   requested store host differs from the currently authorized host
 
-The backend tests the supplied credentials with a read-only product request
-before atomically updating the encrypted singleton configuration row. The response returns only the store
+The backend tests the supplied credentials with read-only product-list and
+processing-order-list requests before atomically updating the encrypted
+singleton configuration row. After saving, it schedules one bounded open-order
+quick sync (up to 25 newest orders per open status); the full server
+reconciliation still imports the complete backlog. The response returns only the store
 URL, host, presence booleans, and a success message. It never returns either
 credential. A host mismatch fails before the connection request unless the
 operator explicitly authorizes replacement. An authorized replacement updates
@@ -697,7 +700,8 @@ Commit behavior:
 
 Fetch the newest WooCommerce orders per requested status and upsert local order
 snapshots when an operator explicitly requests an immediate import. The
-frontend does not call this endpoint on a timer. The backend scheduler owns
+frontend does not call this endpoint on a timer. The backend also reuses the
+same bounded workflow once immediately after credentials are saved. The backend scheduler owns
 normal reconciliation and uses the fully paginated order-sync path so a large
 backlog cannot be clipped. Retrieval remains newest first, but the subsequent
 local allocation pass evaluates all eligible processing orders oldest

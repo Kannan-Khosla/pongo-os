@@ -118,6 +118,16 @@ def test_scheduler_failure_is_durable_and_visible_in_health(caplog):
         assert health["last_error"] == "WooCommerce credentials expired."
 
 
+def test_health_reports_that_first_reconciliation_is_starting():
+    factory = session_factory()
+    with factory() as db:
+        health = reconciliation_health(db, reconciliation_settings(), running=True)
+
+    assert health["healthy"] is False
+    assert health["last_status"] is None
+    assert health["message"] == "The first server order reconciliation is starting."
+
+
 def test_completed_with_errors_does_not_advance_success_cursor_and_reports_degraded_health():
     factory = session_factory()
     now = datetime.now(timezone.utc)

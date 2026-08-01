@@ -56,6 +56,31 @@ def test_woocommerce_credentials_use_basic_auth_and_never_enter_error_urls(monke
     assert "cs_must_not_leak" not in repr(raised.value.__cause__)
 
 
+def test_woocommerce_connection_check_requires_product_and_order_access(monkeypatch):
+    paths = []
+
+    def accept(method, url, **kwargs):
+        paths.append(url)
+        request = httpx.Request(method, url, params=kwargs["params"])
+        return httpx.Response(200, request=request, json=[])
+
+    monkeypatch.setattr("app.services.woocommerce_client.httpx.request", accept)
+    client = WooCommerceClient(Settings(
+        _env_file=None,
+        woocommerce_base_url="https://store.example",
+        woocommerce_allowed_host="store.example",
+        woocommerce_consumer_key="ck_test",
+        woocommerce_consumer_secret="cs_test",
+    ))
+
+    client.check_connection()
+
+    assert paths == [
+        "https://store.example/wp-json/wc/v3/products",
+        "https://store.example/wp-json/wc/v3/orders",
+    ]
+
+
 def test_woocommerce_configuration_is_verified_and_saved_backend_only(tmp_path, monkeypatch):
     checked = []
 
@@ -332,6 +357,7 @@ def test_woocommerce_configuration_never_reuses_credentials_across_hosts_without
 
 def test_woocommerce_configuration_response_never_exposes_keys(client, monkeypatch):
     saved_options = {}
+    initial_syncs = []
     settings = Settings(
         _env_file=None,
         woocommerce_base_url="https://store.example",
@@ -344,6 +370,7 @@ def test_woocommerce_configuration_response_never_exposes_keys(client, monkeypat
         return settings
 
     monkeypatch.setattr("app.api.routes.woocommerce.save_woocommerce_configuration", save_configuration)
+    monkeypatch.setattr("app.api.routes.woocommerce.initial_order_sync", lambda saved_settings, actor: initial_syncs.append((saved_settings, actor)))
 
     response = client.post(
         "/api/integrations/woocommerce/configuration",
@@ -358,6 +385,7 @@ def test_woocommerce_configuration_response_never_exposes_keys(client, monkeypat
     assert response.status_code == 200
     assert response.json()["connected"] is True
     assert saved_options["allow_host_change"] is True
+    assert initial_syncs == [(settings, "pytest@example.com")]
     assert "ck_private" not in response.text
     assert "cs_private" not in response.text
 
@@ -376,6 +404,7 @@ def test_frontend_configuration_endpoint_persists_for_backend_status(client, mon
     monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: settings)
     monkeypatch.setattr("app.services.woocommerce_configuration.get_settings", lambda: settings)
     monkeypatch.setattr("app.services.woocommerce_client.WooCommerceClient.check_connection", lambda _self: None)
+    monkeypatch.setattr("app.api.routes.woocommerce.initial_order_sync", lambda *_args: None)
 
     response = client.post(
         "/api/integrations/woocommerce/configuration",

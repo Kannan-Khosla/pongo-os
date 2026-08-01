@@ -62,6 +62,9 @@ Not implemented yet:
 - Do not commit credentials, API keys, secrets, or real customer data.
 - WooCommerce credentials are submitted only to the authenticated backend and
   stored encrypted in PostgreSQL; the encryption key remains a backend environment secret.
+- Saving WooCommerce credentials verifies read access to both products and
+  orders, then starts a bounded server-side open-order sync immediately; the
+  periodic reconciliation job imports the full backlog and later changes.
 - The webhook receiver is disabled by default. Its separate secret must be at
   least 32 bytes and must never be committed, logged, or returned by the API.
 - Frontend code must never call WooCommerce directly.

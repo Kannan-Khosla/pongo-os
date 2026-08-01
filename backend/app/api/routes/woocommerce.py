@@ -1,6 +1,7 @@
+import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -75,11 +76,25 @@ from app.services.woocommerce_writeback import (
 from app.services.woocommerce_stock_sync_jobs import cancel_stock_sync_job, create_stock_sync_job, list_stock_sync_jobs, resume_stock_sync_job, stock_sync_job_read
 
 router = APIRouter(prefix="/integrations/woocommerce", tags=["woocommerce"])
+logger = logging.getLogger(__name__)
 
 
 def create_woocommerce_client() -> WooCommerceClient:
     with SessionLocal() as db:
         return WooCommerceClient(effective_woocommerce_settings(db, get_settings()))
+
+
+def initial_order_sync(settings, actor: str) -> None:
+    try:
+        with SessionLocal() as db:
+            commit_recent_order_sync(
+                db,
+                WooCommerceClient(settings),
+                WooCommerceOrderSyncRequest(limit=75, created_by=f"{actor}:configuration"[:120]),
+                per_status_limit=25,
+            )
+    except Exception:
+        logger.exception("Initial WooCommerce open-order sync failed after saving configuration.")
 
 
 @router.post("/access-mode", response_model=WooCommerceAccessModeResponse)
@@ -104,6 +119,7 @@ def update_woocommerce_access_mode(
 @router.post("/configuration", response_model=WooCommerceConfigurationResponse)
 def configure_woocommerce(
     payload: WooCommerceConfigurationRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     actor: str = Depends(authenticated_actor),
 ) -> WooCommerceConfigurationResponse:
@@ -120,6 +136,7 @@ def configure_woocommerce(
         raise HTTPException(status_code=422, detail=str(error)) from error
     except WooCommerceClientError as error:
         raise HTTPException(status_code=400, detail=f"WooCommerce connection failed: {error.message}") from error
+    background_tasks.add_task(initial_order_sync, settings, actor)
     client = WooCommerceClient(settings)
     return WooCommerceConfigurationResponse(
         connected=True,
@@ -127,7 +144,7 @@ def configure_woocommerce(
         base_url_host=client.base_url_host or "",
         consumer_key_present=True,
         consumer_secret_present=True,
-        message="WooCommerce credentials were verified and saved securely in Pongo.",
+        message="WooCommerce credentials were verified and saved securely in Pongo. Initial open-order sync started.",
     )
 
 

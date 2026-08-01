@@ -174,6 +174,8 @@ def reconciliation_health(db: Session, settings: Any, *, running: bool = False, 
         message = "Server order reconciliation cannot run while WooCommerce reads are disabled."
     elif not running:
         message = "Server order reconciliation is not running."
+    elif latest_attempt is None:
+        message = "The first server order reconciliation is starting."
     elif latest_attempt_failed:
         message = "The last server order reconciliation failed."
     elif degraded:
