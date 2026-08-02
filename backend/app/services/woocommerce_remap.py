@@ -190,7 +190,7 @@ def remote_summary(db: Session, woo_product_id: int, woo_variation_id: int | Non
     item = db.scalars(select(InventoryItem).where(InventoryItem.woo_product_id == woo_product_id, InventoryItem.woo_variation_id.is_(None) if woo_variation_id is None else InventoryItem.woo_variation_id == woo_variation_id)).first()
     if item:
         return remote_from_item(item, "mapped")
-    error = db.scalars(select(WooCommerceSyncError).where(WooCommerceSyncError.remote_product_id == woo_product_id, WooCommerceSyncError.remote_variation_id.is_(None) if woo_variation_id is None else WooCommerceSyncError.remote_variation_id == woo_variation_id).order_by(WooCommerceSyncError.created_at.desc())).first()
+    error = db.scalars(select(WooCommerceSyncError).where(WooCommerceSyncError.remote_product_id == woo_product_id, WooCommerceSyncError.remote_variation_id.is_(None) if woo_variation_id is None else WooCommerceSyncError.remote_variation_id == woo_variation_id).order_by(WooCommerceSyncError.created_at.desc()).limit(1)).first()
     return WooRemapRemoteSummary(woo_product_id=woo_product_id, woo_variation_id=woo_variation_id, woo_sku=error.sku if error else None, woo_name=error.error_message if error else None, reason="manual_review")
 
 

@@ -228,7 +228,7 @@ const emptyWooStatus = {
 };
 const wooOrderSyncStatuses = ['processing', 'on-hold', 'pending', 'completed', 'failed', 'cancelled', 'refunded'];
 const ORDER_VIEW_REFRESH_INTERVAL_MS = 10000;
-const WOO_SYNC_HEALTH_POLL_INTERVAL_MS = 30000;
+const WOO_SYNC_HEALTH_POLL_INTERVAL_MS = 120000;
 const WEBHOOK_EVENT_POLL_INTERVAL_MS = 2000;
 const WEBHOOK_EVENT_POLL_LIMIT = 50;
 const ORDER_NOTIFICATION_HISTORY_LIMIT = 50;
@@ -1156,6 +1156,7 @@ export default function App({ currentUser = null }) {
   const [unreadOrderNotificationKeys, setUnreadOrderNotificationKeys] = useState(() => new Set());
   const [orderNotificationHistoryOpen, setOrderNotificationHistoryOpen] = useState(false);
   const webhookEventPollInFlight = useRef(false);
+  const wooStatusRequestInFlight = useRef(false);
   const webhookEventCursor = useRef(null);
   const seenWebhookEventIds = useRef(new Set());
   const activeRouteRef = useRef(route);
@@ -1613,6 +1614,10 @@ export default function App({ currentUser = null }) {
   }
 
   async function loadWooStatus(check = false, options = {}) {
+    if (wooStatusRequestInFlight.current) {
+      return;
+    }
+    wooStatusRequestInFlight.current = true;
     const silent = options.silent === true;
     if (!silent) {
       setWooLoading(true);
@@ -1632,6 +1637,7 @@ export default function App({ currentUser = null }) {
         setWooError('Unable to load WooCommerce integration status from the backend.');
       }
     } finally {
+      wooStatusRequestInFlight.current = false;
       if (!silent) {
         setWooLoading(false);
       }

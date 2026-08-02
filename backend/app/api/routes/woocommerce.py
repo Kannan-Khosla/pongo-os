@@ -566,8 +566,8 @@ def woo_status_payload(settings, client: WooCommerceClient, db: Session, *, sche
     saved_configuration = latest_woocommerce_configuration(db)
     last_product_sync = latest_sync(db, "products")
     last_order_sync = latest_scheduler_run(db) or latest_sync(db, "orders")
-    latest_error = db.scalars(select(WooCommerceSyncError).order_by(WooCommerceSyncError.created_at.desc(), WooCommerceSyncError.id.desc())).first()
-    latest_webhook = db.scalars(select(WooCommerceWebhookDelivery).order_by(WooCommerceWebhookDelivery.received_at.desc(), WooCommerceWebhookDelivery.id.desc())).first()
+    latest_error = db.scalars(select(WooCommerceSyncError).order_by(WooCommerceSyncError.created_at.desc(), WooCommerceSyncError.id.desc()).limit(1)).first()
+    latest_webhook = db.scalars(select(WooCommerceWebhookDelivery).order_by(WooCommerceWebhookDelivery.received_at.desc(), WooCommerceWebhookDelivery.id.desc()).limit(1)).first()
     return {
         "base_url": settings.woocommerce_base_url or None,
         "base_url_host": host,
@@ -612,4 +612,4 @@ def woo_status_payload(settings, client: WooCommerceClient, db: Session, *, sche
 
 
 def latest_sync(db: Session, sync_type: str) -> WooCommerceSyncRun | None:
-    return db.scalars(select(WooCommerceSyncRun).where(WooCommerceSyncRun.sync_type == sync_type).order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())).first()
+    return db.scalars(select(WooCommerceSyncRun).where(WooCommerceSyncRun.sync_type == sync_type).order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc()).limit(1)).first()

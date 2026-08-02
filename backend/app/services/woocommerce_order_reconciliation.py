@@ -383,7 +383,7 @@ def latest_scheduler_run(
         statement = statement.where(WooCommerceSyncRun.status.in_(statuses))
     if exclude_id is not None:
         statement = statement.where(WooCommerceSyncRun.id != exclude_id)
-    return db.scalars(statement.order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())).first()
+    return db.scalars(statement.order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc()).limit(1)).first()
 
 
 def run_time(sync_run: WooCommerceSyncRun | None) -> datetime | None:

@@ -1,6 +1,6 @@
 import httpx
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
 from tests.test_items_api import client, seed_item  # noqa: F401
@@ -9,6 +9,7 @@ from app.db.base import Base
 from app.models.woocommerce import WooCommerceConfiguration
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.woocommerce_configuration import save_woocommerce_configuration, settings_with_persisted_woocommerce_configuration
+from app.api.routes.woocommerce import woo_status_payload
 
 
 class FakeWooClient:
@@ -537,6 +538,26 @@ def test_woocommerce_status_returns_unconfigured_without_secrets(client, monkeyp
     assert body["configured"] is False
     assert "secret" not in body
     assert "WOOCOMMERCE_CONSUMER_SECRET" not in response.text
+
+
+def test_woocommerce_status_limits_every_history_lookup():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    statements = []
+    event.listen(engine, "before_cursor_execute", lambda _connection, _cursor, statement, _parameters, _context, _many: statements.append(statement))
+
+    settings = Settings(_env_file=None)
+    with Session(engine) as db:
+        woo_status_payload(settings, WooCommerceClient(settings), db)
+
+    history_queries = [
+        statement.upper()
+        for statement in statements
+        if statement.lstrip().upper().startswith("SELECT")
+        and any(table in statement for table in ("woocommerce_sync_errors", "woocommerce_webhook_deliveries", "woocommerce_sync_runs"))
+    ]
+    assert history_queries
+    assert all("LIMIT" in statement for statement in history_queries)
 
 
 def test_woocommerce_preview_simple_product_with_sku_as_create(client, monkeypatch):

@@ -1142,6 +1142,30 @@ describe('App shell and workflows', () => {
     expect(screen.getByRole('button', { name: 'Order notifications, no unread orders' })).toBeInTheDocument();
   });
 
+  it('does not overlap WooCommerce status requests', async () => {
+    let releaseStatus;
+    const pendingStatus = new Promise((resolve) => {
+      releaseStatus = () => resolve({
+        ok: true,
+        json: () => Promise.resolve({ configured: true, order_reconciliation: mockWooHealth }),
+      });
+    });
+    fetch.mockImplementation((url) => (
+      String(url).includes('/api/integrations/woocommerce/status') ? pendingStatus : mockFetch(url)
+    ));
+    render(<App />);
+
+    await waitFor(() => expect(wooStatusCalls()).toHaveLength(1));
+    await focusWindow();
+    await focusWindow();
+    expect(wooStatusCalls()).toHaveLength(1);
+
+    await act(async () => {
+      releaseStatus();
+      await pendingStatus;
+    });
+  });
+
   it('announces a subsequent webhook order and exposes persistent view and history actions', async () => {
     const user = userEvent.setup();
     render(<App />);
