@@ -73,6 +73,13 @@ function defaultFilters(report) {
   return { start_date: localIsoDate(start), end_date: localIsoDate(end) };
 }
 
+function completedMonthRange(months) {
+  const now = new Date();
+  const end = new Date(now.getFullYear(), now.getMonth(), 0);
+  const start = new Date(end.getFullYear(), end.getMonth() - months + 1, 1);
+  return { start_date: localIsoDate(start), end_date: localIsoDate(end) };
+}
+
 function responseError(body, fallback) {
   if (typeof body?.detail === 'string') return body.detail;
   if (Array.isArray(body?.detail)) return body.detail.map((item) => item.msg).join(', ');
@@ -408,16 +415,26 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
     const end = new Date();
     const start = new Date();
     start.setDate(end.getDate() - (days - 1));
-    setFilters((current) => ({ ...current, start_date: localIsoDate(start), end_date: localIsoDate(end) }));
+    const nextFilters = { ...filters, start_date: localIsoDate(start), end_date: localIsoDate(end) };
+    setFilters(nextFilters);
+    generate(report.key, nextFilters);
+  }
+
+  function applyCompletedMonths(months) {
+    const nextFilters = { ...filters, ...completedMonthRange(months) };
+    setFilters(nextFilters);
+    generate(report.key, nextFilters);
   }
 
   function applyYearToDate() {
     const now = new Date();
-    setFilters((current) => ({
-      ...current,
+    const nextFilters = {
+      ...filters,
       start_date: `${now.getFullYear()}-01-01`,
       end_date: localIsoDate(now),
-    }));
+    };
+    setFilters(nextFilters);
+    generate(report.key, nextFilters);
   }
 
   if (!report && !error) {
@@ -455,7 +472,10 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
                 {report.date_mode === 'range' && (
                   <div className="ri-presets" aria-label="Date presets">
                     <button type="button" onClick={() => applyPreset(7)}>7 days</button>
-                    <button type="button" onClick={() => applyPreset(30)}>30 days</button>
+                    <button type="button" onClick={() => applyCompletedMonths(1)}>Last month</button>
+                    <button type="button" onClick={() => applyCompletedMonths(2)}>Last 2 months</button>
+                    <button type="button" onClick={() => applyCompletedMonths(3)}>Last 3 months</button>
+                    <button type="button" onClick={() => applyCompletedMonths(12)}>Last year</button>
                     <button type="button" onClick={applyYearToDate}>Calendar YTD</button>
                   </div>
                 )}

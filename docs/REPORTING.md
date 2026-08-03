@@ -47,6 +47,11 @@ Missing cost, incomplete history, unavailable delivery timestamps, unallocated
 refund detail, and similar limitations are disclosed instead of being silently
 treated as zero.
 
+Date-based reports provide instant last month, last two months, last three
+months, last year, and calendar-year-to-date presets while preserving custom
+date entry. Received Inventory also exposes the same presets directly on its
+operational report page.
+
 ## External delivery
 
 Google Sheets publishing and SMTP email are backend-only integrations.

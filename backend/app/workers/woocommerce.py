@@ -7,7 +7,7 @@ import time
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.services.woocommerce_order_reconciliation import ensure_automatic_order_sync_job, process_next_order_sync_job
-from app.services.woocommerce_stock_sync_jobs import process_next_stock_sync_job
+from app.services.woocommerce_stock_sync_jobs import ensure_daily_full_stock_sync_job, process_next_stock_sync_job
 
 POLL_SECONDS = 5
 
@@ -16,6 +16,7 @@ def run_cycle() -> bool:
     settings = get_settings()
     with SessionLocal() as db:
         ensure_automatic_order_sync_job(db, settings)
+        ensure_daily_full_stock_sync_job(db, settings)
     order_job = process_next_order_sync_job(settings)
     if order_job is not None:
         return True

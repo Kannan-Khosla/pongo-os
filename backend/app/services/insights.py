@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
 from itertools import combinations
+from numbers import Number
 from statistics import median
 from typing import Any
 
@@ -46,7 +47,23 @@ def build_insight(db: Session, dashboard: str, params: dict[str, Any] | None = N
         "product-affinity": product_affinity,
         "reorder-forecast": reorder_forecast,
     }
-    return builders[dashboard](context)
+    result = builders[dashboard](context)
+    if params.get("compare_start_date") and params.get("compare_end_date"):
+        comparison_params = {
+            **params,
+            "start_date": params["compare_start_date"],
+            "end_date": params["compare_end_date"],
+            "compare_start_date": None,
+            "compare_end_date": None,
+        }
+        previous = builders[dashboard](build_context(db, comparison_params))
+        result.comparison = {
+            "start_date": params["compare_start_date"],
+            "end_date": params["compare_end_date"],
+            "summary": previous.summary,
+            "changes": summary_changes(result.summary, previous.summary),
+        }
+    return result
 
 
 def export_insight_csv(db: Session, dashboard: str, params: dict[str, Any] | None = None) -> str:
@@ -647,8 +664,12 @@ def reorder_rows(ctx: dict[str, Any]) -> list[dict[str, Any]]:
 
 def daily_trends(orders: list[Order], ctx: dict[str, Any] | None = None) -> dict[str, list[dict[str, Any]]]:
     grouped = defaultdict(lambda: {"orders": 0, "gross": Decimal("0"), "net": Decimal("0"), "units": Decimal("0")})
+    granularity = (ctx or {}).get("params", {}).get("granularity", "day")
     for order in orders:
-        key = (order_date(order) or datetime.now(timezone.utc)).date().isoformat()
+        period = (order_date(order) or datetime.now(timezone.utc)).date()
+        if granularity == "week":
+            period -= timedelta(days=period.weekday())
+        key = period.isoformat()
         grouped[key]["orders"] += 1
         grouped[key]["gross"] += order_gross(order, ctx)
         grouped[key]["net"] += order_net_sales(order, ctx)
@@ -785,8 +806,6 @@ def base_warnings(orders: list[Order], items: list[InventoryItem]) -> list[dict[
     warnings = []
     if not orders:
         warnings += warning("limited_order_history", "info", "No local order snapshots matched the current filters.")
-    if any(not normalized_email(order.customer_email) for order in orders):
-        warnings += warning("missing_customer_email", "info", "Some orders are missing customer email, so customer metrics may use fallback identities.")
     if any(item.unit_cost is None for item in items):
         warnings += warning("missing_unit_cost", "warning", "Some inventory items are missing unit cost, so margin and value metrics may be incomplete.")
     return warnings
@@ -896,10 +915,19 @@ def customer_key(order: Order) -> str:
     email = normalized_email(order.customer_email)
     if email:
         return email
-    if order.customer_id is not None:
+    if order.customer_id:
         return f"customer:{order.customer_id}"
     fallback = "|".join([clean(order.customer_phone or order.shipping_phone or order.billing_phone), clean(order.customer_name or full_name(order)), clean(order.shipping_zip or order.billing_zip)])
-    return f"guest:{fallback or order.id}"
+    return f"guest:{fallback if fallback != '||' else order.id}"
+
+
+def summary_changes(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, float | None]:
+    changes = {}
+    for key, value in current.items():
+        old = previous.get(key)
+        if isinstance(value, Number) and not isinstance(value, bool) and isinstance(old, Number) and not isinstance(old, bool):
+            changes[key] = None if old == 0 else round((float(value) - float(old)) * 100 / abs(float(old)), 1)
+    return changes
 
 
 def first_line_value(order: Order, sku: str, field: str) -> str | None:

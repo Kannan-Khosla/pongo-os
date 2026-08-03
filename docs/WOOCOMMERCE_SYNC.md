@@ -356,8 +356,9 @@ Dashboard, and Pongo Insights.
 
 The dedicated worker dyno owns periodic order reconciliation. It is enabled by
 default when WooCommerce reads are configured and queues a pass every 120
-seconds. The first pass and manual fetches read every active order; later
-automatic passes request only orders modified since the previous remote scan.
+seconds. Every pass reads every active order so processing, pending, and on-hold
+orders cannot be skipped by a stale modified-time cursor. Terminal statuses use
+the previous successful remote-scan time as their incremental cursor.
 Active and terminal statuses are committed in batches of 25, so a large Woo
 history never lives in web-dyno memory. The default terminal set includes
 completed, failed, cancelled, and refunded orders.
@@ -380,6 +381,14 @@ Pongo order views with GET requests, while the signed webhooks and server job
 remain responsible for ingestion. The quick-sync endpoint remains available
 for an explicit operator-triggered import and is also reused once by the backend
 immediately after credentials are saved.
+
+Completing a picked order immediately sends its final local stock quantities
+and completed order status through the guarded WooCommerce writeback path.
+Separately, the worker creates one forced, resumable full-catalog stock job at
+the first cycle after midnight in `ADMIN_TIMEZONE` (default
+`America/Edmonton`). `WOOCOMMERCE_DAILY_FULL_STOCK_SYNC_ENABLED=false` disables
+that nightly reconciliation. Its date-based idempotency key prevents duplicate
+jobs after worker restarts.
 
 ## Signed Order Webhook: Phase 1
 

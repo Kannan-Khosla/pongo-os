@@ -319,9 +319,10 @@ def customer_key(order: Order) -> str:
     email = normalized_email(order.customer_email)
     if email:
         return email
-    if order.customer_id is not None:
+    if order.customer_id:
         return f"customer:{order.customer_id}"
-    return f"guest:{clean(order.customer_name or full_name(order))}|{clean(order.customer_phone or order.shipping_phone or order.billing_phone)}|{clean(order.shipping_zip or order.billing_zip)}"
+    fallback = f"{clean(order.customer_name or full_name(order))}|{clean(order.customer_phone or order.shipping_phone or order.billing_phone)}|{clean(order.shipping_zip or order.billing_zip)}"
+    return f"guest:{fallback if fallback != '||' else order.id}"
 
 
 def data_quality_warnings(orders: list[Order], include_limited_history: bool) -> list[dict[str, str]]:
@@ -330,8 +331,6 @@ def data_quality_warnings(orders: list[Order], include_limited_history: bool) ->
         warnings += warning("limited_order_history", "info", "No local order snapshots are available for this dashboard yet.")
     if any(order.total is None for order in orders):
         warnings += warning("missing_order_total", "warning", "Some orders are missing totals; line totals are used where possible.")
-    if any(not normalized_email(order.customer_email) for order in orders):
-        warnings += warning("missing_customer_email", "info", "Some orders are missing customer email, so customer counts may use fallback identities.")
     return warnings
 
 

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -10,7 +11,7 @@ from app.db.session import get_db
 from app.main import app
 from app.models.woocommerce import WooCommerceAccessModeChange, WooStockSyncJob
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError, safe_woocommerce_error_message
-from app.services.woocommerce_stock_sync_jobs import cancel_stock_sync_job, process_next_stock_sync_job, run_stock_sync_job_scheduler, unresolved_stock_sync_job_count
+from app.services.woocommerce_stock_sync_jobs import cancel_stock_sync_job, ensure_daily_full_stock_sync_job, process_next_stock_sync_job, run_stock_sync_job_scheduler, unresolved_stock_sync_job_count
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
 from tests.test_woocommerce_sync_api import patch_woo_client, simple_product
@@ -514,6 +515,25 @@ def test_stock_sync_updates_only_changed_items_then_can_force_all(client, monkey
     completed_all = client.get(f"/api/integrations/woocommerce/writeback/stock/jobs/{all_items.json()['id']}").json()
     assert completed_all["sent_count"] == 2
     assert calls == [("/wp-json/wc/v3/products/701", 8.0), ("/wp-json/wc/v3/products/702", 5.0)]
+
+
+def test_daily_full_stock_sync_is_forced_and_idempotent_per_admin_day(client):
+    seed_item(client, sku="DAILY-STOCK", wooProductId=703, **{"In Stock": 5})
+    factory = stock_sync_db_factory()
+    settings = staging_settings(woocommerce_daily_full_stock_sync_enabled=True, admin_timezone="America/Edmonton")
+    with factory() as db:
+        before_first_midnight = ensure_daily_full_stock_sync_job(db, settings, now=datetime(2026, 8, 3, 23, 0, tzinfo=timezone.utc))
+        first = ensure_daily_full_stock_sync_job(db, settings, now=datetime(2026, 8, 4, 6, 5, tzinfo=timezone.utc))
+        duplicate = ensure_daily_full_stock_sync_job(db, settings, now=datetime(2026, 8, 4, 23, 0, tzinfo=timezone.utc))
+        next_day = ensure_daily_full_stock_sync_job(db, settings, now=datetime(2026, 8, 5, 6, 5, tzinfo=timezone.utc))
+        first_id, duplicate_id, next_day_id = first.id, duplicate.id, next_day.id
+        first_force, first_requester = first.force, first.requested_by
+
+    assert before_first_midnight is None
+    assert first_force is True
+    assert duplicate_id == first_id
+    assert next_day_id != first_id
+    assert first_requester == "daily-midnight-stock-sync"
 
 
 def test_stock_sync_recovers_a_stale_running_chunk(client, monkeypatch):

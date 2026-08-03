@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     woocommerce_stock_sync_job_interval_seconds: int = Field(default=3, ge=1, le=300, validation_alias=AliasChoices("WOOCOMMERCE_STOCK_SYNC_JOB_INTERVAL_SECONDS", "woocommerce_stock_sync_job_interval_seconds"))
     woocommerce_stock_sync_job_stale_seconds: int = Field(default=900, ge=30, le=86400, validation_alias=AliasChoices("WOOCOMMERCE_STOCK_SYNC_JOB_STALE_SECONDS", "woocommerce_stock_sync_job_stale_seconds"))
     woocommerce_stock_sync_max_retries: int = Field(default=3, ge=0, le=10, validation_alias=AliasChoices("WOOCOMMERCE_STOCK_SYNC_MAX_RETRIES", "woocommerce_stock_sync_max_retries"))
+    woocommerce_daily_full_stock_sync_enabled: bool = Field(default=True, validation_alias=AliasChoices("WOOCOMMERCE_DAILY_FULL_STOCK_SYNC_ENABLED", "woocommerce_daily_full_stock_sync_enabled"))
+    admin_timezone: str = Field(default="America/Edmonton", validation_alias=AliasChoices("ADMIN_TIMEZONE", "admin_timezone"))
     woocommerce_webhook_enabled: bool = Field(default=False, validation_alias=AliasChoices("WOOCOMMERCE_WEBHOOK_ENABLED", "woocommerce_webhook_enabled"))
     woocommerce_webhook_secret: str = Field(default="", validation_alias=AliasChoices("WOOCOMMERCE_WEBHOOK_SECRET", "woocommerce_webhook_secret"))
     woocommerce_webhook_max_body_bytes: int = Field(default=1_048_576, validation_alias=AliasChoices("WOOCOMMERCE_WEBHOOK_MAX_BODY_BYTES", "woocommerce_webhook_max_body_bytes"))

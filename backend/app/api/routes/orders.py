@@ -259,15 +259,14 @@ def commit_order_completion(order_id: int, payload: OrderCompletionRequest, db: 
     stock_sync = sync_completed_picked_stock(db, settings, woo_client, order_id, actor) if completion_mode == "complete_picked" else None
     writeback = None
     writeback_error = None
-    if payload.queue_woo_status_update:
-        try:
-            writeback = sync_completed_order_status(db, settings, woo_client, order_id, actor)
-        except ValueError as error:
-            writeback_error = str(error)
+    try:
+        writeback = sync_completed_order_status(db, settings, woo_client, order_id, actor)
+    except ValueError as error:
+        writeback_error = str(error)
     return OrderCompletionResponse(
         **result,
-        queue_woo_status_update=bool(payload.queue_woo_status_update),
-        woo_sync_status=writeback.status if writeback else ("failed" if payload.queue_woo_status_update else "skipped"),
+        queue_woo_status_update=True,
+        woo_sync_status=writeback.status if writeback else "failed",
         woo_writeback_queue_id=writeback.id if writeback else None,
         woo_sync_error=(writeback.error_message if writeback else writeback_error) or stock_sync_error(stock_sync),
     )

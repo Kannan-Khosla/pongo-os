@@ -20,3 +20,4 @@ class InsightResponse(BaseModel):
     tables: dict[str, list[dict[str, Any]]] = {}
     data_quality: list[DataQualityWarning] = []
     empty_state: str | None = None
+    comparison: dict[str, Any] | None = None

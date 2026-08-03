@@ -57,11 +57,20 @@ Implemented first-pass metrics include:
 
 Forecasting is deterministic only. No ML model is used.
 
+Orders without a customer email are still included in every order, revenue,
+unit, product, and customer total. Customer identity falls back from a nonzero
+Woo customer ID to phone/name/postal details and finally the local order ID, so
+anonymous POS orders are not collapsed into one customer or discarded.
+
+The UI defaults to the last completed calendar month and provides instant last
+month, two-month, three-month, year, comparison, sales-per-day, and
+sales-per-week presets. Custom start and end dates remain available.
+
 ## Data Quality Warnings
 
 Endpoints return `data_quality` warnings instead of crashing when source data is
 missing. Current warnings include `limited_order_history`,
-`missing_customer_email`, `missing_unit_cost`, `missing_refund_data`,
+`missing_unit_cost`, `missing_refund_data`,
 `missing_coupon_data`, `missing_subscription_data`, and
 `missing_shipping_postal_code`.
 

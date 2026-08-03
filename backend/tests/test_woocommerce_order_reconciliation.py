@@ -55,6 +55,15 @@ def remote_order(order_id):
 
 def test_scheduler_fetches_all_active_orders_and_recent_terminal_changes():
     factory = session_factory()
+    with factory() as db:
+        db.add(WooCommerceSyncRun(
+            sync_type="order_job",
+            status="completed",
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=3),
+            completed_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+            created_by="server-order-reconciliation",
+        ))
+        db.commit()
 
     class Client:
         configured = True

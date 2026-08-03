@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
 import os
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +21,7 @@ from app.services.woocommerce_writeback import sync_inventory_stock
 from app.services.operations_alerts import send_operations_alert
 
 ACTIVE_JOB_STATUSES = {"queued", "running", "cancelling"}
+DAILY_FULL_STOCK_SYNC_REQUESTED_BY = "daily-midnight-stock-sync"
 POSTGRES_STOCK_JOB_WORKER_LOCK_KEY = int.from_bytes(b"PONGOWBJ", byteorder="big")
 logger = logging.getLogger(__name__)
 _worker_health = {
@@ -62,6 +64,35 @@ def create_stock_sync_job(db: Session, payload: WooStockSyncRequest) -> WooStock
         return existing
     db.refresh(job)
     return job
+
+
+def ensure_daily_full_stock_sync_job(db: Session, settings: Settings, *, now: datetime | None = None) -> WooStockSyncJob | None:
+    if not getattr(settings, "woocommerce_daily_full_stock_sync_enabled", True) or str(settings.app_env).casefold() == "test":
+        return None
+    settings = effective_woocommerce_settings(db, settings)
+    if getattr(settings, "woocommerce_read_only", True) or not getattr(settings, "woocommerce_writeback_enabled", False) or not getattr(settings, "woocommerce_allow_stock_write", False):
+        return None
+    try:
+        local_now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(getattr(settings, "admin_timezone", "America/Edmonton")))
+    except ZoneInfoNotFoundError:
+        logger.error("Daily WooCommerce stock sync skipped because ADMIN_TIMEZONE is invalid.")
+        return None
+    previous = db.scalar(
+        select(WooStockSyncJob)
+        .where(WooStockSyncJob.requested_by == DAILY_FULL_STOCK_SYNC_REQUESTED_BY)
+        .order_by(WooStockSyncJob.created_at.desc(), WooStockSyncJob.id.desc())
+        .limit(1)
+    )
+    if previous is None and local_now.hour != 0:
+        return None
+    return create_stock_sync_job(
+        db,
+        WooStockSyncRequest(
+            force=True,
+            requested_by=DAILY_FULL_STOCK_SYNC_REQUESTED_BY,
+            idempotency_key=f"daily-full-stock-{local_now.date().isoformat()}",
+        ),
+    )
 
 
 def process_next_stock_sync_job(settings: Settings, *, db_factory=SessionLocal, client_factory=WooCommerceClient) -> WooStockSyncJob | None:

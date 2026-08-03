@@ -35,7 +35,8 @@ Pongo OS deploys as one Heroku app. The Node.js buildpack builds
 `frontend/dist`, the Python buildpack installs the FastAPI backend, the release
 process runs `alembic upgrade head`, and the web process serves both the API and
 the built frontend. A separate `worker` process runs two-minute WooCommerce
-order reconciliation and resumable stock-sync jobs; do not run schedulers in
-the web process. Keep `heroku/nodejs` first and `heroku/python` last. Attach
+order reconciliation and resumable stock-sync jobs; it also queues the forced
+daily catalog reconciliation after midnight in `ADMIN_TIMEZONE`. Do not run
+schedulers in the web process. Keep `heroku/nodejs` first and `heroku/python` last. Attach
 Heroku Postgres before the first release, set `APP_ENV=production`, and use the
 app's exact HTTPS origin for `BACKEND_CORS_ORIGINS`.

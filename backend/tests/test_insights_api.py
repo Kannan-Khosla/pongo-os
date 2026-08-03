@@ -209,6 +209,55 @@ def test_insights_customer_metrics_calculates_new_and_returning(client, monkeypa
     assert body["summary"]["new_customers"] == 1
 
 
+def test_insights_include_email_less_pos_orders_as_separate_guests(client, monkeypatch):
+    seed_item(client, sku="POS-SKU", Brand="POS")
+    orders = [
+        woo_order(831, "", "POS-SKU", "10.00", "2026-07-02T12:00:00", quantity=1),
+        woo_order(832, "", "POS-SKU", "15.00", "2026-07-03T12:00:00", quantity=1),
+    ]
+    for order in orders:
+        order["customer_id"] = 0
+        order["billing"] = {}
+        order["shipping"] = {}
+    fake = patch_woo_orders(monkeypatch, orders)
+    committed = client.post("/api/integrations/woocommerce/orders/commit", json={"include_statuses": ["processing"], "limit": 100})
+    assert committed.status_code == 200, committed.text
+    assert fake.write_called is False
+
+    revenue = client.get("/api/insights/orders-revenue").json()
+    customers = client.get("/api/insights/customer-metrics").json()
+
+    assert revenue["summary"]["total_orders"] == 2
+    assert revenue["summary"]["net_sales"] == 25
+    assert customers["summary"]["total_customers"] == 2
+    assert all(warning["code"] != "missing_customer_email" for warning in customers["data_quality"])
+
+
+def test_insights_compare_period_and_weekly_sales(client, monkeypatch):
+    seed_item(client, sku="COMPARE-SKU")
+    orders = [
+        woo_order(841, "one@example.invalid", "COMPARE-SKU", "10.00", "2026-06-02T12:00:00", quantity=1),
+        woo_order(842, "two@example.invalid", "COMPARE-SKU", "20.00", "2026-07-08T12:00:00", quantity=1),
+        woo_order(843, "three@example.invalid", "COMPARE-SKU", "30.00", "2026-07-09T12:00:00", quantity=1),
+    ]
+    patch_woo_orders(monkeypatch, orders)
+    assert client.post("/api/integrations/woocommerce/orders/commit", json={"include_statuses": ["processing"], "limit": 100}).status_code == 200
+
+    body = client.get("/api/insights/orders-revenue", params={
+        "start_date": "2026-07-01",
+        "end_date": "2026-07-31",
+        "compare_start_date": "2026-06-01",
+        "compare_end_date": "2026-06-30",
+        "granularity": "week",
+    }).json()
+
+    assert body["summary"]["net_sales"] == 50
+    assert body["comparison"]["summary"]["net_sales"] == 10
+    assert body["comparison"]["changes"]["net_sales"] == 400
+    assert len(body["trends"]["daily_revenue"]) == 1
+    assert body["trends"]["daily_revenue"][0]["date"] == "2026-07-06"
+
+
 def test_insights_customer_segmentation_returns_segment_counts(client, monkeypatch):
     seed_insight_orders(client, monkeypatch)
 

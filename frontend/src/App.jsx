@@ -3793,7 +3793,6 @@ const insightWarningPresentation = {
   limited_order_history: { impact: 'Trend and forecasting confidence is limited until more order snapshots are available.', href: '#settings', label: 'Review sync status' },
   missing_unit_cost: { impact: 'Margin and inventory-value metrics exclude items without cost.', href: '#/inventory/all?data_quality=missing_cost', label: 'Review missing costs' },
   missing_refund_data: { impact: 'Refund amount and refund rate remain unavailable; net figures are not adjusted using fabricated refund values.' },
-  missing_customer_email: { impact: 'Customer retention and reorder analysis cannot include orders without a customer email.' },
   missing_subscription_data: { impact: 'Subscription dashboards remain unavailable until local subscription snapshots exist.' },
   insufficient_sales_history: { impact: 'Demand, velocity, days-left, and reorder recommendations remain unavailable for affected SKUs until matching sales history exists.' },
   missing_barcode: { impact: 'Scanner-based workflows may require SKU entry for these items.', href: '#/inventory/all?data_quality=missing_barcode', label: 'Review missing barcodes' },
@@ -3804,17 +3803,51 @@ function pickFilterValues(filters, allowed) {
   return Object.fromEntries((allowed || []).filter((key) => filters[key] !== undefined && filters[key] !== '').map((key) => [key, filters[key]]));
 }
 
+function localDateInput(value) {
+  const offset = value.getTimezoneOffset() * 60_000;
+  return new Date(value.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function completedMonthRange(months, compare = false) {
+  const now = new Date();
+  const end = new Date(now.getFullYear(), now.getMonth(), 0);
+  const start = new Date(end.getFullYear(), end.getMonth() - months + 1, 1);
+  const range = { start_date: localDateInput(start), end_date: localDateInput(end) };
+  if (!compare) return { ...range, compare_start_date: '', compare_end_date: '' };
+  const compareEnd = new Date(start.getFullYear(), start.getMonth(), 0);
+  const compareStart = new Date(compareEnd.getFullYear(), compareEnd.getMonth() - months + 1, 1);
+  return { ...range, compare_start_date: localDateInput(compareStart), compare_end_date: localDateInput(compareEnd) };
+}
+
+function emptyInsightFilters(withDefaultRange = true) {
+  return {
+    ...(withDefaultRange ? completedMonthRange(1) : { start_date: '', end_date: '', compare_start_date: '', compare_end_date: '' }),
+    granularity: 'day',
+    brand: '', category: '', sku: '', customer_email: '', city: '', postal_code: '', payment_method: '', order_status: '',
+  };
+}
+
+function insightRequestFilters(filters, allowed) {
+  const request = pickFilterValues(filters, allowed);
+  if (allowed.includes('start_date') || allowed.includes('end_date')) {
+    ['compare_start_date', 'compare_end_date', 'granularity'].forEach((key) => {
+      if (filters[key]) request[key] = filters[key];
+    });
+  }
+  return request;
+}
+
 function InsightsPage({ route }) {
   const activeTab = route.insightsView || 'overview';
   const [cache, setCache] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [filters, setFilters] = useState({ start_date: '', end_date: '', brand: '', category: '', sku: '', customer_email: '', city: '', postal_code: '', payment_method: '', order_status: '' });
+  const [filters, setFilters] = useState(() => emptyInsightFilters());
   const tabListRef = useRef(null);
   const tabRefs = useRef({});
   const activeConfig = insightTabs.find((tab) => tab.id === activeTab) || insightTabs[0];
   const allowedFilters = insightFiltersByTab[activeTab] || [];
-  const activeFilters = pickFilterValues(filters, allowedFilters);
+  const activeFilters = insightRequestFilters(filters, allowedFilters);
   const activeData = cache[activeTab];
 
   useEffect(() => {
@@ -3824,13 +3857,13 @@ function InsightsPage({ route }) {
   }, [activeTab]);
 
   useEffect(() => {
-    setFilters((current) => Object.fromEntries(Object.entries(current).map(([key, value]) => [key, allowedFilters.includes(key) ? value : ''])));
+    setFilters((current) => Object.fromEntries(Object.entries(current).map(([key, value]) => [key, allowedFilters.includes(key) || ((allowedFilters.includes('start_date') || allowedFilters.includes('end_date')) && ['compare_start_date', 'compare_end_date', 'granularity'].includes(key)) ? value : ''])));
     tabRefs.current[activeTab]?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   }, [activeTab]);
 
   async function loadInsight(tabId = activeTab, forceFilters) {
     const config = insightTabs.find((tab) => tab.id === tabId) || insightTabs[0];
-    const requestFilters = forceFilters || pickFilterValues(filters, insightFiltersByTab[tabId] || []);
+    const requestFilters = forceFilters || insightRequestFilters(filters, insightFiltersByTab[tabId] || []);
     setLoading(true);
     setError('');
     try {
@@ -3857,10 +3890,25 @@ function InsightsPage({ route }) {
   }
 
   function clearFilters() {
-    const nextFilters = { start_date: '', end_date: '', brand: '', category: '', sku: '', customer_email: '', city: '', postal_code: '', payment_method: '', order_status: '' };
+    const nextFilters = emptyInsightFilters(false);
     setFilters(nextFilters);
     setCache({});
     loadInsight(activeTab, {});
+  }
+
+  function applyDatePreset(months, compare = false) {
+    const nextFilters = { ...filters, ...completedMonthRange(months, compare) };
+    setFilters(nextFilters);
+    setCache({});
+    loadInsight(activeTab, insightRequestFilters(nextFilters, allowedFilters));
+  }
+
+  function applySalesTemplate(granularity) {
+    const nextFilters = { ...filters, ...completedMonthRange(granularity === 'week' ? 3 : 1), granularity };
+    setFilters(nextFilters);
+    setCache({});
+    if (activeTab === 'orders-revenue') loadInsight(activeTab, insightRequestFilters(nextFilters, insightFiltersByTab['orders-revenue']));
+    else selectTab('orders-revenue');
   }
 
   function selectTab(tabId) {
@@ -3923,6 +3971,25 @@ function InsightsPage({ route }) {
 
       <div className="filter-card insights-filter-card">
         {(allowedFilters.includes('start_date') || allowedFilters.includes('end_date')) && <p className="filter-context">Date range: {filters.start_date || filters.end_date ? `${filters.start_date || 'earliest'} to ${filters.end_date || 'latest'}` : 'All available local history'}</p>}
+        {(allowedFilters.includes('start_date') || allowedFilters.includes('end_date')) && (
+          <div className="date-preset-panel">
+            <div><span>Quick range</span><small>Completed calendar periods</small></div>
+            <div className="date-preset-buttons" aria-label="Insights date presets">
+              <button type="button" onClick={() => applyDatePreset(1)}>Last month</button>
+              <button type="button" onClick={() => applyDatePreset(2)}>Last 2 months</button>
+              <button type="button" onClick={() => applyDatePreset(3)}>Last 3 months</button>
+              <button type="button" onClick={() => applyDatePreset(12)}>Last year</button>
+              <button type="button" onClick={() => applyDatePreset(1, true)}>Compare 1M</button>
+              <button type="button" onClick={() => applyDatePreset(2, true)}>Compare 2M</button>
+              <button type="button" onClick={() => applyDatePreset(12, true)}>Compare 1Y</button>
+            </div>
+            <div className="date-preset-buttons date-view-buttons" aria-label="Insights view templates">
+              <button type="button" className={filters.granularity === 'day' && activeTab === 'orders-revenue' ? 'active' : ''} onClick={() => applySalesTemplate('day')}>Sales / day</button>
+              <button type="button" className={filters.granularity === 'week' && activeTab === 'orders-revenue' ? 'active' : ''} onClick={() => applySalesTemplate('week')}>Sales / week</button>
+              <a href="#/reports/received-inventory">Stock received / day</a>
+            </div>
+          </div>
+        )}
         <div className="filter-grid report-filter-grid">
           {allowedFilters.map((field) => (
             <label className="field" key={field}>
@@ -3963,6 +4030,7 @@ function InsightDashboard({ config, data }) {
   const totalPages = Math.max(1, Math.ceil(tableRows.length / pageSize));
   const currentPage = Math.min(page, totalPages);
   const visibleRows = tableRows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const comparisonEntries = summaryEntries.filter(([key]) => data.comparison?.changes?.[key] !== undefined).slice(0, 6);
 
   useEffect(() => {
     setPage(1);
@@ -3975,6 +4043,27 @@ function InsightDashboard({ config, data }) {
         {summaryEntries.map(([key, value]) => <Metric key={key} label={titleize(key)} value={formatInsightValue(key, value)} help={insightMetricDefinitions[key]} />)}
         {!summaryEntries.length && <div className="empty-table-row">No summary metrics available for this dashboard yet.</div>}
       </div>
+
+      {!!comparisonEntries.length && (
+        <section className="insight-comparison" aria-label="Prior period comparison">
+          <div className="insight-comparison-heading">
+            <span>Prior period comparison</span>
+            <small>{data.comparison.start_date} to {data.comparison.end_date}</small>
+          </div>
+          <div className="insight-comparison-grid">
+            {comparisonEntries.map(([key]) => {
+              const change = data.comparison.changes[key];
+              return (
+                <article key={key}>
+                  <span>{titleize(key)}</span>
+                  <strong className={change > 0 ? 'positive' : change < 0 ? 'negative' : ''}>{change === null ? 'No baseline' : `${change > 0 ? '+' : ''}${change}%`}</strong>
+                  <small>Previous: {formatInsightValue(key, data.comparison.summary[key])}</small>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {!!trendRows.length && (
         <div className="insight-trend-grid">
@@ -7315,6 +7404,12 @@ function ExpandedReportsPanel({ activeReport }) {
     }
   }
 
+  function applyDatePreset(months) {
+    const nextFilters = { ...filters, ...completedMonthRange(months) };
+    setFilters(nextFilters);
+    loadReport(nextFilters);
+  }
+
   return (
     <section className="wide-panel report-section">
       <div className="panel-title"><div><h2>{definition.label}</h2><p>Read-only local inventory and operations report.</p></div></div>
@@ -7325,6 +7420,7 @@ function ExpandedReportsPanel({ activeReport }) {
       {active === 'inventory-valuation' && <div className="data-quality-warning info"><strong>Count definition</strong><span>Inventory records count catalog items. Reported SKUs have matching location rows; valued SKUs also have a non-null unit cost. Exclusions are listed below rather than hidden.</span></div>}
       {Array.isArray(summary.exclusion_summary) && summary.exclusion_summary.length > 0 && <div className="insight-warning-list" aria-label="Valuation exclusions">{summary.exclusion_summary.map((entry, index) => <div className="insight-warning warning" key={`${entry.reason || entry.label}-${index}`}><strong>{entry.label || titleize(entry.reason)}</strong><span>{entry.message || `${formatNumber(entry.count)} record(s) excluded.`}</span></div>)}</div>}
       <div className="toolbar report-toolbar">
+        {(definition.filters.includes('start_date') || definition.filters.includes('end_date')) && <div className="date-preset-panel report-date-presets"><div><span>Quick range</span><small>Completed calendar periods</small></div><div className="date-preset-buttons" aria-label="Report date presets"><button type="button" onClick={() => applyDatePreset(1)}>Last month</button><button type="button" onClick={() => applyDatePreset(2)}>Last 2 months</button><button type="button" onClick={() => applyDatePreset(3)}>Last 3 months</button><button type="button" onClick={() => applyDatePreset(12)}>Last year</button></div></div>}
         <div className="filter-grid report-filter-grid">
           {definition.filters.map((field) => <label className="field" key={field}><span>{reportFilterLabels[field] || titleize(field)}</span><input value={filters[field]} onChange={(event) => update(field, event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, loadReport)} type={field.endsWith('_date') ? 'date' : 'text'} /></label>)}
         </div>
@@ -7387,6 +7483,14 @@ function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadRepo
     onLoadReport(cleared);
   }
 
+  function applyDatePreset(months) {
+    const range = completedMonthRange(months);
+    const nextFilters = { ...filters, dateFrom: range.start_date, dateTo: range.end_date };
+    setFilters(nextFilters);
+    setActiveFilters(nextFilters);
+    onLoadReport(nextFilters);
+  }
+
   return (
     <section className="wide-panel report-section">
       <div className="panel-title">
@@ -7404,6 +7508,15 @@ function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadRepo
         <Metric label="Unique Locations" value={summary.unique_locations || 0} />
       </div>
       <div className="toolbar report-toolbar">
+        <div className="date-preset-panel report-date-presets">
+          <div><span>Stock received</span><small>Filter posted receipts instantly</small></div>
+          <div className="date-preset-buttons" aria-label="Received inventory date presets">
+            <button type="button" onClick={() => applyDatePreset(1)}>Last month</button>
+            <button type="button" onClick={() => applyDatePreset(2)}>Last 2 months</button>
+            <button type="button" onClick={() => applyDatePreset(3)}>Last 3 months</button>
+            <button type="button" onClick={() => applyDatePreset(12)}>Last year</button>
+          </div>
+        </div>
         <div className="filter-grid report-filter-grid">
           <label className="field">
             <span>Date From</span>

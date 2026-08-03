@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
@@ -16,6 +16,7 @@ def insight_params(
     end_date: str | None = None,
     compare_start_date: str | None = None,
     compare_end_date: str | None = None,
+    granularity: Literal["day", "week"] = "day",
     brand: str | None = None,
     category: str | None = None,
     sku: str | None = None,
@@ -32,6 +33,7 @@ def insight_params(
         "end_date": end_date,
         "compare_start_date": compare_start_date,
         "compare_end_date": compare_end_date,
+        "granularity": granularity,
         "brand": brand,
         "category": category,
         "sku": sku,

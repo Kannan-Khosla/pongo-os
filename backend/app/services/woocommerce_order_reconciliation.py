@@ -205,7 +205,6 @@ def run_order_reconciliation_once(
             previous_success = latest_scheduler_run(db, SUCCESS_STATUSES, exclude_id=job.id)
             modified_after = reconciliation_cursor(effective_settings, started_at, previous_success)
             statuses = list(getattr(effective_settings, "order_reconciliation_statuses", None) or DEFAULT_STATUSES)
-            force_active = requested_by != SCHEDULER_CREATED_BY or previous_success is None
 
         client = client_factory(effective_settings)
         totals = {
@@ -221,7 +220,9 @@ def run_order_reconciliation_once(
         cursor_value = modified_after.isoformat().replace("+00:00", "Z")
         for status in statuses:
             page = 1
-            status_cursor = None if status in ACTIVE_STATUSES and force_active else cursor_value
+            # Active orders are a small operational set and must be reconciled
+            # in full; relying on Woo's modified cursor can miss a pickable order.
+            status_cursor = None if status in ACTIVE_STATUSES else cursor_value
             while True:
                 remote_orders = client.list_orders(
                     page=page,

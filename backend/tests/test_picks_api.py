@@ -152,6 +152,7 @@ def test_pick_waits_until_completion_to_write_reduced_stock_to_woo(client, monke
             "woocommerce_writeback_dry_run": False,
             "woocommerce_staging_live_test_mode": True,
             "woocommerce_allow_stock_write": True,
+            "woocommerce_allow_order_status_write": True,
             "woocommerce_allowed_host": "staging32.pongo.ca",
         }
     )
@@ -159,8 +160,8 @@ def test_pick_waits_until_completion_to_write_reduced_stock_to_woo(client, monke
     calls = []
 
     def fake_write(self, operation_type, method, path, payload):
-        calls.append((operation_type, path, payload["stock_quantity"]))
-        return {"stock_quantity": payload["stock_quantity"]}
+        calls.append((operation_type, path, payload.get("stock_quantity"), payload.get("status")))
+        return payload
 
     monkeypatch.setattr("app.api.routes.orders.WooCommerceClient.guarded_write", fake_write)
     order, _ = allocated_order(client, monkeypatch, item_stock=6, item_allocated=1, quantity=2, sku="PICK-WRITEBACK", barcode="PICK-WRITEBACK-BAR")
@@ -177,7 +178,10 @@ def test_pick_waits_until_completion_to_write_reduced_stock_to_woo(client, monke
     )
 
     assert completed.status_code == 200
-    assert calls == [("update_product_stock", "/wp-json/wc/v3/products/101", 4.0)]
+    assert calls == [
+        ("update_product_stock", "/wp-json/wc/v3/products/101", 4.0, None),
+        ("update_order_status", "/wp-json/wc/v3/orders/501", None, "completed"),
+    ]
 
 
 def test_pick_preview_skips_fully_picked_line(client, monkeypatch):
