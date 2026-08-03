@@ -627,6 +627,8 @@ Implementation:
   reference number, created by, and receipt notes.
 - `inventory_items` enrich barcode, category, brand, and description when a
   receipt line does not already store those values.
+- `inventory_items.description` is unbounded text so complete WooCommerce
+  descriptions cannot block otherwise valid products from catalog import.
 - `inventory_locations` enrich the inventory location code when the receipt
   line stores a location foreign key.
 - `stock_movements` remain the immutable audit trail and are not the primary

@@ -75,7 +75,7 @@ class InventoryItem(TimestampMixin, Base):
     woo_sync_error: Mapped[str | None] = mapped_column(Text)
     sku: Mapped[str | None] = mapped_column(String(120), index=True)
     barcode: Mapped[str | None] = mapped_column(String(120), index=True)
-    description: Mapped[str | None] = mapped_column(String(500))
+    description: Mapped[str | None] = mapped_column(Text)
     category: Mapped[str | None] = mapped_column(String(200), index=True)
     unit_of_measurement: Mapped[str | None] = mapped_column(String(50))
     warehouse: Mapped[str | None] = mapped_column(String(120), index=True)
