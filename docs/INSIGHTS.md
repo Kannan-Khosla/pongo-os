@@ -1,8 +1,7 @@
 # Pongo Insights
 
 Pongo Insights is the read-only business intelligence page for Pongo Inventory
-OS. It is separate from the operational Command Center dashboard and reads local
-Pongo OS data only.
+OS. It is separate from the operational Command Center dashboard.
 
 ## Dashboards
 
@@ -27,18 +26,21 @@ not load all dashboards on first render.
 
 ## Data Sources
 
-Insights uses local tables:
+Insights uses local tables for customer, product, inventory, payment, geography,
+forecasting, and drill-down detail:
 
 - `orders`
 - `order_items`
 - `inventory_items`
 - local WooCommerce order snapshot fields already stored on orders and lines
 
-The frontend never calls WooCommerce. The Insights backend does not call
-WooCommerce and does not write WooCommerce products, orders, statuses, or stock.
-When staging WooCommerce sync is configured, Insights reads the local staging
-product/order/customer/address snapshots after sync commit. It still does not
-call WooCommerce directly.
+For unfiltered Executive Overview and Orders & Revenue date ranges, the backend
+reads WooCommerce Analytics revenue statistics so order count, gross/net sales,
+returns, coupons, tax, shipping, units, AOV, and time-series totals match the
+WooCommerce Analytics screen. Filtered product/customer views continue to use
+local order snapshots because WooCommerce's aggregate endpoint cannot apply
+Pongo-owned inventory dimensions. The frontend never receives credentials or
+calls WooCommerce directly, and Insights never writes WooCommerce or local data.
 
 ## Metrics
 
@@ -70,7 +72,7 @@ sales-per-week presets. Custom start and end dates remain available.
 
 Endpoints return `data_quality` warnings instead of crashing when source data is
 missing. Current warnings include `limited_order_history`,
-`missing_unit_cost`, `missing_refund_data`,
+`missing_unit_cost`, `missing_refund_data`, `woo_analytics_unavailable`,
 `missing_coupon_data`, `missing_subscription_data`, and
 `missing_shipping_postal_code`.
 

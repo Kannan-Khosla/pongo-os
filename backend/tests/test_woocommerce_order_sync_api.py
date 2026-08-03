@@ -486,3 +486,20 @@ def test_order_commit_stores_completed_snapshot_without_open_order(client, monke
     assert dashboard["summary"]["today_orders_count"] == 1
     assert dashboard["summary"]["completed_orders_today"] == 1
     assert dashboard["summary"]["today_revenue"] == 30
+
+
+def test_completed_foosales_order_enters_normal_pick_workflow(client, monkeypatch):
+    seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 6, "Allocated": 0})
+    patch_woo_order_client(
+        monkeypatch,
+        [woo_order(status="completed", payment_method="foosales-stripe-reader", payment_method_title="FooSales POS")],
+    )
+
+    response = client.post("/api/integrations/woocommerce/orders/commit", json={"include_statuses": ["completed"]})
+
+    assert response.status_code == 200
+    assert response.json()["auto_allocated_count"] == 1
+    order = client.get("/api/orders/pick").json()["orders"][0]
+    assert order["woo_status"] == "completed"
+    assert order["local_status"] == "allocated"
+    assert client.get(f"/api/orders/{order['id']}").json()["payment_method"] == "foosales-stripe-reader"

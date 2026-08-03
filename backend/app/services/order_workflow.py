@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session, defer, selectinload
 
 from app.models.allocations import Allocation, AllocationLine
@@ -26,6 +26,27 @@ COMPLETED_LOCAL_STATUSES = {"completed", "closed", "fulfilled", "partially_fulfi
 BLOCKING_MATCH_STATUSES = {"unmatched", "conflict"}
 BLOCKING_ALLOCATION_EXCEPTION_REASONS = {"woo_quantity_below_allocated"}
 POSTGRES_FIFO_ALLOCATION_LOCK_KEY = int.from_bytes(b"PONGOFIF", byteorder="big")
+POS_PAYMENT_METHOD_PREFIX = "foosales"
+
+
+def is_pos_order(order: Order) -> bool:
+    return (order.payment_method or "").strip().casefold().startswith(POS_PAYMENT_METHOD_PREFIX)
+
+
+def is_operational_order(order: Order) -> bool:
+    return is_active_order(order) and (
+        order.woo_status == "processing" or (order.woo_status == "completed" and is_pos_order(order))
+    )
+
+
+def operational_order_clause():
+    return or_(
+        Order.woo_status == "processing",
+        and_(
+            Order.woo_status == "completed",
+            func.lower(func.coalesce(Order.payment_method, "")).like(f"{POS_PAYMENT_METHOD_PREFIX}%"),
+        ),
+    )
 
 
 @dataclass
@@ -192,7 +213,7 @@ def auto_allocate_order_if_possible(db: Session, order_id: int, source: str = "a
     order = load_order(db, order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
-    if not is_active_order(order) or order.woo_status != "processing":
+    if not is_operational_order(order):
         order.auto_allocation_status = "skipped_inactive"
         sync_order_workflow_statuses(order)
         return {"status": "skipped", "reason": "not_active_processing", "evaluation": None, "allocation_id": None, "allocated_quantity": 0}
@@ -337,7 +358,7 @@ def auto_allocate_processing_orders_fifo(db: Session, source: str = "fifo-auto-a
     orders = list(
         db.scalars(
             select(Order)
-            .where(Order.woo_status == "processing")
+            .where(operational_order_clause())
             .options(defer(Order.raw_woo_payload), selectinload(Order.items).selectinload(OrderItem.inventory_item))
             .order_by(Order.date_created.asc().nulls_last(), Order.id.asc())
         ).all()
@@ -405,7 +426,7 @@ def determine_order_workflow_flags(db: Session, order_id: int) -> dict:
 
 def workflow_flags(order: Order) -> dict:
     active = is_active_order(order)
-    operational = active and order.woo_status == "processing"
+    operational = is_operational_order(order)
     can_pick = operational and is_pickable(order)
     return {
         "shows_in_open_orders": operational,
@@ -625,7 +646,7 @@ def sync_order_workflow_statuses(order: Order) -> None:
     any_picked = any(to_decimal(line.quantity_picked) > 0 for line in matched_lines)
     all_picked = bool(matched_lines) and all(line_is_fully_picked_and_reduced(line) for line in matched_lines)
 
-    if order.woo_status and order.woo_status != "processing" and order.completion_status not in {"completed", "completed_without_picking"}:
+    if order.woo_status and not is_operational_order(order) and order.completion_status not in {"completed", "completed_without_picking"}:
         order.local_status = order.woo_status
         order.completion_status = order.woo_status
         order.allocation_status = "unallocated"

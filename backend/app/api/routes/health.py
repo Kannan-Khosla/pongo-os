@@ -16,6 +16,7 @@ from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_order_reconciliation import order_worker_is_recent, reconciliation_health
 from app.services.woocommerce_webhooks import webhook_is_configured
 from app.services.woocommerce_stock_sync_jobs import stock_sync_worker_health, unresolved_stock_sync_job_count
+from app.services.order_workflow import operational_order_clause
 
 router = APIRouter(tags=["health"])
 
@@ -59,7 +60,7 @@ def readiness_check(db: Session = Depends(get_db)) -> ReadinessResponse | JSONRe
         select(func.count(OrderItem.id)).join(Order, Order.id == OrderItem.order_id).where(
             OrderItem.inventory_item_id.is_(None),
             OrderItem.quantity_ordered > 0,
-            Order.woo_status.in_(["processing", "on-hold", "pending"]),
+            operational_order_clause(),
         )
     ) or 0)
     checks.extend([

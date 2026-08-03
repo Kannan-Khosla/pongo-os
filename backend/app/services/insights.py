@@ -9,13 +9,17 @@ from itertools import combinations
 from numbers import Number
 from statistics import median
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.inventory import InventoryItem
 from app.models.orders import Order, OrderItem
-from app.schemas.insights import InsightResponse
+from app.core.config import get_settings
+from app.schemas.insights import DataQualityWarning, InsightResponse
+from app.services.woocommerce_access import effective_woocommerce_settings
+from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 
 
 SUCCESS_STATUSES = {"completed", "processing", "fulfilled", "partially_fulfilled", "open", "allocated", "picked"}
@@ -48,6 +52,7 @@ def build_insight(db: Session, dashboard: str, params: dict[str, Any] | None = N
         "reorder-forecast": reorder_forecast,
     }
     result = builders[dashboard](context)
+    apply_woo_analytics(db, dashboard, params, result)
     if params.get("compare_start_date") and params.get("compare_end_date"):
         comparison_params = {
             **params,
@@ -57,6 +62,7 @@ def build_insight(db: Session, dashboard: str, params: dict[str, Any] | None = N
             "compare_end_date": None,
         }
         previous = builders[dashboard](build_context(db, comparison_params))
+        apply_woo_analytics(db, dashboard, comparison_params, previous)
         result.comparison = {
             "start_date": params["compare_start_date"],
             "end_date": params["compare_end_date"],
@@ -64,6 +70,73 @@ def build_insight(db: Session, dashboard: str, params: dict[str, Any] | None = N
             "changes": summary_changes(result.summary, previous.summary),
         }
     return result
+
+
+def apply_woo_analytics(db: Session, dashboard: str, params: dict[str, Any], result: InsightResponse) -> None:
+    if dashboard not in {"overview", "orders-revenue"} or not params.get("start_date") or not params.get("end_date"):
+        return
+    if any(params.get(key) for key in ("brand", "category", "sku", "customer_email", "city", "postal_code", "payment_method", "order_status")):
+        return
+    settings = get_settings()
+    if settings.app_env in {"test", "e2e"}:
+        return
+    try:
+        client = WooCommerceClient(effective_woocommerce_settings(db, settings))
+        if not client.configured:
+            return
+        stats = client.analytics_stats(
+            "revenue",
+            after=str(params["start_date"]),
+            before=str(params["end_date"]),
+            interval=str(params.get("granularity") or "day"),
+        )
+    except (WooCommerceClientError, ValueError) as error:
+        result.data_quality.append(DataQualityWarning(code="woo_analytics_unavailable", severity="warning", message=f"WooCommerce Analytics could not be loaded: {error.message if isinstance(error, WooCommerceClientError) else str(error)}"))
+        return
+    totals = stats["totals"]
+    total_orders = int(totals.get("orders_count") or 0)
+    exact = {
+        "total_orders": total_orders,
+        "gross_sales": dec(totals.get("gross_sales")),
+        "net_sales": dec(totals.get("net_revenue")),
+        "average_order_value": dec(totals.get("avg_order_value")) if total_orders else None,
+        "units_sold": dec(totals.get("num_items_sold")),
+        "refund_amount": dec(totals.get("refunds")),
+        "refund_rate": percent(totals.get("refunds"), totals.get("gross_sales")),
+        "discount_amount": dec(totals.get("coupons")),
+    }
+    if dashboard == "overview":
+        exact.update({
+            "total_customers": int(totals.get("total_customers") or 0),
+            "coupon_discount_total": dec(totals.get("coupons")),
+        })
+    else:
+        exact.update({
+            "units_per_order": dec(totals.get("avg_items_per_order")),
+            "discount_rate": percent(totals.get("coupons"), totals.get("gross_sales")),
+            "shipping_revenue": dec(totals.get("shipping")),
+            "tax_total": dec(totals.get("taxes")),
+        })
+    result.summary.update(exact)
+    if result.metrics:
+        result.metrics.update(exact)
+    trend = []
+    for interval in stats.get("intervals") or []:
+        subtotal = interval.get("subtotals") or {}
+        trend.append({
+            "date": str(interval.get("interval") or interval.get("date_start") or "")[:10],
+            "order_count": int(subtotal.get("orders_count") or 0),
+            "gross_sales": dec(subtotal.get("gross_sales")),
+            "net_sales": dec(subtotal.get("net_revenue")),
+            "units_sold": dec(subtotal.get("num_items_sold")),
+        })
+    result.trends["daily_revenue"] = trend
+    result.trends["revenue_by_day"] = trend
+    result.trends["orders_by_day"] = [{"date": row["date"], "order_count": row["order_count"]} for row in trend]
+    if dashboard == "orders-revenue":
+        result.rows = trend
+    result.data_quality = [entry for entry in result.data_quality if entry.code not in {"missing_refund_data", "limited_order_history"}]
+    result.empty_state = None if total_orders else result.empty_state
 
 
 def export_insight_csv(db: Session, dashboard: str, params: dict[str, Any] | None = None) -> str:
@@ -972,7 +1045,13 @@ def parse_date(value: Any, end_of_day: bool = False) -> datetime | None:
 
 
 def make_aware(value: datetime) -> datetime:
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if value.tzinfo:
+        return value.astimezone(timezone.utc)
+    try:
+        local_timezone = ZoneInfo(get_settings().admin_timezone)
+    except ZoneInfoNotFoundError:
+        local_timezone = timezone.utc
+    return value.replace(tzinfo=local_timezone).astimezone(timezone.utc)
 
 
 def money(value: Any) -> Decimal:

@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.main import app
 from app.models.inventory import InventoryItem
@@ -256,6 +257,56 @@ def test_insights_compare_period_and_weekly_sales(client, monkeypatch):
     assert body["comparison"]["changes"]["net_sales"] == 400
     assert len(body["trends"]["daily_revenue"]) == 1
     assert body["trends"]["daily_revenue"][0]["date"] == "2026-07-06"
+
+
+def test_unfiltered_sales_headlines_use_authoritative_woo_analytics(client, monkeypatch):
+    settings = get_settings().model_copy(update={
+        "app_env": "production",
+        "woocommerce_base_url": "https://woo.example.invalid",
+        "woocommerce_consumer_key": "ck_test",
+        "woocommerce_consumer_secret": "cs_test",
+    })
+    monkeypatch.setattr("app.services.insights.get_settings", lambda: settings)
+    monkeypatch.setattr("app.services.insights.effective_woocommerce_settings", lambda _db, value: value)
+    monkeypatch.setattr(
+        "app.services.insights.WooCommerceClient.analytics_stats",
+        lambda _self, *_args, **_kwargs: {
+            "totals": {
+                "orders_count": 265,
+                "num_items_sold": 1006,
+                "gross_sales": 27497.84,
+                "net_revenue": 26491.41,
+                "avg_order_value": 101.702792,
+                "refunds": 459.83,
+                "coupons": 546.60,
+                "shipping": 109.89,
+                "taxes": 1299.07,
+                "avg_items_per_order": 3.8189,
+                "total_customers": 229,
+            },
+            "intervals": [{
+                "interval": "2026-07-01",
+                "subtotals": {"orders_count": 9, "gross_sales": 900, "net_revenue": 850, "num_items_sold": 31},
+            }],
+        },
+    )
+
+    body = client.get(
+        "/api/insights/orders-revenue",
+        params={"start_date": "2026-07-01", "end_date": "2026-07-31"},
+    ).json()
+
+    assert {
+        "total_orders": 265,
+        "gross_sales": 27497.84,
+        "net_sales": 26491.41,
+        "refund_amount": 459.83,
+        "discount_amount": 546.6,
+        "shipping_revenue": 109.89,
+        "tax_total": 1299.07,
+    }.items() <= body["summary"].items()
+    assert body["rows"] == [{"date": "2026-07-01", "order_count": 9, "gross_sales": 900.0, "net_sales": 850.0, "units_sold": 31.0}]
+    assert all(warning["code"] != "missing_refund_data" for warning in body["data_quality"])
 
 
 def test_insights_customer_segmentation_returns_segment_counts(client, monkeypatch):

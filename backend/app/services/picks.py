@@ -29,6 +29,7 @@ from app.services.location_inventory import lock_inventory_stock, reduce_pick_fr
 from app.services.order_workflow import (
     add_audit_event,
     allocation_remaining_by_location,
+    is_operational_order,
     is_pickable as workflow_order_is_pickable,
     sync_order_workflow_statuses,
 )
@@ -375,7 +376,7 @@ def unpick_orders(
     orders_by_id = {order.id: order for order in orders}
     errors = [f"Order {order_id} was not found." for order_id in selected_ids if order_id not in orders_by_id]
     for order in orders:
-        if (order.woo_status or "").casefold() != "processing":
+        if not is_operational_order(order):
             errors.append(f"Order {order.woo_order_number or order.id} is not an active processing order and cannot be unpicked.")
         if order.completed_at or order.closed_at or order.completion_status in {"completed", "closed"}:
             errors.append(f"Order {order.woo_order_number or order.id} is completed and cannot be unpicked.")

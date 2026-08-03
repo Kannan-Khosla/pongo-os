@@ -5,8 +5,9 @@ Pongo Inventory OS now follows a Zenventory-style local order workflow:
 1. Signed WooCommerce `order.created` and `order.updated` webhooks import and
    reconcile local orders; server-side periodic reconciliation remains the
    recovery path for missed deliveries.
-2. Only active orders whose latest stored WooCommerce status is `processing`
-   enter the operational allocation queues.
+2. Active `processing` orders enter the operational allocation queues. FooSales
+   POS orders also enter the same queues when FooSales creates them directly as
+   WooCommerce `completed` orders.
 3. Processing orders are auto-allocated oldest first by WooCommerce
    `date_created`; equal timestamps use the local order ID as a deterministic
    tie-breaker, and missing dates sort after dated orders.
@@ -16,7 +17,8 @@ Pongo Inventory OS now follows a Zenventory-style local order workflow:
 5. Pick Orders is where staff open an allocated order, enter the quantity
    physically picked for each product line, and confirm the pick. Picking
    reduces local stock.
-6. Open Orders shows active local orders whose latest stored WooCommerce status is `processing`, newest first, until staff complete or close the order locally.
+6. Open Orders shows active processing and FooSales POS orders, newest first,
+   until staff complete or close the order locally.
 
 WooCommerce remains the storefront. Completing a Pongo OS order also marks the
 linked WooCommerce order `completed` through the guarded backend writeback
@@ -65,11 +67,11 @@ data.
 
 An order can appear in more than one operational view:
 
-- Open Orders: active local customer orders whose latest stored WooCommerce status is `processing` and that are not locally completed or closed.
-- Allocate: processing orders with unresolved quantities, shortages, unmatched
+- Open Orders: active processing and FooSales POS orders that are not locally completed or closed.
+- Allocate: operational orders with unresolved quantities, shortages, unmatched
   lines, conflicts, unavailable location stock, or failed/partial
   auto-allocation. The default view excludes 100% allocated lines.
-- Pick Orders: processing orders whose required inventory lines are fully
+- Pick Orders: operational orders whose required inventory lines are fully
   allocated. Partially allocated orders remain in Allocate. Fully picked
   orders leave this queue and remain available for audited correction in Open
   Orders.
@@ -91,7 +93,7 @@ always oldest `date_created` first. This prevents the newest order in a sync
 response from consuming stock owed to an older processing order.
 
 Auto-allocation:
-- considers processing orders only;
+- considers processing orders and completed FooSales POS orders that remain locally active;
 - uses `date_created ASC`, then local order ID ASC, with missing dates last;
 - uses `inventory_item_locations` as the quantity source of truth;
 - ignores inactive locations;
@@ -139,10 +141,11 @@ Preview endpoints remain read-only and do not trigger allocation.
 
 ## WooCommerce Status Changes
 
-Only `processing` is operational. Pending, on-hold, cancelled, failed, refunded,
-completed, and other non-processing snapshots may be retained for reporting or
-sync history, but they do not appear in Open Orders, Allocate, or Pick Orders
-and cannot reserve new stock.
+`processing` is operational. A `completed` order is also operational when its
+payment method starts with `foosales`; this is the POS exception because
+FooSales completes Woo orders at the till before Pongo's warehouse workflow.
+Other pending, on-hold, cancelled, failed, refunded, completed, and
+non-processing snapshots remain reporting history and cannot reserve stock.
 
 When a previously allocated order is synchronized to a non-processing status,
 Pongo OS releases its remaining unpicked allocation with deallocation audit

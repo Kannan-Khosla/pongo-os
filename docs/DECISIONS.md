@@ -390,17 +390,18 @@ overflow horizontally. Visible action controls must work, navigate to a real
 workflow, or be disabled/removed. Frontend tests run with Vitest and Testing
 Library through `npm test -- --run`.
 
-## ADR-031: Pongo Insights Is Read-Only Local BI
+## ADR-031: Pongo Insights Is Read-Only BI
 
-Decision: Add Pongo Insights as a separate sidebar page and backend router
-built from local `orders`, `order_items`, and `inventory_items` data.
+Decision: Add Pongo Insights as a separate sidebar page and backend router.
+Pongo-owned dimensions use local `orders`, `order_items`, and `inventory_items`;
+unfiltered sales headlines use WooCommerce Analytics revenue statistics.
 
 Reason: Pongo needs business intelligence and forecasting without disturbing the
 operational Command Center or introducing WooCommerce writeback risk.
 
-Safety: Insights endpoints are read-only, do not call WooCommerce, do not mutate
-local stock or orders, and return explicit data quality warnings or empty states
-when subscription, coupon, refund, or other source fields are not synced yet.
+Safety: Insights endpoints are read-only, never expose credentials, never mutate
+local stock or orders, and perform only backend WooCommerce GET requests. They
+return explicit data quality warnings or empty states when a source is unavailable.
 
 ## ADR-032: Dashboard Is Business Home, Inventory Overview Is Operations
 

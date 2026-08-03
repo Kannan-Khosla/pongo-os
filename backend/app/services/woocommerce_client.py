@@ -152,6 +152,43 @@ class WooCommerceClient:
                 page += 1
         return orders
 
+    def analytics_stats(self, report: str, *, after: str, before: str, interval: str = "day") -> dict[str, Any]:
+        if report not in {"orders", "revenue"} or interval not in {"day", "week"}:
+            raise ValueError("Unsupported WooCommerce analytics report.")
+        result: dict[str, Any] | None = None
+        intervals: dict[str, dict[str, Any]] = {}
+        page = 1
+        while True:
+            data = self._request(
+                "GET",
+                f"/wp-json/wc-analytics/reports/{report}/stats",
+                params={
+                    "after": f"{after}T00:00:00",
+                    "before": f"{before}T23:59:59",
+                    "interval": interval,
+                    "order": "asc",
+                    "page": page,
+                    "per_page": 100,
+                },
+            )
+            if not isinstance(data, dict) or not isinstance(data.get("totals"), dict):
+                raise WooCommerceClientError("WooCommerce Analytics returned an unexpected response shape.")
+            result = result or {**data, "intervals": []}
+            batch = data.get("intervals") or []
+            if not isinstance(batch, list):
+                raise WooCommerceClientError("WooCommerce Analytics returned an unexpected response shape.")
+            before_count = len(intervals)
+            for row in batch:
+                if isinstance(row, dict):
+                    intervals[str(row.get("interval") or row.get("date_start") or len(intervals))] = row
+            if len(batch) < 100 or len(intervals) == before_count:
+                break
+            page += 1
+        if result is None:
+            raise WooCommerceClientError("WooCommerce Analytics returned no data.")
+        result["intervals"] = list(intervals.values())
+        return result
+
     def check_connection(self) -> None:
         self.list_products(page=1, per_page=1)
         self.list_orders(page=1, per_page=1, status="processing")

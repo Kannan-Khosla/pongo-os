@@ -1293,7 +1293,7 @@ describe('App shell and workflows', () => {
     expect(metricLabels).toEqual(['Gross Sales', 'Discount Amount', 'Refund Amount', 'Net Sales', 'Total Orders', 'Units Sold', 'Average Order Value']);
     const refundMetric = screen.getByText('Refund Amount').closest('.metric');
     expect(within(refundMetric).getByText('Not available')).toBeInTheDocument();
-    expect(within(refundMetric).getByText('Refund value when refund detail is available locally.')).toBeInTheDocument();
+    expect(within(refundMetric).getByText('Refund value reported by WooCommerce Analytics for the selected unfiltered range.')).toBeInTheDocument();
     expect(screen.getByText('Low risk')).toBeInTheDocument();
     expect(screen.queryByText('Total Revenue')).not.toBeInTheDocument();
 

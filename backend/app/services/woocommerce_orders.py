@@ -26,6 +26,7 @@ from app.services.location_inventory import lock_inventory_stock
 from app.services.order_workflow import (
     append_note,
     auto_allocate_processing_orders_fifo,
+    operational_order_clause,
     release_line_allocations,
     release_unpicked_allocations,
     sync_order_workflow_statuses,
@@ -34,8 +35,6 @@ from app.services.order_workflow import (
 
 OPEN_WOO_STATUSES = {"processing", "on-hold", "pending"}
 BARCODE_META_KEYS = {"barcode", "_barcode", "_ywbc_barcode", "upc", "gtin"}
-LOCAL_TERMINAL_STATUSES = {"completed", "closed", "fulfilled", "partially_fulfilled", "archived"}
-LOCAL_TERMINAL_COMPLETION_STATUSES = {"completed", "completed_without_picking"}
 WOO_QUANTITY_BELOW_ALLOCATED_REASON = "woo_quantity_below_allocated"
 RETIRED_WOO_LINE_STATUS = "removed_from_woocommerce"
 POSTGRES_ORDER_IMPORT_LOCK_KEY = int.from_bytes(b"PONGOORD", byteorder="big")
@@ -247,7 +246,7 @@ def commit_remote_order_records(
                     order.allocation_exception_reason = None
                 db.flush()
                 db.expire(order, ["items"])
-                if record.woo_status != "processing":
+                if not is_operational_record(record):
                     released_quantity = release_unpicked_allocations(
                         db,
                         order,
@@ -289,7 +288,7 @@ def commit_remote_order_records(
     )
     pick_ready_count = sum(
         1
-        for order in db.scalars(select(Order).where(Order.woo_status == "processing").options(defer(Order.raw_woo_payload), selectinload(Order.items))).all()
+        for order in db.scalars(select(Order).where(operational_order_clause()).options(defer(Order.raw_woo_payload), selectinload(Order.items))).all()
         if order.pick_status in {"ready_to_pick", "partially_picked", "picked"}
     )
     if fifo_summary["errors"]:
@@ -360,7 +359,13 @@ def acquire_order_import_transaction_lock(db: Session) -> None:
 
 
 def is_locally_terminal_order(order: Order) -> bool:
-    return order.local_status in LOCAL_TERMINAL_STATUSES or order.completion_status in LOCAL_TERMINAL_COMPLETION_STATUSES
+    return bool(order.completed_at or order.closed_at or order.completed_without_picking)
+
+
+def is_operational_record(record: NormalizedWooOrder) -> bool:
+    return record.woo_status == "processing" or (
+        record.woo_status == "completed" and record.payment_method.strip().casefold().startswith("foosales")
+    )
 
 
 def order_recency_sort_key(order: dict[str, Any]) -> datetime:
@@ -375,7 +380,7 @@ def build_order_preview(db: Session, record: NormalizedWooOrder, requested_statu
     if record.woo_status not in requested_statuses:
         action = "skip"
         warnings.append(f"WooCommerce status {record.woo_status or 'unknown'} was not requested for this sync.")
-    elif record.woo_status not in OPEN_WOO_STATUSES:
+    elif record.woo_status not in OPEN_WOO_STATUSES and not is_operational_record(record):
         warnings.append(f"WooCommerce status {record.woo_status or 'unknown'} will be stored as a read-only local snapshot, not an open operational order.")
     lines = [build_line_preview(db, line) for line in record.lines]
     matched_status = aggregate_matched_status(lines)
@@ -472,11 +477,15 @@ def normalize_order(order: dict[str, Any]) -> NormalizedWooOrder:
     billing = order.get("billing") or {}
     shipping = order.get("shipping") or {}
     woo_status = str(order.get("status") or "")
+    payment_method = str(order.get("payment_method") or "")
+    operational = woo_status == "processing" or (
+        woo_status == "completed" and payment_method.strip().casefold().startswith("foosales")
+    )
     return NormalizedWooOrder(
         woo_order_id=int(order.get("id")),
         woo_order_number=str(order.get("number") or order.get("id") or ""),
         woo_status=woo_status,
-        local_status="open" if woo_status in OPEN_WOO_STATUSES else (woo_status or "synced"),
+        local_status="open" if woo_status in OPEN_WOO_STATUSES or operational else (woo_status or "synced"),
         currency=str(order.get("currency") or ""),
         customer_id=to_int_or_none(order.get("customer_id")),
         customer_email=str(billing.get("email") or order.get("billing_email") or ""),
@@ -485,7 +494,7 @@ def normalize_order(order: dict[str, Any]) -> NormalizedWooOrder:
         customer_phone=str(billing.get("phone") or shipping.get("phone") or ""),
         billing_summary=address_summary(billing),
         shipping_summary=address_summary(shipping),
-        payment_method=str(order.get("payment_method") or ""),
+        payment_method=payment_method,
         payment_method_title=str(order.get("payment_method_title") or ""),
         subtotal=calculate_subtotal(order),
         discount_total=to_decimal_or_none(order.get("discount_total")),
@@ -813,7 +822,7 @@ def list_open_orders(
         orders = [
             order
             for order in orders
-            if workflow_flags(order)["shows_in_open_orders"] and (order.woo_status or "").casefold() == "processing"
+            if workflow_flags(order)["shows_in_open_orders"]
         ]
     if search:
         needle = search.casefold()

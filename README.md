@@ -240,7 +240,7 @@ Current local build now includes:
   email delivery. Calculation and accounting boundaries are documented in
   `docs/REPORTING.md`.
 - Pongo Insights: a separate read-only BI page with tabbed dashboards for executive overview, revenue, customers, segmentation, SKU demand, subscriptions empty states, forecasting, coupons, payment health, geography, affinity, and reorder forecast. See `docs/INSIGHTS.md`.
-- Zenventory-style Orders workflow: Woo order sync runs processing-only FIFO
+- Zenventory-style Orders workflow: Woo order sync runs FIFO for processing and FooSales POS
   auto-allocation, Open Orders is review/completion, Allocate shows unresolved
   Orders/Items shortages, fully allocated orders enter Pick Orders, and Order
   History holds allocation/pick/legacy fulfillment records. See

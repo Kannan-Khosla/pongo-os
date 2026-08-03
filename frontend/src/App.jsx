@@ -3780,19 +3780,20 @@ const insightSummaryOrder = {
 };
 
 const insightMetricDefinitions = {
-  gross_sales: 'Product line subtotal before discounts for matching completed or active sales orders.',
-  discount_amount: 'Discount value captured in local order snapshots.',
-  refund_amount: 'Refund value when refund detail is available locally.',
-  net_sales: 'Product line sales after line discounts, excluding shipping and tax, for matching completed or active sales orders.',
-  total_orders: 'Orders matching the selected range and report inclusion rules.',
-  units_sold: 'Sum of item quantities on matching orders.',
-  average_order_value: 'Net sales divided by matching orders.',
+  gross_sales: 'WooCommerce Analytics gross sales for unfiltered ranges; local order lines when Pongo filters are applied.',
+  discount_amount: 'WooCommerce Analytics coupon value for unfiltered ranges; local order discounts when Pongo filters are applied.',
+  refund_amount: 'Refund value reported by WooCommerce Analytics for the selected unfiltered range.',
+  net_sales: 'WooCommerce Analytics net revenue for unfiltered ranges; filtered local product-line sales otherwise.',
+  total_orders: 'WooCommerce Analytics order count for unfiltered ranges; matching local orders otherwise.',
+  units_sold: 'WooCommerce Analytics item count for unfiltered ranges; matching local item quantities otherwise.',
+  average_order_value: 'WooCommerce Analytics average order value for unfiltered ranges; local net sales per order otherwise.',
 };
 
 const insightWarningPresentation = {
   limited_order_history: { impact: 'Trend and forecasting confidence is limited until more order snapshots are available.', href: '#settings', label: 'Review sync status' },
   missing_unit_cost: { impact: 'Margin and inventory-value metrics exclude items without cost.', href: '#/inventory/all?data_quality=missing_cost', label: 'Review missing costs' },
   missing_refund_data: { impact: 'Refund amount and refund rate remain unavailable; net figures are not adjusted using fabricated refund values.' },
+  woo_analytics_unavailable: { impact: 'Pongo is temporarily showing locally synced order snapshots. Check the WooCommerce connection and refresh.' },
   missing_subscription_data: { impact: 'Subscription dashboards remain unavailable until local subscription snapshots exist.' },
   insufficient_sales_history: { impact: 'Demand, velocity, days-left, and reorder recommendations remain unavailable for affected SKUs until matching sales history exists.' },
   missing_barcode: { impact: 'Scanner-based workflows may require SKU entry for these items.', href: '#/inventory/all?data_quality=missing_barcode', label: 'Review missing barcodes' },

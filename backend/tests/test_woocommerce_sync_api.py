@@ -82,6 +82,32 @@ def test_woocommerce_connection_check_requires_product_and_order_access(monkeypa
     ]
 
 
+def test_woocommerce_analytics_stats_collects_paginated_intervals(monkeypatch):
+    client = WooCommerceClient(Settings(
+        _env_file=None,
+        woocommerce_base_url="https://store.example",
+        woocommerce_consumer_key="ck_test",
+        woocommerce_consumer_secret="cs_test",
+    ))
+    pages = []
+
+    def request(_method, _path, params=None, payload=None):
+        pages.append(params["page"])
+        start = (params["page"] - 1) * 100
+        count = 100 if params["page"] == 1 else 1
+        return {
+            "totals": {"orders_count": 101},
+            "intervals": [{"interval": f"day-{index}", "subtotals": {}} for index in range(start, start + count)],
+        }
+
+    monkeypatch.setattr(client, "_request", request)
+
+    result = client.analytics_stats("revenue", after="2026-01-01", before="2026-12-31")
+
+    assert pages == [1, 2]
+    assert len(result["intervals"]) == 101
+
+
 def test_woocommerce_configuration_is_verified_and_saved_backend_only(tmp_path, monkeypatch):
     checked = []
 

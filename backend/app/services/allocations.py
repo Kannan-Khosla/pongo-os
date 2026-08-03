@@ -25,7 +25,7 @@ from app.schemas.allocations import (
     AllocationRequest,
 )
 from app.services.location_inventory import allocate_from_location, choose_allocation_location
-from app.services.order_workflow import acquire_fifo_allocation_lock, is_active_order, sync_order_workflow_statuses
+from app.services.order_workflow import acquire_fifo_allocation_lock, is_active_order, operational_order_clause, sync_order_workflow_statuses
 
 ALLOCATABLE_ORDER_STATUSES = {"open", "partially_allocated"}
 
@@ -41,7 +41,7 @@ def list_allocation_exception_lines(
     statement = (
         select(OrderItem)
         .join(Order)
-        .where(Order.woo_status == "processing")
+        .where(operational_order_clause())
         .options(selectinload(OrderItem.order), selectinload(OrderItem.inventory_item))
         .order_by(Order.date_created.asc().nulls_last(), Order.id.asc(), OrderItem.line_number.asc().nulls_last(), OrderItem.id.asc())
     )
