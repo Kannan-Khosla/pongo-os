@@ -193,6 +193,8 @@ refresh each item's WooCommerce stock snapshot.
 For local items without stored Woo IDs, sync first attempts an unambiguous
 mapping from matched imported order lines. Positive quantities explicitly send
 `stock_status=instock`; zero sends `stock_status=outofstock`.
+The default quantity is local Sellable (`In Stock - Allocated`); an explicit
+preview quantity remains available for controlled one-off tests.
 
 Live staging send is guarded by all of these conditions:
 

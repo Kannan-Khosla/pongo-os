@@ -146,7 +146,7 @@ def sync_inventory_stock(
 
 
 def stock_snapshot_changed(item: InventoryItem) -> bool:
-    return item.woo_stock_quantity_snapshot is None or Decimal(str(item.in_stock or 0)) != Decimal(str(item.woo_stock_quantity_snapshot))
+    return item.woo_stock_quantity_snapshot is None or Decimal(str(item.sellable or 0)) != Decimal(str(item.woo_stock_quantity_snapshot))
 
 
 def attach_order_line_mappings(db: Session, items: list[InventoryItem]) -> None:
@@ -260,7 +260,7 @@ def preview_stock_writeback(db: Session, settings: Settings, client: WooCommerce
         return None
     validate_item_mapping(db, item)
     woo_entity_id = item.woo_variation_id or item.woo_product_id
-    proposed = Decimal(str(payload.proposed_stock_quantity)) if payload.proposed_stock_quantity is not None else item.in_stock
+    proposed = Decimal(str(payload.proposed_stock_quantity)) if payload.proposed_stock_quantity is not None else item.sellable
     operation_type = "update_variation_stock" if item.woo_variation_id else "update_product_stock"
     endpoint_path = product_stock_path(item)
     body = {

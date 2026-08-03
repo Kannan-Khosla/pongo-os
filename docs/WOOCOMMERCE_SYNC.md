@@ -697,7 +697,7 @@ Current behavior:
 - Manual stock adjustments, including scanner adjustment commits, send the
   changed mapped item after the audited local adjustment commits.
 - `POST /api/integrations/woocommerce/writeback/stock/sync` with `force=false`
-  retries only mapped items whose local `in_stock` differs from the last
+  retries only mapped items whose local `sellable` differs from the last
   successful WooCommerce stock snapshot.
 - The same endpoint with `force=true` resends every active mapped inventory
   item, even when its snapshot already matches.
@@ -708,7 +708,8 @@ Current behavior:
   variation IDs from previously matched WooCommerce order lines. Recovery is
   allowed only when every matched line points to one unambiguous remote item.
 - Stock writes send both `stock_quantity` and the matching `stock_status`
-  (`instock` above zero, `outofstock` at zero).
+  (`instock` above zero, `outofstock` at zero). The quantity is local Sellable
+  (`In Stock - Allocated`) so open-order reservations are not offered twice.
 - Bulk receiving, cycle counts, and transfers remain local-only unless they use
   a separately documented writeback path.
 - Expanded reports read local tables only.

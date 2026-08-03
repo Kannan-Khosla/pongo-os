@@ -4,6 +4,10 @@
 
 Pongo OS is the production stock authority. Settings → Connection exposes an audited access mode: **Read only** permits WooCommerce GET operations, while **Read & write** activates the existing queued stock and completed-order writeback workflows. Every mode change records the staff identity and timestamp in `woocommerce_access_mode_changes`. Product metadata, customer, coupon, refund, and delete workflows are not exposed by Pongo OS.
 
+WooCommerce stock writeback uses local Sellable (`In Stock - Allocated`), not
+physical In Stock, so inventory reserved by imported open/POS orders is not
+made available to customers again.
+
 ## Staff access
 
 Set `AUTH_REQUIRED=true`. Every production registration, including the first,

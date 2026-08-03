@@ -326,7 +326,7 @@ def test_stock_preview_creates_no_woo_request(client, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["operation_type"] == "update_product_stock"
-    assert body["payload_json"]["body"]["stock_quantity"] == 8
+    assert body["payload_json"]["body"]["stock_quantity"] == 6
 
 
 def test_stock_preview_fails_closed_for_duplicate_sku(client, monkeypatch):
@@ -404,7 +404,7 @@ def test_non_dry_run_send_calls_allowlisted_operation(client, monkeypatch):
 
     assert sent.status_code == 200
     assert sent.json()["status"] == "sent"
-    assert calls == [("update_product_stock", "PATCH", "/wp-json/wc/v3/products/404", {"manage_stock": True, "stock_quantity": 9.0, "stock_status": "instock"})]
+    assert calls == [("update_product_stock", "PATCH", "/wp-json/wc/v3/products/404", {"manage_stock": True, "stock_quantity": 6.0, "stock_status": "instock"})]
 
 
 def test_failed_legacy_order_status_queue_can_retry_with_woo_put(client, monkeypatch):
@@ -476,7 +476,7 @@ def test_logs_include_failed_cancelled_and_sent(client, monkeypatch):
 def test_stock_sync_updates_only_changed_items_then_can_force_all(client, monkeypatch):
     monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: staging_settings())
     seed_item(client, sku="CHANGED-STOCK", wooProductId=701, wooStockQuantitySnapshot=3, **{"In Stock": 8})
-    seed_item(client, sku="UNCHANGED-STOCK", wooProductId=702, wooStockQuantitySnapshot=5, **{"In Stock": 5})
+    seed_item(client, sku="UNCHANGED-STOCK", wooProductId=702, wooStockQuantitySnapshot=2, **{"In Stock": 5})
     calls = []
 
     class FakeWoo:
@@ -501,7 +501,7 @@ def test_stock_sync_updates_only_changed_items_then_can_force_all(client, monkey
     assert completed["status"] == "completed"
     assert completed["sent_count"] == 1
     assert completed["unchanged_count"] == 1
-    assert calls == [("/wp-json/wc/v3/products/701", 8.0)]
+    assert calls == [("/wp-json/wc/v3/products/701", 5.0)]
 
     calls.clear()
     all_items = client.post(
@@ -514,7 +514,7 @@ def test_stock_sync_updates_only_changed_items_then_can_force_all(client, monkey
     process_next_stock_sync_job(staging_settings(), db_factory=stock_sync_db_factory(), client_factory=lambda _settings: FakeWoo())
     completed_all = client.get(f"/api/integrations/woocommerce/writeback/stock/jobs/{all_items.json()['id']}").json()
     assert completed_all["sent_count"] == 2
-    assert calls == [("/wp-json/wc/v3/products/701", 8.0), ("/wp-json/wc/v3/products/702", 5.0)]
+    assert calls == [("/wp-json/wc/v3/products/701", 5.0), ("/wp-json/wc/v3/products/702", 2.0)]
 
 
 def test_daily_full_stock_sync_is_forced_and_idempotent_per_admin_day(client):
@@ -565,7 +565,7 @@ def test_stock_sync_recovers_a_stale_running_chunk(client, monkeypatch):
 
     completed = client.get(f"/api/integrations/woocommerce/writeback/stock/jobs/{created['id']}").json()
     assert completed["status"] == "completed"
-    assert calls == [("/wp-json/wc/v3/products/799", 4.0)]
+    assert calls == [("/wp-json/wc/v3/products/799", 1.0)]
 
 
 def test_completed_stock_sync_failures_can_be_resumed(client, monkeypatch):
@@ -693,13 +693,13 @@ def test_stock_sync_recovers_unambiguous_mapping_from_imported_order(client, mon
         (
             "update_variation_stock",
             "/wp-json/wc/v3/products/704/variations/705",
-            {"manage_stock": True, "stock_quantity": 6.0, "stock_status": "instock"},
+            {"manage_stock": True, "stock_quantity": 1.0, "stock_status": "instock"},
         )
     ]
     item = client.get("/api/items", params={"sku": "ORDER-MAPPED-STOCK"}).json()["items"][0]
     assert item["wooProductId"] == 704
     assert item["wooVariationId"] == 705
-    assert item["wooStockQuantitySnapshot"] == 6
+    assert item["wooStockQuantitySnapshot"] == 1
     assert item["wooStockStatus"] == "instock"
 
 
@@ -728,7 +728,7 @@ def test_manual_stock_adjustment_writes_changed_item_to_woo(client, monkeypatch)
     )
 
     assert response.status_code == 201, response.text
-    assert calls == [("update_product_stock", "/wp-json/wc/v3/products/703", 8.0)]
+    assert calls == [("update_product_stock", "/wp-json/wc/v3/products/703", 5.0)]
 
 
 def test_writeback_missing_duplicate_and_incomplete_mappings_fail_closed(client, monkeypatch):
