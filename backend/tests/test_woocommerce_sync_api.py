@@ -680,6 +680,18 @@ def test_woocommerce_commit_creates_new_local_item_from_simple_product(client, m
     assert item["wooStockQuantitySnapshot"] == 42
 
 
+def test_woocommerce_commit_keeps_long_product_description(client, monkeypatch):
+    description = "Long Woo description " * 40
+    patch_woo_client(monkeypatch, [simple_product(description=f"<p>{description}</p>")])
+
+    response = client.post("/api/integrations/woocommerce/products/commit", json={})
+
+    assert response.status_code == 200
+    assert response.json()["created_count"] == 1
+    item = client.get("/api/items", params={"sku": "WOO-SIMPLE"}).json()["items"][0]
+    assert item["Description"] == description.strip()
+
+
 def test_woocommerce_commit_creates_new_local_item_from_variation(client, monkeypatch):
     patch_woo_client(monkeypatch, [variation_product()])
 

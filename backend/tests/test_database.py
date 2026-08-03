@@ -1,4 +1,4 @@
-from sqlalchemy import inspect
+from sqlalchemy import Text, inspect
 from sqlalchemy.orm import Session
 
 from app.db.session import init_db, make_engine
@@ -69,3 +69,7 @@ def test_model_creation_for_inventory_item():
         assert item.id is not None
         assert item.sku == "TEST-SKU"
         assert item.barcode == "TEST-BARCODE"
+
+
+def test_inventory_item_description_accepts_complete_woo_content():
+    assert isinstance(InventoryItem.__table__.c.description.type, Text)
