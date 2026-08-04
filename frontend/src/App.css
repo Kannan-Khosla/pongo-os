@@ -1113,17 +1113,12 @@ input[type="checkbox"] {
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: visible;
   border-top: 1px solid var(--border);
   border-bottom: 0;
-  overscroll-behavior: contain;
-}
-
-.inventory-page .table-scroll,
-.report-main-panel .table-scroll,
-.insight-dashboard-panel .table-scroll,
-.receiving-form .table-scroll {
-  max-height: min(70vh, 720px);
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
 }
 
 .items-table-scroll {
@@ -4809,7 +4804,7 @@ tbody tr:nth-child(even) .sticky-col {
 
 .items-page-pro {
   max-width: 100%;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .items-command-bar {

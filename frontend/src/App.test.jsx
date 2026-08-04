@@ -173,6 +173,7 @@ const mockWebhookEvent = {
 let mockWebhookFeed;
 let mockWooHealth;
 let mockWooLastError;
+let mockWooEnvironment;
 let mockItemsFeed;
 let mockInsightOverview;
 
@@ -296,7 +297,7 @@ function mockFetch(url) {
     consumer_secret_present: true,
     base_url: 'https://staging32.pongo.ca',
     base_url_host: 'staging32.pongo.ca',
-    environment: 'staging',
+    environment: mockWooEnvironment,
     access_mode: 'read_write',
     access_mode_updated_by: 'Pytest',
     access_mode_updated_at: '2026-07-31T18:00:00Z',
@@ -446,6 +447,7 @@ describe('App shell and workflows', () => {
       message: 'Server order reconciliation is healthy.',
     };
     mockWooLastError = null;
+    mockWooEnvironment = 'staging';
     mockItemsFeed = { items: [item], page: 1, page_size: 20, total: 1, total_pages: 1, returned_count: 1 };
     mockInsightOverview = {
       dashboard: 'overview',
@@ -1280,6 +1282,20 @@ describe('App shell and workflows', () => {
     expect(within(warning).getByRole('link', { name: 'Review WooCommerce Settings' })).toHaveAttribute('href', '#/settings/sync');
   });
 
+  it('hides WooCommerce health warnings from the local development environment', async () => {
+    mockWooEnvironment = 'development';
+    mockWooHealth = {
+      ...mockWooHealth,
+      healthy: false,
+      stale: true,
+      last_error: 'Local WooCommerce sync is unavailable.',
+    };
+    render(<App />);
+
+    await settleInitialOrderPolling();
+    expect(screen.queryByRole('alert', { name: 'WooCommerce order sync warning' })).not.toBeInTheDocument();
+  });
+
   it('shows Insights in the sidebar and opens Pongo Insights', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -1730,6 +1746,7 @@ describe('App shell and workflows', () => {
     expect(within(invoice).getByText('Shipping details')).toBeInTheDocument();
     expect(within(invoice).getByText('200 Delivery Way')).toBeInTheDocument();
     expect(within(invoice).getByText('Cash on delivery')).toBeInTheDocument();
+    expect(within(invoice).getByText('Completed')).toBeInTheDocument();
     expect(within(invoice).getByText('Leave at the receiving desk.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Close' }));
 

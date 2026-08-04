@@ -3183,6 +3183,9 @@ function NewOrderNotificationRegion({ notifications = [], onDismiss, onViewOpenO
 
 function WooOrderSyncHealthWarning({ status, error }) {
   const health = status?.order_reconciliation;
+  if (status?.environment === 'development') {
+    return null;
+  }
   if (!error && (!status?.configured || !health || health.healthy)) {
     return null;
   }
@@ -9062,7 +9065,7 @@ function OrderInvoice({ order, className = '' }) {
 
       <section className="invoice-reference-grid" aria-label="Order and payment details">
         <div><span>Order date</span><strong>{formatDateTime(order.date_created)}</strong></div>
-        <div><span>Order status</span><strong>{order.woo_status || order.local_status || '—'}</strong></div>
+        <div><span>Order status</span><strong>Completed</strong></div>
         <div><span>Payment</span><strong>{paymentMethod}</strong></div>
         <div><span>Ship via</span><strong>{order.shipping_via || 'Not provided'}</strong></div>
         <div><span>Customer ID</span><strong>{order.customer_id || 'Guest'}</strong></div>
@@ -10531,8 +10534,8 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
           <Metric label="Live Test" value={status.staging_live_test_mode ? 'On' : 'Off'} />
           <Metric label="Last Sync" value={status.last_product_sync?.status || latestRun?.status || 'None'} />
         </div>
-        <div className="warning-strip">Credentials are encrypted in Pongo backend storage and are never returned to the browser after saving.</div>
-        <div className="csv-note">{status.message}</div>
+        <div className="csv-note">Credentials are encrypted in Pongo backend storage and are never returned to the browser after saving.</div>
+        {status.configured && status.message && <div className="csv-note">{status.message}</div>}
         {preview && <WooPreviewSummary preview={preview} />}
         {commitSummary && (
           <div className="success-strip">
@@ -10575,7 +10578,7 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
           <Metric label="Last Server Success" value={reconciliation.last_success_at ? formatDateTime(reconciliation.last_success_at) : 'None'} />
         </div>
         <div className="csv-note">Order sync stores local order/order line snapshots and may safely auto-allocate active local orders. It does not write WooCommerce, update product stock, create stock movements, pick, fulfill, or route orders.</div>
-        {!reconciliation.healthy && (
+        {status.configured && reconciliation.enabled && !reconciliation.healthy && (
           <div className="warning-strip">
             {reconciliation.message || 'Server order reconciliation needs attention.'}
             {reconciliation.last_error ? ` ${reconciliation.last_error}` : ''}
