@@ -997,6 +997,7 @@ def line_to_read(line: OrderItem) -> OpenOrderLineRead:
         picking_status="picked" if quantity_allocated > 0 and quantity_picked >= quantity_allocated else ("partial" if quantity_picked > 0 else "unpicked"),
         fulfillment_status="fulfilled" if quantity_picked > 0 and quantity_fulfilled >= quantity_picked else ("partial" if quantity_fulfilled > 0 else "unfulfilled"),
         unit_price=decimal_to_float(line.unit_price),
+        line_tax=decimal_to_float(line.line_tax),
         line_total=decimal_to_float(line.line_total),
         matched_status=line.matched_status,
         availability_status=line.availability_status,

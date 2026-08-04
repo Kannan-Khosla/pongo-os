@@ -27,6 +27,7 @@ class OpenOrderLineRead(BaseModel):
     picking_status: str | None = None
     fulfillment_status: str | None = None
     unit_price: float | None = None
+    line_tax: float | None = None
     line_total: float | None = None
     matched_status: str | None = None
     availability_status: str | None = None

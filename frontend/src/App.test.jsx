@@ -96,7 +96,16 @@ const mockOrder = {
 const mockOrderDetail = {
   ...mockOrder,
   customer_phone: '555-0100',
-  shipping_summary: { city: 'Edmonton', state: 'AB', postcode: 'T5J 0N3' },
+  customer_id: 501,
+  billing_summary: { first_name: 'Avery', last_name: 'Stone', company: 'Pongo Test Co.', address_1: '100 Billing Ave', city: 'Edmonton', state: 'AB', postcode: 'T5J 0N3', country: 'CA', email: 'avery@example.invalid', phone: '555-0100' },
+  shipping_summary: { first_name: 'Avery', last_name: 'Stone', address_1: '200 Delivery Way', city: 'Edmonton', state: 'AB', postcode: 'T5J 0N3', country: 'CA' },
+  payment_method: 'cod',
+  payment_method_title: 'Cash on delivery',
+  subtotal: 58,
+  discount_total: 3,
+  shipping_total: 2,
+  tax_total: 3,
+  workflow_notes: 'Leave at the receiving desk.',
   lines: [{
     id: 9001,
     sku: 'SMOKE-001',
@@ -107,6 +116,9 @@ const mockOrderDetail = {
     quantity_picked: 0,
     quantity_stock_reduced: 0,
     quantity_fulfilled: 0,
+    unit_price: 29,
+    line_tax: 3,
+    line_total: 58,
     remaining_to_pick: 2,
     remaining_to_fulfill: 2,
     remaining_to_allocate: 0,
@@ -1711,6 +1723,14 @@ describe('App shell and workflows', () => {
     });
     expect(await screen.findByRole('dialog', { name: 'View Customer Order' })).toBeInTheDocument();
     expect(screen.getByText('Ship/Bill To')).toBeInTheDocument();
+    const invoice = screen.getByLabelText('Invoice for order 0802');
+    expect(within(invoice).getByRole('img', { name: 'Pongo Pet Supplies' })).toHaveAttribute('src', '/pongo-logo.png');
+    expect(within(invoice).getByText('Billing details')).toBeInTheDocument();
+    expect(within(invoice).getByText('100 Billing Ave')).toBeInTheDocument();
+    expect(within(invoice).getByText('Shipping details')).toBeInTheDocument();
+    expect(within(invoice).getByText('200 Delivery Way')).toBeInTheDocument();
+    expect(within(invoice).getByText('Cash on delivery')).toBeInTheDocument();
+    expect(within(invoice).getByText('Leave at the receiving desk.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Close' }));
 
     const printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
@@ -1905,20 +1925,27 @@ describe('App shell and workflows', () => {
   it('selects Open Orders and exposes complete, print, and unpick-all bulk actions', async () => {
     const user = userEvent.setup();
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
     window.location.hash = '#/orders/open';
     render(<App />);
 
-    await user.click(await screen.findByRole('checkbox', { name: 'Select order 0802' }));
+    await user.click(await screen.findByRole('checkbox', { name: 'Select all open orders' }));
     await user.click(screen.getByRole('button', { name: 'Actions' }));
     expect(screen.getByRole('menuitem', { name: 'Mark as completed' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Print' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Unpick all' })).toBeInTheDocument();
 
+    await user.click(screen.getByRole('menuitem', { name: 'Print' }));
+    await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
+    expect(document.body).not.toHaveClass('bulk-order-printing');
+
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
     await user.click(screen.getByRole('menuitem', { name: 'Mark as completed' }));
     await waitFor(() => {
       const bulkCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/orders/bulk/complete'));
       expect(JSON.parse(bulkCall[1].body)).toMatchObject({ order_ids: [701] });
     });
+    printSpy.mockRestore();
     confirmSpy.mockRestore();
   });
 

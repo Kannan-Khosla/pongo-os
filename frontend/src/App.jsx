@@ -8016,6 +8016,10 @@ function OrdersPage({
     setOrdersPageNumber((current) => Math.min(current, ordersPageCount));
   }, [ordersPageCount]);
 
+  useEffect(() => {
+    if (bulkPrintOrders.length) printVisibleRoot('bulk-order-printing');
+  }, [bulkPrintOrders]);
+
   function updateFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value }));
   }
@@ -8049,7 +8053,7 @@ function OrdersPage({
     const loaded = await onLoadOpenOrderDetail(orderId);
     if (loaded) {
       setOrderDialogOpen(true);
-      window.requestAnimationFrame(() => window.print());
+      printVisibleRoot('single-order-printing');
     }
   }
 
@@ -8103,11 +8107,6 @@ function OrdersPage({
         const responses = await Promise.all(selectedOpenOrderIds.map((orderId) => apiFetch(`${API_BASE_URL}/api/orders/${orderId}`)));
         if (responses.some((response) => !response.ok)) throw new Error('One or more selected orders could not be loaded for printing.');
         setBulkPrintOrders(await Promise.all(responses.map((response) => response.json())));
-        document.body.classList.add('bulk-order-printing');
-        window.setTimeout(() => {
-          window.print();
-          document.body.classList.remove('bulk-order-printing');
-        }, 0);
       } catch (printError) {
         setBulkActionError(printError.message || 'Unable to print selected orders.');
       } finally {
@@ -8298,7 +8297,7 @@ function OrdersPage({
           { label: 'Unpick all', icon: <RotateCcw size={17} />, onSelect: () => runOpenOrdersBulkAction('unpick'), danger: true },
         ]}
         busy={bulkActionLoading}
-        label="Filters"
+        label="Bulk actions"
         selectedCount={selectedOpenOrderIds.length}
       />
       <OpenOrdersTable
@@ -8322,7 +8321,7 @@ function OrdersPage({
         )}
       />
       <OrdersPager count={filteredOpenOrders.length} page={ordersPageNumber} pageCount={ordersPageCount} pageSize={ordersPageSize} onPageChange={setOrdersPageNumber} onPageSizeChange={(size) => { setOrdersPageSize(size); setOrdersPageNumber(1); }} />
-      {orderDialogOpen && <OpenOrderDetailPanel order={detail} onClose={() => { setOrderDialogOpen(false); onLoadOpenOrderDetail(null); }} onPrint={() => window.print()} />}
+      {orderDialogOpen && <OpenOrderDetailPanel order={detail} onClose={() => { setOrderDialogOpen(false); onLoadOpenOrderDetail(null); }} onPrint={() => printVisibleRoot('single-order-printing')} />}
       <BulkPrintSheet orders={bulkPrintOrders} />
     </section>
   );
@@ -8976,6 +8975,17 @@ function OrderWorkflowSummary({ summary, type, quantityField }) {
   );
 }
 
+function printVisibleRoot(bodyClass) {
+  document.body.classList.add(bodyClass);
+  window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+    try {
+      window.print();
+    } finally {
+      document.body.classList.remove(bodyClass);
+    }
+  }));
+}
+
 function BulkActionsBar({ selectedCount, actions, busy = false, label = 'Bulk actions' }) {
   const [open, setOpen] = useState(false);
   return (
@@ -9014,30 +9024,125 @@ function BulkActionsBar({ selectedCount, actions, busy = false, label = 'Bulk ac
   );
 }
 
+function InvoiceAddress({ label, address, fallbackName, fallbackEmail, fallbackPhone }) {
+  const details = address || {};
+  const name = [details.first_name, details.last_name].filter(Boolean).join(' ') || fallbackName || 'Customer';
+  const cityLine = [details.city, details.state, details.postcode].filter(Boolean).join(', ');
+  return (
+    <section className="invoice-address-block">
+      <h2>{label}</h2>
+      <strong>{name}</strong>
+      {(details.company) && <span>{details.company}</span>}
+      {(details.address_1) && <span>{details.address_1}</span>}
+      {(details.address_2) && <span>{details.address_2}</span>}
+      {cityLine && <span>{cityLine}</span>}
+      {(details.country) && <span>{details.country}</span>}
+      {(details.email || fallbackEmail) && <span>{details.email || fallbackEmail}</span>}
+      {(details.phone || fallbackPhone) && <span>{details.phone || fallbackPhone}</span>}
+    </section>
+  );
+}
+
+function OrderInvoice({ order, className = '' }) {
+  if (!order) return null;
+  const orderNumber = order.woo_order_number || order.woo_order_id || order.id;
+  const paymentMethod = order.payment_method_title || order.payment_method || 'Not provided';
+  return (
+    <article className={`order-invoice ${className}`.trim()} aria-label={`Invoice for order ${orderNumber}`}>
+      <header className="invoice-masthead">
+        <div className="invoice-brand">
+          <img className="invoice-logo" src="/pongo-logo.png" alt="Pongo Pet Supplies" />
+        </div>
+        <div className="invoice-title">
+          <span>Customer invoice</span>
+          <h1>Order #{orderNumber}</h1>
+          <p>{order.currency || 'CAD'} · {order.order_source || 'WooCommerce'}</p>
+        </div>
+      </header>
+
+      <section className="invoice-reference-grid" aria-label="Order and payment details">
+        <div><span>Order date</span><strong>{formatDateTime(order.date_created)}</strong></div>
+        <div><span>Order status</span><strong>{order.woo_status || order.local_status || '—'}</strong></div>
+        <div><span>Payment</span><strong>{paymentMethod}</strong></div>
+        <div><span>Ship via</span><strong>{order.shipping_via || 'Not provided'}</strong></div>
+        <div><span>Customer ID</span><strong>{order.customer_id || 'Guest'}</strong></div>
+        <div><span>Last updated</span><strong>{formatDateTime(order.date_modified || order.last_synced_at)}</strong></div>
+      </section>
+
+      <div className="invoice-address-grid">
+        <InvoiceAddress
+          label="Billing details"
+          address={order.billing_summary}
+          fallbackName={order.customer_name}
+          fallbackEmail={order.customer_email}
+          fallbackPhone={order.customer_phone}
+        />
+        <InvoiceAddress
+          label="Shipping details"
+          address={order.shipping_summary}
+          fallbackName={order.customer_name}
+          fallbackEmail={order.customer_email}
+          fallbackPhone={order.customer_phone}
+        />
+        <section className="invoice-address-block invoice-contact-block">
+          <h2>Customer & fulfillment</h2>
+          <strong>{order.company || order.customer_name || 'Customer'}</strong>
+          <span>{order.customer_email || 'Email not provided'}</span>
+          <span>{order.customer_phone || 'Phone not provided'}</span>
+          <span>Ship from: {order.ship_from || 'Main Warehouse'}</span>
+          <span>Allocation: {order.allocation_status || '—'}</span>
+          <span>Picking: {order.pick_status || '—'}</span>
+        </section>
+      </div>
+
+      <table className="invoice-lines-table">
+        <thead>
+          <tr><th>SKU / barcode</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Tax</th><th>Line total</th></tr>
+        </thead>
+        <tbody>
+          {(order.lines || []).map((line) => (
+            <tr key={line.id}>
+              <td><strong>{line.sku || '—'}</strong><span>{line.barcode || ''}</span></td>
+              <td><strong>{decodeHtmlEntities(line.name || 'Unnamed product')}</strong><span>Picked {formatNumber(line.quantity_picked)} · Fulfilled {formatNumber(line.quantity_fulfilled)}</span></td>
+              <td>{formatNumber(line.quantity_ordered)}</td>
+              <td>{formatCurrency(line.unit_price)}</td>
+              <td>{formatCurrency(line.line_tax)}</td>
+              <td>{formatCurrency(line.line_total)}</td>
+            </tr>
+          ))}
+          {!order.lines?.length && <tr><td colSpan="6">No line items were returned for this order.</td></tr>}
+        </tbody>
+      </table>
+
+      <section className="invoice-closing-grid">
+        <div className="invoice-notes">
+          <h2>Order notes</h2>
+          <p>{order.workflow_notes || 'No customer or operational notes were supplied.'}</p>
+          <span>WooCommerce order ID: {order.woo_order_id || '—'}</span>
+          <span>Local order ID: {order.id || '—'}</span>
+        </div>
+        <dl className="invoice-totals">
+          <div><dt>Subtotal</dt><dd>{formatCurrency(order.subtotal)}</dd></div>
+          <div><dt>Discount</dt><dd>{order.discount_total ? `−${formatCurrency(order.discount_total)}` : formatCurrency(0)}</dd></div>
+          <div><dt>Shipping</dt><dd>{formatCurrency(order.shipping_total ?? 0)}</dd></div>
+          <div><dt>Tax</dt><dd>{formatCurrency(order.tax_total ?? 0)}</dd></div>
+          <div className="invoice-grand-total"><dt>Total</dt><dd>{formatCurrency(order.total)}</dd></div>
+        </dl>
+      </section>
+
+      <footer className="invoice-footer">
+        <span>Pongo Pet Supplies · pongo.ca</span>
+        <span>Order #{orderNumber} · Printed {formatDateTime(new Date().toISOString())}</span>
+      </footer>
+    </article>
+  );
+}
+
 function BulkPrintSheet({ orders }) {
   if (!orders.length) return null;
   return (
-    <section className="bulk-print-sheet" aria-label="Selected orders print sheet">
-      <h1>Pongo Inventory OS — Selected Orders</h1>
-      {orders.map((order) => (
-        <article key={order.id}>
-          <header>
-            <div><span>Order</span><strong>#{order.woo_order_number || order.woo_order_id}</strong></div>
-            <div><span>Customer</span><strong>{order.customer_name || '—'}</strong></div>
-            <div><span>Placed</span><strong>{formatDateTime(order.date_created)}</strong></div>
-            <div><span>Total</span><strong>{formatCurrency(order.total)}</strong></div>
-          </header>
-          <p>{formatAddressSummary(order.shipping_summary)}</p>
-          <table>
-            <thead><tr><th>SKU</th><th>Product</th><th>Ordered</th><th>Allocated</th><th>Picked</th></tr></thead>
-            <tbody>
-              {(order.lines || []).map((line) => (
-                <tr key={line.id}><td>{line.sku}</td><td>{decodeHtmlEntities(line.name || '')}</td><td>{formatNumber(line.quantity_ordered)}</td><td>{formatNumber(line.quantity_allocated)}</td><td>{formatNumber(line.quantity_picked)}</td></tr>
-              ))}
-            </tbody>
-          </table>
-        </article>
-      ))}
+    <section className="bulk-print-sheet" aria-label="Selected customer invoices">
+      {orders.map((order) => <OrderInvoice key={order.id} order={order} />)}
     </section>
   );
 }
@@ -9250,6 +9355,7 @@ function OpenOrderDetailPanel({ order, onClose, onPrint }) {
           <button className="primary-button" onClick={onPrint} type="button"><Printer size={17} />Print</button>
           <button className="muted-button" onClick={onClose} type="button">Close</button>
         </footer>
+        <OrderInvoice className="order-invoice-print" order={order} />
       </section>
     </div>
   );

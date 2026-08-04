@@ -903,7 +903,10 @@ interface.
 
 ### GET /api/orders/{id}
 
-Return one local order with line-level match and availability detail.
+Return one local order with line-level match and availability detail. The detail
+payload also includes stored billing, shipping, customer, payment and order
+totals; each line exposes `unit_price`, `line_tax`, and `line_total` for the
+Pongo invoice print view.
 
 ### POST /api/orders/bulk/complete
 

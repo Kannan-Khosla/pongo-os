@@ -214,6 +214,9 @@ def test_order_commit_creates_local_order_lines_and_auto_allocates(client, monke
     assert detail["lines"][0]["quantity_allocated"] == 2
     assert detail["lines"][0]["quantity_picked"] == 0
     assert detail["lines"][0]["quantity_stock_reduced"] == 0
+    assert detail["lines"][0]["unit_price"] == 12
+    assert detail["lines"][0]["line_tax"] == 1
+    assert detail["lines"][0]["line_total"] == 24
     item = client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]
     assert item["In Stock"] == 6
     assert item["Allocated"] == 3

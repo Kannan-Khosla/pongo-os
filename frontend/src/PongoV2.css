@@ -517,10 +517,10 @@ textarea:focus-visible,
   gap: 18px;
   padding: 0 24px;
   border-bottom: 1px solid var(--line-200);
-  background: rgba(255, 255, 255, 0.96);
+  background: #ffffff;
   color: var(--ink-900);
   box-shadow: 0 1px 2px rgba(14, 16, 50, 0.05);
-  backdrop-filter: blur(12px);
+  backdrop-filter: none;
 }
 
 .app-shell .header-primary,
@@ -721,7 +721,7 @@ textarea:focus-visible,
   justify-content: space-between;
   gap: 24px;
   border-bottom: 1px solid var(--line-200);
-  background: transparent;
+  background: #ffffff;
 }
 
 .app-shell .page-heading-copy {
@@ -1787,7 +1787,6 @@ textarea:focus-visible,
   color: var(--danger-700);
 }
 
-.app-shell .bulk-actions-bar,
 .app-shell .bulk-action-bar,
 .app-shell .bulk-actions-panel,
 .app-shell .items-bulk-actions {
@@ -1796,6 +1795,28 @@ textarea:focus-visible,
   background: var(--pongo-50);
   color: var(--pongo-900);
   box-shadow: var(--shadow-sm);
+}
+
+.app-shell .bulk-actions-bar {
+  border-color: var(--pongo-900);
+  border-radius: 10px;
+  background: var(--pongo-900);
+  color: #ffffff;
+  box-shadow: var(--shadow-sm);
+}
+
+.app-shell .bulk-actions-bar > div:first-child span {
+  color: rgba(255, 255, 255, 0.74);
+}
+
+.app-shell .bulk-actions-trigger {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.app-shell .zen-orders-heading {
+  background: #ffffff;
 }
 
 .app-shell .zen-orders-page,

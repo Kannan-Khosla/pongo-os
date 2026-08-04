@@ -4182,19 +4182,20 @@ tbody tr:nth-child(even) .sticky-col {
   }
 }
 
+@page {
+  size: auto;
+  margin: 10mm;
+}
+
 @media print {
+
   body * {
     visibility: hidden !important;
   }
 
-  .print-order-panel,
-  .print-order-panel * {
+  body.single-order-printing .order-invoice-print,
+  body.single-order-printing .order-invoice-print * {
     visibility: visible !important;
-  }
-
-  body.bulk-order-printing .print-order-panel,
-  body.bulk-order-printing .print-order-panel * {
-    visibility: hidden !important;
   }
 
   body.bulk-order-printing .bulk-print-sheet,
@@ -4210,53 +4211,248 @@ tbody tr:nth-child(even) .sticky-col {
     color: #111;
   }
 
-  .bulk-print-sheet h1 {
-    margin: 0 0 20px;
-    font-size: 22px;
-  }
-
-  .bulk-print-sheet article {
-    break-inside: avoid;
-    margin-bottom: 26px;
-    padding-bottom: 18px;
-    border-bottom: 2px solid #111;
-  }
-
-  .bulk-print-sheet article header {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-  }
-
-  .bulk-print-sheet article header div {
-    display: grid;
-  }
-
-  .bulk-print-sheet article header span {
-    font-size: 10px;
-    font-weight: 700;
-    text-transform: uppercase;
-  }
-
-  .bulk-print-sheet table {
-    width: 100%;
-    border-collapse: collapse;
-  }
-
-  .bulk-print-sheet th,
-  .bulk-print-sheet td {
-    padding: 7px;
-    border: 1px solid #bbb;
-    text-align: left;
-  }
-
-  .print-order-panel {
+  body.single-order-printing .order-invoice-print {
     position: absolute;
     inset: 0 auto auto 0;
+    display: block !important;
     width: 100%;
     padding: 0;
     border: 0;
     box-shadow: none;
+  }
+
+  .order-invoice {
+    width: 100%;
+    color: #15152a;
+    font-family: Arial, Helvetica, sans-serif;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .bulk-print-sheet .order-invoice {
+    break-after: page;
+  }
+
+  .bulk-print-sheet .order-invoice:last-child {
+    break-after: auto;
+  }
+
+  .invoice-masthead {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    padding-bottom: 18px;
+    border-bottom: 3px solid #1718a8;
+  }
+
+  .invoice-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .invoice-logo {
+    display: block;
+    width: 62px;
+    height: 64px;
+    object-fit: contain;
+  }
+
+  .invoice-title > span {
+    color: #62627a;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+  }
+
+  .invoice-title {
+    text-align: right;
+  }
+
+  .invoice-title h1 {
+    margin: 4px 0;
+    color: #15152a;
+    font-size: 26px;
+  }
+
+  .invoice-title p {
+    margin: 0;
+    color: #62627a;
+    font-size: 10px;
+  }
+
+  .invoice-reference-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    margin-top: 18px;
+    border: 1px solid #d9d9e5;
+    background: #d9d9e5;
+  }
+
+  .invoice-reference-grid > div {
+    display: grid;
+    gap: 4px;
+    min-height: 44px;
+    padding: 8px 10px;
+    background: #f7f7fb;
+  }
+
+  .invoice-reference-grid span,
+  .invoice-address-block h2,
+  .invoice-notes h2 {
+    margin: 0;
+    color: #62627a;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .invoice-reference-grid strong {
+    font-size: 10px;
+    text-transform: capitalize;
+  }
+
+  .invoice-address-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    margin: 20px 0;
+  }
+
+  .invoice-address-block {
+    display: flex;
+    min-height: 108px;
+    flex-direction: column;
+    gap: 3px;
+    padding-left: 10px;
+    border-left: 2px solid #f36b36;
+    font-size: 9px;
+    line-height: 1.35;
+  }
+
+  .invoice-address-block h2 {
+    margin-bottom: 5px;
+  }
+
+  .invoice-address-block strong {
+    font-size: 10px;
+  }
+
+  .invoice-lines-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 9px;
+  }
+
+  .invoice-lines-table thead {
+    display: table-header-group;
+  }
+
+  .invoice-lines-table tr,
+  .invoice-masthead,
+  .invoice-reference-grid,
+  .invoice-address-grid,
+  .invoice-closing-grid,
+  .invoice-footer {
+    break-inside: avoid;
+  }
+
+  .invoice-lines-table th {
+    padding: 8px 7px;
+    background: #1718a8;
+    color: #fff;
+    font-size: 8px;
+    letter-spacing: 0.06em;
+    text-align: right;
+    text-transform: uppercase;
+  }
+
+  .invoice-lines-table th:first-child,
+  .invoice-lines-table th:nth-child(2),
+  .invoice-lines-table td:first-child,
+  .invoice-lines-table td:nth-child(2) {
+    text-align: left;
+  }
+
+  .invoice-lines-table th:first-child { width: 18%; }
+  .invoice-lines-table th:nth-child(2) { width: 34%; }
+
+  .invoice-lines-table td {
+    padding: 9px 7px;
+    border-bottom: 1px solid #dedee8;
+    text-align: right;
+    vertical-align: top;
+  }
+
+  .invoice-lines-table td span {
+    display: block;
+    margin-top: 3px;
+    color: #6d6d80;
+    font-size: 8px;
+  }
+
+  .invoice-closing-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 240px;
+    gap: 28px;
+    margin-top: 18px;
+  }
+
+  .invoice-notes {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    color: #62627a;
+    font-size: 8px;
+  }
+
+  .invoice-notes p {
+    margin: 0 0 4px;
+    color: #26263b;
+    font-size: 9px;
+    line-height: 1.45;
+  }
+
+  .invoice-totals {
+    margin: 0;
+  }
+
+  .invoice-totals > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 6px 4px;
+    border-bottom: 1px solid #e2e2ea;
+    font-size: 10px;
+  }
+
+  .invoice-totals dt,
+  .invoice-totals dd {
+    margin: 0;
+  }
+
+  .invoice-grand-total {
+    margin-top: 4px;
+    border-bottom: 0 !important;
+    background: #fff0e8;
+    color: #15152a;
+    font-size: 14px !important;
+    font-weight: 900;
+  }
+
+  .invoice-footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    margin-top: 24px;
+    padding-top: 9px;
+    border-top: 1px solid #d9d9e5;
+    color: #6d6d80;
+    font-size: 8px;
   }
 
   .print-order-panel .table-pager,
@@ -5077,6 +5273,10 @@ button[title="Pagination is not available yet"] {
 }
 
 .bulk-print-sheet {
+  display: none;
+}
+
+.order-invoice-print {
   display: none;
 }
 
