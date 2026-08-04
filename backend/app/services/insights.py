@@ -179,7 +179,7 @@ def build_context(db: Session, params: dict[str, Any]) -> dict[str, Any]:
 def overview(ctx: dict[str, Any]) -> InsightResponse:
     sales_ctx = successful_context(ctx)
     order_metrics = revenue_metrics(sales_ctx["orders"], sales_ctx)
-    customers = customer_groups(sales_ctx["orders"])
+    customers, new_customers, returning_customers = identified_customer_groups(sales_ctx)
     product_rows = product_rows_for_orders(sales_ctx)
     inventory_value = sum((money(item.in_stock) * money(item.unit_cost) for item in ctx["items"]), Decimal("0"))
     stockout_rows = forecast_rows(sales_ctx)
@@ -189,9 +189,10 @@ def overview(ctx: dict[str, Any]) -> InsightResponse:
     summary = {
         **order_metrics,
         "total_customers": len(customers),
-        "new_customers": sum(1 for customer in customers.values() if len(customer["orders"]) == 1),
-        "returning_customers": sum(1 for customer in customers.values() if len(customer["orders"]) > 1),
-        "repeat_customer_rate": percent(sum(1 for customer in customers.values() if len(customer["orders"]) > 1), len(customers)),
+        "new_customers": len(new_customers),
+        "returning_customers": len(returning_customers),
+        "anonymous_orders_without_email": sum(1 for order in sales_ctx["orders"] if not normalized_email(order.customer_email)),
+        "repeat_customer_rate": percent(len(returning_customers), len(customers)),
         "top_sku_by_units": top_units,
         "top_sku_by_revenue": top_revenue,
         "inventory_value": dec(inventory_value),
@@ -202,7 +203,7 @@ def overview(ctx: dict[str, Any]) -> InsightResponse:
     trends = daily_trends(sales_ctx["orders"], sales_ctx)
     trends.update(
         {
-            "new_vs_returning_by_month": new_vs_returning_by_month(sales_ctx["orders"]),
+            "new_vs_returning_by_month": new_vs_returning_by_month(sales_ctx["orders"], sales_ctx["all_orders"]),
             "top_brands": top_dimension(product_rows, "brand"),
             "top_categories": top_dimension(product_rows, "category"),
             "top_skus": product_rows[:10],
@@ -251,16 +252,17 @@ def orders_revenue(ctx: dict[str, Any]) -> InsightResponse:
 
 def customer_metrics(ctx: dict[str, Any]) -> InsightResponse:
     sales_ctx = successful_context(ctx)
-    customers = customer_groups(sales_ctx["orders"])
+    customers, new_customers, returning_customers = identified_customer_groups(sales_ctx)
     rows = customer_rows(customers, sales_ctx)
-    returning = [row for row in rows if row["order_count"] > 1]
+    returning = [row for row in rows if row["customer_key"] in returning_customers]
     intervals = [row["average_days_between_orders"] for row in rows if row["average_days_between_orders"] is not None]
     summary = {
         "total_customers": len(rows),
-        "new_customers": sum(1 for row in rows if row["order_count"] == 1),
+        "new_customers": len(new_customers),
         "returning_customers": len(returning),
-        "guest_customers": sum(1 for row in rows if row["customer_key"].startswith("guest:")),
-        "registered_customers": sum(1 for row in rows if not row["customer_key"].startswith("guest:")),
+        "guest_customers": 0,
+        "registered_customers": len(rows),
+        "anonymous_orders_without_email": sum(1 for order in sales_ctx["orders"] if not normalized_email(order.customer_email)),
         "repeat_customer_rate": percent(len(returning), len(rows)),
         "average_orders_per_customer": safe_div(sum(row["order_count"] for row in rows), len(rows)),
         "average_customer_lifetime_value": safe_div(sum(row["lifetime_spend"] for row in rows), len(rows)),
@@ -662,6 +664,29 @@ def customer_groups(orders: list[Order]) -> dict[str, dict[str, Any]]:
     return grouped
 
 
+def identified_customer_groups(ctx: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], set[str], set[str]]:
+    groups = {key: value for key, value in customer_groups(ctx["orders"]).items() if value["email"]}
+    first_orders = first_order_dates_by_email(ctx["all_orders"])
+    new_customers = {
+        email
+        for email in groups
+        if email in first_orders
+        and (ctx["start"] is None or first_orders[email] >= ctx["start"])
+        and (ctx["end"] is None or first_orders[email] <= ctx["end"])
+    }
+    return groups, new_customers, set(groups) - new_customers
+
+
+def first_order_dates_by_email(orders: list[Order]) -> dict[str, datetime]:
+    first_orders = {}
+    for order in orders:
+        email = normalized_email(order.customer_email)
+        placed_at = make_aware(order_date(order)) if order_date(order) else None
+        if email and placed_at and (email not in first_orders or placed_at < first_orders[email]):
+            first_orders[email] = placed_at
+    return first_orders
+
+
 def customer_rows(customers: dict[str, dict[str, Any]], ctx: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     rows = []
     now = datetime.now(timezone.utc)
@@ -826,21 +851,20 @@ def coupon_rows(orders: list[Order], ctx: dict[str, Any] | None = None) -> list[
     return rows
 
 
-def new_vs_returning_by_month(orders: list[Order]) -> list[dict[str, Any]]:
-    first_seen = {}
-    rows = defaultdict(lambda: {"new_customers": 0, "returning_customers": 0})
-    for order in sorted(orders, key=lambda row: order_date(row) or datetime.min.replace(tzinfo=timezone.utc)):
+def new_vs_returning_by_month(orders: list[Order], historical_orders: list[Order]) -> list[dict[str, Any]]:
+    first_orders = first_order_dates_by_email(historical_orders)
+    rows = defaultdict(lambda: {"new_customers": set(), "returning_customers": set()})
+    for order in orders:
         od = order_date(order)
-        if not od:
+        email = normalized_email(order.customer_email)
+        if not od or not email or email not in first_orders:
             continue
         month = od.strftime("%Y-%m")
-        key = customer_key(order)
-        if key in first_seen:
-            rows[month]["returning_customers"] += 1
+        if first_orders[email].strftime("%Y-%m") == month:
+            rows[month]["new_customers"].add(email)
         else:
-            rows[month]["new_customers"] += 1
-            first_seen[key] = od
-    return [{"month": key, **value} for key, value in sorted(rows.items())]
+            rows[month]["returning_customers"].add(email)
+    return [{"month": month, **{key: len(emails) for key, emails in value.items()}} for month, value in sorted(rows.items())]
 
 
 def top_dimension(product_rows: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:

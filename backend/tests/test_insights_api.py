@@ -202,15 +202,20 @@ def test_insights_product_filters_scope_mixed_order_lines_across_sales_breakdown
 
 def test_insights_customer_metrics_calculates_new_and_returning(client, monkeypatch):
     seed_insight_orders(client, monkeypatch)
+    today = datetime.now(timezone.utc).date()
+    params = {"start_date": (today - timedelta(days=10)).isoformat(), "end_date": today.isoformat()}
 
-    body = client.get("/api/insights/customer-metrics").json()
+    body = client.get("/api/insights/customer-metrics", params=params).json()
+    overview = client.get("/api/insights/overview", params=params).json()
 
     assert body["summary"]["total_customers"] == 2
     assert body["summary"]["returning_customers"] == 1
     assert body["summary"]["new_customers"] == 1
+    assert overview["summary"]["returning_customers"] == 1
+    assert overview["summary"]["new_customers"] == 1
 
 
-def test_insights_include_email_less_pos_orders_as_separate_guests(client, monkeypatch):
+def test_insights_keep_email_less_pos_sales_out_of_customer_counts(client, monkeypatch):
     seed_item(client, sku="POS-SKU", Brand="POS")
     orders = [
         woo_order(831, "", "POS-SKU", "10.00", "2026-07-02T12:00:00", quantity=1),
@@ -230,7 +235,9 @@ def test_insights_include_email_less_pos_orders_as_separate_guests(client, monke
 
     assert revenue["summary"]["total_orders"] == 2
     assert revenue["summary"]["net_sales"] == 25
-    assert customers["summary"]["total_customers"] == 2
+    assert customers["summary"]["total_customers"] == 0
+    assert customers["summary"]["new_customers"] == 0
+    assert customers["summary"]["anonymous_orders_without_email"] == 2
     assert all(warning["code"] != "missing_customer_email" for warning in customers["data_quality"])
 
 
