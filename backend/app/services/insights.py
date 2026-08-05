@@ -107,7 +107,6 @@ def apply_woo_analytics(db: Session, dashboard: str, params: dict[str, Any], res
     }
     if dashboard == "overview":
         exact.update({
-            "total_customers": int(totals.get("total_customers") or 0),
             "coupon_discount_total": dec(totals.get("coupons")),
         })
     else:

@@ -345,6 +345,14 @@ def test_unfiltered_sales_headlines_use_authoritative_woo_analytics(client, monk
     assert body["rows"] == [{"date": "2026-07-01", "order_count": 9, "gross_sales": 900.0, "net_sales": 850.0, "units_sold": 31.0}]
     assert all(warning["code"] != "missing_refund_data" for warning in body["data_quality"])
 
+    overview = client.get(
+        "/api/insights/overview",
+        params={"start_date": "2026-07-01", "end_date": "2026-07-31"},
+    ).json()
+    assert overview["summary"]["total_customers"] == 0
+    assert overview["summary"]["new_customers"] == 0
+    assert overview["summary"]["returning_customers"] == 0
+
 
 def test_insights_customer_segmentation_returns_segment_counts(client, monkeypatch):
     seed_insight_orders(client, monkeypatch)
