@@ -365,7 +365,7 @@ history never lives in web-dyno memory. The default terminal set includes
 completed, failed, cancelled, and refunded orders.
 
 The separate historical reporting import scans the complete order history
-across all standard and custom statuses as GET-only pages of 25. Its next page,
+across all standard and custom statuses as GET-only pages of up to 100. Its next page,
 frozen cutoff, retry count, and date coverage persist in
 `woocommerce_sync_runs.progress`, so a worker restart resumes at the last
 committed page. Newly discovered historical orders are marked

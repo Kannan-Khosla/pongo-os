@@ -15,6 +15,7 @@ from app.services.woocommerce_client import WooCommerceClientError
 from app.services.woocommerce_orders import commit_remote_order_records
 from app.services.woocommerce_order_reconciliation import (
     DEFAULT_STATUSES,
+    HISTORY_BATCH_SIZE,
     enqueue_order_history_import,
     order_history_coverage,
     process_next_order_history_import,
@@ -187,7 +188,7 @@ def test_historical_import_resumes_by_page_and_never_enters_operations():
     completed_orders = [
         {
             **remote_order(order_id),
-            "status": "custom-fulfilled" if order_id == 26 else "completed",
+            "status": "custom-fulfilled" if order_id == HISTORY_BATCH_SIZE + 1 else "completed",
             "payment_method": "foosales_pos",
             "billing": {"email": f"customer-{order_id}@example.invalid"},
             "line_items": [{
@@ -202,7 +203,7 @@ def test_historical_import_resumes_by_page_and_never_enters_operations():
                 "total_tax": "0.50",
             }],
         }
-        for order_id in range(1, 27)
+        for order_id in range(1, HISTORY_BATCH_SIZE + 2)
     ]
 
     class ReadOnlyClient:
@@ -238,8 +239,8 @@ def test_historical_import_resumes_by_page_and_never_enters_operations():
 
     assert result["status"] == "completed"
     assert result["sync_run_id"] == job_id
-    assert result["total_remote_records"] == 26
-    assert result["created_count"] == 26
+    assert result["total_remote_records"] == HISTORY_BATCH_SIZE + 1
+    assert result["created_count"] == HISTORY_BATCH_SIZE + 1
     assert [(call["status"], call["page"]) for call in remote.calls] == [
         ("any", 1),
         ("any", 2),
@@ -248,7 +249,7 @@ def test_historical_import_resumes_by_page_and_never_enters_operations():
 
     with factory() as db:
         orders = list(db.scalars(select(Order).order_by(Order.id)).all())
-        assert len(orders) == 26
+        assert len(orders) == HISTORY_BATCH_SIZE + 1
         assert all(order.is_historical_snapshot for order in orders)
         assert {order.local_status for order in orders} == {"completed", "custom-fulfilled"}
         assert all(order.allocation_status == "unallocated" for order in orders)
@@ -261,18 +262,18 @@ def test_historical_import_resumes_by_page_and_never_enters_operations():
         assert get_scanner_order(db, orders[0].id) is None
         coverage = order_history_coverage(db, settings)
         assert coverage["verified_complete"] is True
-        assert coverage["local_order_count"] == 26
-        assert coverage["historical_snapshot_count"] == 26
+        assert coverage["local_order_count"] == HISTORY_BATCH_SIZE + 1
+        assert coverage["historical_snapshot_count"] == HISTORY_BATCH_SIZE + 1
         assert coverage["distinct_order_dates"] == 1
 
 
 def test_historical_import_uses_woo_total_pages_at_exact_batch_boundary():
     factory = session_factory()
     settings = reconciliation_settings()
-    rows = [{**remote_order(order_id), "status": "completed"} for order_id in range(1, 26)]
+    rows = [{**remote_order(order_id), "status": "completed"} for order_id in range(1, HISTORY_BATCH_SIZE + 1)]
 
     class Client:
-        last_response_headers = {"X-WP-Total": "25", "X-WP-TotalPages": "1"}
+        last_response_headers = {"X-WP-Total": str(HISTORY_BATCH_SIZE), "X-WP-TotalPages": "1"}
 
         def list_orders(self, **_kwargs):
             return rows
@@ -282,7 +283,7 @@ def test_historical_import_uses_woo_total_pages_at_exact_batch_boundary():
 
     result = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: Client())
 
-    assert result["total_remote_records"] == 25
+    assert result["total_remote_records"] == HISTORY_BATCH_SIZE
     assert result["status"] == "completed"
     assert result["progress"]["current_status"] is None
     assert result["progress"]["next_page"] == 1
@@ -321,10 +322,10 @@ def test_historical_import_does_not_verify_coverage_if_woo_pagination_changes():
 def test_historical_import_does_not_verify_coverage_for_duplicate_page_ids():
     factory = session_factory()
     settings = reconciliation_settings()
-    first_page = [{**remote_order(order_id), "status": "completed"} for order_id in range(1, 26)]
+    first_page = [{**remote_order(order_id), "status": "completed"} for order_id in range(1, HISTORY_BATCH_SIZE + 1)]
 
     class Client:
-        last_response_headers = {"X-WP-Total": "26", "X-WP-TotalPages": "2"}
+        last_response_headers = {"X-WP-Total": str(HISTORY_BATCH_SIZE + 1), "X-WP-TotalPages": "2"}
 
         def list_orders(self, **kwargs):
             return first_page if kwargs["page"] == 1 else [first_page[-1]]
@@ -337,8 +338,8 @@ def test_historical_import_does_not_verify_coverage_for_duplicate_page_ids():
     result = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
 
     assert result["status"] == "completed"
-    assert result["total_remote_records"] == 26
-    assert result["progress"]["distinct_remote_records"] == 25
+    assert result["total_remote_records"] == HISTORY_BATCH_SIZE + 1
+    assert result["progress"]["distinct_remote_records"] == HISTORY_BATCH_SIZE
     assert result["progress"]["coverage_complete"] is False
 
 
@@ -472,7 +473,7 @@ def test_historical_snapshots_feed_sales_and_lifetime_customer_metrics():
 def test_historical_import_retries_the_same_checkpoint_without_double_counting():
     factory = session_factory()
     settings = reconciliation_settings()
-    orders = [{**remote_order(order_id), "status": "completed"} for order_id in range(1, 27)]
+    orders = [{**remote_order(order_id), "status": "completed"} for order_id in range(1, HISTORY_BATCH_SIZE + 2)]
 
     class FlakyClient:
         def __init__(self):
@@ -499,9 +500,9 @@ def test_historical_import_retries_the_same_checkpoint_without_double_counting()
 
     first = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
     failed_page = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
-    assert first["total_remote_records"] == 25
+    assert first["total_remote_records"] == HISTORY_BATCH_SIZE
     assert failed_page["status"] == "queued"
-    assert failed_page["total_remote_records"] == 25
+    assert failed_page["total_remote_records"] == HISTORY_BATCH_SIZE
     assert failed_page["progress"]["next_page"] == 2
 
     result = failed_page
@@ -509,8 +510,8 @@ def test_historical_import_retries_the_same_checkpoint_without_double_counting()
         result = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
 
     assert result["status"] == "completed"
-    assert result["total_remote_records"] == 26
-    assert result["created_count"] == 26
+    assert result["total_remote_records"] == HISTORY_BATCH_SIZE + 1
+    assert result["created_count"] == HISTORY_BATCH_SIZE + 1
     assert remote.calls[:3] == [("any", 1), ("any", 2), ("any", 2)]
 
 

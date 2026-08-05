@@ -26,6 +26,7 @@ DEFAULT_STATUSES = ["processing", "on-hold", "pending", "completed", "failed", "
 ACTIVE_STATUSES = {"processing", "on-hold", "pending"}
 HISTORY_STATUSES = ["any"]
 BATCH_SIZE = 25
+HISTORY_BATCH_SIZE = 100
 POSTGRES_ORDER_JOB_QUEUE_LOCK_KEY = int.from_bytes(b"PONGOQOJ", byteorder="big")
 _PROCESS_LOCK = threading.Lock()
 
@@ -134,6 +135,7 @@ def enqueue_order_history_import(
             "current_status": HISTORY_STATUSES[0],
             "next_page": 1,
             "batch_count": 0,
+            "batch_size": HISTORY_BATCH_SIZE,
             "transport_retry_count": 0,
             "coverage_complete": False,
             "status_total_records": {},
@@ -239,13 +241,14 @@ def run_order_history_import_batch(
                 return finish_order_history_import(db, job, progress)
             status = HISTORY_STATUSES[status_index]
             page = max(1, int(progress.get("next_page", 1)))
+            batch_size = max(1, min(100, int(progress.get("batch_size") or HISTORY_BATCH_SIZE)))
             snapshot_before = str(progress.get("snapshot_before") or "")
             requested_by = job.created_by or "historical-order-import"
 
         client = client_factory(effective_settings)
         remote_orders = client.list_orders(
             page=page,
-            per_page=BATCH_SIZE,
+            per_page=batch_size,
             status=status,
             before=snapshot_before,
         )
@@ -310,7 +313,7 @@ def run_order_history_import_batch(
                 else:
                     status_pages[status] = total_pages
                 progress["status_total_pages"] = status_pages
-            status_complete = page >= total_pages if total_pages is not None else len(remote_orders) < BATCH_SIZE
+            status_complete = page >= total_pages if total_pages is not None else len(remote_orders) < batch_size
             if status_complete:
                 status_index += 1
                 progress["status_index"] = status_index
