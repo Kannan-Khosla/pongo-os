@@ -14,6 +14,7 @@ from app.services.picks import get_scanner_order
 from app.services.woocommerce_client import WooCommerceClientError
 from app.services.woocommerce_orders import commit_remote_order_records
 from app.services.woocommerce_order_reconciliation import (
+    BATCH_SIZE,
     DEFAULT_STATUSES,
     HISTORY_BATCH_SIZE,
     enqueue_order_history_import,
@@ -287,6 +288,33 @@ def test_historical_import_uses_woo_total_pages_at_exact_batch_boundary():
     assert result["status"] == "completed"
     assert result["progress"]["current_status"] is None
     assert result["progress"]["next_page"] == 1
+
+
+def test_legacy_history_checkpoint_keeps_its_original_batch_size():
+    factory = session_factory()
+    settings = reconciliation_settings()
+
+    class Client:
+        last_response_headers = {"X-WP-Total": "0", "X-WP-TotalPages": "0"}
+
+        def __init__(self):
+            self.per_page = None
+
+        def list_orders(self, **kwargs):
+            self.per_page = kwargs["per_page"]
+            return []
+
+    remote = Client()
+    with factory() as db:
+        job = enqueue_order_history_import(db, "pytest", settings)
+        progress = dict(job.progress or {})
+        progress.pop("batch_size")
+        job.progress = progress
+        db.commit()
+
+    process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+
+    assert remote.per_page == BATCH_SIZE
 
 
 def test_historical_import_does_not_verify_coverage_if_woo_pagination_changes():

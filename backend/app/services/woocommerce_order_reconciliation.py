@@ -241,7 +241,7 @@ def run_order_history_import_batch(
                 return finish_order_history_import(db, job, progress)
             status = HISTORY_STATUSES[status_index]
             page = max(1, int(progress.get("next_page", 1)))
-            batch_size = max(1, min(100, int(progress.get("batch_size") or HISTORY_BATCH_SIZE)))
+            batch_size = max(1, min(100, int(progress.get("batch_size") or BATCH_SIZE)))
             snapshot_before = str(progress.get("snapshot_before") or "")
             requested_by = job.created_by or "historical-order-import"
 
