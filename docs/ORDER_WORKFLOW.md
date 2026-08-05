@@ -20,6 +20,11 @@ Pongo Inventory OS now follows a Zenventory-style local order workflow:
 6. Open Orders shows active processing and FooSales POS orders, newest first,
    until staff complete or close the order locally.
 
+The read-only historical import is outside this workflow. It marks newly
+discovered past orders as reporting snapshots, so they improve
+Insights and Reports without appearing in allocation, picking, completion, or
+route queues.
+
 WooCommerce remains the storefront. Completing a Pongo OS order also marks the
 linked WooCommerce order `completed` through the guarded backend writeback
 queue. Allocation and picking remain local-only, and WooCommerce stock is not

@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.orders import Order, OrderItem
@@ -15,6 +15,7 @@ from app.models.orders import Order, OrderItem
 OPEN_STATUSES = {"open", "processing", "on-hold", "pending", "allocated", "partially_allocated", "picked", "partially_picked"}
 DONE_STATUSES = {"completed", "fulfilled", "partially_fulfilled"}
 FAILED_STATUSES = {"failed", "cancelled", "canceled", "refunded"}
+SALES_STATUSES = {"completed", "processing", "fulfilled", "partially_fulfilled", "open", "allocated", "picked"}
 CITY_COORDINATES = {
     "edmonton": (53.5461, -113.4938),
     "sherwood park": (53.5412, -113.2957),
@@ -55,26 +56,34 @@ def build_today(db: Session, target_date: date | None = None) -> dict[str, Any]:
     target_date = target_date or date.today()
     orders = load_orders(db)
     today_orders = [order for order in orders if order_is_on_date(order, target_date)]
-    customers_today = {customer_key(order) for order in today_orders}
-    earlier_customers = {customer_key(order) for order in orders if order_day(order) and order_day(order) < target_date}
-    revenue = sum((order_total(order) for order in today_orders), Decimal("0"))
-    subscription_count = sum(1 for order in today_orders if is_subscription_order(order))
-    warnings = data_quality_warnings(orders=today_orders, include_limited_history=not orders)
+    today_sales_orders = [order for order in today_orders if is_sales_order(order)]
+    customers_today = {email for order in today_sales_orders if (email := normalized_email(order.customer_email))}
+    earlier_customers = {
+        email
+        for order in orders
+        if is_sales_order(order)
+        and order_day(order)
+        and order_day(order) < target_date
+        and (email := normalized_email(order.customer_email))
+    }
+    revenue = sum((order_total(order) for order in today_sales_orders), Decimal("0"))
+    subscription_count = sum(1 for order in today_sales_orders if is_subscription_order(order))
+    warnings = data_quality_warnings(orders=today_sales_orders, include_limited_history=not orders)
     if not any_subscription_data(orders):
         warnings += warning("missing_subscription_data", "info", "Subscription data is not synced yet.")
     summary = {
         "today_date": target_date.isoformat(),
-        "today_orders_count": len(today_orders),
+        "today_orders_count": len(today_sales_orders),
         "today_revenue": dec(revenue),
         "today_new_customers": sum(1 for customer in customers_today if customer not in earlier_customers),
         "today_returning_customers": sum(1 for customer in customers_today if customer in earlier_customers),
         "today_subscription_orders": subscription_count,
-        "today_units_sold": dec(sum((line_qty(line) for order in today_orders for line in order.items), Decimal("0"))),
+        "today_units_sold": dec(sum((line_qty(line) for order in today_sales_orders for line in order.items), Decimal("0"))),
         "open_orders_count": len(open_order_rows(orders)),
-        "completed_orders_today": sum(1 for order in today_orders if normalized_status(order) in DONE_STATUSES),
+        "completed_orders_today": sum(1 for order in today_sales_orders if normalized_status(order) in DONE_STATUSES),
         "failed_orders_today": sum(1 for order in today_orders if normalized_status(order) == "failed"),
         "cancelled_orders_today": sum(1 for order in today_orders if normalized_status(order) in {"cancelled", "canceled"}),
-        "average_order_value_today": dec(revenue / Decimal(len(today_orders))) if today_orders else 0,
+        "average_order_value_today": dec(revenue / Decimal(len(today_sales_orders))) if today_sales_orders else 0,
     }
     return {"summary": summary, "data_quality": warnings}
 
@@ -167,7 +176,7 @@ def build_revenue_comparison(db: Session, target_date: date | None = None, mode:
 
 def build_order_map(db: Session, target_date: date | None = None) -> dict[str, Any]:
     target_date = target_date or date.today()
-    orders = [order for order in load_orders(db) if order_is_on_date(order, target_date)]
+    orders = [order for order in load_orders(db) if order_is_on_date(order, target_date) and is_sales_order(order)]
     city_groups = defaultdict(lambda: {"orders": [], "customers": set(), "revenue": Decimal("0")})
     markers = []
     unplotted = 0
@@ -175,7 +184,8 @@ def build_order_map(db: Session, target_date: date | None = None) -> dict[str, A
         city = clean(order.shipping_city or order.billing_city or "Unknown")
         city_key = city.lower()
         city_groups[city]["orders"].append(order)
-        city_groups[city]["customers"].add(customer_key(order))
+        if email := normalized_email(order.customer_email):
+            city_groups[city]["customers"].add(email)
         city_groups[city]["revenue"] += order_total(order)
         latitude, longitude, approximate = coordinates_for_order(order)
         if latitude is None or longitude is None:
@@ -213,7 +223,11 @@ def build_order_map(db: Session, target_date: date | None = None) -> dict[str, A
 
 
 def load_orders(db: Session) -> list[Order]:
-    return list(db.scalars(select(Order).options(selectinload(Order.items))).all())
+    return list(db.scalars(
+        select(Order)
+        .where(or_(Order.is_historical_snapshot.is_(False), Order.historical_source_present.is_(True)))
+        .options(selectinload(Order.items))
+    ).all())
 
 
 def open_order_rows(orders: list[Order]) -> list[Order]:
@@ -277,7 +291,7 @@ def count_due_within(rows: list[dict[str, Any]], target_date: date, days: int) -
 
 
 def revenue_for_day(orders: list[Order], day: date) -> Decimal:
-    return sum((order_total(order) for order in orders if order_is_on_date(order, day)), Decimal("0"))
+    return sum((order_total(order) for order in orders if order_is_on_date(order, day) and is_sales_order(order)), Decimal("0"))
 
 
 def order_is_on_date(order: Order, day: date) -> bool:
@@ -313,6 +327,11 @@ def line_qty(line: OrderItem) -> Decimal:
 
 def normalized_status(order: Order) -> str:
     return clean(order.local_status or order.status or order.woo_status).lower()
+
+
+def is_sales_order(order: Order) -> bool:
+    statuses = {clean(order.status).lower(), clean(order.woo_status).lower(), clean(order.local_status).lower()}
+    return not statuses & FAILED_STATUSES and bool(statuses & SALES_STATUSES)
 
 
 def customer_key(order: Order) -> str:

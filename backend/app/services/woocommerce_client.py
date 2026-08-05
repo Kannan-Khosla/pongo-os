@@ -42,6 +42,7 @@ class WooCommerceClient:
         self.timeout_seconds = settings.woocommerce_timeout_seconds
         self.page_size = settings.woocommerce_page_size
         self.order_page_size = settings.woocommerce_order_sync_page_size
+        self.last_response_headers: dict[str, str] = {}
 
     @property
     def configured(self) -> bool:
@@ -293,6 +294,7 @@ class WooCommerceClient:
                     continue
                 response.raise_for_status()
                 data = response.json()
+                self.last_response_headers = dict(response.headers)
                 return data
             except httpx.TimeoutException as exc:
                 if attempt < 3:

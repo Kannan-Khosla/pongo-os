@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.config import Settings
 from app.db.session import get_db
 from app.main import app
+from app.models.orders import Order
 from app.models.woocommerce import WooCommerceAccessModeChange, WooStockSyncJob
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError, safe_woocommerce_error_message
 from app.services.woocommerce_stock_sync_jobs import cancel_stock_sync_job, ensure_daily_full_stock_sync_job, process_next_stock_sync_job, run_stock_sync_job_scheduler, unresolved_stock_sync_job_count
@@ -352,6 +353,45 @@ def test_order_status_preview_creates_no_woo_request(client, monkeypatch):
     body = response.json()
     assert body["operation_type"] == "update_order_status"
     assert body["payload_json"]["body"]["status"] == "completed"
+
+
+def test_historical_snapshot_cannot_be_previewed_or_queued_for_writeback(client, monkeypatch):
+    monkeypatch.setattr("app.api.routes.woocommerce.get_settings", lambda: staging_settings())
+    db = next(app.dependency_overrides[get_db]())
+    try:
+        order = Order(
+            woo_order_id=9501,
+            order_number="HISTORY-9501",
+            woo_status="completed",
+            local_status="completed",
+            is_historical_snapshot=True,
+        )
+        db.add(order)
+        db.commit()
+        order_id = order.id
+    finally:
+        db.close()
+
+    preview = client.post(
+        "/api/integrations/woocommerce/writeback/order-status/preview",
+        json={"order_id": order_id, "proposed_status": "completed"},
+    )
+    forged_queue = client.post(
+        "/api/integrations/woocommerce/writeback/queue",
+        json={
+            "operation_type": "update_order_status",
+            "entity_type": "order",
+            "entity_id": order_id,
+            "woo_entity_id": 9501,
+            "woo_order_id": 9501,
+            "payload_json": {"method": "PUT", "path": "/wp-json/wc/v3/orders/9501", "body": {"status": "completed"}},
+            "preview_json": {},
+        },
+    )
+
+    assert preview.status_code == 404
+    assert forged_queue.status_code == 400
+    assert "historical snapshots" in forged_queue.text
 
 
 def test_queue_creates_local_row_only(client, monkeypatch):

@@ -11,7 +11,7 @@ from statistics import median
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.inventory import InventoryItem
@@ -22,8 +22,8 @@ from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 
 
-SUCCESS_STATUSES = {"completed", "processing", "fulfilled", "partially_fulfilled", "open", "allocated", "picked"}
-FAILED_STATUSES = {"failed", "cancelled", "canceled", "refunded"}
+SUCCESS_STATUSES = {"completed", "processing", "fulfilled", "partially_fulfilled", "open", "allocated", "picked", "refunded"}
+FAILED_STATUSES = {"failed", "cancelled", "canceled"}
 EXPORT_COLUMNS = {
     "orders-revenue": ["date", "order_count", "gross_sales", "net_sales", "units_sold"],
     "customer-metrics": ["customer_key", "customer_name", "email", "order_count", "lifetime_spend", "first_order_date", "last_order_date"],
@@ -152,7 +152,11 @@ def export_insight_csv(db: Session, dashboard: str, params: dict[str, Any] | Non
 
 
 def build_context(db: Session, params: dict[str, Any]) -> dict[str, Any]:
-    orders = list(db.scalars(select(Order).options(selectinload(Order.items).selectinload(OrderItem.inventory_item))).all())
+    orders = list(db.scalars(
+        select(Order)
+        .where(or_(Order.is_historical_snapshot.is_(False), Order.historical_source_present.is_(True)))
+        .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
+    ).all())
     items = list(db.scalars(select(InventoryItem)).all())
     item_by_id = {item.id: item for item in items}
     item_by_sku = {clean_key(item.sku): item for item in items if clean_key(item.sku)}
@@ -209,7 +213,7 @@ def overview(ctx: dict[str, Any]) -> InsightResponse:
             "top_skus": product_rows[:10],
         }
     )
-    warnings = sales_ctx["warnings"] + warning("missing_refund_data", "info", "Refund detail is not synced yet, so refund metrics are unavailable.")
+    warnings = sales_ctx["warnings"] + refund_warning(sales_ctx["orders"], sales_ctx)
     return response(
         "overview",
         summary=summary,
@@ -237,7 +241,7 @@ def orders_revenue(ctx: dict[str, Any]) -> InsightResponse:
     )
     trends = daily_trends(orders, ctx)
     tables = {"status_breakdown": status_breakdown(orders, ctx), "payment_methods": payment_breakdown(orders, ctx)}
-    warnings = base_warnings(orders, ctx["items"]) + warning("missing_refund_data", "info", "Refund detail is not synced yet, so refund metrics are unavailable.")
+    warnings = base_warnings(orders, ctx["items"]) + refund_warning(orders, ctx)
     return response(
         "orders-revenue",
         summary=metrics,
@@ -320,6 +324,8 @@ def product_sku(ctx: dict[str, Any]) -> InsightResponse:
     warnings = [entry for entry in sales_ctx["warnings"] if entry["code"] != "missing_unit_cost"]
     if not all_costs_available:
         warnings += warning("missing_unit_cost", "warning", "Some SKU margin estimates are unavailable because unit cost is missing.")
+    if any((order_refund_total(order) or Decimal("0")) > 0 for order in sales_ctx["orders"]):
+        warnings += warning("sku_refund_allocation_unavailable", "info", "Order-level refunds cannot be assigned to individual SKUs from order summaries alone.")
     return response("product-sku", summary=summary, rows=rows, tables={"skus": rows}, warnings=warnings)
 
 
@@ -485,14 +491,20 @@ def revenue_metrics(orders: list[Order], ctx: dict[str, Any] | None = None) -> d
     net = sum((order_net_sales(order, ctx) for order in orders), Decimal("0"))
     units = sum((line_qty(line) for order in orders for line in scoped_order_lines(order, ctx)), Decimal("0"))
     discounts = sum((order_discount(order, ctx) for order in orders), Decimal("0"))
+    refund_totals = [order_refund_total(order) for order in orders]
+    refunds = (
+        sum((value for value in refund_totals if value is not None), Decimal("0"))
+        if orders and not has_product_filters(ctx) and all(value is not None for value in refund_totals)
+        else None
+    )
     return {
         "total_orders": len(orders),
         "gross_sales": dec(gross),
         "net_sales": dec(net),
         "average_order_value": dec(net / Decimal(len(orders))) if orders else None,
         "units_sold": dec(units),
-        "refund_amount": None,
-        "refund_rate": None,
+        "refund_amount": dec(refunds) if refunds is not None else None,
+        "refund_rate": percent(refunds, gross) if refunds is not None else None,
         "discount_amount": dec(discounts),
     }
 
@@ -978,8 +990,28 @@ def order_total(order: Order) -> Decimal:
 
 def order_net_sales(order: Order, ctx: dict[str, Any] | None = None) -> Decimal:
     if order.items:
-        return sum((line_revenue(line) for line in scoped_order_lines(order, ctx)), Decimal("0"))
-    return order_total(order) - money(order.shipping_total) - money(order.tax_total)
+        net = sum((line_revenue(line) for line in scoped_order_lines(order, ctx)), Decimal("0"))
+    else:
+        net = order_total(order) - money(order.shipping_total) - money(order.tax_total)
+    refund = order_refund_total(order)
+    if refund is not None and not has_product_filters(ctx):
+        net -= refund
+    return max(net, Decimal("0"))
+
+
+def order_refund_total(order: Order) -> Decimal | None:
+    payload = order.raw_woo_payload or {}
+    if "refunds" not in payload:
+        return None
+    return sum((abs(money(row.get("total") or row.get("amount"))) for row in payload.get("refunds") or []), Decimal("0"))
+
+
+def refund_warning(orders: list[Order], ctx: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    if has_product_filters(ctx):
+        return warning("sku_refund_allocation_unavailable", "info", "Order-level refunds cannot be assigned to filtered products from order summaries alone.")
+    if orders and all(order_refund_total(order) is not None for order in orders):
+        return []
+    return warning("missing_refund_data", "info", "Refund summaries are missing on some local orders, so refund metrics are unavailable.")
 
 
 def order_gross(order: Order, ctx: dict[str, Any] | None = None) -> Decimal:

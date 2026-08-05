@@ -6,10 +6,11 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from sqlalchemy import case, select, text
+from sqlalchemy import case, func, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
+from app.models.orders import Order
 from app.models.woocommerce import WooCommerceSyncRun
 from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_client import WooCommerceClient
@@ -19,9 +20,11 @@ logger = logging.getLogger(__name__)
 
 SCHEDULER_CREATED_BY = "server-order-reconciliation"
 ORDER_JOB_SYNC_TYPE = "order_job"
+ORDER_HISTORY_SYNC_TYPE = "order_history_v1"
 SUCCESS_STATUSES = {"completed", "completed_with_errors"}
 DEFAULT_STATUSES = ["processing", "on-hold", "pending", "completed", "failed", "cancelled", "refunded"]
 ACTIVE_STATUSES = {"processing", "on-hold", "pending"}
+HISTORY_STATUSES = ["any"]
 BATCH_SIZE = 25
 POSTGRES_ORDER_JOB_QUEUE_LOCK_KEY = int.from_bytes(b"PONGOQOJ", byteorder="big")
 _PROCESS_LOCK = threading.Lock()
@@ -81,6 +84,461 @@ def enqueue_order_sync_job(
     db.commit()
     db.refresh(job)
     return job
+
+
+def enqueue_order_history_import(
+    db: Session,
+    requested_by: str,
+    settings: Any,
+    *,
+    now: datetime | None = None,
+) -> WooCommerceSyncRun:
+    effective_settings = effective_woocommerce_settings(db, settings)
+    if not getattr(effective_settings, "woocommerce_read_enabled", True):
+        raise ValueError("WooCommerce reads are disabled.")
+    if not reconciliation_is_configured(effective_settings):
+        raise ValueError("WooCommerce credentials are not configured.")
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": POSTGRES_ORDER_JOB_QUEUE_LOCK_KEY + 1})
+    latest = db.scalars(
+        select(WooCommerceSyncRun)
+        .where(WooCommerceSyncRun.sync_type == ORDER_HISTORY_SYNC_TYPE)
+        .order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())
+    ).first()
+    source_url = str(getattr(effective_settings, "woocommerce_base_url", "")).rstrip("/")
+    if latest is not None and latest.status in {"queued", "running"}:
+        return latest
+    if latest is not None and latest.status == "failed" and (latest.progress or {}).get("source_base_url") == source_url:
+        progress = dict(latest.progress or {})
+        progress["transport_retry_count"] = 0
+        progress["last_error"] = None
+        latest.progress = progress
+        latest.status = "queued"
+        latest.completed_at = None
+        latest.notes = "Historical order import resumed from its last committed WooCommerce page."
+        db.commit()
+        db.refresh(latest)
+        return latest
+
+    current_time = as_utc(now or datetime.now(timezone.utc))
+    job = WooCommerceSyncRun(
+        sync_type=ORDER_HISTORY_SYNC_TYPE,
+        status="queued",
+        started_at=current_time,
+        created_by=requested_by[:120],
+        notes="Full read-only WooCommerce order history import queued.",
+        progress={
+            "source_base_url": source_url,
+            "snapshot_before": current_time.isoformat().replace("+00:00", "Z"),
+            "status_index": 0,
+            "current_status": HISTORY_STATUSES[0],
+            "next_page": 1,
+            "batch_count": 0,
+            "transport_retry_count": 0,
+            "coverage_complete": False,
+            "status_total_records": {},
+            "status_total_pages": {},
+            "seen_order_ids": [],
+            "distinct_remote_records": 0,
+            "earliest_remote_order_at": None,
+            "latest_remote_order_at": None,
+            "last_error": None,
+        },
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def recover_stale_order_history_jobs(db: Session, settings: Any, *, now: datetime | None = None) -> int:
+    current_time = as_utc(now or datetime.now(timezone.utc))
+    stale_seconds = max(900, int(getattr(settings, "woocommerce_order_reconciliation_stale_after_seconds", 300)))
+    recovered = 0
+    for job in db.scalars(
+        select(WooCommerceSyncRun).where(
+            WooCommerceSyncRun.sync_type == ORDER_HISTORY_SYNC_TYPE,
+            WooCommerceSyncRun.status == "running",
+        )
+    ).all():
+        heartbeat = progress_datetime((job.progress or {}).get("heartbeat_at")) or as_utc(job.started_at)
+        if current_time - heartbeat <= timedelta(seconds=stale_seconds):
+            continue
+        progress = dict(job.progress or {})
+        progress["last_error"] = "Recovered after the previous worker stopped during this page."
+        job.progress = progress
+        job.status = "queued"
+        job.notes = "Historical order import recovered at its last committed WooCommerce page."
+        recovered += 1
+    if recovered:
+        db.commit()
+    return recovered
+
+
+def process_next_order_history_import(
+    settings: Any,
+    *,
+    session_factory: Callable[[], Session] = SessionLocal,
+    client_factory: Callable[[Any], Any] = WooCommerceClient,
+) -> dict[str, Any] | None:
+    with session_factory() as db:
+        effective_settings = effective_woocommerce_settings(db, settings)
+        recover_stale_order_history_jobs(db, effective_settings)
+        statement = (
+            select(WooCommerceSyncRun)
+            .where(
+                WooCommerceSyncRun.sync_type == ORDER_HISTORY_SYNC_TYPE,
+                WooCommerceSyncRun.status == "queued",
+            )
+            .order_by(WooCommerceSyncRun.started_at, WooCommerceSyncRun.id)
+        )
+        if db.get_bind().dialect.name == "postgresql":
+            statement = statement.with_for_update(skip_locked=True)
+        job = db.scalars(statement).first()
+        if job is None:
+            return None
+        progress = dict(job.progress or {})
+        progress["heartbeat_at"] = utc_iso(datetime.now(timezone.utc))
+        job.progress = progress
+        job.status = "running"
+        job.completed_at = None
+        job.notes = "Historical order import is reading one WooCommerce page."
+        job_id = job.id
+        db.commit()
+    return run_order_history_import_batch(
+        settings,
+        job_id,
+        session_factory=session_factory,
+        client_factory=client_factory,
+    )
+
+
+def run_order_history_import_batch(
+    settings: Any,
+    job_id: int,
+    *,
+    session_factory: Callable[[], Session] = SessionLocal,
+    client_factory: Callable[[Any], Any] = WooCommerceClient,
+) -> dict[str, Any]:
+    try:
+        with session_factory() as db:
+            effective_settings = effective_woocommerce_settings(db, settings)
+            job = db.get(WooCommerceSyncRun, job_id)
+            if job is None or job.sync_type != ORDER_HISTORY_SYNC_TYPE:
+                return {"status": "failed", "sync_run_id": job_id, "error": "Historical order import job was not found."}
+            if not getattr(effective_settings, "woocommerce_read_enabled", True):
+                return fail_order_history_import(db, job, "WooCommerce reads are disabled.")
+            if not reconciliation_is_configured(effective_settings):
+                return fail_order_history_import(db, job, "WooCommerce credentials are not configured.")
+            progress = dict(job.progress or {})
+            source_url = str(getattr(effective_settings, "woocommerce_base_url", "")).rstrip("/")
+            if progress.get("source_base_url") != source_url:
+                return fail_order_history_import(db, job, "WooCommerce store changed after this history import began.")
+            status_index = int(progress.get("status_index", 0))
+            if status_index >= len(HISTORY_STATUSES):
+                return finish_order_history_import(db, job, progress)
+            status = HISTORY_STATUSES[status_index]
+            page = max(1, int(progress.get("next_page", 1)))
+            snapshot_before = str(progress.get("snapshot_before") or "")
+            requested_by = job.created_by or "historical-order-import"
+
+        client = client_factory(effective_settings)
+        remote_orders = client.list_orders(
+            page=page,
+            per_page=BATCH_SIZE,
+            status=status,
+            before=snapshot_before,
+        )
+        total_pages, total_records = woo_pagination(getattr(client, "last_response_headers", {}))
+
+        with session_factory() as db:
+            job = db.get(WooCommerceSyncRun, job_id)
+            if job is None:
+                raise RuntimeError("Historical order import job disappeared.")
+            progress = dict(job.progress or {})
+            if remote_orders:
+                seen_order_ids = {int(value) for value in progress.get("seen_order_ids") or []}
+                seen_order_ids.update(
+                    int(order["id"])
+                    for order in remote_orders
+                    if order.get("id") is not None
+                )
+                progress["seen_order_ids"] = sorted(seen_order_ids)
+                progress["distinct_remote_records"] = len(seen_order_ids)
+                requested_statuses = sorted({
+                    str(order.get("status") or "").strip()
+                    for order in remote_orders
+                    if str(order.get("status") or "").strip()
+                }) or DEFAULT_STATUSES
+                page_run, _summary = commit_remote_order_records(
+                    db,
+                    remote_orders,
+                    requested_statuses,
+                    requested_by,
+                    commit=False,
+                    snapshot_only=True,
+                )
+                for key in (
+                    "total_remote_records",
+                    "created_count",
+                    "updated_count",
+                    "matched_count",
+                    "skipped_count",
+                    "conflict_count",
+                    "error_count",
+                ):
+                    setattr(job, key, int(getattr(job, key) or 0) + int(getattr(page_run, key) or 0))
+                update_history_date_coverage(progress, remote_orders)
+
+            progress["batch_count"] = int(progress.get("batch_count", 0)) + 1
+            progress["transport_retry_count"] = 0
+            progress["last_error"] = None
+            progress["heartbeat_at"] = utc_iso(datetime.now(timezone.utc))
+            if total_records is not None:
+                status_totals = dict(progress.get("status_total_records") or {})
+                previous_total = status_totals.get(status)
+                if previous_total is not None and int(previous_total) != total_records:
+                    progress["pagination_changed"] = True
+                else:
+                    status_totals[status] = total_records
+                progress["status_total_records"] = status_totals
+            if total_pages is not None:
+                status_pages = dict(progress.get("status_total_pages") or {})
+                previous_pages = status_pages.get(status)
+                if previous_pages is not None and int(previous_pages) != total_pages:
+                    progress["pagination_changed"] = True
+                else:
+                    status_pages[status] = total_pages
+                progress["status_total_pages"] = status_pages
+            status_complete = page >= total_pages if total_pages is not None else len(remote_orders) < BATCH_SIZE
+            if status_complete:
+                status_index += 1
+                progress["status_index"] = status_index
+                progress["next_page"] = 1
+                progress["current_status"] = HISTORY_STATUSES[status_index] if status_index < len(HISTORY_STATUSES) else None
+            else:
+                progress["next_page"] = page + 1
+                progress["current_status"] = status
+            job.progress = progress
+            if status_index >= len(HISTORY_STATUSES):
+                return finish_order_history_import(db, job, progress)
+            job.status = "queued"
+            job.notes = f"Historical order page committed; next: {progress['current_status']} page {progress['next_page']}."
+            db.commit()
+            db.refresh(job)
+            return history_job_result(job)
+    except Exception as error:
+        message = str(error)[:1000] or error.__class__.__name__
+        logger.error("WooCommerce historical order import failed: %s", message)
+        with session_factory() as db:
+            job = db.get(WooCommerceSyncRun, job_id)
+            if job is None:
+                return {"status": "failed", "sync_run_id": job_id, "error": message}
+            progress = dict(job.progress or {})
+            attempts = int(progress.get("transport_retry_count", 0)) + 1
+            progress["transport_retry_count"] = attempts
+            progress["last_error"] = message
+            progress["heartbeat_at"] = utc_iso(datetime.now(timezone.utc))
+            job.progress = progress
+            if attempts < 3:
+                job.status = "queued"
+                job.notes = f"Historical order page failed; automatic retry {attempts} of 3 is queued."
+            else:
+                job.status = "failed"
+                job.error_count = int(job.error_count or 0) + 1
+                job.completed_at = datetime.now(timezone.utc)
+                job.notes = f"Historical order import paused after 3 failed attempts: {message}"[:1000]
+            db.commit()
+            db.refresh(job)
+            return history_job_result(job)
+
+
+def finish_order_history_import(db: Session, job: WooCommerceSyncRun, progress: dict[str, Any]) -> dict[str, Any]:
+    status_totals = progress.get("status_total_records") or {}
+    totals_verified = all(status in status_totals for status in HISTORY_STATUSES)
+    expected_records = sum(int(status_totals[status]) for status in HISTORY_STATUSES) if totals_verified else None
+    progress["expected_remote_records"] = expected_records
+    progress["coverage_complete"] = bool(
+        totals_verified
+        and not progress.get("pagination_changed")
+        and expected_records == int(job.total_remote_records or 0)
+        and expected_records == int(progress.get("distinct_remote_records") or 0)
+        and int(job.created_count or 0) + int(job.updated_count or 0) == int(job.total_remote_records or 0)
+        and int(job.skipped_count or 0) == 0
+    )
+    if progress["coverage_complete"]:
+        progress["source_absent_snapshot_count"] = reconcile_history_snapshot_presence(
+            db,
+            {int(value) for value in progress.get("seen_order_ids") or []},
+        )
+    progress["heartbeat_at"] = utc_iso(datetime.now(timezone.utc))
+    job.progress = progress
+    job.completed_at = datetime.now(timezone.utc)
+    job.status = "completed_with_errors" if job.conflict_count or job.error_count else "completed"
+    job.notes = (
+        f"Read-only history scan completed in {progress.get('batch_count', 0)} page request(s); "
+        f"{job.total_remote_records} order snapshot(s) covered."
+    )
+    db.commit()
+    db.refresh(job)
+    return history_job_result(job)
+
+
+def reconcile_history_snapshot_presence(db: Session, seen_order_ids: set[int]) -> int:
+    current_ids = {
+        int(value)
+        for value in db.scalars(
+            select(Order.woo_order_id).where(
+                Order.is_historical_snapshot.is_(True),
+                Order.historical_source_present.is_(True),
+                Order.woo_order_id.is_not(None),
+            )
+        ).all()
+    }
+    db.execute(
+        update(Order)
+        .where(Order.is_historical_snapshot.is_(True))
+        .values(historical_source_present=False)
+    )
+    seen_order_id_list = list(seen_order_ids)
+    for offset in range(0, len(seen_order_id_list), 500):
+        batch = seen_order_id_list[offset:offset + 500]
+        db.execute(
+            update(Order)
+            .where(Order.is_historical_snapshot.is_(True), Order.woo_order_id.in_(batch))
+            .values(historical_source_present=True)
+        )
+    return len(current_ids - seen_order_ids)
+
+
+def fail_order_history_import(db: Session, job: WooCommerceSyncRun, message: str) -> dict[str, Any]:
+    progress = dict(job.progress or {})
+    progress["last_error"] = message
+    progress["coverage_complete"] = False
+    job.progress = progress
+    job.status = "failed"
+    job.error_count = int(job.error_count or 0) + 1
+    job.completed_at = datetime.now(timezone.utc)
+    job.notes = message[:1000]
+    db.commit()
+    db.refresh(job)
+    return history_job_result(job)
+
+
+def history_job_result(job: WooCommerceSyncRun) -> dict[str, Any]:
+    progress = dict(job.progress or {})
+    progress.pop("seen_order_ids", None)
+    return {
+        "status": job.status,
+        "sync_run_id": job.id,
+        "total_remote_records": job.total_remote_records,
+        "created_count": job.created_count,
+        "updated_count": job.updated_count,
+        "error_count": job.error_count,
+        "progress": progress,
+    }
+
+
+def update_history_date_coverage(progress: dict[str, Any], remote_orders: list[dict[str, Any]]) -> None:
+    dates = [
+        parsed
+        for order in remote_orders
+        if (parsed := progress_datetime(order.get("date_created_gmt") or order.get("date_created"))) is not None
+    ]
+    if not dates:
+        return
+    earliest = min(dates)
+    latest = max(dates)
+    current_earliest = progress_datetime(progress.get("earliest_remote_order_at"))
+    current_latest = progress_datetime(progress.get("latest_remote_order_at"))
+    progress["earliest_remote_order_at"] = utc_iso(min(earliest, current_earliest) if current_earliest else earliest)
+    progress["latest_remote_order_at"] = utc_iso(max(latest, current_latest) if current_latest else latest)
+
+
+def order_history_coverage(db: Session, settings: Any) -> dict[str, Any]:
+    source_url = str(getattr(settings, "woocommerce_base_url", "")).rstrip("/")
+    runs = list(
+        db.scalars(
+            select(WooCommerceSyncRun)
+            .where(WooCommerceSyncRun.sync_type == ORDER_HISTORY_SYNC_TYPE)
+            .order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())
+            .limit(20)
+        ).all()
+    )
+    latest = runs[0] if runs else None
+    verified = next(
+        (
+            run
+            for run in runs
+            if (run.progress or {}).get("coverage_complete")
+            and (run.progress or {}).get("source_base_url") == source_url
+            and run.status in SUCCESS_STATUSES
+        ),
+        None,
+    )
+    visible_order_clause = or_(Order.is_historical_snapshot.is_(False), Order.historical_source_present.is_(True))
+    count, earliest, latest_date = db.execute(
+        select(func.count(Order.id), func.min(Order.date_created), func.max(Order.date_created)).where(visible_order_clause)
+    ).one()
+    distinct_dates = db.scalar(select(func.count(func.distinct(func.date(Order.date_created)))).where(visible_order_clause)) or 0
+    snapshot_count = db.scalar(
+        select(func.count(Order.id)).where(
+            Order.is_historical_snapshot.is_(True),
+            Order.historical_source_present.is_(True),
+        )
+    ) or 0
+    source_absent_count = db.scalar(
+        select(func.count(Order.id)).where(
+            Order.is_historical_snapshot.is_(True),
+            Order.historical_source_present.is_(False),
+        )
+    ) or 0
+    return {
+        "verified_complete": verified is not None,
+        "latest_status": latest.status if latest else None,
+        "latest_job_id": latest.id if latest else None,
+        "verified_at": utc_iso(verified.completed_at) if verified and verified.completed_at else None,
+        "local_order_count": int(count or 0),
+        "historical_snapshot_count": int(snapshot_count),
+        "source_absent_snapshot_count": int(source_absent_count),
+        "distinct_order_dates": int(distinct_dates),
+        "earliest_order_at": utc_iso(earliest) if earliest else None,
+        "latest_order_at": utc_iso(latest_date) if latest_date else None,
+        "source_matches": bool(latest and (latest.progress or {}).get("source_base_url") == source_url),
+    }
+
+
+def latest_order_history_run(db: Session) -> WooCommerceSyncRun | None:
+    return db.scalars(
+        select(WooCommerceSyncRun)
+        .where(WooCommerceSyncRun.sync_type == ORDER_HISTORY_SYNC_TYPE)
+        .order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())
+        .limit(1)
+    ).first()
+
+
+def progress_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return as_utc(parsed)
+
+
+def woo_pagination(headers: dict[str, Any]) -> tuple[int | None, int | None]:
+    normalized = {str(key).casefold(): value for key, value in (headers or {}).items()}
+    try:
+        total_pages = int(normalized["x-wp-totalpages"])
+        total_records = int(normalized["x-wp-total"])
+    except (KeyError, TypeError, ValueError):
+        return None, None
+    return max(total_pages, 0), max(total_records, 0)
+
+
+def utc_iso(value: datetime) -> str:
+    return as_utc(value).isoformat().replace("+00:00", "Z")
 
 
 def ensure_automatic_order_sync_job(db: Session, settings: Any, *, now: datetime | None = None) -> WooCommerceSyncRun | None:

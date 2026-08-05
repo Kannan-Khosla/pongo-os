@@ -1,6 +1,9 @@
 import csv
 from io import StringIO
 
+from app.db.session import get_db
+from app.main import app
+from app.models.orders import Order
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
 
@@ -88,6 +91,27 @@ def test_allocation_preview_skips_unmatched_and_conflict_lines(client, monkeypat
     conflict_order = [order for order in client.get("/api/orders/open").json()["orders"] if order["woo_order_number"] == "1002"][0]
     conflict = client.post("/api/allocations/preview", json={"order_ids": [conflict_order["id"]], "allow_partial": True}).json()
     assert conflict["conflict_lines"] == 1
+
+
+def test_allocation_preview_excludes_historical_snapshots(client, monkeypatch):
+    _, order, line = synced_order(client, monkeypatch)
+    override = app.dependency_overrides[get_db]()
+    db = next(override)
+    try:
+        db.get(Order, order["id"]).is_historical_snapshot = True
+        db.commit()
+    finally:
+        override.close()
+
+    payloads = [
+        {"order_ids": [order["id"]], "allow_partial": True},
+        {"lines": [{"order_line_id": line["id"], "quantity_to_allocate": 1}], "allow_partial": True},
+    ]
+    for payload in payloads:
+        response = client.post("/api/allocations/preview", json=payload)
+        assert response.status_code == 200
+        assert response.json()["total_orders"] == 0
+        assert response.json()["total_lines"] == 0
 
 
 def test_manual_allocation_commit_partial_updates_allocated_and_audit_only(client, monkeypatch):

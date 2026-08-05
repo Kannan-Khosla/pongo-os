@@ -386,6 +386,8 @@ def create_queue_item(db: Session, settings: Settings, payload: WooWritebackQueu
         preview_json=payload.preview_json,
         requested_by=payload.requested_by,
     )
+    if row.operation_type == "update_order_status":
+        validate_queue_mapping(db, row)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -527,6 +529,21 @@ def validate_item_mapping(db: Session, item: InventoryItem) -> WooItemMapping | 
 
 
 def validate_queue_mapping(db: Session, row: WooWritebackQueue) -> None:
+    if row.operation_type == "update_order_status":
+        order = db.get(Order, row.entity_id)
+        if order is None or order.is_historical_snapshot:
+            raise ValueError("woo_order_writeback_blocked: reporting-only historical snapshots cannot be written to WooCommerce.")
+        expected_path = f"/wp-json/wc/v3/orders/{order.woo_order_id}"
+        actual_path = str((row.payload_json or {}).get("path") or "")
+        if (
+            order.woo_order_id is None
+            or row.entity_type != "order"
+            or row.woo_order_id != order.woo_order_id
+            or row.woo_entity_id != order.woo_order_id
+            or actual_path != expected_path
+        ):
+            raise ValueError("woo_writeback_target_stale: queue target does not agree with the current order; preview it again.")
+        return
     if row.operation_type not in {"update_product_stock", "update_variation_stock"}:
         return
     item = db.get(InventoryItem, row.entity_id)
@@ -583,9 +600,12 @@ def find_item(db: Session, item_id: int | None = None, sku: str | None = None) -
 
 def find_order(db: Session, order_id: int | None = None, woo_order_id: int | None = None) -> Order | None:
     if order_id:
-        return db.get(Order, order_id)
+        order = db.get(Order, order_id)
+        return order if order is not None and not order.is_historical_snapshot else None
     if woo_order_id:
-        return db.scalars(select(Order).where(Order.woo_order_id == woo_order_id)).first()
+        return db.scalars(
+            select(Order).where(Order.woo_order_id == woo_order_id, Order.is_historical_snapshot.is_(False))
+        ).first()
     return None
 
 

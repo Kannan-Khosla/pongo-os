@@ -41,7 +41,11 @@ def preview_pick(db: Session, payload: PickRequest) -> PickPreviewResponse:
 
 
 def get_scanner_order(db: Session, order_id: int) -> PickScannerOrder | None:
-    order = db.scalars(select(Order).where(Order.id == order_id).options(selectinload(Order.items).selectinload(OrderItem.inventory_item))).one_or_none()
+    order = db.scalars(
+        select(Order)
+        .where(Order.id == order_id, Order.is_historical_snapshot.is_(False))
+        .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
+    ).one_or_none()
     if order is None:
         return None
     lines = [scanner_line(line) for line in sorted(order.items, key=lambda row: row.line_number or row.id)]
@@ -605,7 +609,11 @@ def find_scan_line(db: Session, order_id: int, payload: PickScanRequest) -> tupl
         return None, PickScanResponse(status="rejected", errors=["Scan value is required."])
     if payload.quantity <= 0:
         return None, PickScanResponse(status="rejected", errors=["Quantity must be greater than zero."])
-    order = db.scalars(select(Order).where(Order.id == order_id).options(selectinload(Order.items).selectinload(OrderItem.inventory_item))).one_or_none()
+    order = db.scalars(
+        select(Order)
+        .where(Order.id == order_id, Order.is_historical_snapshot.is_(False))
+        .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
+    ).one_or_none()
     if order is None:
         return None, None
     matches = [

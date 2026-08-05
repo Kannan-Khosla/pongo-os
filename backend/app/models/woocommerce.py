@@ -50,6 +50,7 @@ class WooCommerceSyncRun(Base):
     conflict_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
+    progress: Mapped[dict | None] = mapped_column(JSON)
 
     errors: Mapped[list["WooCommerceSyncError"]] = relationship(back_populates="sync_run", cascade="all, delete-orphan")
 

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from tests.test_items_api import client, seed_item  # noqa: F401
 from app.core.config import Settings
 from app.db.base import Base
+from app.models.orders import Order
 from app.models.woocommerce import WooCommerceConfiguration
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.woocommerce_configuration import save_woocommerce_configuration, settings_with_persisted_woocommerce_configuration
@@ -326,6 +327,21 @@ def test_production_configuration_is_encrypted_in_database_and_reused(tmp_path):
         assert persisted.woocommerce_allowed_host == "store.example"
         assert persisted.woocommerce_consumer_key == "ck_private"
         assert persisted.woocommerce_consumer_secret == "cs_private"
+
+        db.add(Order(woo_order_id=1, woo_status="completed", local_status="completed"))
+        db.commit()
+        with pytest.raises(ValueError, match="isolated database"):
+            save_woocommerce_configuration(
+                "https://another-store.example",
+                "ck_other",
+                "cs_other",
+                allow_host_change=True,
+                env_path=tmp_path / ".env",
+                settings=settings,
+                client_type=ConnectionCheck,
+                db=db,
+                changed_by="pytest@example.com",
+            )
 
 
 def test_woocommerce_configuration_binds_blank_allowed_host(tmp_path):

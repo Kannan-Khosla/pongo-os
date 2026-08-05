@@ -14,7 +14,7 @@ def test_readiness_reports_real_database_and_data_blockers(client):
     checks = {check["name"]: check for check in response.json()["checks"]}
     assert checks["database"]["ready"] is True
     assert checks["migrations"]["ready"] is False
-    assert "expected 20260803_0030" in checks["migrations"]["message"]
+    assert "expected 20260805_0031" in checks["migrations"]["message"]
     assert checks["login"]["ready"] is True
     assert checks["duplicate_skus"]["count"] == 1
     assert checks["duplicate_barcodes"]["count"] == 1

@@ -34,17 +34,20 @@ def is_pos_order(order: Order) -> bool:
 
 
 def is_operational_order(order: Order) -> bool:
-    return is_active_order(order) and (
+    return not order.is_historical_snapshot and is_active_order(order) and (
         order.woo_status == "processing" or (order.woo_status == "completed" and is_pos_order(order))
     )
 
 
 def operational_order_clause():
-    return or_(
-        Order.woo_status == "processing",
-        and_(
-            Order.woo_status == "completed",
-            func.lower(func.coalesce(Order.payment_method, "")).like(f"{POS_PAYMENT_METHOD_PREFIX}%"),
+    return and_(
+        Order.is_historical_snapshot.is_(False),
+        or_(
+            Order.woo_status == "processing",
+            and_(
+                Order.woo_status == "completed",
+                func.lower(func.coalesce(Order.payment_method, "")).like(f"{POS_PAYMENT_METHOD_PREFIX}%"),
+            ),
         ),
     )
 
@@ -750,7 +753,11 @@ def build_location_allocation_segments(
 
 
 def load_order(db: Session, order_id: int) -> Order | None:
-    return db.scalars(select(Order).where(Order.id == order_id).options(selectinload(Order.items).selectinload(OrderItem.inventory_item))).one_or_none()
+    return db.scalars(
+        select(Order)
+        .where(Order.id == order_id, Order.is_historical_snapshot.is_(False))
+        .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
+    ).one_or_none()
 
 
 def lock_order_completion_scope(db: Session, order_id: int) -> Order | None:
@@ -765,7 +772,7 @@ def lock_order_completion_scope(db: Session, order_id: int) -> Order | None:
     lock_inventory_stock(db, item_ids)
     order = db.scalars(
         select(Order)
-        .where(Order.id == order_id)
+        .where(Order.id == order_id, Order.is_historical_snapshot.is_(False))
         .with_for_update()
         .execution_options(populate_existing=True)
     ).one_or_none()

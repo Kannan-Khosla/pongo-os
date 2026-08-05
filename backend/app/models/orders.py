@@ -55,6 +55,8 @@ class Order(TimestampMixin, Base):
     completion_status: Mapped[str | None] = mapped_column(String(80), index=True)
     auto_allocation_status: Mapped[str | None] = mapped_column(String(80), index=True)
     completed_without_picking: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    is_historical_snapshot: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    historical_source_present: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     picked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

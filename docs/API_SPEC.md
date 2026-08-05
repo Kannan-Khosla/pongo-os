@@ -727,6 +727,23 @@ Example operator payload:
 Signed webhooks are the immediate ingestion path; the server reconciliation
 loop is the durable recovery path.
 
+### POST /api/integrations/woocommerce/orders/history-import
+
+Queue or resume the full read-only WooCommerce order-history import across all
+order statuses, including store-defined custom statuses.
+The endpoint returns HTTP `202` with the durable sync-run row. Repeated requests
+reuse an active job; a failed job resumes from its last committed status/page.
+The WooCommerce worker processes one page at a time.
+
+This import creates reporting-only historical order and line snapshots. It does
+not allocate, release, pick, fulfill, route, create stock movements, change
+inventory quantities, or call a WooCommerce write endpoint. Progress and
+verified local date coverage are also exposed by
+`GET /api/integrations/woocommerce/status` as `order_history_import` and
+`order_history_coverage`. Coverage includes `source_absent_snapshot_count`;
+these retained audit rows no longer contribute to intelligence after a verified
+rerun confirms WooCommerce no longer returns them.
+
 ### POST /api/integrations/woocommerce/webhooks/orders
 
 Receive WooCommerce webhook deliveries. The receiver is disabled by default

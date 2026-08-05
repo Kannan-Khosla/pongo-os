@@ -1,18 +1,28 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import Base
+from app.models.inventory import InventoryItem, StockMovement
+from app.models.orders import Order, OrderItem
 from app.models.woocommerce import WooCommerceSyncRun
+from app.services.business_dashboard import build_today
+from app.services.picks import get_scanner_order
 from app.services.woocommerce_client import WooCommerceClientError
+from app.services.woocommerce_orders import commit_remote_order_records
 from app.services.woocommerce_order_reconciliation import (
     DEFAULT_STATUSES,
+    enqueue_order_history_import,
+    order_history_coverage,
+    process_next_order_history_import,
     reconciliation_health,
     reconciliation_should_start,
     run_order_reconciliation_once,
 )
+from app.services.routes import list_route_candidates
 
 
 def reconciliation_settings(**overrides):
@@ -169,3 +179,379 @@ def test_scheduler_does_not_start_in_tests(monkeypatch):
     assert reconciliation_should_start(reconciliation_settings()) is True
     assert reconciliation_should_start(reconciliation_settings(woocommerce_base_url="")) is True
     assert reconciliation_should_start(reconciliation_settings(app_env="test")) is False
+
+
+def test_historical_import_resumes_by_page_and_never_enters_operations():
+    factory = session_factory()
+    settings = reconciliation_settings()
+    completed_orders = [
+        {
+            **remote_order(order_id),
+            "status": "custom-fulfilled" if order_id == 26 else "completed",
+            "payment_method": "foosales_pos",
+            "billing": {"email": f"customer-{order_id}@example.invalid"},
+            "line_items": [{
+                "id": order_id * 100,
+                "product_id": 0,
+                "variation_id": 0,
+                "sku": "HISTORY-SKU",
+                "name": "Historical Item",
+                "quantity": 2,
+                "subtotal": "10.00",
+                "total": "10.00",
+                "total_tax": "0.50",
+            }],
+        }
+        for order_id in range(1, 27)
+    ]
+
+    class ReadOnlyClient:
+        def __init__(self):
+            self.calls = []
+            self.last_response_headers = {}
+
+        def list_orders(self, **kwargs):
+            self.calls.append(kwargs)
+            rows = completed_orders if kwargs["status"] == "any" else []
+            self.last_response_headers = {
+                "X-WP-Total": str(len(rows)),
+                "X-WP-TotalPages": str((len(rows) + kwargs["per_page"] - 1) // kwargs["per_page"]),
+            }
+            start = (kwargs["page"] - 1) * kwargs["per_page"]
+            return rows[start:start + kwargs["per_page"]]
+
+    remote = ReadOnlyClient()
+    with factory() as db:
+        db.add(InventoryItem(sku="HISTORY-SKU", in_stock=Decimal("10"), allocated=Decimal("3"), sellable=Decimal("7")))
+        db.commit()
+        job = enqueue_order_history_import(db, "pytest", settings)
+        job_id = job.id
+
+    first = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+    assert first["status"] == "queued"
+    assert first["progress"]["current_status"] == "any"
+    assert first["progress"]["next_page"] == 2
+
+    result = first
+    while result["status"] == "queued":
+        result = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+
+    assert result["status"] == "completed"
+    assert result["sync_run_id"] == job_id
+    assert result["total_remote_records"] == 26
+    assert result["created_count"] == 26
+    assert [(call["status"], call["page"]) for call in remote.calls] == [
+        ("any", 1),
+        ("any", 2),
+    ]
+    assert all(call["before"] for call in remote.calls)
+
+    with factory() as db:
+        orders = list(db.scalars(select(Order).order_by(Order.id)).all())
+        assert len(orders) == 26
+        assert all(order.is_historical_snapshot for order in orders)
+        assert {order.local_status for order in orders} == {"completed", "custom-fulfilled"}
+        assert all(order.allocation_status == "unallocated" for order in orders)
+        assert all(order.pick_status == "not_ready" for order in orders)
+        assert all(line.quantity_allocated == 0 and line.quantity_stock_reduced == 0 for order in orders for line in order.items)
+        item = db.scalars(select(InventoryItem).where(InventoryItem.sku == "HISTORY-SKU")).one()
+        assert (item.in_stock, item.allocated, item.sellable) == (Decimal("10"), Decimal("3"), Decimal("7"))
+        assert list(db.scalars(select(StockMovement)).all()) == []
+        assert list_route_candidates(db).total_candidates == 0
+        assert get_scanner_order(db, orders[0].id) is None
+        coverage = order_history_coverage(db, settings)
+        assert coverage["verified_complete"] is True
+        assert coverage["local_order_count"] == 26
+        assert coverage["historical_snapshot_count"] == 26
+        assert coverage["distinct_order_dates"] == 1
+
+
+def test_historical_import_uses_woo_total_pages_at_exact_batch_boundary():
+    factory = session_factory()
+    settings = reconciliation_settings()
+    rows = [{**remote_order(order_id), "status": "completed"} for order_id in range(1, 26)]
+
+    class Client:
+        last_response_headers = {"X-WP-Total": "25", "X-WP-TotalPages": "1"}
+
+        def list_orders(self, **_kwargs):
+            return rows
+
+    with factory() as db:
+        enqueue_order_history_import(db, "pytest", settings)
+
+    result = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: Client())
+
+    assert result["total_remote_records"] == 25
+    assert result["status"] == "completed"
+    assert result["progress"]["current_status"] is None
+    assert result["progress"]["next_page"] == 1
+
+
+def test_historical_import_does_not_verify_coverage_if_woo_pagination_changes():
+    factory = session_factory()
+    settings = reconciliation_settings()
+    rows = [{**remote_order(order_id), "status": "completed"} for order_id in range(1, 27)]
+
+    class Client:
+        def __init__(self):
+            self.last_response_headers = {}
+
+        def list_orders(self, **kwargs):
+            total = 26 if kwargs["page"] == 1 else 25
+            self.last_response_headers = {
+                "X-WP-Total": str(total),
+                "X-WP-TotalPages": "2" if kwargs["page"] == 1 else "1",
+            }
+            start = (kwargs["page"] - 1) * kwargs["per_page"]
+            return rows[start:start + kwargs["per_page"]]
+
+    remote = Client()
+    with factory() as db:
+        enqueue_order_history_import(db, "pytest", settings)
+
+    result = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+    result = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+
+    assert result["status"] == "completed"
+    assert result["progress"]["pagination_changed"] is True
+    assert result["progress"]["coverage_complete"] is False
+
+
+def test_historical_import_does_not_verify_coverage_for_duplicate_page_ids():
+    factory = session_factory()
+    settings = reconciliation_settings()
+    first_page = [{**remote_order(order_id), "status": "completed"} for order_id in range(1, 26)]
+
+    class Client:
+        last_response_headers = {"X-WP-Total": "26", "X-WP-TotalPages": "2"}
+
+        def list_orders(self, **kwargs):
+            return first_page if kwargs["page"] == 1 else [first_page[-1]]
+
+    remote = Client()
+    with factory() as db:
+        enqueue_order_history_import(db, "pytest", settings)
+
+    result = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+    result = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+
+    assert result["status"] == "completed"
+    assert result["total_remote_records"] == 26
+    assert result["progress"]["distinct_remote_records"] == 25
+    assert result["progress"]["coverage_complete"] is False
+
+
+def test_historical_import_does_not_mutate_an_existing_operational_order():
+    factory = session_factory()
+    with factory() as db:
+        existing = Order(
+            woo_order_id=700,
+            woo_order_number="700",
+            woo_status="processing",
+            local_status="allocated",
+            allocation_status="allocated",
+            pick_status="ready_to_pick",
+            completion_status="open",
+        )
+        existing.items.append(OrderItem(
+            woo_order_item_id=7001,
+            quantity_ordered=Decimal("2"),
+            quantity_allocated=Decimal("2"),
+            allocated_qty=Decimal("2"),
+            allocation_status="allocated",
+            pick_status="not_ready",
+        ))
+        db.add(existing)
+        db.commit()
+
+        run, _summary = commit_remote_order_records(
+            db,
+            [{**remote_order(700), "status": "cancelled"}],
+            ["cancelled"],
+            "pytest-history",
+            snapshot_only=True,
+        )
+
+        db.refresh(existing)
+        assert run.updated_count == 1
+        assert existing.woo_status == "processing"
+        assert existing.local_status == "allocated"
+        assert existing.allocation_status == "allocated"
+        assert existing.pick_status == "ready_to_pick"
+        assert existing.items[0].quantity_allocated == Decimal("2")
+
+
+def test_historical_order_seen_as_operational_is_promoted():
+    factory = session_factory()
+    with factory() as db:
+        commit_remote_order_records(
+            db,
+            [
+                {**remote_order(701), "status": "completed"},
+                {**remote_order(702), "status": "completed"},
+            ],
+            ["completed"],
+            "pytest-history",
+            snapshot_only=True,
+        )
+        commit_remote_order_records(
+            db,
+            [
+                remote_order(701),
+                {**remote_order(702), "status": "completed", "payment_method": "foosales_pos"},
+            ],
+            ["processing", "completed"],
+            "pytest-order-sync",
+        )
+
+        orders = list(db.scalars(select(Order).where(Order.woo_order_id.in_([701, 702]))).all())
+        assert all(order.is_historical_snapshot is False for order in orders)
+        assert {order.woo_status for order in orders} == {"processing", "completed"}
+
+
+def test_normal_sync_restores_a_returned_terminal_snapshot_to_reporting():
+    factory = session_factory()
+    record = {**remote_order(703), "status": "completed", "total": "15.00"}
+    with factory() as db:
+        commit_remote_order_records(db, [record], ["completed"], "pytest-history", snapshot_only=True)
+        order = db.scalars(select(Order).where(Order.woo_order_id == 703)).one()
+        order.historical_source_present = False
+        db.commit()
+
+        commit_remote_order_records(db, [record], ["completed"], "pytest-order-sync")
+
+        db.refresh(order)
+        assert order.is_historical_snapshot is True
+        assert order.historical_source_present is True
+        assert build_today(db, datetime(2026, 7, 26).date())["summary"]["today_orders_count"] == 1
+
+
+def test_historical_snapshots_feed_sales_and_lifetime_customer_metrics():
+    factory = session_factory()
+    older = {
+        **remote_order(710),
+        "status": "completed",
+        "total": "10.00",
+        "date_created_gmt": "2026-06-26T12:00:00",
+        "date_modified_gmt": "2026-06-26T12:00:00",
+        "billing": {"email": "returning@example.invalid"},
+    }
+    recent = {
+        **remote_order(711),
+        "status": "completed",
+        "total": "20.00",
+        "billing": {"email": "returning@example.invalid"},
+        "line_items": [{"id": 7110, "name": "Historical Item", "quantity": 2, "total": "20.00"}],
+    }
+    anonymous = {
+        **remote_order(712),
+        "status": "completed",
+        "total": "10.00",
+        "billing": {},
+        "line_items": [{"id": 7120, "name": "POS Item", "quantity": 1, "total": "10.00"}],
+    }
+
+    with factory() as db:
+        commit_remote_order_records(
+            db,
+            [older, recent, anonymous],
+            ["completed"],
+            "pytest-history",
+            snapshot_only=True,
+        )
+
+        summary = build_today(db, datetime(2026, 7, 26).date())["summary"]
+        assert summary["today_orders_count"] == 2
+        assert summary["today_revenue"] == 30
+        assert summary["today_units_sold"] == 3
+        assert summary["today_new_customers"] == 0
+        assert summary["today_returning_customers"] == 1
+
+
+def test_historical_import_retries_the_same_checkpoint_without_double_counting():
+    factory = session_factory()
+    settings = reconciliation_settings()
+    orders = [{**remote_order(order_id), "status": "completed"} for order_id in range(1, 27)]
+
+    class FlakyClient:
+        def __init__(self):
+            self.calls = []
+            self.fail_page_two_once = True
+            self.last_response_headers = {}
+
+        def list_orders(self, **kwargs):
+            self.calls.append((kwargs["status"], kwargs["page"]))
+            rows = orders if kwargs["status"] == "any" else []
+            self.last_response_headers = {
+                "x-wp-total": str(len(rows)),
+                "x-wp-totalpages": str((len(rows) + kwargs["per_page"] - 1) // kwargs["per_page"]),
+            }
+            if kwargs["status"] == "any" and kwargs["page"] == 2 and self.fail_page_two_once:
+                self.fail_page_two_once = False
+                raise WooCommerceClientError("Temporary WooCommerce failure.")
+            start = (kwargs["page"] - 1) * kwargs["per_page"]
+            return rows[start:start + kwargs["per_page"]]
+
+    remote = FlakyClient()
+    with factory() as db:
+        enqueue_order_history_import(db, "pytest", settings)
+
+    first = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+    failed_page = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+    assert first["total_remote_records"] == 25
+    assert failed_page["status"] == "queued"
+    assert failed_page["total_remote_records"] == 25
+    assert failed_page["progress"]["next_page"] == 2
+
+    result = failed_page
+    while result["status"] == "queued":
+        result = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+
+    assert result["status"] == "completed"
+    assert result["total_remote_records"] == 26
+    assert result["created_count"] == 26
+    assert remote.calls[:3] == [("any", 1), ("any", 2), ("any", 2)]
+
+
+def test_verified_history_rerun_excludes_snapshots_no_longer_returned_by_woo():
+    factory = session_factory()
+    settings = reconciliation_settings()
+
+    class Client:
+        def __init__(self):
+            self.rows = [
+                {**remote_order(801), "status": "completed", "total": "10.00"},
+                {**remote_order(802), "status": "completed", "total": "20.00"},
+            ]
+            self.last_response_headers = {}
+
+        def list_orders(self, **kwargs):
+            self.last_response_headers = {
+                "X-WP-Total": str(len(self.rows)),
+                "X-WP-TotalPages": "1",
+            }
+            return self.rows if kwargs["page"] == 1 else []
+
+    remote = Client()
+    with factory() as db:
+        enqueue_order_history_import(db, "pytest", settings)
+    first = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+    assert first["progress"]["coverage_complete"] is True
+
+    remote.rows = remote.rows[:1]
+    with factory() as db:
+        enqueue_order_history_import(db, "pytest", settings)
+    second = process_next_order_history_import(settings, session_factory=factory, client_factory=lambda _settings: remote)
+
+    assert second["progress"]["coverage_complete"] is True
+    assert second["progress"]["source_absent_snapshot_count"] == 1
+    with factory() as db:
+        absent = db.scalars(select(Order).where(Order.woo_order_id == 802)).one()
+        assert absent.is_historical_snapshot is True
+        assert absent.historical_source_present is False
+        assert build_today(db, datetime(2026, 7, 26).date())["summary"]["today_orders_count"] == 1
+        coverage = order_history_coverage(db, settings)
+        assert coverage["local_order_count"] == 1
+        assert coverage["historical_snapshot_count"] == 1
+        assert coverage["source_absent_snapshot_count"] == 1

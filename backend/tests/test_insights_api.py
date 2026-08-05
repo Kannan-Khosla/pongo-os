@@ -140,6 +140,36 @@ def test_insights_revenue_definitions_exclude_shipping_and_tax(client, monkeypat
     assert payment_health["rows"][0]["revenue"] == 100
 
 
+def test_insights_uses_imported_woo_refund_summaries(client, monkeypatch):
+    order = woo_order(802, "refund@example.invalid", "REFUND-SKU", "100.00", "2026-06-22T12:00:00", quantity=2)
+    order["refunds"] = [{"id": 9001, "total": "-25.00"}]
+    patch_woo_orders(monkeypatch, [order])
+    committed = client.post("/api/integrations/woocommerce/orders/commit", json={"include_statuses": ["processing"], "limit": 100})
+    assert committed.status_code == 200, committed.text
+
+    body = client.get("/api/insights/orders-revenue").json()
+
+    assert body["summary"]["net_sales"] == 75
+    assert body["summary"]["refund_amount"] == 25
+    assert body["summary"]["refund_rate"] == 25
+    assert all(warning["code"] != "missing_refund_data" for warning in body["data_quality"])
+
+
+def test_insights_includes_fully_refunded_orders_in_gross_and_returns(client, monkeypatch):
+    order = woo_order(803, "refunded@example.invalid", "REFUNDED-SKU", "100.00", "2026-06-22T12:00:00", status="refunded", quantity=2)
+    order["refunds"] = [{"id": 9002, "total": "-100.00"}]
+    patch_woo_orders(monkeypatch, [order])
+    committed = client.post("/api/integrations/woocommerce/orders/commit", json={"include_statuses": ["refunded"], "limit": 100})
+    assert committed.status_code == 200, committed.text
+
+    body = client.get("/api/insights/orders-revenue").json()["summary"]
+
+    assert body["total_orders"] == 1
+    assert body["gross_sales"] == 100
+    assert body["refund_amount"] == 100
+    assert body["net_sales"] == 0
+
+
 def test_insights_brand_and_category_filters_use_mapped_inventory_item(client, monkeypatch):
     seed_insight_orders(client, monkeypatch)
 

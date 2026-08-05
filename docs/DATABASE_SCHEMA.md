@@ -688,6 +688,8 @@ Fields:
 - completion_status
 - auto_allocation_status
 - completed_without_picking
+- is_historical_snapshot
+- historical_source_present
 - completed_at
 - closed_at
 - picked_at
@@ -726,6 +728,11 @@ Index/uniqueness suggestions:
   `order_number`, `status`, `allocation_status`, `pick_status`,
   `completion_status`, `auto_allocation_status`, completion timestamps, and
   `placed_on`.
+- Index `is_historical_snapshot`; true rows are reporting-only and excluded
+  from operational order and route workflows.
+- Index `historical_source_present`; a verified history scan marks reporting
+  snapshots no longer returned by WooCommerce as absent so they remain auditable
+  without contributing to sales, customer, or order reporting.
 
 ## order_items
 
@@ -1294,10 +1301,13 @@ Fields:
 - conflict_count
 - error_count
 - notes
+- progress
 
 Current usage:
 - Product/variation commit creates one run with `sync_type = products`.
 - Order commit creates one run with `sync_type = orders`.
+- The durable full-history job uses `sync_type = order_history_v1`; `progress`
+  stores its frozen cutoff, current status/page, retries, and verified coverage.
 - A processed phase-1 `order.created` webhook creates one order sync run and
   links it from `woocommerce_webhook_deliveries.sync_run_id`.
 - Sync runs represent local database sync only; they do not represent writes to

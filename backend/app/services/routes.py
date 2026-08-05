@@ -61,7 +61,10 @@ def list_route_candidates(
     woo_order_number: str | None = None,
     search: str | None = None,
 ) -> RouteCandidateListResponse:
-    statement = select(Order).where(Order.local_status.in_(ROUTE_ELIGIBLE_STATUSES)).options(selectinload(Order.items), selectinload(Order.route_stops).selectinload(RouteStop.route)).order_by(Order.date_created.asc().nullslast(), Order.woo_order_number.asc().nullslast(), Order.id.asc())
+    statement = select(Order).where(
+        Order.local_status.in_(ROUTE_ELIGIBLE_STATUSES),
+        Order.is_historical_snapshot.is_(False),
+    ).options(selectinload(Order.items), selectinload(Order.route_stops).selectinload(RouteStop.route)).order_by(Order.date_created.asc().nullslast(), Order.woo_order_number.asc().nullslast(), Order.id.asc())
     orders = list(db.scalars(statement).all())
     candidates = []
     for order in orders:
@@ -161,6 +164,8 @@ def build_preview_stops(db: Session, payload: RouteRequest) -> list[RoutePreview
             stops.append(empty_preview_stop(sequence, order_id, ["Order was not found."]))
             continue
         candidate = order_to_candidate(order)
+        if order.is_historical_snapshot:
+            errors.append("Historical reporting snapshots are not eligible for routing.")
         if order.local_status not in ROUTE_ELIGIBLE_STATUSES:
             errors.append(f"Order status {order.local_status or 'unknown'} is not eligible for routing.")
         if candidate.fulfilled_line_count <= 0:

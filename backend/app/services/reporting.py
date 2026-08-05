@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import Settings
@@ -776,7 +776,11 @@ def build_inventory_export(db: Session, filters: dict[str, Any]) -> dict[str, An
 
 
 def scoped_orders(db: Session, filters: dict[str, Any]) -> list[Order]:
-    orders = list(db.scalars(select(Order).options(selectinload(Order.items))).unique().all())
+    orders = list(db.scalars(
+        select(Order)
+        .where(or_(Order.is_historical_snapshot.is_(False), Order.historical_source_present.is_(True)))
+        .options(selectinload(Order.items))
+    ).unique().all())
     scoped = []
     for order in orders:
         placed = order.placed_on or order.date_created or order.created_at
@@ -823,7 +827,7 @@ def line_matches_filters(line: OrderItem, filters: dict[str, Any]) -> bool:
 def build_unallocated_items(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
     rows = []
     for order in scoped_orders(db, filters):
-        if order_status(order) in TERMINAL_ORDER_STATUSES:
+        if order.is_historical_snapshot or order_status(order) in TERMINAL_ORDER_STATUSES:
             continue
         for line in order.items:
             if not line_matches_filters(line, filters):
@@ -891,7 +895,7 @@ def build_unallocated_items(db: Session, filters: dict[str, Any]) -> dict[str, A
 def build_incomplete_orders(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
     rows = []
     for order in scoped_orders(db, filters):
-        if order_status(order) in TERMINAL_ORDER_STATUSES:
+        if order.is_historical_snapshot or order_status(order) in TERMINAL_ORDER_STATUSES:
             continue
         ordered = sum((line_quantity(line) for line in order.items), Decimal("0"))
         allocated = sum((line_allocated(line) for line in order.items), Decimal("0"))
@@ -956,7 +960,7 @@ def build_order_summary(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
         allocated = sum((line_allocated(line) for line in order.items), Decimal("0"))
         picked = sum((D(line.quantity_picked or line.picked_qty) for line in order.items), Decimal("0"))
         fulfilled = sum((line_fulfilled(line) for line in order.items), Decimal("0"))
-        unallocated = Decimal("0") if order_status(order) in TERMINAL_ORDER_STATUSES else max(Decimal("0"), ordered - max(allocated, picked, fulfilled))
+        unallocated = Decimal("0") if order.is_historical_snapshot or order_status(order) in TERMINAL_ORDER_STATUSES else max(Decimal("0"), ordered - max(allocated, picked, fulfilled))
         unallocated_units += unallocated
         rows.append(
             {

@@ -325,6 +325,7 @@ Implemented endpoints:
 - `POST /api/integrations/woocommerce/orders/preview`
 - `POST /api/integrations/woocommerce/orders/commit`
 - `POST /api/integrations/woocommerce/orders/quick-sync`
+- `POST /api/integrations/woocommerce/orders/history-import`
 - `POST /api/integrations/woocommerce/webhooks/orders`
 - `GET /api/integrations/woocommerce/webhooks/events`
 - `GET /api/orders/open`
@@ -363,6 +364,24 @@ Active and terminal statuses are committed in batches of 25, so a large Woo
 history never lives in web-dyno memory. The default terminal set includes
 completed, failed, cancelled, and refunded orders.
 
+The separate historical reporting import scans the complete order history
+across all standard and custom statuses as GET-only pages of 25. Its next page,
+frozen cutoff, retry count, and date coverage persist in
+`woocommerce_sync_runs.progress`, so a worker restart resumes at the last
+committed page. Newly discovered historical orders are marked
+`is_historical_snapshot`; they are available to Insights and Reports but are
+excluded from Open, Allocate, Pick, Completed Operations, and Routes. The
+history path never changes stock or allocation quantities and never writes to
+WooCommerce. Only after Woo pagination and distinct-order coverage are fully
+verified does a rerun mark snapshots no longer returned by WooCommerce as
+source-absent; those rows remain stored for audit but stop contributing to
+intelligence. Active processing, pending, and on-hold orders continue through
+the normal two-minute reconciliation.
+
+Pongo OS is single-store by design. Once local orders exist, changing the
+WooCommerce host is blocked; a different store requires an isolated database
+so order IDs, history, and reporting cannot be mixed across stores.
+
 Every worker attempt is stored in the existing WooCommerce sync ledger.
 `GET /api/integrations/woocommerce/status` exposes whether the scheduler is
 running, healthy, stale, or degraded, plus its last attempt, success, failure,
@@ -374,7 +393,7 @@ reconciliation is starting instead of incorrectly calling it stale.
 `POST /api/integrations/woocommerce/orders/fetch-now` queues one priority
 manual pass. Duplicate clicks reuse the queued/running job. The worker checks
 the queue every five seconds and restarts its Python interpreter after every
-order or stock job to return retained memory to the dyno.
+order, stock, or historical-order page to return retained memory to the dyno.
 
 The browser no longer posts `orders/quick-sync` on a timer. It may refresh local
 Pongo order views with GET requests, while the signed webhooks and server job

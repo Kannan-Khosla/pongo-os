@@ -100,6 +100,35 @@ def test_business_dashboard_new_vs_returning_customers(client, monkeypatch):
     assert body["summary"]["today_returning_customers"] == 1
 
 
+def test_business_dashboard_does_not_count_orders_without_email_as_new_customers(client, monkeypatch):
+    seed_business_orders(client, monkeypatch)
+    anonymous_order = woo_order(805, "", "25.00", "2026-07-08T12:00:00")
+    patch_woo_orders(monkeypatch, [anonymous_order])
+    response = client.post("/api/integrations/woocommerce/orders/commit", json={"include_statuses": ["processing"], "limit": 100})
+    assert response.status_code == 200, response.text
+
+    body = client.get("/api/business-dashboard/today", params={"date": "2026-07-08"}).json()
+
+    assert body["summary"]["today_orders_count"] == 3
+    assert body["summary"]["today_new_customers"] == 1
+    assert body["summary"]["today_returning_customers"] == 1
+
+
+def test_business_dashboard_excludes_failed_orders_from_sales_and_customers(client, monkeypatch):
+    seed_business_orders(client, monkeypatch)
+    failed_order = woo_order(806, "failed@example.invalid", "100.00", "2026-07-08T12:30:00", status="failed")
+    patch_woo_orders(monkeypatch, [failed_order])
+    response = client.post("/api/integrations/woocommerce/orders/commit", json={"include_statuses": ["failed"], "limit": 100})
+    assert response.status_code == 200, response.text
+
+    body = client.get("/api/business-dashboard/today", params={"date": "2026-07-08"}).json()["summary"]
+
+    assert body["today_orders_count"] == 2
+    assert body["today_revenue"] == 90
+    assert body["today_new_customers"] == 1
+    assert body["failed_orders_today"] == 1
+
+
 def test_business_dashboard_open_orders_customer_rows(client, monkeypatch):
     seed_business_orders(client, monkeypatch)
 

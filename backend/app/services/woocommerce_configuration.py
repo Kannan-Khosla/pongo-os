@@ -9,9 +9,11 @@ from threading import Lock
 from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
+from app.models.orders import Order
 from app.models.woocommerce import WooCommerceConfiguration
 from app.services.woocommerce_client import WooCommerceClient
 
@@ -43,6 +45,11 @@ def save_woocommerce_configuration(
         raise ValueError(
             f"WooCommerce store host '{requested_host}' does not match configured allowed host "
             f"'{current_host}'. Retry with allow_host_change=true to replace the allowed host."
+        )
+    if db is not None and host_changed and db.scalar(select(func.count(Order.id))):
+        raise ValueError(
+            "WooCommerce store host cannot be changed while local orders exist. "
+            "Use an isolated database for a different store so order history is never mixed."
         )
     if host_changed and (not (consumer_key or "").strip() or not (consumer_secret or "").strip()):
         raise ValueError("Enter a fresh consumer key and secret when changing the WooCommerce store host.")

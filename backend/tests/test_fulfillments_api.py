@@ -1,6 +1,9 @@
 import csv
 from io import StringIO
 
+from app.db.session import get_db
+from app.main import app
+from app.models.orders import Order
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
 
@@ -91,6 +94,27 @@ def test_fulfillment_preview_skips_fully_fulfilled_line(client, monkeypatch):
 
     assert fully_fulfilled["skipped_lines"] == 1
     assert fully_fulfilled["preview_orders"][0]["lines"][0]["remaining_to_fulfill"] == 0
+
+
+def test_fulfillment_preview_excludes_historical_snapshots(client, monkeypatch):
+    order, line = picked_order(client, monkeypatch)
+    override = app.dependency_overrides[get_db]()
+    db = next(override)
+    try:
+        db.get(Order, order["id"]).is_historical_snapshot = True
+        db.commit()
+    finally:
+        override.close()
+
+    payloads = [
+        {"order_ids": [order["id"]], "allow_partial": True},
+        {"lines": [{"order_line_id": line["id"], "quantity_to_fulfill": 1}], "allow_partial": True},
+    ]
+    for payload in payloads:
+        response = client.post("/api/fulfillments/preview", json=payload)
+        assert response.status_code == 200
+        assert response.json()["total_orders"] == 0
+        assert response.json()["total_lines"] == 0
 
 
 def test_fulfillment_commit_creates_records_without_reducing_stock_again(client, monkeypatch):

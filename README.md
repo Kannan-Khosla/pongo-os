@@ -96,7 +96,9 @@ Not implemented yet:
 - Completing a picked order never reduces stock again.
 - Completing an unpicked order does not reduce stock and releases remaining
   local allocation.
-- Only WooCommerce `processing` orders participate in Open, Allocate, and Pick.
+- WooCommerce `processing` orders and newly ingested FooSales POS orders
+  participate in Open, Allocate, and Pick. Reporting-only historical snapshots
+  never enter those operational queues.
   Allocation runs oldest first with a deterministic local-order-ID tie-break;
   partially allocated orders remain in Allocate until fully pick-ready.
 - Receiving, stock adjustments, cycle counts, completion releases, and synced
@@ -250,6 +252,9 @@ Current local build now includes:
   durable idempotency ledger, and published to an immutable local event outbox
   for the internal staff new-order alert. A backend scheduler reconciles missed
   and terminal changes; browser refreshes are display-only.
+- Resumable GET-only historical WooCommerce order import: past orders across all statuses
+  feed Insights and Reports without allocating stock, entering warehouse
+  workflows, or writing to WooCommerce.
 
 Still intentionally delayed:
 - RBAC; every authenticated staff account currently has the same access.

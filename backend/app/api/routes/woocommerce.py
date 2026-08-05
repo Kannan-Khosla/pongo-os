@@ -50,8 +50,11 @@ from app.services.woocommerce_configuration import latest_woocommerce_configurat
 from app.services.woocommerce_orders import commit_order_sync, commit_recent_order_sync, preview_order_sync
 from app.services.woocommerce_order_reconciliation import (
     ORDER_JOB_SYNC_TYPE,
+    enqueue_order_history_import,
     enqueue_order_sync_job,
+    latest_order_history_run,
     latest_scheduler_run,
+    order_history_coverage,
     order_worker_is_recent,
     reconciliation_health,
 )
@@ -225,6 +228,14 @@ def quick_sync_woocommerce_orders(payload: WooCommerceOrderSyncRequest | None = 
 @router.post("/orders/fetch-now", response_model=WooCommerceSyncRunRead, status_code=202)
 def fetch_woocommerce_orders_now(db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> WooCommerceSyncRunRead:
     return sync_run_to_read(enqueue_order_sync_job(db, actor))
+
+
+@router.post("/orders/history-import", response_model=WooCommerceSyncRunRead, status_code=202)
+def import_woocommerce_order_history(db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> WooCommerceSyncRunRead:
+    try:
+        return sync_run_to_read(enqueue_order_history_import(db, actor, get_settings()))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.get("/orders/fetch-jobs", response_model=WooCommerceSyncRunListResponse)
@@ -541,6 +552,8 @@ def writeback_queue_cancel_legacy(queue_id: int, db: Session = Depends(get_db)) 
 
 
 def sync_run_to_read(run: WooCommerceSyncRun) -> WooCommerceSyncRunRead:
+    progress = dict(run.progress or {})
+    progress.pop("seen_order_ids", None)
     return WooCommerceSyncRunRead(
         id=run.id,
         sync_type=run.sync_type,
@@ -556,6 +569,7 @@ def sync_run_to_read(run: WooCommerceSyncRun) -> WooCommerceSyncRunRead:
         conflict_count=run.conflict_count,
         error_count=run.error_count,
         notes=run.notes,
+        progress=progress or None,
     )
 
 
@@ -566,6 +580,7 @@ def woo_status_payload(settings, client: WooCommerceClient, db: Session, *, sche
     saved_configuration = latest_woocommerce_configuration(db)
     last_product_sync = latest_sync(db, "products")
     last_order_sync = latest_scheduler_run(db) or latest_sync(db, "orders")
+    order_history_import = latest_order_history_run(db)
     latest_error = db.scalars(select(WooCommerceSyncError).order_by(WooCommerceSyncError.created_at.desc(), WooCommerceSyncError.id.desc()).limit(1)).first()
     latest_webhook = db.scalars(select(WooCommerceWebhookDelivery).order_by(WooCommerceWebhookDelivery.received_at.desc(), WooCommerceWebhookDelivery.id.desc()).limit(1)).first()
     return {
@@ -606,6 +621,8 @@ def woo_status_payload(settings, client: WooCommerceClient, db: Session, *, sche
         } if latest_webhook else None,
         "last_product_sync": sync_run_to_read(last_product_sync).model_dump(mode="json") if last_product_sync else None,
         "last_order_sync": sync_run_to_read(last_order_sync).model_dump(mode="json") if last_order_sync else None,
+        "order_history_import": sync_run_to_read(order_history_import).model_dump(mode="json") if order_history_import else None,
+        "order_history_coverage": order_history_coverage(db, settings),
         "order_reconciliation": reconciliation_health(db, settings, running=scheduler_running),
         "last_error": latest_error.error_message if latest_error else None,
     }

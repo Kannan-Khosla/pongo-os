@@ -187,21 +187,26 @@ def commit_remote_order_records(
     created_by: str,
     *,
     commit: bool = True,
+    snapshot_only: bool = False,
 ) -> tuple[WooCommerceSyncRun, WooCommerceOrderPreviewResponse]:
     acquire_order_import_transaction_lock(db)
     started_at = datetime.now(timezone.utc)
     normalized_orders = [normalize_order(order) for order in remote_orders]
+    if snapshot_only:
+        for order in normalized_orders:
+            order.local_status = order.woo_status or "synced"
     preview_rows = [build_order_preview(db, order, requested_statuses) for order in normalized_orders]
     preview = build_order_preview_response(True, preview_rows)
-    lock_inventory_stock(
-        db,
-        {
-            line.item_id
-            for preview_order in preview_rows
-            for line in preview_order.lines
-            if line.item_id is not None
-        },
-    )
+    if not snapshot_only:
+        lock_inventory_stock(
+            db,
+            {
+                line.item_id
+                for preview_order in preview_rows
+                for line in preview_order.lines
+                if line.item_id is not None
+            },
+        )
     sync_run = WooCommerceSyncRun(sync_type="orders", status="completed", started_at=started_at, created_by=created_by, total_remote_records=preview.total_remote_records)
     db.add(sync_run)
     db.flush()
@@ -220,15 +225,27 @@ def commit_remote_order_records(
             with db.begin_nested():
                 order = db.scalars(select(Order).where(Order.woo_order_id == record.woo_order_id).options(defer(Order.raw_woo_payload), selectinload(Order.items))).one_or_none()
                 is_new_order = order is None
-                preserve_local_workflow = order is not None and is_locally_terminal_order(order)
+                if snapshot_only and order is not None and not order.is_historical_snapshot:
+                    updated_count += 1
+                    matched_count += sum(1 for line in preview_order.lines if line.matched_status == "matched")
+                    conflict_count += sum(1 for line in preview_order.lines if line.matched_status == "conflict")
+                    error_count += sum(1 for line in preview_order.lines if line.matched_status in {"unmatched", "conflict"})
+                    continue
+                if order is not None and order.is_historical_snapshot:
+                    order.historical_source_present = True
+                if not snapshot_only and order is not None and order.is_historical_snapshot and is_operational_record(record):
+                    order.is_historical_snapshot = False
+                preserve_local_workflow = order is not None and (snapshot_only or is_locally_terminal_order(order))
                 previous_woo_status = order.woo_status if order is not None else None
                 if order is None:
                     order = Order(woo_order_id=record.woo_order_id)
                     db.add(order)
                 update_local_order(order, record, preview_order, now, preserve_local_workflow=preserve_local_workflow)
+                if snapshot_only and is_new_order:
+                    order.is_historical_snapshot = True
                 db.flush()
                 line_sync_issues, reconciliation_notes = upsert_order_lines(db, order, record, preview_order)
-                if previous_woo_status and previous_woo_status != record.woo_status:
+                if not snapshot_only and previous_woo_status and previous_woo_status != record.woo_status:
                     reconciliation_notes.append(
                         f"WooCommerce status changed from {previous_woo_status} to {record.woo_status}."
                     )
@@ -238,15 +255,31 @@ def commit_remote_order_records(
                     issue_messages = [issue.message for issue in line_sync_issues]
                     order.sync_status = "needs_review"
                     order.sync_error = " ".join(issue_messages)
-                    order.allocation_status = "exception"
-                    order.allocation_exception_reason = WOO_QUANTITY_BELOW_ALLOCATED_REASON
+                    if not snapshot_only:
+                        order.allocation_status = "exception"
+                        order.allocation_exception_reason = WOO_QUANTITY_BELOW_ALLOCATED_REASON
                     for issue in line_sync_issues:
                         store_order_sync_error(db, sync_run.id, preview_order, issue.preview_line, [issue.message])
                 elif order.allocation_exception_reason == WOO_QUANTITY_BELOW_ALLOCATED_REASON:
                     order.allocation_exception_reason = None
                 db.flush()
                 db.expire(order, ["items"])
-                if not is_operational_record(record):
+                if snapshot_only and is_new_order:
+                    order.allocation_status = "unallocated"
+                    order.pick_status = "not_ready"
+                    order.completion_status = record.local_status
+                    for line in order.items:
+                        line.quantity_allocated = Decimal("0")
+                        line.quantity_picked = Decimal("0")
+                        line.quantity_fulfilled = Decimal("0")
+                        line.quantity_stock_reduced = Decimal("0")
+                        line.allocated_qty = Decimal("0")
+                        line.picked_qty = Decimal("0")
+                        line.fulfilled_qty = Decimal("0")
+                        line.allocation_status = "unallocated"
+                        line.pick_status = "not_ready"
+                        line.status = record.local_status
+                elif not snapshot_only and not is_operational_record(record):
                     released_quantity = release_unpicked_allocations(
                         db,
                         order,
@@ -261,7 +294,8 @@ def commit_remote_order_records(
                     order.local_status = record.local_status
                     if not preserve_local_workflow:
                         order.completion_status = record.local_status
-                sync_order_workflow_statuses(order)
+                if not snapshot_only:
+                    sync_order_workflow_statuses(order)
                 for line in preview_order.lines:
                     if line.matched_status in {"unmatched", "conflict"}:
                         store_order_sync_error(db, sync_run.id, preview_order, line, line.errors or line.warnings or [f"Order line is {line.matched_status}."])
@@ -271,7 +305,8 @@ def commit_remote_order_records(
             conflict_count += sum(1 for line in preview_order.lines if line.matched_status == "conflict")
             error_count += sum(1 for line in preview_order.lines if line.matched_status in {"unmatched", "conflict"})
             error_count += len(issue_messages)
-            allocation_exception_count += int(bool(issue_messages))
+            if not snapshot_only:
+                allocation_exception_count += int(bool(issue_messages))
             commit_errors.extend(issue_messages)
         except Exception as exc:
             if not commit:
@@ -280,20 +315,21 @@ def commit_remote_order_records(
             commit_errors.append(str(exc))
             store_order_sync_error(db, sync_run.id, preview_order, None, [str(exc)])
 
-    fifo_summary = auto_allocate_processing_orders_fifo(db, source=created_by or "order-sync")
-    auto_allocated_count = fifo_summary["allocated_orders"]
-    allocation_exception_count = max(
-        allocation_exception_count,
-        fifo_summary["partially_allocated_orders"] + fifo_summary["exception_orders"],
-    )
-    pick_ready_count = sum(
-        1
-        for order in db.scalars(select(Order).where(operational_order_clause()).options(defer(Order.raw_woo_payload), selectinload(Order.items))).all()
-        if order.pick_status in {"ready_to_pick", "partially_picked", "picked"}
-    )
-    if fifo_summary["errors"]:
-        error_count += len(fifo_summary["errors"])
-        commit_errors.extend(fifo_summary["errors"])
+    if not snapshot_only:
+        fifo_summary = auto_allocate_processing_orders_fifo(db, source=created_by or "order-sync")
+        auto_allocated_count = fifo_summary["allocated_orders"]
+        allocation_exception_count = max(
+            allocation_exception_count,
+            fifo_summary["partially_allocated_orders"] + fifo_summary["exception_orders"],
+        )
+        pick_ready_count = sum(
+            1
+            for order in db.scalars(select(Order).where(operational_order_clause()).options(defer(Order.raw_woo_payload), selectinload(Order.items))).all()
+            if order.pick_status in {"ready_to_pick", "partially_picked", "picked"}
+        )
+        if fifo_summary["errors"]:
+            error_count += len(fifo_summary["errors"])
+            commit_errors.extend(fifo_summary["errors"])
 
     sync_run.created_count = created_count
     sync_run.updated_count = updated_count
@@ -809,7 +845,12 @@ def list_open_orders(
     matched_status: str | None = None,
     workflow_view: str = "open",
 ) -> OpenOrderListResponse:
-    orders = list(db.scalars(select(Order).options(defer(Order.raw_woo_payload), selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.date_created.desc().nullslast(), Order.id.desc())).all())
+    orders = list(db.scalars(
+        select(Order)
+        .where(Order.is_historical_snapshot.is_(False))
+        .options(defer(Order.raw_woo_payload), selectinload(Order.items).selectinload(OrderItem.inventory_item))
+        .order_by(Order.date_created.desc().nullslast(), Order.id.desc())
+    ).all())
     for order in orders:
         sync_order_workflow_statuses(order)
     if workflow_view == "allocate":
@@ -845,7 +886,11 @@ def list_open_orders(
 
 
 def get_open_order_detail(db: Session, order_id: int) -> OpenOrderDetail | None:
-    order = db.scalars(select(Order).where(Order.id == order_id).options(defer(Order.raw_woo_payload), selectinload(Order.items).selectinload(OrderItem.inventory_item))).one_or_none()
+    order = db.scalars(
+        select(Order)
+        .where(Order.id == order_id, Order.is_historical_snapshot.is_(False))
+        .options(defer(Order.raw_woo_payload), selectinload(Order.items).selectinload(OrderItem.inventory_item))
+    ).one_or_none()
     if order is None:
         return None
     sync_order_workflow_statuses(order)

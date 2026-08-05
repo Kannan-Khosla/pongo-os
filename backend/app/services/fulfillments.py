@@ -243,13 +243,18 @@ def build_preview_orders(db: Session, payload: FulfillmentRequest) -> list[Fulfi
 def selected_order_lines(db: Session, payload: FulfillmentRequest) -> list[OrderItem]:
     if payload.lines:
         ids = [line.order_line_id for line in payload.lines]
-        return list(db.scalars(select(OrderItem).where(OrderItem.id.in_(ids)).options(selectinload(OrderItem.order), selectinload(OrderItem.inventory_item))).all())
+        return list(db.scalars(
+            select(OrderItem)
+            .join(Order)
+            .where(OrderItem.id.in_(ids), Order.is_historical_snapshot.is_(False))
+            .options(selectinload(OrderItem.order), selectinload(OrderItem.inventory_item))
+        ).all())
     if payload.order_ids:
         return list(
             db.scalars(
                 select(OrderItem)
                 .join(Order)
-                .where(Order.id.in_(payload.order_ids))
+                .where(Order.id.in_(payload.order_ids), Order.is_historical_snapshot.is_(False))
                 .options(selectinload(OrderItem.order), selectinload(OrderItem.inventory_item))
                 .order_by(OrderItem.order_id.asc(), OrderItem.line_number.asc().nullslast(), OrderItem.id.asc())
             ).all()

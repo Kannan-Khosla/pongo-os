@@ -201,6 +201,39 @@ def test_sales_report_excludes_pending_woo_orders_and_keeps_blank_sku_lines_sepa
     assert {(row["name"], row["quantity_sold"]) for row in response.json()["rows"]} == {("Blank A", "1.000"), ("Blank B", "2.000")}
 
 
+def test_operational_reports_do_not_treat_historical_snapshots_as_open_demand(client):
+    override, db = database_session()
+    try:
+        snapshot = Order(
+            order_number="HISTORICAL-SNAPSHOT",
+            woo_status="processing",
+            local_status="processing",
+            is_historical_snapshot=True,
+            placed_on=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        )
+        db.add(snapshot)
+        db.flush()
+        db.add(OrderItem(
+            order_id=snapshot.id,
+            sku="HISTORY-ONLY",
+            quantity_ordered=Decimal("5"),
+            quantity_allocated=Decimal("2"),
+            quantity_picked=Decimal("1"),
+        ))
+        db.commit()
+    finally:
+        override.close()
+
+    unallocated = client.post("/api/reports/runs/unallocated-order-items", json={"filters": {}}).json()
+    incomplete = client.post("/api/reports/runs/incomplete-orders", json={"filters": {}}).json()
+    summary = client.post("/api/reports/runs/order-summary", json={"filters": {}}).json()
+
+    assert unallocated["rows"] == []
+    assert incomplete["rows"] == []
+    summary_row = next(row for row in summary["rows"] if row["order_number"] == "HISTORICAL-SNAPSHOT")
+    assert summary_row["units_unallocated"] == "0.000"
+
+
 def test_unconfigured_external_report_sharing_fails_closed(client, monkeypatch):
     seed_item(client, sku="NO-SHARE", **{"In Stock": 1, "Allocated": 0, "Unit Cost": 2})
     run = client.post("/api/reports/runs/inventory-cost-sku", json={"filters": {}}).json()

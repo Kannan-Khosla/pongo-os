@@ -109,6 +109,31 @@ def test_picked_completion_fails_closed_for_order_without_inventory_lines(client
     assert "at least one inventory line" in response.text
 
 
+def test_historical_snapshot_cannot_be_completed_directly(client):
+    db_override = app.dependency_overrides[get_db]()
+    db = next(db_override)
+    try:
+        order = Order(
+            order_number="HISTORICAL-SNAPSHOT",
+            local_status="completed",
+            woo_status="completed",
+            is_historical_snapshot=True,
+        )
+        db.add(order)
+        db.commit()
+        order_id = order.id
+    finally:
+        db_override.close()
+
+    response = client.post(
+        f"/api/orders/{order_id}/complete/commit",
+        json={"completion_mode": "complete_without_picking", "reason": "Must remain reporting only."},
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.text.lower()
+
+
 def test_complete_without_picking_releases_allocation_and_does_not_reduce_stock(client, monkeypatch):
     order = sync_auto_allocated_order(client, monkeypatch, sku="NO-PICK-COMPLETE-SKU", barcode="NO-PICK-COMPLETE-BAR", woo_id=852, product_id=852)
     before = client.get("/api/items", params={"sku": "NO-PICK-COMPLETE-SKU"}).json()["items"][0]

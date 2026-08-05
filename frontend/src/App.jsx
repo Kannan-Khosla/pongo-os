@@ -206,6 +206,8 @@ const emptyWooStatus = {
   last_webhook_delivery: null,
   last_product_sync: null,
   last_order_sync: null,
+  order_history_import: null,
+  order_history_coverage: {},
   order_reconciliation: {
     enabled: false,
     running: false,
@@ -1291,6 +1293,17 @@ export default function App({ currentUser = null }) {
       document.removeEventListener('visibilitychange', loadVisibleWooHealth);
     };
   }, []);
+
+  useEffect(() => {
+    if (route.pageId !== 'settings' || route.settingsView !== 'sync' || !['queued', 'running'].includes(wooStatus.order_history_import?.status)) return undefined;
+    const pollHistoryImport = () => {
+      if (document.visibilityState !== 'hidden') {
+        Promise.all([loadWooStatus(false, { silent: true }), loadWooSyncRuns()]);
+      }
+    };
+    const intervalId = window.setInterval(pollHistoryImport, 3000);
+    return () => window.clearInterval(intervalId);
+  }, [route.pageId, route.settingsView, wooStatus.order_history_import?.id, wooStatus.order_history_import?.status]);
 
   useEffect(() => {
     const runWebhookEventPoll = () => {
@@ -2534,6 +2547,22 @@ export default function App({ currentUser = null }) {
     }
   }
 
+  async function startWooOrderHistoryImport() {
+    const confirmed = window.confirm('Import the complete WooCommerce order history for reporting? This uses GET requests only. Historical orders will not allocate stock, enter picking, create stock movements, enter routes, or write to WooCommerce.');
+    if (!confirmed) return;
+    setWooLoading(true);
+    setWooError('');
+    try {
+      const job = await postJson('/api/integrations/woocommerce/orders/history-import', {});
+      setWooStatus((current) => ({ ...current, order_history_import: job }));
+      await loadWooSyncRuns();
+    } catch (error) {
+      setWooError(error.message || 'Unable to queue the WooCommerce historical order import.');
+    } finally {
+      setWooLoading(false);
+    }
+  }
+
   async function trackWooOrderFetchJob(jobId) {
     try {
       const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/sync-runs/${jobId}`);
@@ -2802,6 +2831,7 @@ export default function App({ currentUser = null }) {
             onCommitWooProductSync={commitWooProductSync}
             onPreviewWooOrderSync={previewWooOrderSync}
             onCommitWooOrderSync={commitWooOrderSync}
+            onStartWooOrderHistoryImport={startWooOrderHistoryImport}
             onPreviewWooRemap={previewWooRemap}
             onCommitWooRemap={commitWooRemap}
             onLoadWooRemap={loadWooRemap}
@@ -3318,6 +3348,7 @@ function PageBody({
   onCommitWooProductSync,
   onPreviewWooOrderSync,
   onCommitWooOrderSync,
+  onStartWooOrderHistoryImport,
   onPreviewWooRemap,
   onCommitWooRemap,
   onLoadWooRemap,
@@ -3560,6 +3591,7 @@ function PageBody({
         onCommit={onCommitWooProductSync}
         onPreviewOrders={onPreviewWooOrderSync}
         onCommitOrders={onCommitWooOrderSync}
+        onStartOrderHistoryImport={onStartWooOrderHistoryImport}
         onPreviewRemap={onPreviewWooRemap}
         onCommitRemap={onCommitWooRemap}
         onLoadRemap={onLoadWooRemap}
@@ -10276,10 +10308,13 @@ function StatusText(value, context = '') {
   return <span className={`status-pill status-${presentation.tone} order-status-${key.replace(/[^a-z0-9-]/g, '-')}`} aria-label={presentation.help ? `${presentation.label}: ${presentation.help}` : presentation.label} title={presentation.help || undefined}>{presentation.label}</span>;
 }
 
-function WooCommerceSettingsPage({ view = 'connection', status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, remapCandidates, remapMappings, remapPreview, remapMessage, writebackQueue, stockSyncJobs, writebackPreview, writebackMessage, loading, error, onCheckConnection, onSaveConfiguration, onChangeAccessMode, onPreview, onCommit, onPreviewOrders, onCommitOrders, onPreviewRemap, onCommitRemap, onLoadRemap, onPreviewStockWriteback, onPreviewOrderStatusWriteback, onQueueWriteback, onApproveWriteback, onSendWriteback, onCancelWriteback, onRevalidateWriteback, onSyncStock, onResumeStockJob, onCancelStockJob }) {
+function WooCommerceSettingsPage({ view = 'connection', status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, remapCandidates, remapMappings, remapPreview, remapMessage, writebackQueue, stockSyncJobs, writebackPreview, writebackMessage, loading, error, onCheckConnection, onSaveConfiguration, onChangeAccessMode, onPreview, onCommit, onPreviewOrders, onCommitOrders, onStartOrderHistoryImport, onPreviewRemap, onCommitRemap, onLoadRemap, onPreviewStockWriteback, onPreviewOrderStatusWriteback, onQueueWriteback, onApproveWriteback, onSendWriteback, onCancelWriteback, onRevalidateWriteback, onSyncStock, onResumeStockJob, onCancelStockJob }) {
   const latestRun = syncRuns.find((run) => run.sync_type === 'products') || syncRuns[0];
   const latestOrderRun = syncRuns.find((run) => run.sync_type === 'orders');
   const reconciliation = status.order_reconciliation || {};
+  const historyImport = status.order_history_import || {};
+  const historyCoverage = status.order_history_coverage || {};
+  const historyImportActive = ['queued', 'running'].includes(historyImport.status);
   const commitDisabled = !status.configured || !preview || preview.error_count > 0;
   const [connectionForm, setConnectionForm] = useState({ base_url: status.base_url || '', consumer_key: '', consumer_secret: '' });
   const [connectionMessage, setConnectionMessage] = useState('');
@@ -10603,6 +10638,48 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
         )}
       </div>
       {orderPreview && <WooOrderPreviewTable orders={orderPreview.preview_orders || []} />}
+      <div className="wide-panel settings-operation-panel">
+        <div className="panel-title">
+          <div>
+            <h2>Historical Reporting Baseline</h2>
+            <p>Imports the complete WooCommerce order history across all statuses in resumable pages so customer, sales, SKU, and order intelligence uses the full local record.</p>
+          </div>
+          <button className="action-button" disabled={loading || !status.configured || historyImportActive} onClick={onStartOrderHistoryImport} type="button">
+            <Download size={17} />
+            {historyImportActive ? 'Import running' : (historyImport.status === 'failed' ? 'Resume history import' : 'Import full order history')}
+          </button>
+        </div>
+        <div className="summary-strip report-summary-strip">
+          <Metric label="Coverage" value={historyCoverage.verified_complete ? 'Verified' : 'Not verified'} />
+          <Metric label="Job Status" value={historyImport.status || 'Not started'} />
+          <Metric label="Orders Scanned" value={historyImport.total_remote_records || 0} />
+          <Metric label="New Snapshots" value={historyImport.created_count || 0} />
+          <Metric label="Already Local" value={historyImport.updated_count || 0} />
+          <Metric label="Local Orders" value={historyCoverage.local_order_count || 0} />
+          <Metric label="Archived Snapshots" value={historyCoverage.source_absent_snapshot_count || 0} />
+          <Metric label="Order Dates" value={historyCoverage.distinct_order_dates || 0} />
+          <Metric label="Earliest Order" value={historyCoverage.earliest_order_at ? formatDateTime(historyCoverage.earliest_order_at) : 'None'} />
+          <Metric label="Latest Order" value={historyCoverage.latest_order_at ? formatDateTime(historyCoverage.latest_order_at) : 'None'} />
+        </div>
+        <div className="csv-note">Read-only by design: this uses WooCommerce GET requests and never allocates, picks, completes, routes, changes stock, or writes back. Active orders remain handled by the two-minute operational sync.</div>
+        {historyImportActive && (
+          <div className="loading-strip" role="status">
+            Importing {historyImport.progress?.current_status === 'any' ? 'all order statuses' : (historyImport.progress?.current_status || 'orders')}, page {historyImport.progress?.next_page || 1}. The worker safely resumes after restarts; you can leave this page.
+          </div>
+        )}
+        {historyCoverage.verified_complete && (
+          <div className="api-success">Full historical order coverage was verified {historyCoverage.verified_at ? formatDateTime(historyCoverage.verified_at) : ''}.</div>
+        )}
+        {historyImport.status === 'completed_with_errors' && historyImport.progress?.coverage_complete && (
+          <div className="warning-strip">Order and customer coverage is complete. {historyImport.error_count || 0} item mapping issue(s) remain available in sync history for review.</div>
+        )}
+        {historyImport.status === 'completed_with_errors' && !historyImport.progress?.coverage_complete && (
+          <div className="api-error">The history scan finished with errors, so full order coverage is not verified. Review Sync Run History and run it again.</div>
+        )}
+        {historyImport.status === 'failed' && (
+          <div className="api-error">{historyImport.progress?.last_error || historyImport.notes || 'Historical order import paused. Resume it from the last committed page.'}</div>
+        )}
+      </div>
       </>}
       {view === 'writeback' && <>
         <SettingsViewIntro

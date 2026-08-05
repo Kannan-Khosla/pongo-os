@@ -49,14 +49,14 @@ class CompletedOrderFilters:
 
 
 def list_completed_orders(db: Session, filters: CompletedOrderFilters) -> CompletedOrderListResponse:
-    statement = select(Order).where((Order.local_status.in_(COMPLETED_ORDER_STATUSES)) | (Order.completion_status.in_(["completed", "completed_without_picking"]))).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.closed_at.desc().nullslast(), Order.completed_at.desc().nullslast(), Order.date_modified.desc().nullslast(), Order.date_created.desc().nullslast(), Order.id.desc())
+    statement = select(Order).where(Order.is_historical_snapshot.is_(False), (Order.local_status.in_(COMPLETED_ORDER_STATUSES)) | (Order.completion_status.in_(["completed", "completed_without_picking"]))).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.closed_at.desc().nullslast(), Order.completed_at.desc().nullslast(), Order.date_modified.desc().nullslast(), Order.date_created.desc().nullslast(), Order.id.desc())
     orders = list(db.scalars(statement).all())
     rows = [completed_order_to_read(order) for order in orders if order_matches_filters(order, filters)]
     return CompletedOrderListResponse(orders=rows, total=len(rows))
 
 
 def export_completed_orders_csv(db: Session, filters: CompletedOrderFilters) -> str:
-    statement = select(Order).where((Order.local_status.in_(COMPLETED_ORDER_STATUSES)) | (Order.completion_status.in_(["completed", "completed_without_picking"]))).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.closed_at.desc().nullslast(), Order.completed_at.desc().nullslast(), Order.date_modified.desc().nullslast(), Order.date_created.desc().nullslast(), Order.id.desc())
+    statement = select(Order).where(Order.is_historical_snapshot.is_(False), (Order.local_status.in_(COMPLETED_ORDER_STATUSES)) | (Order.completion_status.in_(["completed", "completed_without_picking"]))).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.closed_at.desc().nullslast(), Order.completed_at.desc().nullslast(), Order.date_modified.desc().nullslast(), Order.date_created.desc().nullslast(), Order.id.desc())
     orders = [order for order in db.scalars(statement).all() if order_matches_filters(order, filters)]
     output = StringIO()
     writer = csv.writer(output)

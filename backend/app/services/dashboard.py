@@ -76,6 +76,7 @@ def build_inventory_health(db: Session, items: list[InventoryItem]) -> Inventory
 
 
 def build_order_operations(orders: list[Order]) -> OrderOperationsCards:
+    orders = [order for order in orders if not order.is_historical_snapshot]
     attention_ids = {order.id for order in orders if order_needs_attention(order)}
     return OrderOperationsCards(
         open_orders_count=sum(1 for order in orders if (order.local_status or "open") == "open"),
@@ -92,7 +93,13 @@ def build_order_operations(orders: list[Order]) -> OrderOperationsCards:
 
 
 def build_route_cards(orders: list[Order], routes: list[Route]) -> RouteCards:
-    route_candidates = [order for order in orders if order.local_status in ROUTE_ELIGIBLE_STATUSES and not order_has_active_route(order)]
+    route_candidates = [
+        order
+        for order in orders
+        if not order.is_historical_snapshot
+        and order.local_status in ROUTE_ELIGIBLE_STATUSES
+        and not order_has_active_route(order)
+    ]
     return RouteCards(
         route_candidates_count=len(route_candidates),
         draft_routes_count=sum(1 for route in routes if route.status == "draft"),
@@ -104,6 +111,7 @@ def build_route_cards(orders: list[Order], routes: list[Route]) -> RouteCards:
 
 
 def build_warnings(db: Session, items: list[InventoryItem], orders: list[Order]) -> list[DashboardWarningGroup]:
+    orders = [order for order in orders if not order.is_historical_snapshot]
     groups = [
         warning_group("items_missing_sku", "error", "Items missing SKU", [item for item in items if not clean(item.sku)], "Items without SKUs cannot be matched reliably.", "#/items", item_sample),
         warning_group("items_negative_sellable", "error", "Items with negative sellable", [item for item in items if (item.sellable or Decimal("0")) < 0], "Sellable below zero usually means allocation exceeds stock.", "#/items", item_sample),

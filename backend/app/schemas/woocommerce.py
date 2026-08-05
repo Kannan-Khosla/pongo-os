@@ -56,6 +56,8 @@ class WooCommerceStatusResponse(BaseModel):
     last_webhook_delivery: dict | None = None
     last_product_sync: dict | None = None
     last_order_sync: dict | None = None
+    order_history_import: dict | None = None
+    order_history_coverage: dict = Field(default_factory=dict)
     order_reconciliation: WooCommerceOrderReconciliationStatus = Field(default_factory=WooCommerceOrderReconciliationStatus)
     last_error: str | None = None
     message: str
@@ -330,6 +332,7 @@ class WooCommerceSyncRunRead(BaseModel):
     conflict_count: int
     error_count: int
     notes: str | None = None
+    progress: dict | None = None
 
 
 class WooCommerceSyncRunDetail(WooCommerceSyncRunRead):
