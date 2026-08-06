@@ -16,7 +16,7 @@ from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.orders import Order, OrderItem
 from app.schemas.imports import ImportCommitResponse, ImportPreviewResponse
 from app.schemas.inventory import InventoryItemLocationCreate, InventoryItemLocationListResponse, InventoryItemLocationRead, InventoryItemLocationUpdate
-from app.schemas.items import InventoryItemCreate, InventoryItemListResponse, InventoryItemRead, InventoryItemUpdate, InventoryOpeningBalanceRequest
+from app.schemas.items import InventoryItemBulkUpdateRequest, InventoryItemCreate, InventoryItemListResponse, InventoryItemRead, InventoryItemUpdate, InventoryOpeningBalanceRequest
 from app.services.item_import import create_payload_from_row, parse_items_csv, preview_from_parsed, read_upload_text
 from app.services.auth import authenticated_actor
 from app.services.item_enrichment import commit_enrichment, enrichment_csv, parse_enrichment_csv, preview_enrichment
@@ -199,13 +199,13 @@ def search_items_endpoint(
 
 
 @router.post("/bulk/preview")
-def preview_items_bulk_update(payload: dict, db: Session = Depends(get_db)) -> dict:
-    return preview_bulk_item_update(db, payload.get("item_ids") or [], payload.get("updates") or {})
+def preview_items_bulk_update(payload: InventoryItemBulkUpdateRequest, db: Session = Depends(get_db)) -> dict:
+    return preview_bulk_item_update(db, payload.item_ids, payload.updates)
 
 
 @router.post("/bulk/commit")
-def commit_items_bulk_update(payload: dict, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
-    return commit_bulk_item_update(db, payload.get("item_ids") or [], payload.get("updates") or {}, created_by=actor)
+def commit_items_bulk_update(payload: InventoryItemBulkUpdateRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
+    return commit_bulk_item_update(db, payload.item_ids, payload.updates, created_by=actor)
 
 
 @router.get("", response_model=InventoryItemListResponse)

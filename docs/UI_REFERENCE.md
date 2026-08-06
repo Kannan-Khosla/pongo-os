@@ -831,7 +831,11 @@ Items now has:
 - Clickable SKU/description cells that open the Item Detail Control Center.
 - Column visibility controls.
 - Saved item views.
-- Bulk selection and safe metadata-only bulk edit.
+- Shared bulk selection and audited metadata editing on Item Master, All
+  Inventory, Inventory by Location, Low Stock, and Par Level tables. The editor
+  supports brands, categories, additive tags, locations, unit costs/prices,
+  planning fields, dimensions, and handling flags; unique identifiers and
+  stock quantities are not offered.
 - Local remap candidate search that does not write WooCommerce.
 
 Item Detail Control Center tabs:

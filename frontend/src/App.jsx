@@ -79,10 +79,59 @@ const CANONICAL_ITEM_COLUMNS = [
   'Storage Height',
   'Storage Volume',
   'Brand',
+  'Tags',
 ];
 const ITEM_DEFAULT_VISIBLE_COLUMNS = ['SKU / Barcode', 'Product Title', 'Brand', 'Category', 'In Stock', 'Sellable', 'Unit Cost'];
 
-const SEARCH_FIELDS = ['SKU', 'Barcode', 'Description', 'Category', 'Brand', 'Manufacturer', 'Warehouse', 'Inventory Location'];
+const SEARCH_FIELDS = ['SKU', 'Barcode', 'Description', 'Category', 'Brand', 'Tags', 'Manufacturer', 'Warehouse', 'Inventory Location'];
+
+const BULK_ITEM_FIELD_GROUPS = [
+  {
+    title: 'Classification',
+    fields: [
+      { key: 'client', label: 'Client / organization' },
+      { key: 'description', label: 'Description / local product title' },
+      { key: 'brand', label: 'Brand' },
+      { key: 'category', label: 'Category' },
+      { key: 'add_tags', label: 'Add tags', placeholder: 'Seasonal, freezer, priority' },
+      { key: 'manufacturer', label: 'Manufacturer' },
+      { key: 'manufacturer_website', label: 'Manufacturer website', type: 'url' },
+      { key: 'unit_of_measurement', label: 'Unit of measurement', placeholder: 'Each, case, bag' },
+    ],
+  },
+  {
+    title: 'Costs & planning',
+    fields: [
+      { key: 'unit_cost', label: 'Unit cost', type: 'number', step: '0.01', min: '0' },
+      { key: 'sales_price', label: 'Sales price', type: 'number', step: '0.01', min: '0' },
+      { key: 'recommended_retail_price', label: 'Recommended retail price', type: 'number', step: '0.01', min: '0' },
+      { key: 'par_level', label: 'Par level', type: 'number', step: '0.001', min: '0' },
+      { key: 'default_econ_order', label: 'Default order quantity', type: 'number', step: '0.001', min: '0' },
+      { key: 'default_lead_time_days', label: 'Lead time (days)', type: 'number', step: '1', min: '0' },
+    ],
+  },
+  {
+    title: 'Storage & handling',
+    fields: [
+      { key: 'weight', label: 'Weight', type: 'number', step: '0.001', min: '0' },
+      { key: 'storage_length', label: 'Storage length', type: 'number', step: '0.001', min: '0' },
+      { key: 'storage_width', label: 'Storage width', type: 'number', step: '0.001', min: '0' },
+      { key: 'storage_height', label: 'Storage height', type: 'number', step: '0.001', min: '0' },
+    ],
+  },
+  {
+    title: 'Item controls',
+    fields: [
+      { key: 'active', label: 'Active', type: 'boolean' },
+      { key: 'reorder', label: 'Reorder enabled', type: 'boolean' },
+      { key: 'non_inventory', label: 'Non-inventory item', type: 'boolean' },
+      { key: 'assembly', label: 'Assembly', type: 'boolean' },
+      { key: 'track_lot', label: 'Track lot', type: 'boolean' },
+      { key: 'perishable', label: 'Perishable', type: 'boolean' },
+      { key: 'serializable', label: 'Serializable', type: 'boolean' },
+    ],
+  },
+];
 const BOOLEAN_FIELDS = new Set(['Under Par', 'Assembly', 'Serializable', 'Track Lot', 'Perishable', 'Re-Order']);
 const CURRENCY_FIELDS = new Set(['Recommended Retail Price', 'Sales Price', 'Unit Cost']);
 const NUMERIC_FIELDS = new Set([
@@ -4263,6 +4312,8 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
   const [editingItem, setEditingItem] = useState(null);
   const [adjustingItem, setAdjustingItem] = useState(null);
   const [parItem, setParItem] = useState(null);
+  const [selectedItemIds, setSelectedItemIds] = useState([]);
+  const [bulkOpen, setBulkOpen] = useState(false);
   const [movementFilters, setMovementFilters] = useState({ movement_type: '', warehouse: '', inventory_location: '', date_from: '', date_to: '' });
 
   const options = useMemo(
@@ -4299,6 +4350,15 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
   }, [items, locationRows]);
   const itemRows = useMemo(() => buildInventoryItemRows(items, enrichedLocationRows, activeSearch, filters, inventoryView), [items, enrichedLocationRows, activeSearch, filters, inventoryView]);
   const groupedRows = useMemo(() => groupLocationRows(enrichedLocationRows), [enrichedLocationRows]);
+  const selectableItemIds = useMemo(() => {
+    const source = inventoryView === 'by-location' ? enrichedLocationRows.map((row) => row.item_id) : itemRows.map((row) => row.item.id);
+    return [...new Set(source.filter(Boolean))];
+  }, [inventoryView, enrichedLocationRows, itemRows]);
+
+  useEffect(() => {
+    setSelectedItemIds([]);
+    setBulkOpen(false);
+  }, [inventoryView, activeSearch, filters, pagination.page, pagination.page_size]);
 
   function submitSearch(nextSearch = queryDraft) {
     window.location.hash = inventoryRouteHref(route, { search: nextSearch.trim(), page: 1 });
@@ -4422,9 +4482,29 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
     setMessage(`Open Orders can be filtered for SKU ${item.SKU || item.Barcode || 'selected item'} from the Orders page.`);
   }
 
+  function toggleInventoryItem(itemId) {
+    setSelectedItemIds((current) => (current.includes(itemId) ? current.filter((id) => id !== itemId) : [...current, itemId]));
+  }
+
+  function toggleAllInventoryItems(checked, itemIds = selectableItemIds) {
+    const targetIds = new Set(itemIds);
+    setSelectedItemIds((current) => (checked ? [...new Set([...current, ...itemIds])] : current.filter((id) => !targetIds.has(id))));
+  }
+
+  async function finishBulkEdit(result) {
+    setMessage(`Updated ${result.updated_count} inventory item(s).`);
+    setSelectedItemIds([]);
+    await refreshInventory();
+  }
+
   return (
     <section className="content-panel inventory-page">
       <div className="inventory-sync-toolbar" aria-label="WooCommerce stock controls">
+        <span className="bulk-selection-count" aria-live="polite">{selectedItemIds.length ? `${selectedItemIds.length} selected` : 'Select items to bulk edit'}</span>
+        <button className="action-button" disabled={!selectedItemIds.length} onClick={() => setBulkOpen(true)} type="button">
+          <Edit3 size={17} />
+          Bulk Edit
+        </button>
         <button className="muted-button" disabled={Boolean(stockSyncMode)} onClick={() => syncWooStock(false)} type="button">
           <RefreshCw size={17} />
           Update Stock
@@ -4453,16 +4533,17 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
       {message && <div className="api-success" role="status" aria-live="polite">{message}</div>}
       {(loading || locationRowsLoading || itemsLoading) && <div className="loading-strip">Loading inventory...</div>}
 
-      {inventoryView === 'all' && <AllInventoryTable rows={itemRows} pagination={pagination} onPageChange={(page) => { window.location.hash = inventoryRouteHref(route, { page }); }} onPageSizeChange={(pageSize) => { window.location.hash = inventoryRouteHref(route, { pageSize, page: 1 }); }} onEdit={setEditingItem} onStock={setAdjustingItem} onLocation={viewLocationStock} onMovements={viewMovements} onOrders={viewOrders} />}
-      {inventoryView === 'by-location' && <InventoryByLocationView groups={groupedRows} rows={enrichedLocationRows} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
-      {inventoryView === 'low-stock' && <LowStockTable rows={itemRows} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
+      {inventoryView === 'all' && <AllInventoryTable rows={itemRows} pagination={pagination} selectedIds={selectedItemIds} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onPageChange={(page) => { window.location.hash = inventoryRouteHref(route, { page }); }} onPageSizeChange={(pageSize) => { window.location.hash = inventoryRouteHref(route, { pageSize, page: 1 }); }} onEdit={setEditingItem} onStock={setAdjustingItem} onLocation={viewLocationStock} onMovements={viewMovements} onOrders={viewOrders} />}
+      {inventoryView === 'by-location' && <InventoryByLocationView groups={groupedRows} rows={enrichedLocationRows} selectedIds={selectedItemIds} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
+      {inventoryView === 'low-stock' && <LowStockTable rows={itemRows} selectedIds={selectedItemIds} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
       {inventoryView === 'expiring' && <ExpiringStockView rows={itemRows.filter((row) => row.item.Perishable || row.item['Track Lot'])} />}
-      {inventoryView === 'par-level' && <ParLevelTable rows={itemRows} onEdit={setEditingItem} onPar={setParItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
+      {inventoryView === 'par-level' && <ParLevelTable rows={itemRows} selectedIds={selectedItemIds} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onEdit={setEditingItem} onPar={setParItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
       {inventoryView === 'movements' && <InventoryMovementsView movements={stockMovements} loading={stockMovementsLoading} filters={movementFilters} setFilters={setMovementFilters} activeSearch={activeSearch} onLoad={() => onLoadStockMovements(stockMovementFiltersToApi(activeSearch, movementFilters))} />}
 
       {editingItem && <ProductInfoModal item={editingItem} onClose={() => setEditingItem(null)} onSave={saveProductInfo} />}
       {adjustingItem && <StockAdjustmentModal item={adjustingItem} locationRows={enrichedLocationRows.filter((row) => row.item_id === adjustingItem.id)} onClose={() => setAdjustingItem(null)} onCommit={commitStockEdit} />}
       {parItem && <ParLevelModal item={parItem} onClose={() => setParItem(null)} onSave={saveParLevel} />}
+      {bulkOpen && <BulkEditModal selectedIds={selectedItemIds} onCommitted={finishBulkEdit} onClose={() => setBulkOpen(false)} />}
     </section>
   );
 }
@@ -4520,19 +4601,22 @@ function InventoryScannerSearch({ value, onChange, onSubmit, onClear, filters, o
   );
 }
 
-function AllInventoryTable({ rows, pagination, onPageChange, onPageSizeChange, onEdit, onStock, onLocation, onMovements, onOrders }) {
+function AllInventoryTable({ rows, pagination, selectedIds, onToggleSelected, onToggleAll, onPageChange, onPageSizeChange, onEdit, onStock, onLocation, onMovements, onOrders }) {
+  const rowIds = rows.map((row) => row.item.id);
+  const allSelected = rowIds.length > 0 && rowIds.every((id) => selectedIds.includes(id));
   return (
-    <TableShell caption="Inventory records" columns={['Actions', 'SKU / Barcode', 'Product Title', 'Brand', 'Category', 'Location', 'In Stock', 'Open Orders', 'Allocated', 'Sellable', 'Unit Cost', 'Value', 'Active']} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: pagination.returned_count, noun: 'inventory records', onPageChange, onPageSizeChange }}>
-      {rows.map((row) => <InventoryItemRow key={row.item.id} row={row} onEdit={onEdit} onStock={onStock} onLocation={onLocation} onMovements={onMovements} onOrders={onOrders} />)}
-      {!rows.length && <tr><td colSpan={13}><div className="empty-table-row">No inventory items match the current search.</div></td></tr>}
+    <TableShell caption="Inventory records" columns={[{ key: 'select', label: <input aria-label="Select all visible inventory items" checked={allSelected} onChange={(event) => onToggleAll(event.target.checked, rowIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Brand', 'Category', 'Location', 'In Stock', 'Open Orders', 'Allocated', 'Sellable', 'Unit Cost', 'Value', 'Active']} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: pagination.returned_count, noun: 'inventory records', onPageChange, onPageSizeChange }}>
+      {rows.map((row) => <InventoryItemRow key={row.item.id} row={row} selected={selectedIds.includes(row.item.id)} onToggleSelected={onToggleSelected} onEdit={onEdit} onStock={onStock} onLocation={onLocation} onMovements={onMovements} onOrders={onOrders} />)}
+      {!rows.length && <tr><td colSpan={14}><div className="empty-table-row">No inventory items match the current search.</div></td></tr>}
     </TableShell>
   );
 }
 
-function InventoryItemRow({ row, onEdit, onStock, onLocation, onMovements, onOrders }) {
+function InventoryItemRow({ row, selected, onToggleSelected, onEdit, onStock, onLocation, onMovements, onOrders }) {
   const item = row.item;
   return (
     <tr>
+      <td><input aria-label={`Select ${item.SKU || productTitle(item) || 'inventory item'}`} checked={selected} onChange={() => onToggleSelected(item.id)} type="checkbox" /></td>
       <td><InventoryRowActions item={item} onEdit={onEdit} onStock={onStock} onLocation={onLocation} onMovements={onMovements} onOrders={onOrders} /></td>
       <td><div className="sku-barcode-cell"><strong>{item.SKU || <DataQualityBadge kind="missing_sku" />}</strong><span>{item.Barcode || <DataQualityBadge kind="missing_barcode" />}</span></div></td>
       <td className="description-cell"><ClampedText value={productTitle(item)} /></td>
@@ -4605,12 +4689,14 @@ function InventoryActionsMenu({ actions }) {
   );
 }
 
-function InventoryByLocationView({ groups, rows, onEdit, onStock, onMovements }) {
+function InventoryByLocationView({ groups, rows, selectedIds, onToggleSelected, onToggleAll, onEdit, onStock, onMovements }) {
   return (
     <div className="location-inventory-sections">
       <InventorySummaryTable groups={groups} />
       {groups.map((group) => {
         const groupRows = rows.filter((row) => inventoryLocationKey(row) === group.key);
+        const groupItemIds = [...new Set(groupRows.map((row) => row.item_id).filter(Boolean))];
+        const allSelected = groupItemIds.length > 0 && groupItemIds.every((id) => selectedIds.includes(id));
         return (
           <section className="location-operations" key={group.key}>
             <div className="section-heading">
@@ -4620,11 +4706,12 @@ function InventoryByLocationView({ groups, rows, onEdit, onStock, onMovements })
               </div>
               <Metric label="Value" value={formatCurrency(group.total_inventory_value)} />
             </div>
-            <TableShell caption={`${groupRows.length} location row(s)`} columns={['Actions', 'SKU / Barcode', 'Product Title', 'Brand', 'Category', 'In Stock', 'Allocated', 'Sellable', 'Unit Cost', 'Value']}>
+            <TableShell caption={`${groupRows.length} location row(s)`} columns={[{ key: 'select', label: <input aria-label={`Select all items in ${group.inventory_location || 'location'}`} checked={allSelected} onChange={(event) => onToggleAll(event.target.checked, groupItemIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Brand', 'Category', 'In Stock', 'Allocated', 'Sellable', 'Unit Cost', 'Value']}>
               {groupRows.map((row) => {
                 const item = row.item || {};
                 return (
                   <tr key={row.id}>
+                    <td><input aria-label={`Select ${row.sku || item.SKU || 'inventory item'}`} checked={selectedIds.includes(row.item_id)} onChange={() => onToggleSelected(row.item_id)} type="checkbox" /></td>
                     <td><InventoryCompactActions item={item} onEdit={onEdit} onStock={onStock} onMovements={onMovements} /></td>
                     <td><div className="sku-barcode-cell"><strong>{row.sku || item.SKU}</strong><span>{row.barcode || item.Barcode}</span></div></td>
                     <td className="description-cell"><ClampedText value={productTitle(item) || row.description} /></td>
@@ -4638,7 +4725,7 @@ function InventoryByLocationView({ groups, rows, onEdit, onStock, onMovements })
                   </tr>
                 );
               })}
-              {!groupRows.length && <tr><td colSpan={10}><div className="empty-table-row">No products in this location.</div></td></tr>}
+              {!groupRows.length && <tr><td colSpan={11}><div className="empty-table-row">No products in this location.</div></td></tr>}
             </TableShell>
           </section>
         );
@@ -4648,12 +4735,15 @@ function InventoryByLocationView({ groups, rows, onEdit, onStock, onMovements })
   );
 }
 
-function LowStockTable({ rows, onEdit, onStock, onMovements }) {
+function LowStockTable({ rows, selectedIds, onToggleSelected, onToggleAll, onEdit, onStock, onMovements }) {
   const lowRows = rows.filter((row) => row.underPar);
+  const rowIds = lowRows.map((row) => row.item.id);
+  const allSelected = rowIds.length > 0 && rowIds.every((id) => selectedIds.includes(id));
   return (
-    <TableShell caption={`${lowRows.length} low stock item(s)`} columns={['Actions', 'SKU / Barcode', 'Product Title', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Par Level', 'Under Par', 'Suggested Reorder', 'Open Orders']}>
+    <TableShell caption={`${lowRows.length} low stock item(s)`} columns={[{ key: 'select', label: <input aria-label="Select all visible low-stock items" checked={allSelected} onChange={(event) => onToggleAll(event.target.checked, rowIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Par Level', 'Under Par', 'Suggested Reorder', 'Open Orders']}>
       {lowRows.map((row) => (
         <tr key={row.item.id}>
+          <td><input aria-label={`Select ${row.item.SKU || productTitle(row.item) || 'inventory item'}`} checked={selectedIds.includes(row.item.id)} onChange={() => onToggleSelected(row.item.id)} type="checkbox" /></td>
           <td><InventoryCompactActions item={row.item} onEdit={onEdit} onStock={onStock} onMovements={onMovements} /></td>
           <td><div className="sku-barcode-cell"><strong>{row.item.SKU}</strong><span>{row.item.Barcode}</span></div></td>
           <td className="description-cell"><ClampedText value={productTitle(row.item)} /></td>
@@ -4667,7 +4757,7 @@ function LowStockTable({ rows, onEdit, onStock, onMovements }) {
           <td>{formatOpenOrders(row.item)}</td>
         </tr>
       ))}
-      {!lowRows.length && <tr><td colSpan={11}><div className="empty-table-row">No low stock items match the current filters.</div></td></tr>}
+      {!lowRows.length && <tr><td colSpan={12}><div className="empty-table-row">No low stock items match the current filters.</div></td></tr>}
     </TableShell>
   );
 }
@@ -4681,11 +4771,14 @@ function ExpiringStockView() {
   );
 }
 
-function ParLevelTable({ rows, onEdit, onPar, onStock, onMovements }) {
+function ParLevelTable({ rows, selectedIds, onToggleSelected, onToggleAll, onEdit, onPar, onStock, onMovements }) {
+  const rowIds = rows.map((row) => row.item.id);
+  const allSelected = rowIds.length > 0 && rowIds.every((id) => selectedIds.includes(id));
   return (
-    <TableShell caption={`${rows.length} par level item(s)`} columns={['Actions', 'SKU / Barcode', 'Product Title', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Par Level', 'Under Par', 'Reorder Enabled', 'Default Econ Order', 'Suggested Order Qty']}>
+    <TableShell caption={`${rows.length} par level item(s)`} columns={[{ key: 'select', label: <input aria-label="Select all visible par-level items" checked={allSelected} onChange={(event) => onToggleAll(event.target.checked, rowIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Par Level', 'Under Par', 'Reorder Enabled', 'Default Econ Order', 'Suggested Order Qty']}>
       {rows.map((row) => (
         <tr key={row.item.id}>
+          <td><input aria-label={`Select ${row.item.SKU || productTitle(row.item) || 'inventory item'}`} checked={selectedIds.includes(row.item.id)} onChange={() => onToggleSelected(row.item.id)} type="checkbox" /></td>
           <td><InventoryParActions item={row.item} onEdit={onEdit} onPar={onPar} onStock={onStock} onMovements={onMovements} /></td>
           <td><div className="sku-barcode-cell"><strong>{row.item.SKU}</strong><span>{row.item.Barcode}</span></div></td>
           <td className="description-cell"><ClampedText value={productTitle(row.item)} /></td>
@@ -4700,7 +4793,7 @@ function ParLevelTable({ rows, onEdit, onPar, onStock, onMovements }) {
           <td>{formatNumber(Math.max(0, toNumber(row.item['Default Econ Order']) || (toNumber(row.item['Par Level']) - toNumber(row.item.Sellable))))}</td>
         </tr>
       ))}
-      {!rows.length && <tr><td colSpan={12}><div className="empty-table-row">No par level rows match the current filters.</div></td></tr>}
+      {!rows.length && <tr><td colSpan={13}><div className="empty-table-row">No par level rows match the current filters.</div></td></tr>}
     </TableShell>
   );
 }
@@ -5224,8 +5317,6 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
   const [viewName, setViewName] = useState('');
   const [message, setMessage] = useState('');
   const [bulkOpen, setBulkOpen] = useState(false);
-  const [bulkUpdates, setBulkUpdates] = useState({ category: '', brand: '', manufacturer: '', unit_cost: '', sales_price: '', par_level: '', active: '' });
-  const [bulkPreview, setBulkPreview] = useState(null);
   const [remapOpen, setRemapOpen] = useState(false);
   const [filters, setFilters] = useState({
     search: '',
@@ -5339,12 +5430,10 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
   }
 
   function toggleSelected(itemId) {
-    setBulkPreview(null);
     setSelectedIds((current) => (current.includes(itemId) ? current.filter((id) => id !== itemId) : [...current, itemId]));
   }
 
   function toggleAllDisplayed(checked) {
-    setBulkPreview(null);
     setSelectedIds(checked ? displayedItems.map((item) => item.id) : []);
   }
 
@@ -5352,21 +5441,8 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     setVisibleColumns((current) => (current.includes(column) ? current.filter((item) => item !== column) : [...current, column]));
   }
 
-  function bulkPayload() {
-    return Object.fromEntries(Object.entries(bulkUpdates).filter(([, value]) => value !== '' && value !== null));
-  }
-
-  async function previewBulkEdit() {
-    const result = await postJson('/api/items/bulk/preview', { item_ids: selectedIds, updates: bulkPayload() });
-    setBulkPreview(result);
-    setMessage(result.warnings?.join(' ') || `Previewed ${result.affected_count} item(s).`);
-  }
-
-  async function commitBulkEdit() {
-    const result = await postJson('/api/items/bulk/commit', { item_ids: selectedIds, updates: bulkPayload() });
+  async function finishBulkEdit(result) {
     setMessage(`Updated ${result.updated_count} item(s).`);
-    setBulkPreview(null);
-    setBulkOpen(false);
     setSelectedIds([]);
     await onLoadItems({ ...filters, page, pageSize });
   }
@@ -5395,7 +5471,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
               <Link2 size={17} />
               Remap Exceptions
             </button>
-            <button className="action-button" disabled={!selectedIds.length} onClick={() => { setBulkPreview(null); setBulkOpen(true); }} type="button">
+            <button className="action-button" disabled={!selectedIds.length} onClick={() => setBulkOpen(true)} type="button">
               <Edit3 size={17} />
               Bulk Edit
             </button>
@@ -5469,7 +5545,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImported={() => onLoadItems({ ...filters, page, pageSize })} />}
       {mappingOpen && <ImportMappingsModal onClose={() => setMappingOpen(false)} onImported={() => onLoadItems({ ...filters, page, pageSize })} />}
       {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onRefresh={() => openDetail(detailId)} />}
-      {bulkOpen && <BulkEditModal selectedCount={selectedIds.length} updates={bulkUpdates} setUpdates={setBulkUpdates} preview={bulkPreview} onInvalidate={() => setBulkPreview(null)} onPreview={previewBulkEdit} onCommit={commitBulkEdit} onClose={() => { setBulkPreview(null); setBulkOpen(false); }} />}
+      {bulkOpen && <BulkEditModal selectedIds={selectedIds} onCommitted={finishBulkEdit} onClose={() => setBulkOpen(false)} />}
       {remapOpen && <LocalRemapSearchModal onClose={() => setRemapOpen(false)} />}
     </section>
   );
@@ -5926,6 +6002,7 @@ function FilterSelect({ label, value, options, onChange }) {
 }
 
 function ItemsTable({ items, pagination, visibleColumns, selectedIds, onToggleSelected, onToggleAll, onOpenDetail }) {
+  const allSelected = items.length > 0 && items.every((item) => selectedIds.includes(item.id));
   return (
     <div className="table-wrap">
       <div className="table-meta">
@@ -5940,7 +6017,7 @@ function ItemsTable({ items, pagination, visibleColumns, selectedIds, onToggleSe
         <table className="items-data-table">
           <thead>
             <tr>
-              <th className="sticky-col sticky-action-col"><input checked={items.length > 0 && selectedIds.length === items.length} onChange={(event) => onToggleAll(event.target.checked)} type="checkbox" /></th>
+              <th className="sticky-col sticky-action-col"><input aria-label="Select all visible items" checked={allSelected} onChange={(event) => onToggleAll(event.target.checked)} type="checkbox" /></th>
               <th className="sticky-col sticky-image-col">Image</th>
               {visibleColumns.map((column) => (
                 <th key={column}>{column}</th>
@@ -5952,7 +6029,7 @@ function ItemsTable({ items, pagination, visibleColumns, selectedIds, onToggleSe
             {items.map((item) => (
               <tr key={item.id}>
                 <td className="sticky-col sticky-action-col">
-                  <input checked={selectedIds.includes(item.id)} onChange={() => onToggleSelected(item.id)} type="checkbox" />
+                  <input aria-label={`Select ${item.SKU || productTitle(item) || 'item'}`} checked={selectedIds.includes(item.id)} onChange={() => onToggleSelected(item.id)} type="checkbox" />
                 </td>
                 <td className="sticky-col sticky-image-col">
                   <button className="image-cell image-button" onClick={() => onOpenDetail(item.id)} type="button">
@@ -6105,19 +6182,104 @@ function ItemMetadataPanel({ item, onSaved }) {
   );
 }
 
-function BulkEditModal({ selectedCount, updates, setUpdates, preview, onInvalidate, onPreview, onCommit, onClose }) {
+function BulkEditModal({ selectedIds, onCommitted, onClose }) {
+  const [updates, setUpdates] = useState({});
+  const [preview, setPreview] = useState(null);
+  const [locations, setLocations] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    apiFetch(`${API_BASE_URL}/api/locations?active=true`)
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error('Unable to load locations.'))))
+      .then((body) => { if (active) setLocations(body.locations || []); })
+      .catch((loadError) => { if (active) setError(loadError.message || 'Unable to load locations.'); });
+    return () => { active = false; };
+  }, []);
+
   function updateField(field, value) {
+    setPreview(null);
+    setError('');
     setUpdates((current) => ({ ...current, [field]: value }));
   }
+
+  function payload() {
+    const next = Object.fromEntries(Object.entries(updates).filter(([, value]) => value !== '' && value !== null));
+    if (next.location_id) next.location_id = Number(next.location_id);
+    if (!next.location_id) delete next.make_default_location;
+    return next;
+  }
+
+  async function previewChanges() {
+    const changes = payload();
+    if (!Object.keys(changes).length) {
+      setError('Choose at least one field to update.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      setPreview(await postJson('/api/items/bulk/preview', { item_ids: selectedIds, updates: changes }));
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to preview the bulk edit.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function commitChanges() {
+    if (!preview?.can_commit) return;
+    setLoading(true);
+    setError('');
+    try {
+      const result = await postJson('/api/items/bulk/commit', { item_ids: selectedIds, updates: payload() });
+      await onCommitted(result);
+      onClose();
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to commit the bulk edit.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <div className="modal-backdrop" role="presentation">
-      <section className="import-modal" role="dialog" aria-modal="true" aria-label="Bulk edit items">
-        <div className="modal-header"><div><h2>Bulk Edit Metadata</h2><p>{selectedCount} selected item(s). Stock and Woo fields are blocked.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close bulk edit" title="Close" type="button"><X size={20} /></button></div>
-        <div className="operation-grid">
-          {Object.keys(updates).map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={updates[field]} onChange={(event) => { updateField(field, event.target.value); onInvalidate(); }} /></label>)}
+    <div className="modal-backdrop bulk-edit-backdrop" role="presentation">
+      <section className="import-modal bulk-edit-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-edit-title">
+        <div className="modal-header">
+          <div><h2 id="bulk-edit-title">Bulk edit inventory items</h2><p>{selectedIds.length} selected item(s). SKU, barcode, stock quantities, and WooCommerce identity stay protected.</p></div>
+          <button className="icon-button modal-close" onClick={onClose} aria-label="Close bulk edit" title="Close" type="button"><X size={20} /></button>
         </div>
-        <div className="button-row"><button className="muted-button" onClick={onPreview} type="button">Preview</button><button className="primary-button" disabled={!preview?.can_commit} onClick={onCommit} type="button">Commit Metadata</button></div>
-        {preview && <div className="import-results"><div className="import-metrics"><Metric label="Affected" value={preview.affected_count} /><Metric label="Fields" value={(preview.fields_to_update || []).length} /></div>{preview.warnings?.map((warning) => <div className="api-error" key={warning}>{warning}</div>)}</div>}
+        <div className="bulk-edit-content">
+          <section className="bulk-edit-section">
+            <div className="bulk-edit-section-heading"><div><span>LOCATION</span><h3>Add an inventory location</h3></div><small>This creates a zero-quantity location assignment. It never moves stock.</small></div>
+            <div className="bulk-edit-grid">
+              <label className="field bulk-edit-location-field"><span>Inventory location</span><select value={updates.location_id || ''} onChange={(event) => updateField('location_id', event.target.value)}><option value="">Do not change</option>{locations.map((location) => <option key={location.id} value={location.id}>{location.warehouse} / {location.code || location.name}</option>)}</select></label>
+              <label className="check-field bulk-edit-default-check"><input checked={Boolean(updates.make_default_location)} disabled={!updates.location_id} onChange={(event) => updateField('make_default_location', event.target.checked)} type="checkbox" />Make this the default location</label>
+            </div>
+          </section>
+          {BULK_ITEM_FIELD_GROUPS.map((group) => (
+            <section className="bulk-edit-section" key={group.title}>
+              <div className="bulk-edit-section-heading"><h3>{group.title}</h3></div>
+              <div className="bulk-edit-grid">
+                {group.fields.map((field) => (
+                  <label className="field" key={field.key}>
+                    <span>{field.label}</span>
+                    {field.type === 'boolean' ? (
+                      <select value={updates[field.key] ?? ''} onChange={(event) => updateField(field.key, event.target.value)}><option value="">Do not change</option><option value="true">Yes</option><option value="false">No</option></select>
+                    ) : (
+                      <input min={field.min} placeholder={field.placeholder || 'Do not change'} step={field.step} type={field.type || 'text'} value={updates[field.key] ?? ''} onChange={(event) => updateField(field.key, event.target.value)} />
+                    )}
+                  </label>
+                ))}
+              </div>
+            </section>
+          ))}
+          {loading && <div className="loading-strip" role="status" aria-live="polite">Working with selected inventory items...</div>}
+          {error && <div className="api-error" role="alert">{error}</div>}
+          {preview && <div className="import-results"><div className="import-metrics"><Metric label="Items affected" value={preview.affected_count} /><Metric label="Fields changing" value={(preview.fields_to_update || []).length} /></div>{preview.warnings?.map((warning) => <div className="api-error" key={warning}>{warning}</div>)}</div>}
+          <div className="detail-actions bulk-edit-actions"><button className="muted-button" disabled={loading} onClick={onClose} type="button">Cancel</button><button className="muted-button" disabled={loading} onClick={previewChanges} type="button"><Search size={16} />Preview changes</button><button className="primary-button" disabled={loading || !preview?.can_commit} onClick={commitChanges} type="button"><Save size={16} />Apply to {selectedIds.length} item(s)</button></div>
+        </div>
       </section>
     </div>
   );

@@ -658,14 +658,14 @@ describe('App shell and workflows', () => {
     const itemRow = (await screen.findByText('Smoke Test Item')).closest('tr');
     await user.click(within(itemRow).getByRole('checkbox'));
     await user.click(screen.getByRole('button', { name: 'Bulk Edit' }));
-    const dialog = screen.getByRole('dialog', { name: 'Bulk edit items' });
-    const brand = within(dialog).getByRole('textbox', { name: 'brand' });
+    const dialog = screen.getByRole('dialog', { name: 'Bulk edit inventory items' });
+    const brand = within(dialog).getByRole('textbox', { name: 'Brand' });
     await user.type(brand, 'Acana');
-    await user.click(within(dialog).getByRole('button', { name: 'Preview' }));
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Commit Metadata' })).toBeEnabled());
+    await user.click(within(dialog).getByRole('button', { name: 'Preview changes' }));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Apply to 1 item(s)' })).toBeEnabled());
 
     await user.type(brand, ' Updated');
-    expect(within(dialog).getByRole('button', { name: 'Commit Metadata' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Apply to 1 item(s)' })).toBeDisabled();
   });
 
   it('shows product titles without a long-description column', async () => {
@@ -724,6 +724,22 @@ describe('App shell and workflows', () => {
       const request = new URL(String(url));
       return request.pathname === '/api/items' && request.searchParams.get('page') === '1' && request.searchParams.get('page_size') === '50';
     })).toBe(true);
+  });
+
+  it('offers the shared safe bulk editor from the inventory table', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    await user.click(screen.getByRole('checkbox', { name: 'Select SMOKE-001' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk Edit' }));
+    const dialog = screen.getByRole('dialog', { name: 'Bulk edit inventory items' });
+
+    expect(within(dialog).getByRole('textbox', { name: 'Brand' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('spinbutton', { name: 'Unit cost' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('combobox', { name: 'Inventory location' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('textbox', { name: 'SKU' })).not.toBeInTheDocument();
   });
 
   it('uses full-catalog raw facets while presenting decoded filter labels', async () => {

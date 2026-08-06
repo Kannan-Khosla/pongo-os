@@ -57,6 +57,64 @@ def test_item_bulk_edit_blocks_stock_and_updates_metadata(client):
     assert refreshed["In Stock"] == 4
 
 
+def test_item_bulk_edit_adds_tags_cost_and_real_location_without_moving_stock(client):
+    first = setup_stock_item(client, sku="BULK-META-1", barcode="BULK-META-BAR-1", location="BULK-A", in_stock=4)
+    second = setup_stock_item(client, sku="BULK-META-2", barcode="BULK-META-BAR-2", location="BULK-B", in_stock=7)
+    destination = seed_location(client, code="BULK-C", name="Bulk C")
+    payload = {
+        "item_ids": [first["id"], second["id"]],
+        "updates": {
+            "client": "Shared Client",
+            "description": "Shared bulk description",
+            "brand": "Shared Brand",
+            "unit_cost": 8.75,
+            "add_tags": "Frozen, Priority",
+            "location_id": destination["id"],
+            "make_default_location": True,
+        },
+    }
+
+    preview = client.post("/api/items/bulk/preview", json=payload)
+    assert preview.status_code == 200
+    assert preview.json()["can_commit"] is True
+    assert preview.json()["affected_count"] == 2
+
+    commit = client.post("/api/items/bulk/commit", json=payload)
+    assert commit.status_code == 200
+    assert commit.json()["updated_count"] == 2
+
+    refreshed_first = client.get(f"/api/items/{first['id']}").json()
+    refreshed_second = client.get(f"/api/items/{second['id']}").json()
+    assert refreshed_first["Client"] == refreshed_second["Client"] == "Shared Client"
+    assert refreshed_first["Description"] == refreshed_second["Description"] == "Shared bulk description"
+    assert refreshed_first["Brand"] == refreshed_second["Brand"] == "Shared Brand"
+    assert refreshed_first["Unit Cost"] == refreshed_second["Unit Cost"] == 8.75
+    assert refreshed_first["Tags"] == refreshed_second["Tags"] == "Frozen, Priority"
+    assert refreshed_first["In Stock"] == 4
+    assert refreshed_second["In Stock"] == 7
+    first_locations = client.get(f"/api/items/{first['id']}/locations").json()["locations"]
+    assert any(row["inventory_location"] == "BULK-C" and row["is_default_location"] for row in first_locations)
+
+
+def test_item_bulk_edit_fails_closed_for_unique_and_unknown_fields(client):
+    item = setup_stock_item(client, sku="PROTECTED-SKU")
+
+    for updates in (
+        {"sku": "DUPLICATE"},
+        {"barcode": "DUPLICATE"},
+        {"made_up_field": "value"},
+        {"unit_cost": "not-a-number"},
+        {"unit_cost": -1},
+    ):
+        preview = client.post("/api/items/bulk/preview", json={"item_ids": [item["id"]], "updates": updates})
+        assert preview.status_code == 200
+        assert preview.json()["can_commit"] is False
+        commit = client.post("/api/items/bulk/commit", json={"item_ids": [item["id"]], "updates": updates})
+        assert commit.status_code == 400
+
+    assert client.get(f"/api/items/{item['id']}").json()["SKU"] == "PROTECTED-SKU"
+
+
 def test_saved_views_crud_and_item_search(client):
     setup_stock_item(client, sku="SEARCH-001", barcode="SEARCH-BAR")
 

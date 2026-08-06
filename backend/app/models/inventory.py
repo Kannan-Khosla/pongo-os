@@ -105,6 +105,7 @@ class InventoryItem(TimestampMixin, Base):
     storage_height: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     storage_volume: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
     brand: Mapped[str | None] = mapped_column(String(200), index=True)
+    tags: Mapped[str | None] = mapped_column(Text)
     image_url: Mapped[str | None] = mapped_column(String(1000))
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     non_inventory: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)

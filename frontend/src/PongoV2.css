@@ -102,6 +102,111 @@ textarea:focus-visible,
   to { transform: rotate(360deg); }
 }
 
+.app-shell .bulk-selection-count {
+  align-self: center;
+  margin-right: auto;
+  color: var(--ink-650);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.app-shell .bulk-edit-backdrop {
+  place-items: start center;
+  overflow-y: auto;
+}
+
+.app-shell .bulk-edit-modal {
+  width: min(1120px, calc(100vw - 32px));
+  max-height: none;
+  margin-block: 16px;
+  overflow: visible;
+}
+
+.app-shell .bulk-edit-content {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  background: var(--canvas-50);
+}
+
+.app-shell .bulk-edit-section {
+  padding: 16px;
+  border: 1px solid var(--line-200);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.app-shell .bulk-edit-section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.app-shell .bulk-edit-section-heading h3,
+.app-shell .bulk-edit-section-heading span,
+.app-shell .bulk-edit-section-heading small {
+  margin: 0;
+}
+
+.app-shell .bulk-edit-section-heading span {
+  color: var(--live-600);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+}
+
+.app-shell .bulk-edit-section-heading small {
+  color: var(--ink-550);
+  text-align: right;
+}
+
+.app-shell .bulk-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.app-shell .bulk-edit-location-field {
+  grid-column: span 2;
+}
+
+.app-shell .bulk-edit-default-check {
+  align-self: end;
+  min-height: 44px;
+}
+
+.app-shell .bulk-edit-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 0 -18px -18px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--line-200);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(8px);
+}
+
+@media (max-width: 800px) {
+  .app-shell .bulk-edit-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell .bulk-edit-location-field {
+    grid-column: auto;
+  }
+
+  .app-shell .bulk-edit-section-heading {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .app-shell .bulk-edit-section-heading small {
+    text-align: left;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .global-activity-spinner { animation: none; }
 }

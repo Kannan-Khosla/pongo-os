@@ -18,7 +18,7 @@ Synthetic reference: `docs/csv-reference/sample-items-import.csv`.
 Canonical header order:
 
 ```csv
-Client,SKU,Description,Category,Unit of Measurement,Warehouse,Inventory Location,Default Location,In Stock,Allocated,Sellable,Under Par,On Order,Barcode,Manufacturer,Manufacturer Website,Recommended Retail Price,Sales Price,Unit Cost,Weight,Default Econ Order,Default Lead Time Days,Par Level,Assembly,Serializable,Track Lot,Perishable,Re-Order,Storage Length,Storage Width,Storage Height,Storage Volume,Brand
+Client,SKU,Description,Category,Unit of Measurement,Warehouse,Inventory Location,Default Location,In Stock,Allocated,Sellable,Under Par,On Order,Barcode,Manufacturer,Manufacturer Website,Recommended Retail Price,Sales Price,Unit Cost,Weight,Default Econ Order,Default Lead Time Days,Par Level,Assembly,Serializable,Track Lot,Perishable,Re-Order,Storage Length,Storage Width,Storage Height,Storage Volume,Brand,Tags
 ```
 
 | Order | Column | Source / Ownership | Notes |
@@ -56,6 +56,7 @@ Client,SKU,Description,Category,Unit of Measurement,Warehouse,Inventory Location
 | 31 | Storage Height | manual/CSV/WooCommerce | Dimension field. |
 | 32 | Storage Volume | calculated | Storage Length x Storage Width x Storage Height. |
 | 33 | Brand | WooCommerce/CSV/manual | Woo taxonomy/meta or manual override. |
+| 34 | Tags | Pongo OS/CSV/manual | Optional comma-separated item labels. Bulk tagging adds labels without removing existing ones. |
 
 ## Inventory Field Split
 

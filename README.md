@@ -229,7 +229,7 @@ Current local build now includes:
 - A new default `Dashboard` home page for business metrics, customer/order activity, subscription empty states, revenue comparison, and city-level order geography. See `docs/BUSINESS_DASHBOARD.md`.
 - The former operational dashboard is now `Inventory Overview`.
 - Frontend Vitest/Testing Library coverage for design-system primitives, app shell navigation, Items, Scanner mode switching, and Reports single-panel switching.
-- Production-grade Items page controls: rich filters, image-aware table rows, column visibility, saved item views, safe metadata-only bulk edit, debounced keyword search with live item/SKU suggestions, and an Item Detail Control Center.
+- Production-grade Items and Inventory controls: rich filters, image-aware table rows, column visibility, saved item views, shared safe bulk editing for non-unique metadata/tags/locations/costs, debounced keyword search with live item/SKU suggestions, and an Item Detail Control Center.
 - Item Detail Control Center tabs for overview, stock by location, activity, history, and metadata edit. Stock quantity edits remain routed through receiving, cycle count, or adjustment workflows.
 - Bulk Receiving Session under Receiving. It previews multi-row receiving carts, commits valid rows into one local receipt, updates `inventory_item_locations`, recalculates item aggregate stock fields, and creates stock movements.
 - Scanner page for inventory lookup, location lookup, receiving, cycle count,

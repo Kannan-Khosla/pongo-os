@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,6 +38,7 @@ class InventoryItemBase(BaseModel):
     storage_height: float | None = Field(default=None, alias="Storage Height")
     storage_volume: float | None = Field(default=None, alias="Storage Volume")
     brand: str | None = Field(default=None, alias="Brand")
+    tags: str | None = Field(default=None, alias="Tags")
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -83,6 +85,11 @@ class InventoryOpeningBalanceRequest(BaseModel):
     created_by: str | None = Field(default="system", alias="createdBy")
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class InventoryItemBulkUpdateRequest(BaseModel):
+    item_ids: list[int] = Field(min_length=1, max_length=5000)
+    updates: dict[str, Any] = Field(min_length=1)
 
 
 class InventoryItemRead(InventoryItemBase):

@@ -47,6 +47,7 @@ HEADER_ALIASES = {
 }
 OPTIONAL_DEFAULT_COLUMNS = {
     "Manufacturer": "",
+    "Tags": "",
 }
 
 

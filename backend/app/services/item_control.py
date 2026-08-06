@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import HTTPException
@@ -12,39 +12,51 @@ from app.models.allocations import AllocationLine
 from app.models.cycle_counts import CycleCountLine
 from app.models.fulfillments import FulfillmentLine
 from app.models.item_notes import ItemNote
-from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation, InventoryTransferLine, StockAdjustmentLine, StockMovement
+from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation, InventoryLocation, InventoryTransferLine, StockAdjustmentLine, StockMovement
 from app.models.orders import OrderItem
 from app.models.picks import PickLine
 from app.models.receipts import ReceiptItem
-from app.services.location_inventory import recalculate_item_location, recalculate_item_totals, to_decimal
+from app.services.location_inventory import get_or_create_item_location, lock_inventory_stock, recalculate_item_location, recalculate_item_totals, to_decimal
 
 
-ITEM_BULK_ALLOWED_FIELDS = {
+ITEM_BULK_MODEL_FIELDS = {
+    "client",
+    "description",
     "category",
     "brand",
+    "tags",
     "manufacturer",
     "manufacturer_website",
     "unit_cost",
     "sales_price",
     "recommended_retail_price",
     "unit_of_measurement",
-    "warehouse",
-    "inventory_location",
-    "default_location",
     "par_level",
+    "default_econ_order",
+    "default_lead_time_days",
     "reorder",
     "active",
     "non_inventory",
+    "assembly",
     "track_lot",
     "perishable",
     "serializable",
     "storage_length",
     "storage_width",
     "storage_height",
-    "storage_volume",
     "weight",
 }
+ITEM_BULK_OPERATION_FIELDS = {"add_tags", "location_id", "make_default_location"}
+ITEM_BULK_ALLOWED_FIELDS = ITEM_BULK_MODEL_FIELDS | ITEM_BULK_OPERATION_FIELDS
 ITEM_BULK_BLOCKED_FIELDS = {
+    "id",
+    "sku",
+    "barcode",
+    "image_url",
+    "source",
+    "warehouse",
+    "inventory_location",
+    "default_location",
     "in_stock",
     "allocated",
     "sellable",
@@ -54,6 +66,13 @@ ITEM_BULK_BLOCKED_FIELDS = {
     "woo_variation_id",
     "woo_stock_quantity_snapshot",
     "woo_stock_status",
+    "woo_name",
+    "woo_parent_name",
+    "woo_permalink",
+    "woo_status",
+    "woo_sync_status",
+    "woo_sync_error",
+    "storage_volume",
 }
 ITEM_SEARCH_COLUMNS = (
     InventoryItem.sku,
@@ -65,7 +84,32 @@ ITEM_SEARCH_COLUMNS = (
     InventoryItem.manufacturer,
     InventoryItem.warehouse,
     InventoryItem.inventory_location,
+    InventoryItem.tags,
 )
+
+ITEM_BULK_DECIMAL_FIELDS = {
+    "unit_cost",
+    "sales_price",
+    "recommended_retail_price",
+    "par_level",
+    "default_econ_order",
+    "weight",
+    "storage_length",
+    "storage_width",
+    "storage_height",
+}
+ITEM_BULK_BOOLEAN_FIELDS = {"reorder", "active", "non_inventory", "assembly", "track_lot", "perishable", "serializable"}
+ITEM_BULK_TEXT_LIMITS = {
+    "client": 120,
+    "description": 10000,
+    "category": 200,
+    "brand": 200,
+    "tags": 2000,
+    "add_tags": 2000,
+    "manufacturer": 200,
+    "manufacturer_website": 500,
+    "unit_of_measurement": 50,
+}
 
 
 def item_keyword_predicates(query: str) -> list:
@@ -86,12 +130,14 @@ def item_summary(item: InventoryItem | None) -> dict[str, Any] | None:
         return None
     return {
         "id": item.id,
+        "client": item.client,
         "sku": item.sku,
         "barcode": item.barcode,
         "product_name": item.woo_name or item.description,
         "description": item.description,
         "category": item.category,
         "brand": item.brand,
+        "tags": item.tags,
         "image_url": item.image_url,
         "unit_of_measurement": item.unit_of_measurement,
         "unit_cost": as_float(item.unit_cost),
@@ -114,8 +160,8 @@ def item_summary(item: InventoryItem | None) -> dict[str, Any] | None:
         "woo_stock_quantity_snapshot": as_float(item.woo_stock_quantity_snapshot),
         "woo_stock_status": item.woo_stock_status,
         "woo_sync_status": item.woo_sync_status,
-        "created_at": item.created_at,
-        "updated_at": item.updated_at,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
     }
 
 
@@ -323,37 +369,125 @@ def search_items(db: Session, *, q: str | None = None, sku: str | None = None, b
     }
 
 
+def normalize_bulk_tags(value: Any) -> list[str]:
+    values = value if isinstance(value, list) else str(value or "").replace("|", ",").split(",")
+    return list(dict.fromkeys(str(tag).strip() for tag in values if str(tag).strip()))
+
+
+def merge_bulk_tags(current: str | None, additions: Any) -> str | None:
+    tags = normalize_bulk_tags(current) + normalize_bulk_tags(additions)
+    unique = list(dict.fromkeys(tag.casefold() for tag in tags))
+    labels = {tag.casefold(): tag for tag in tags}
+    return ", ".join(labels[tag] for tag in unique) or None
+
+
+def bulk_boolean(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise HTTPException(status_code=422, detail=f"Invalid boolean value: {value}")
+
+
+def bulk_value_warnings(updates: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    for field in ITEM_BULK_DECIMAL_FIELDS.intersection(updates):
+        try:
+            value = Decimal(str(updates[field]).replace(",", ""))
+        except (InvalidOperation, ValueError):
+            warnings.append(f"{field.replace('_', ' ').title()} must be a number.")
+            continue
+        if value < 0:
+            warnings.append(f"{field.replace('_', ' ').title()} cannot be negative.")
+    if "default_lead_time_days" in updates:
+        try:
+            if int(updates["default_lead_time_days"]) < 0:
+                warnings.append("Default Lead Time Days cannot be negative.")
+        except (TypeError, ValueError):
+            warnings.append("Default Lead Time Days must be a whole number.")
+    for field in ITEM_BULK_BOOLEAN_FIELDS.intersection(updates):
+        try:
+            bulk_boolean(updates[field])
+        except HTTPException:
+            warnings.append(f"{field.replace('_', ' ').title()} must be Yes or No.")
+    for field, limit in ITEM_BULK_TEXT_LIMITS.items():
+        if field in updates and len(str(updates[field])) > limit:
+            warnings.append(f"{field.replace('_', ' ').title()} cannot exceed {limit} characters.")
+    return warnings
+
+
 def preview_bulk_item_update(db: Session, item_ids: list[int], updates: dict[str, Any]) -> dict[str, Any]:
     blocked = sorted(set(updates).intersection(ITEM_BULK_BLOCKED_FIELDS))
     allowed_updates = {key: value for key, value in updates.items() if key in ITEM_BULK_ALLOWED_FIELDS}
     unknown = sorted(set(updates) - ITEM_BULK_ALLOWED_FIELDS - ITEM_BULK_BLOCKED_FIELDS)
     items = list(db.scalars(select(InventoryItem).where(InventoryItem.id.in_(item_ids))).all()) if item_ids else []
-    warnings = []
+    warnings = bulk_value_warnings(allowed_updates)
     if blocked:
-        warnings.append(f"Blocked stock/Woo fields: {', '.join(blocked)}")
+        warnings.append(f"Blocked unique, stock, or integration fields: {', '.join(blocked)}")
     if unknown:
-        warnings.append(f"Ignored unsupported fields: {', '.join(unknown)}")
+        warnings.append(f"Unsupported fields: {', '.join(unknown)}")
+    location_id = allowed_updates.get("location_id")
+    try:
+        normalized_location_id = int(location_id) if location_id not in (None, "") else None
+    except (TypeError, ValueError):
+        normalized_location_id = None
+        warnings.append("The selected inventory location is invalid.")
+    location = db.get(InventoryLocation, normalized_location_id) if normalized_location_id is not None else None
+    if location_id not in (None, "") and location is None:
+        warnings.append("The selected inventory location does not exist.")
+    elif location is not None and not location.active:
+        warnings.append("The selected inventory location is inactive.")
+    if allowed_updates.get("make_default_location") and location is None:
+        warnings.append("Choose a location before making it the default.")
+    if "add_tags" in allowed_updates and not normalize_bulk_tags(allowed_updates["add_tags"]):
+        warnings.append("Enter at least one tag to add.")
     return {
         "affected_count": len(items),
         "fields_to_update": sorted(allowed_updates),
         "sample_items": [item_summary(item) for item in items[:10]],
         "warnings": warnings,
-        "can_commit": bool(items and allowed_updates and not blocked),
+        "can_commit": bool(items and allowed_updates and not warnings),
     }
 
 
 def commit_bulk_item_update(db: Session, item_ids: list[int], updates: dict[str, Any], *, created_by: str = "system") -> dict[str, Any]:
     preview = preview_bulk_item_update(db, item_ids, updates)
-    if any(key in ITEM_BULK_BLOCKED_FIELDS for key in updates):
+    if not preview["can_commit"]:
         raise HTTPException(status_code=400, detail=preview)
     allowed_updates = {key: value for key, value in updates.items() if key in ITEM_BULK_ALLOWED_FIELDS}
-    items = list(db.scalars(select(InventoryItem).where(InventoryItem.id.in_(item_ids))).all()) if item_ids else []
+    location_id = allowed_updates.pop("location_id", None)
+    make_default_location = bulk_boolean(allowed_updates.pop("make_default_location", False))
+    add_tags = allowed_updates.pop("add_tags", None)
+    location = db.get(InventoryLocation, int(location_id)) if location_id not in (None, "") else None
+    lock_inventory_stock(db, item_ids)
+    items = list(db.scalars(select(InventoryItem).where(InventoryItem.id.in_(item_ids)).order_by(InventoryItem.id).execution_options(populate_existing=True)).all()) if item_ids else []
     for item in items:
         for key, value in allowed_updates.items():
-            if key in {"unit_cost", "sales_price", "recommended_retail_price", "par_level", "weight", "storage_length", "storage_width", "storage_height", "storage_volume"}:
+            if key in ITEM_BULK_DECIMAL_FIELDS:
                 setattr(item, key, to_decimal(value) if value not in (None, "") else None)
+            elif key == "default_lead_time_days":
+                setattr(item, key, int(value) if value not in (None, "") else None)
+            elif key in ITEM_BULK_BOOLEAN_FIELDS:
+                setattr(item, key, bulk_boolean(value))
             else:
                 setattr(item, key, value)
+        if add_tags is not None:
+            item.tags = merge_bulk_tags(item.tags, add_tags)
+        if location is not None:
+            get_or_create_item_location(
+                db,
+                item,
+                location.warehouse,
+                location.location_code or location.location_name,
+                location_id=location.id,
+                is_default_location=make_default_location,
+            )
+        else:
+            recalculate_item_totals(db, item.id)
+        changed_fields = sorted([*allowed_updates, *(["tags"] if add_tags is not None else []), *(["location"] if location is not None else [])])
         db.add(
             InventoryAuditEvent(
                 item_id=item.id,
@@ -370,9 +504,10 @@ def commit_bulk_item_update(db: Session, item_ids: list[int], updates: dict[str,
                 warehouse=item.warehouse,
                 inventory_location=item.inventory_location,
                 reference_type="item_bulk_edit",
-                notes=", ".join(sorted(allowed_updates)),
+                notes=", ".join(changed_fields),
                 created_by=created_by,
             )
         )
     db.commit()
-    return {"updated_count": len(items), "fields_updated": sorted(allowed_updates), "warnings": preview["warnings"]}
+    fields_updated = sorted([*allowed_updates, *(["tags"] if add_tags is not None else []), *(["location"] if location is not None else [])])
+    return {"updated_count": len(items), "fields_updated": fields_updated, "warnings": preview["warnings"]}

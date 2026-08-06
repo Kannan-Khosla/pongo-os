@@ -2102,8 +2102,13 @@ Implemented endpoints:
 - `POST /api/items/bulk/preview`
 - `POST /api/items/bulk/commit`
 
-Bulk edit allows metadata fields only. It blocks direct updates to stock fields,
-Woo IDs, and Woo stock snapshots.
+Bulk edit uses a preview/commit flow with `{ item_ids, updates }`. It supports
+shared catalog metadata, costs/prices, replenishment fields, handling flags,
+additive tags (`add_tags`), and an existing active location (`location_id`,
+optionally `make_default_location`). Adding a location creates a zero-quantity
+item/location assignment and never moves stock. SKU, barcode, direct location
+labels, stock quantities, derived values, WooCommerce identity, and unknown
+fields fail closed.
 
 ## UI Saved Views
 

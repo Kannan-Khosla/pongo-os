@@ -112,6 +112,7 @@ Item-master fields map primarily to `inventory_items`:
 - Storage Height
 - Storage Volume
 - Brand
+- Tags (comma-separated shared item labels)
 
 Location/stock fields map through `inventory_item_locations`, with location
 metadata in `inventory_locations`:

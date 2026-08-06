@@ -36,6 +36,7 @@ CANONICAL_ITEM_COLUMNS = [
     "Storage Height",
     "Storage Volume",
     "Brand",
+    "Tags",
 ]
 
 CSV_FIELD_MAP = {
@@ -72,6 +73,7 @@ CSV_FIELD_MAP = {
     "Storage Height": "storage_height",
     "Storage Volume": "storage_volume",
     "Brand": "brand",
+    "Tags": "tags",
 }
 
 
