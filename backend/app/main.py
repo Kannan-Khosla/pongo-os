@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from app.api.routes import allocations, auth, business_dashboard, cycle_counts, dashboard, fulfillments, health, import_jobs, insights, inventory, items, locations, orders, picks, receipts, reports, routes, scanner, stock_movements, ui, woocommerce
 from app.core.config import get_settings
@@ -31,6 +32,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(GZipMiddleware, minimum_size=1_000, compresslevel=5)
 
     @app.middleware("http")
     async def log_request(request: Request, call_next):
@@ -42,6 +44,8 @@ def create_app() -> FastAPI:
             logger.exception(json.dumps({"event": "http_request", "request_id": request_id, "method": request.method, "path": request.url.path, "status": 500}))
             raise
         response.headers["X-Request-ID"] = request_id
+        if request.url.path.startswith("/assets/") and response.status_code == 200:
+            response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
         logger.info(json.dumps({"event": "http_request", "request_id": request_id, "method": request.method, "path": request.url.path, "status": response.status_code, "duration_ms": round((perf_counter() - started) * 1000, 2)}))
         return response
 

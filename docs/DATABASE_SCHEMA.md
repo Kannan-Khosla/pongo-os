@@ -47,6 +47,30 @@ Implementation notes:
   manual resume retries the failed items instead of silently finishing again.
 - Revision `20260731_0027` persists registration throttling so access-code
   guesses are serialized and rate-limited across application processes.
+- Revision `20260805_0032` adds versioned metric snapshots plus partial reporting
+  indexes for visible-order date and normalized customer-history lookups.
+- Revision `20260805_0033` adds duplicate-safe asynchronous report jobs, progress,
+  retry state, and links to immutable current and previous report runs.
+
+## metric_versions and metric_cache
+
+`metric_versions` is the single source-data generation counter. SQLAlchemy
+mutations to orders, lines, stock, allocations, receiving, picking,
+fulfillment, or stock movements advance it in the same transaction.
+`metric_cache` stores compact JSON dashboard results by namespace and normalized
+filters. A result is usable only when its source version matches the current
+generation, so cached operational quantities cannot outlive a committed stock
+or order change.
+
+## report_jobs
+
+`report_jobs` stores queued, running, completed, and failed report work. A
+partial unique index on `request_key` prevents duplicate active jobs for the
+same report definition and normalized filters. `run_id` and `previous_run_id`
+reference immutable `report_runs`; PostgreSQL `SKIP LOCKED` and an advisory
+worker lock prevent concurrent claims. `report_runs` also stores deferred CSV
+and PDF binary artifacts plus a SHA-256 hash for each; normal report reads do
+not load the binary columns.
 
 ## stock_mutation_requests
 

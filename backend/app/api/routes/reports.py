@@ -1,10 +1,10 @@
 import csv
 from datetime import date
-from io import StringIO
+from io import BytesIO, StringIO
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
@@ -31,6 +31,7 @@ from app.services.received_inventory_report import (
 )
 from app.services.sku_orders_report import SkuOrdersFilters, build_sku_orders_summary, export_sku_orders_csv, get_sku_order_rows
 from app.services.reporting import (
+    ReportArtifactUnavailableError,
     ReportIntegrityError,
     create_report_run,
     email_report,
@@ -38,9 +39,14 @@ from app.services.reporting import (
     google_sheets_status,
     list_report_catalog,
     publish_report_to_google_sheets,
-    report_csv_bytes,
-    report_pdf_bytes,
+    report_artifact_bytes,
     report_run_to_dict,
+)
+from app.services.report_jobs import (
+    enqueue_report_job,
+    get_report_job,
+    latest_completed_report_run,
+    report_job_to_dict,
 )
 from app.services.auth import authenticated_actor
 
@@ -88,6 +94,49 @@ def run_report(report_key: str, payload: ReportRunCreate, db: Session = Depends(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.post("/jobs/{report_key}", status_code=202)
+def enqueue_report(
+    report_key: str,
+    payload: ReportRunCreate,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> dict[str, object]:
+    try:
+        job, deduplicated = enqueue_report_job(db, report_key, payload.filters, actor)
+        return report_job_to_dict(job, deduplicated=deduplicated)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Report not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/jobs/latest/{report_key}")
+def latest_report(
+    report_key: str,
+    payload: ReportRunCreate,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    try:
+        run = latest_completed_report_run(db, report_key, payload.filters)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Report not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ReportIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if run is None:
+        raise HTTPException(status_code=404, detail="No completed report run matches these filters.")
+    return report_run_to_dict(run)
+
+
+@router.get("/jobs/{job_id}")
+def read_report_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    job = get_report_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Report job not found.")
+    return report_job_to_dict(job)
+
+
 @router.get("/runs/{run_id}")
 def read_report_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
     run = require_report_run(db, run_id)
@@ -97,24 +146,32 @@ def read_report_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, obj
 @router.get("/runs/{run_id}/csv")
 def download_report_csv(run_id: str, db: Session = Depends(get_db)) -> Response:
     run = require_report_run(db, run_id)
-    return Response(
-        report_csv_bytes(run),
+    csv_artifact = require_report_artifact(run, "csv")
+    return StreamingResponse(
+        BytesIO(csv_artifact),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="pongo-{run.report_key}-{run.id}.csv"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="pongo-{run.report_key}-{run.id}.csv"',
+            "Content-Length": str(len(csv_artifact)),
+            "X-Report-Data-SHA256": run.data_hash,
+            "X-Artifact-SHA256": run.csv_artifact_hash,
+        },
     )
 
 
 @router.get("/runs/{run_id}/pdf")
 def download_report_pdf(run_id: str, db: Session = Depends(get_db)) -> Response:
     run = require_report_run(db, run_id)
-    try:
-        pdf = report_pdf_bytes(run)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return Response(
-        pdf,
+    pdf_artifact = require_report_artifact(run, "pdf")
+    return StreamingResponse(
+        BytesIO(pdf_artifact),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="pongo-{run.report_key}-{run.id}.pdf"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="pongo-{run.report_key}-{run.id}.pdf"',
+            "Content-Length": str(len(pdf_artifact)),
+            "X-Report-Data-SHA256": run.data_hash,
+            "X-Artifact-SHA256": run.pdf_artifact_hash,
+        },
     )
 
 
@@ -172,6 +229,15 @@ def require_report_run(db: Session, run_id: str):
     if run is None:
         raise HTTPException(status_code=404, detail="Report run not found.")
     return run
+
+
+def require_report_artifact(run, artifact_format: str) -> bytes:
+    try:
+        return report_artifact_bytes(run, artifact_format)
+    except ReportArtifactUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ReportIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/received-inventory", response_model=list[ReceivedInventoryReportRow])

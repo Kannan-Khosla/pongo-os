@@ -24,4 +24,19 @@ describe('API activity', () => {
     expect(states).toEqual([true, false]);
     unsubscribe();
   });
+
+  it('shares one fetch for identical concurrent GET requests', async () => {
+    let release;
+    const response = { ok: true, clone: vi.fn(() => ({ ok: true })) };
+    vi.stubGlobal('fetch', vi.fn(() => new Promise((resolve) => { release = () => resolve(response); })));
+
+    const first = apiFetch('/same');
+    const second = apiFetch('/same');
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    release();
+    await expect(first).resolves.toEqual({ ok: true });
+    await expect(second).resolves.toEqual({ ok: true });
+    expect(response.clone).toHaveBeenCalledTimes(2);
+  });
 });

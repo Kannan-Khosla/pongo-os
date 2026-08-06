@@ -24,6 +24,11 @@ The Insights sidebar page renders these tabbed dashboards:
 Each tab loads its own `/api/insights/*` endpoint on demand. The frontend does
 not load all dashboards on first render.
 
+The browser keeps the most recently verified response for each tab and filter
+set visible while refreshing in the background. Obsolete requests are cancelled
+when the operator changes page or filters, and every view shows its calculation
+timestamp.
+
 ## Data Sources
 
 Insights uses local tables for customer, product, inventory, payment, geography,
@@ -34,13 +39,21 @@ forecasting, and drill-down detail:
 - `inventory_items`
 - local WooCommerce order snapshot fields already stored on orders and lines
 
-For unfiltered Executive Overview and Orders & Revenue date ranges, the backend
-reads WooCommerce Analytics revenue statistics so order count, gross/net sales,
-returns, coupons, tax, shipping, units, AOV, and time-series totals match the
-WooCommerce Analytics screen. Filtered product/customer views continue to use
-local order snapshots because WooCommerce's aggregate endpoint cannot apply
-Pongo-owned inventory dimensions. The frontend never receives credentials or
-calls WooCommerce directly, and Insights never writes WooCommerce or local data.
+Every Insights request reads the verified local WooCommerce snapshot. The
+two-minute worker reconciliation, webhooks, and full-history import keep that
+snapshot current; page loading never waits for WooCommerce. This makes response
+time predictable when WooCommerce is slow or temporarily unavailable. Each
+response is cached by dashboard and normalized filter set and invalidated when
+orders, lines, stock, allocations, picking, receiving, or fulfillment change.
+After invalidation, a previously viewed filter returns its last verified
+snapshot immediately and queues a worker refresh; a filter with no prior
+snapshot is calculated once and then cached.
+
+Date, status, customer, payment, location, SKU, brand, and category filtering is
+performed in PostgreSQL. Only required columns are selected; the stored raw Woo
+payload is loaded only for calculations that need coupon, refund, or order
+metadata. The frontend never receives credentials or calls WooCommerce directly,
+and Insights never writes WooCommerce or local operational data.
 
 ## Metrics
 

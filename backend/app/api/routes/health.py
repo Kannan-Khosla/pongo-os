@@ -38,7 +38,7 @@ def readiness_check(db: Session = Depends(get_db)) -> ReadinessResponse | JSONRe
     except Exception:
         db.rollback()
         revision = None
-    checks.append(ReadinessCheck(name="migrations", ready=revision == "20260805_0031", message=f"Schema revision: {revision or 'missing'}; expected 20260805_0031."))
+    checks.append(ReadinessCheck(name="migrations", ready=revision == "20260805_0033", message=f"Schema revision: {revision or 'missing'}; expected 20260805_0033."))
 
     user_count = int(db.scalar(select(func.count(User.id)).where(User.active.is_(True))) or 0)
     checks.append(ReadinessCheck(name="login", ready=not settings.auth_required or user_count > 0, count=user_count, message="At least one login exists." if user_count else "Create the first production login."))

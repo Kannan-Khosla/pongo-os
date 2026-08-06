@@ -22,6 +22,26 @@ run ID; identical inputs and source data produce the same evidence hash.
 This supports reconciliation and bookkeeping, but does not replace accountant
 review or source-document retention.
 
+Report generation is queued on the existing worker instead of running inside a
+web request. The UI immediately shows the latest completed snapshot for the
+same normalized filters, then polls a small job-status response for progress.
+Only one queued or running job is allowed for an identical report request.
+Interrupted jobs are retryable, and completed snapshots remain immutable.
+The worker also renders the CSV and PDF once, stores both artifacts and their
+SHA-256 hashes with the run in PostgreSQL, and marks the job complete only after
+both artifacts are ready. Downloads stream those stored bytes; they do not
+rebuild a large report in the web process. Runs created before persisted
+artifacts were introduced must be regenerated before download.
+
+Job endpoints:
+
+- `POST /api/reports/jobs/{report_key}` queues or deduplicates a run.
+- `GET /api/reports/jobs/{job_id}` returns progress and the completed run ID.
+- `POST /api/reports/jobs/latest/{report_key}` returns the latest verified run
+  with exactly matching normalized filters.
+
+The original synchronous run endpoint remains available for API compatibility.
+
 ## Implemented catalog
 
 - Current Cost of Inventory by Category

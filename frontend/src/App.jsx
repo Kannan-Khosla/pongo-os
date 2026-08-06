@@ -231,9 +231,11 @@ const emptyWooStatus = {
 const wooOrderSyncStatuses = ['processing', 'on-hold', 'pending', 'completed', 'failed', 'cancelled', 'refunded'];
 const ORDER_VIEW_REFRESH_INTERVAL_MS = 10000;
 const WOO_SYNC_HEALTH_POLL_INTERVAL_MS = 120000;
-const WEBHOOK_EVENT_POLL_INTERVAL_MS = 2000;
+const WEBHOOK_EVENT_POLL_INTERVAL_MS = 15000;
 const WEBHOOK_EVENT_POLL_LIMIT = 50;
 const ORDER_NOTIFICATION_HISTORY_LIMIT = 50;
+const DEFAULT_ITEM_PAGE_FILTERS = Object.freeze({ page: 1, pageSize: 50, includeNonInventory: false });
+const OPERATIONAL_ITEM_SELECTOR_FILTERS = Object.freeze({ includeNonInventory: false });
 const emptyOpenOrders = {
   orders: [],
   total: 0,
@@ -1165,6 +1167,7 @@ export default function App({ currentUser = null }) {
   const openOrderFiltersRef = useRef({});
   const openOrdersRequestIdRef = useRef(0);
   const itemsRequestIdRef = useRef(0);
+  const itemsAbortControllerRef = useRef(null);
   const inventorySummaryRequestIdRef = useRef(0);
   const pickMutationRef = useRef(null);
   const wooStockSyncMutationRef = useRef(null);
@@ -1186,8 +1189,8 @@ export default function App({ currentUser = null }) {
     if (route.pageId === 'inventory-overview') {
       loadDashboard();
     }
-    if (route.pageId === 'items') {
-      loadItems();
+    if (route.pageId === 'items' && route.itemView === 'detail') {
+      loadItem(route.itemId);
     }
     if (route.pageId === 'inventory') {
       loadItems(inventoryRouteToItemFilters(route));
@@ -1197,13 +1200,12 @@ export default function App({ currentUser = null }) {
       }
     }
     if (route.pageId === 'receiving') {
-      loadItems();
+      loadItems(OPERATIONAL_ITEM_SELECTOR_FILTERS);
       loadLocations({ status: 'active' });
       loadReceipts();
       loadStockMovements({ movement_type: 'receive_direct' });
     }
     if (route.pageId === 'scanner') {
-      loadItems();
       loadLocations({ status: 'active' });
     }
     if (route.pageId === 'locations') {
@@ -1215,7 +1217,7 @@ export default function App({ currentUser = null }) {
       if (route.reportKey === 'sku-orders') loadSkuOrdersReport();
     }
     if (route.pageId === 'cycle-count') {
-      loadItems();
+      loadItems(OPERATIONAL_ITEM_SELECTOR_FILTERS);
       loadLocations({ status: 'active' });
       loadCycleCounts();
     }
@@ -1351,13 +1353,29 @@ export default function App({ currentUser = null }) {
     setNavigationOpen(true);
   }
 
-  async function loadItems(filters = {}) {
+  async function loadItem(itemId) {
+    if (!itemId) return;
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/api/items/${itemId}`);
+      if (!response.ok) throw new Error(`Item API returned ${response.status}`);
+      const body = await response.json();
+      const item = normalizeItem(body.item || body);
+      setItems((current) => [item, ...current.filter((candidate) => candidate.id !== item.id)]);
+    } catch {
+      setItemsError('Unable to load the selected item from the backend.');
+    }
+  }
+
+  async function loadItems(filters = DEFAULT_ITEM_PAGE_FILTERS) {
     const requestId = itemsRequestIdRef.current + 1;
     itemsRequestIdRef.current = requestId;
+    itemsAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    itemsAbortControllerRef.current = controller;
     setItemsLoading(true);
     setItemsError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/items${filtersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/items${filtersToQueryString(filters)}`, { signal: controller.signal });
       if (!response.ok) {
         throw new Error(`Items API returned ${response.status}`);
       }
@@ -1378,11 +1396,14 @@ export default function App({ currentUser = null }) {
         window.location.hash = inventoryRouteHref(currentRoute, { page: responsePage });
       }
     } catch (error) {
-      if (requestId === itemsRequestIdRef.current) {
+      if (error?.name !== 'AbortError' && requestId === itemsRequestIdRef.current) {
         setItemsError('Unable to load items from the backend. Start the FastAPI server and try again.');
       }
     } finally {
-      if (requestId === itemsRequestIdRef.current) setItemsLoading(false);
+      if (requestId === itemsRequestIdRef.current) {
+        itemsAbortControllerRef.current = null;
+        setItemsLoading(false);
+      }
     }
   }
 
@@ -3425,7 +3446,7 @@ function PageBody({
   onRouteProviderAction,
 }) {
   if (route.pageId === 'items') {
-    return <ItemsPage route={route} items={items} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
+    return <ItemsPage route={route} items={items} pagination={itemsPagination} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
   }
 
   if (route.pageId === 'insights') {
@@ -3873,23 +3894,29 @@ function insightRequestFilters(filters, allowed) {
   return request;
 }
 
+function insightRequestKey(config, filters) {
+  return `${config.id}${plainFiltersToQueryString(filters)}`;
+}
+
 function InsightsPage({ route }) {
   const activeTab = route.insightsView || 'overview';
   const [cache, setCache] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [filters, setFilters] = useState(() => emptyInsightFilters());
+  const [appliedFilters, setAppliedFilters] = useState(() => emptyInsightFilters());
   const tabListRef = useRef(null);
   const tabRefs = useRef({});
+  const requestRef = useRef({ id: 0, controller: null });
   const activeConfig = insightTabs.find((tab) => tab.id === activeTab) || insightTabs[0];
   const allowedFilters = insightFiltersByTab[activeTab] || [];
-  const activeFilters = insightRequestFilters(filters, allowedFilters);
-  const activeData = cache[activeTab];
+  const activeFilters = insightRequestFilters(appliedFilters, allowedFilters);
+  const activeKey = insightRequestKey(activeConfig, activeFilters);
+  const activeData = cache[activeKey];
 
   useEffect(() => {
-    if (!cache[activeTab]) {
-      loadInsight(activeTab);
-    }
+    loadInsight(activeTab, activeFilters, { background: Boolean(cache[insightRequestKey(activeConfig, activeFilters)]) });
+    return () => requestRef.current.controller?.abort();
   }, [activeTab]);
 
   useEffect(() => {
@@ -3897,22 +3924,29 @@ function InsightsPage({ route }) {
     tabRefs.current[activeTab]?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   }, [activeTab]);
 
-  async function loadInsight(tabId = activeTab, forceFilters) {
+  async function loadInsight(tabId = activeTab, forceFilters, { background = false } = {}) {
     const config = insightTabs.find((tab) => tab.id === tabId) || insightTabs[0];
     const requestFilters = forceFilters || insightRequestFilters(filters, insightFiltersByTab[tabId] || []);
+    const cacheKey = insightRequestKey(config, requestFilters);
+    requestRef.current.controller?.abort();
+    const controller = new AbortController();
+    const requestId = requestRef.current.id + 1;
+    requestRef.current = { id: requestId, controller };
     setLoading(true);
     setError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}${config.endpoint}${plainFiltersToQueryString(requestFilters)}`);
+      const response = await apiFetch(`${API_BASE_URL}${config.endpoint}${plainFiltersToQueryString(requestFilters)}`, { signal: controller.signal });
       if (!response.ok) {
         throw new Error(`Insights API returned ${response.status}`);
       }
       const body = await response.json();
-      setCache((current) => ({ ...current, [tabId]: body }));
+      if (requestId === requestRef.current.id) setCache((current) => ({ ...current, [cacheKey]: body }));
     } catch (loadError) {
-      setError('Unable to load Pongo Insights from the backend.');
+      if (loadError?.name !== 'AbortError' && requestId === requestRef.current.id && !background) {
+        setError('Unable to load Pongo Insights from the backend.');
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestRef.current.id) setLoading(false);
     }
   }
 
@@ -3921,28 +3955,29 @@ function InsightsPage({ route }) {
   }
 
   function applyFilters() {
-    setCache({});
-    loadInsight(activeTab, activeFilters);
+    const nextFilters = insightRequestFilters(filters, allowedFilters);
+    setAppliedFilters(filters);
+    loadInsight(activeTab, nextFilters);
   }
 
   function clearFilters() {
     const nextFilters = emptyInsightFilters(false);
     setFilters(nextFilters);
-    setCache({});
-    loadInsight(activeTab, {});
+    setAppliedFilters(nextFilters);
+    loadInsight(activeTab, insightRequestFilters(nextFilters, allowedFilters));
   }
 
   function applyDatePreset(months, compare = false) {
     const nextFilters = { ...filters, ...completedMonthRange(months, compare) };
     setFilters(nextFilters);
-    setCache({});
+    setAppliedFilters(nextFilters);
     loadInsight(activeTab, insightRequestFilters(nextFilters, allowedFilters));
   }
 
   function applySalesTemplate(granularity) {
     const nextFilters = { ...filters, ...completedMonthRange(granularity === 'week' ? 3 : 1), granularity };
     setFilters(nextFilters);
-    setCache({});
+    setAppliedFilters(nextFilters);
     if (activeTab === 'orders-revenue') loadInsight(activeTab, insightRequestFilters(nextFilters, insightFiltersByTab['orders-revenue']));
     else selectTab('orders-revenue');
   }
@@ -3976,8 +4011,9 @@ function InsightsPage({ route }) {
           <p>Business intelligence, customer behavior, revenue, product demand, and forecasting.</p>
         </div>
         <div className="button-row">
+          {activeData?.generated_at && <small>Updated {formatDateTime(activeData.generated_at)}</small>}
           {activeConfig.exportable && <a className="action-button" href={`${API_BASE_URL}/api/insights/${activeConfig.id}/export${plainFiltersToQueryString(activeFilters)}`}><Download size={16} />Export CSV</a>}
-          <button className="primary-button" onClick={() => loadInsight(activeTab)} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
+          <button className="primary-button" onClick={() => loadInsight(activeTab, activeFilters, { background: Boolean(activeData) })} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
         </div>
       </div>
 
@@ -4048,7 +4084,7 @@ function InsightsPage({ route }) {
           </div>
           <span className="status-pill">Read only</span>
         </div>
-        {error ? <div className="api-error" role="alert"><span>{error}</span><button className="muted-button" onClick={() => loadInsight(activeTab, activeFilters)} type="button">Retry</button></div> : loading ? <div className="loading-strip">Loading {activeConfig.label}...</div> : activeData ? <InsightDashboard config={activeConfig} data={activeData} /> : <div className="empty-state"><h2>Dashboard unavailable</h2><p>Select a tab or refresh to load local analytics.</p></div>}
+        {error ? <div className="api-error" role="alert"><span>{error}</span><button className="muted-button" onClick={() => loadInsight(activeTab, activeFilters)} type="button">Retry</button></div> : activeData ? <InsightDashboard config={activeConfig} data={activeData} /> : loading ? <div className="loading-strip">Loading {activeConfig.label}...</div> : <div className="empty-state"><h2>Dashboard unavailable</h2><p>Select a tab or refresh to load local analytics.</p></div>}
       </div>
     </section>
   );
@@ -4169,7 +4205,7 @@ function insightRowsForTab(tabId, data) {
   return data.rows || Object.values(data.tables || {})[0] || [];
 }
 
-function ItemsPage({ route, items, itemsLoading, itemsError, onLoadItems, onSaveItem, onCloneItem }) {
+function ItemsPage({ route, items, pagination, itemsLoading, itemsError, onLoadItems, onSaveItem, onCloneItem }) {
   if (route.itemView === 'new') {
     return <ItemDetail item={emptyItem} onSave={onSaveItem} onClone={onCloneItem} isNew />;
   }
@@ -4203,7 +4239,7 @@ function ItemsPage({ route, items, itemsLoading, itemsError, onLoadItems, onSave
     );
   }
 
-  return <ItemsList items={items} loading={itemsLoading} error={itemsError} onLoadItems={onLoadItems} />;
+  return <ItemsList items={items} pagination={pagination} loading={itemsLoading} error={itemsError} onLoadItems={onLoadItems} />;
 }
 
 function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsLoading, summary, loading, error, onLoadItems, onLoadSummary, stockMovements, stockMovementsLoading, stockMovementsError, onLoadStockMovements }) {
@@ -5175,7 +5211,7 @@ function LocationDetail({ location, onSave, isNew = false }) {
   );
 }
 
-function ItemsList({ items, loading, error, onLoadItems }) {
+function ItemsList({ items, pagination = emptyItemsPagination, loading, error, onLoadItems }) {
   const [importOpen, setImportOpen] = useState(false);
   const [mappingOpen, setMappingOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -5200,18 +5236,21 @@ function ItemsList({ items, loading, error, onLoadItems }) {
     includeNonInventory: true,
   });
   const [searchDraft, setSearchDraft] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
 
   const options = useMemo(
     () => ({
-      categories: uniqueOptions(items, 'Category'),
-      brands: uniqueOptions(items, 'Brand'),
+      categories: pagination.facets?.categories?.length ? pagination.facets.categories : uniqueOptions(items, 'Category'),
+      brands: pagination.facets?.brands?.length ? pagination.facets.brands : uniqueOptions(items, 'Brand'),
     }),
-    [items],
+    [items, pagination.facets],
   );
 
   useEffect(() => {
-    onLoadItems(filters);
-  }, [filters]);
+    setSelectedIds([]);
+    onLoadItems({ ...filters, page, pageSize });
+  }, [filters, page, pageSize]);
 
   useEffect(() => {
     setSearchDraft(filters.search);
@@ -5224,11 +5263,13 @@ function ItemsList({ items, loading, error, onLoadItems }) {
   const displayedItems = useMemo(() => filterItems(items, filters), [items, filters]);
 
   function updateFilter(name, value) {
+    setPage(1);
     setFilters((current) => ({ ...current, [name]: value }));
   }
 
   function clearFilters() {
     setSearchDraft('');
+    setPage(1);
     setFilters({
       search: '',
       category: '',
@@ -5268,6 +5309,7 @@ function ItemsList({ items, loading, error, onLoadItems }) {
     }
     setSelectedViewId(String(view.id));
     const nextFilters = { ...filters, ...(view.filters || {}) };
+    setPage(1);
     setSearchDraft(nextFilters.search || '');
     setFilters(nextFilters);
     setVisibleColumns((view.columns?.length ? view.columns : visibleColumns).map((column) => (column === 'Description' ? 'Product Title' : column)));
@@ -5326,7 +5368,7 @@ function ItemsList({ items, loading, error, onLoadItems }) {
     setBulkPreview(null);
     setBulkOpen(false);
     setSelectedIds([]);
-    await onLoadItems(filters);
+    await onLoadItems({ ...filters, page, pageSize });
   }
 
   return (
@@ -5345,7 +5387,7 @@ function ItemsList({ items, loading, error, onLoadItems }) {
             <button className="muted-button" onClick={clearFilters} type="button">
               Clear
             </button>
-            <button className="action-button" onClick={() => onLoadItems(filters)} type="button">
+            <button className="action-button" onClick={() => onLoadItems({ ...filters, page, pageSize })} type="button">
               <RefreshCw size={17} />
               Refresh Items
             </button>
@@ -5423,9 +5465,9 @@ function ItemsList({ items, loading, error, onLoadItems }) {
       {error && <div className="api-error">{error}</div>}
       {message && <div className="api-success">{message}</div>}
       {loading && <div className="loading-strip">Loading backend items...</div>}
-      <ItemsTable items={displayedItems} visibleColumns={visibleColumns} selectedIds={selectedIds} onToggleSelected={toggleSelected} onToggleAll={toggleAllDisplayed} onOpenDetail={openDetail} />
-      {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImported={() => onLoadItems(filters)} />}
-      {mappingOpen && <ImportMappingsModal onClose={() => setMappingOpen(false)} onImported={() => onLoadItems(filters)} />}
+      <ItemsTable items={displayedItems} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: displayedItems.length, noun: 'items', onPageChange: setPage, onPageSizeChange: (nextPageSize) => { setPageSize(nextPageSize); setPage(1); } }} visibleColumns={visibleColumns} selectedIds={selectedIds} onToggleSelected={toggleSelected} onToggleAll={toggleAllDisplayed} onOpenDetail={openDetail} />
+      {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImported={() => onLoadItems({ ...filters, page, pageSize })} />}
+      {mappingOpen && <ImportMappingsModal onClose={() => setMappingOpen(false)} onImported={() => onLoadItems({ ...filters, page, pageSize })} />}
       {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onRefresh={() => openDetail(detailId)} />}
       {bulkOpen && <BulkEditModal selectedCount={selectedIds.length} updates={bulkUpdates} setUpdates={setBulkUpdates} preview={bulkPreview} onInvalidate={() => setBulkPreview(null)} onPreview={previewBulkEdit} onCommit={commitBulkEdit} onClose={() => { setBulkPreview(null); setBulkOpen(false); }} />}
       {remapOpen && <LocalRemapSearchModal onClose={() => setRemapOpen(false)} />}
@@ -5883,11 +5925,12 @@ function FilterSelect({ label, value, options, onChange }) {
   );
 }
 
-function ItemsTable({ items, visibleColumns, selectedIds, onToggleSelected, onToggleAll, onOpenDetail }) {
+function ItemsTable({ items, pagination, visibleColumns, selectedIds, onToggleSelected, onToggleAll, onOpenDetail }) {
   return (
     <div className="table-wrap">
       <div className="table-meta">
-        <span>{formatNumber(items.length)} loaded item(s)</span>
+        <span>{formatNumber(pagination?.total ?? items.length)} matching item(s)</span>
+        <TablePager pagination={pagination} />
       </div>
       <div className="table-action-band">
         <span>Actions</span>
@@ -5913,7 +5956,7 @@ function ItemsTable({ items, visibleColumns, selectedIds, onToggleSelected, onTo
                 </td>
                 <td className="sticky-col sticky-image-col">
                   <button className="image-cell image-button" onClick={() => onOpenDetail(item.id)} type="button">
-                    {item.imageUrl ? <img alt="" src={item.imageUrl} /> : 'No Image'}
+                    {item.imageUrl ? <img alt="" src={item.imageUrl} loading="lazy" decoding="async" /> : 'No Image'}
                   </button>
                 </td>
                 {visibleColumns.map((column) => (
@@ -5986,7 +6029,7 @@ function ItemOverview({ detail, onRefresh }) {
   return (
     <div className="drawer-section">
       <div className="item-overview-grid">
-        <div className="item-photo">{item.image_url ? <img alt="" src={item.image_url} /> : <PackageSearch size={42} />}</div>
+        <div className="item-photo">{item.image_url ? <img alt="" src={item.image_url} loading="lazy" decoding="async" /> : <PackageSearch size={42} />}</div>
         <div className="summary-strip">
           <Metric label="In Stock" value={formatNumber(item.in_stock)} />
           <Metric label="Allocated" value={formatNumber(item.allocated)} />
@@ -6524,7 +6567,7 @@ function CycleCountPage({ items, locations, cycleCounts, cycleCountsLoading, cyc
       const result = await postJson('/api/cycle-counts/commit', cycleCountPayload(form, items));
       setSummary(result);
       await onLoadCycleCounts();
-      await onLoadItems();
+      await onLoadItems(OPERATIONAL_ITEM_SELECTOR_FILTERS);
       await onLoadInventorySummary();
       setForm({ warehouse: 'Main Warehouse', inventory_location: '', count_type: 'selected_items', notes: '', lines: [emptyCycleCountLine()] });
       setPreview(null);
@@ -7171,7 +7214,7 @@ function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }
       setResult(nextResult);
       setRecent((current) => [{ mode, scan: form.scan_input, status: nextResult.matched === false || nextResult.can_commit === false ? 'warning' : 'success', at: new Date().toISOString() }, ...current].slice(0, 12));
       if (commit) {
-        await onLoadItems();
+        await onLoadItems(OPERATIONAL_ITEM_SELECTOR_FILTERS);
         await onLoadInventorySummary();
         if (['receiving', 'adjustment'].includes(mode)) resetMutationIdempotency(mutationRef);
       }
@@ -11227,29 +11270,11 @@ function StandardPage({ icon: Icon, title, description, columns }) {
 }
 
 function TableShell({ caption, columns, children, className = '', showActionBand = true, pagination = null }) {
-  const total = Math.max(0, toNumber(pagination?.total));
-  const pageSize = Math.max(1, toNumber(pagination?.pageSize) || 20);
-  const totalPages = total === 0 ? 0 : Math.max(1, toNumber(pagination?.totalPages) || Math.ceil(total / pageSize));
-  const page = totalPages === 0 ? 0 : Math.min(totalPages, Math.max(1, toNumber(pagination?.page) || 1));
-  const returnedCount = Math.max(0, toNumber(pagination?.returnedCount));
-  const rangeStart = total && returnedCount ? (page - 1) * pageSize + 1 : 0;
-  const rangeEnd = total && returnedCount ? Math.min(total, rangeStart + returnedCount - 1) : 0;
-  const noun = pagination?.noun || 'records';
   return (
     <div className={`table-wrap table-card ${className}`.trim()}>
       <div className="table-meta">
         <span>{caption}</span>
-        {pagination && <div className="table-pager" aria-label={`${titleize(noun)} pagination`}>
-          <span>Showing {formatNumber(rangeStart)}–{formatNumber(rangeEnd)} of {formatNumber(total)} {noun}</span>
-          <label className="table-page-size"><span>Rows per page</span><select aria-label="Rows per page" value={pageSize} onChange={(event) => pagination.onPageSizeChange?.(Number(event.target.value))}>{[20, 50, 100].map((size) => <option value={size} key={size}>{size}</option>)}</select></label>
-          <button className="pager-button" aria-label="Previous page" onClick={() => pagination.onPageChange?.(page - 1)} disabled={page <= 1} type="button">
-            <ChevronLeft size={18} aria-hidden="true" />
-          </button>
-          {totalPages > 0 ? <><label className="table-page-number"><span className="sr-only">Current page</span><select aria-label="Current page" value={page} onChange={(event) => pagination.onPageChange?.(Number(event.target.value))}>{Array.from({ length: totalPages }, (_, index) => index + 1).map((pageNumber) => <option value={pageNumber} key={pageNumber}>{pageNumber}</option>)}</select></label><span>of {formatNumber(totalPages)}</span></> : <span>No pages</span>}
-          <button className="pager-button active" aria-label="Next page" onClick={() => pagination.onPageChange?.(page + 1)} disabled={page >= totalPages || total === 0} type="button">
-            <ChevronRight size={18} aria-hidden="true" />
-          </button>
-        </div>}
+        <TablePager pagination={pagination} />
       </div>
       {showActionBand && (
         <div className="table-action-band">
@@ -11269,6 +11294,27 @@ function TableShell({ caption, columns, children, className = '', showActionBand
           <tbody>{children}</tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function TablePager({ pagination }) {
+  if (!pagination) return null;
+  const total = Math.max(0, toNumber(pagination.total));
+  const pageSize = Math.max(1, toNumber(pagination.pageSize) || 20);
+  const totalPages = total === 0 ? 0 : Math.max(1, toNumber(pagination.totalPages) || Math.ceil(total / pageSize));
+  const page = totalPages === 0 ? 0 : Math.min(totalPages, Math.max(1, toNumber(pagination.page) || 1));
+  const returnedCount = Math.max(0, toNumber(pagination.returnedCount));
+  const rangeStart = total && returnedCount ? (page - 1) * pageSize + 1 : 0;
+  const rangeEnd = total && returnedCount ? Math.min(total, rangeStart + returnedCount - 1) : 0;
+  const noun = pagination.noun || 'records';
+  return (
+    <div className="table-pager" aria-label={`${titleize(noun)} pagination`}>
+      <span>Showing {formatNumber(rangeStart)}–{formatNumber(rangeEnd)} of {formatNumber(total)} {noun}</span>
+      <label className="table-page-size"><span>Rows per page</span><select aria-label="Rows per page" value={pageSize} onChange={(event) => pagination.onPageSizeChange?.(Number(event.target.value))}>{[20, 50, 100].map((size) => <option value={size} key={size}>{size}</option>)}</select></label>
+      <button className="pager-button" aria-label="Previous page" onClick={() => pagination.onPageChange?.(page - 1)} disabled={page <= 1} type="button"><ChevronLeft size={18} aria-hidden="true" /></button>
+      {totalPages > 0 ? <><label className="table-page-number"><span className="sr-only">Current page</span><select aria-label="Current page" value={page} onChange={(event) => pagination.onPageChange?.(Number(event.target.value))}>{Array.from({ length: totalPages }, (_, index) => index + 1).map((pageNumber) => <option value={pageNumber} key={pageNumber}>{pageNumber}</option>)}</select></label><span>of {formatNumber(totalPages)}</span></> : <span>No pages</span>}
+      <button className="pager-button active" aria-label="Next page" onClick={() => pagination.onPageChange?.(page + 1)} disabled={page >= totalPages || total === 0} type="button"><ChevronRight size={18} aria-hidden="true" /></button>
     </div>
   );
 }
@@ -12368,6 +12414,7 @@ function filtersToQueryString(filters = {}) {
   if (filters.brand) params.set('brand', filters.brand);
   if (filters.status === 'active') params.set('active', 'true');
   if (filters.status === 'inactive') params.set('active', 'false');
+  if (filters.stockStatus) params.set('stock_status', filters.stockStatus);
   params.set('include_non_inventory', String(Boolean(filters.includeNonInventory)));
   if (filters.page) params.set('page', String(filters.page));
   if (filters.pageSize) params.set('page_size', String(filters.pageSize));

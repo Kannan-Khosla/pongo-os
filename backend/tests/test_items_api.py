@@ -211,6 +211,22 @@ def test_list_items_pagination_metadata_tracks_filtered_total(client):
     assert body["returned_count"] == 1
 
 
+def test_list_items_stock_status_filters_remain_server_paginated(client):
+    seed_item(client, sku="STOCK-IN", **{"In Stock": 10, "Allocated": 0, "Par Level": 5})
+    seed_item(client, sku="STOCK-OUT", **{"In Stock": 0, "Allocated": 0, "Par Level": 0})
+    seed_item(client, sku="STOCK-LOW", **{"In Stock": 2, "Allocated": 0, "Par Level": 5})
+
+    in_stock = client.get("/api/items", params={"stock_status": "in_stock", "page": 1, "page_size": 1}).json()
+    assert in_stock["total"] == 2
+    assert in_stock["returned_count"] == 1
+
+    out_of_stock = client.get("/api/items", params={"stock_status": "out_of_stock", "page": 1, "page_size": 20}).json()
+    assert [item["SKU"] for item in out_of_stock["items"]] == ["STOCK-OUT"]
+
+    under_par = client.get("/api/items", params={"stock_status": "under_par", "page": 1, "page_size": 20}).json()
+    assert [item["SKU"] for item in under_par["items"]] == ["STOCK-LOW", "STOCK-OUT"]
+
+
 def test_list_items_facets_cover_the_full_catalog_and_preserve_raw_values(client):
     seed_item(client, sku="FACET-1", Category="Dogs", Brand="Alpha")
     seed_item(client, sku="FACET-2", Category="Dog &amp; Cat", Brand="Zeta &amp; Co")

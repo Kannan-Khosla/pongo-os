@@ -23,7 +23,12 @@ Read-only endpoints:
 - `GET /api/business-dashboard/order-map`
 
 The combined endpoint returns all sections needed for the initial Dashboard
-page load.
+page load. It loads the applicable local order snapshot once, not once per
+section. Results are versioned in PostgreSQL and reused until an order, stock,
+allocation, receipt, pick, fulfillment, or movement changes the source version.
+When the source changes, an existing verified snapshot is returned immediately
+while the worker refreshes it. Dashboard requests never contact WooCommerce
+directly.
 
 ## Metric Definitions
 

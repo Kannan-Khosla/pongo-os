@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from tests.test_items_api import client, seed_item  # noqa: F401
 
 
@@ -189,3 +191,16 @@ def test_business_dashboard_endpoints_are_read_only(client, monkeypatch):
     assert after_item["In Stock"] == before_item["In Stock"]
     assert after_item["Allocated"] == before_item["Allocated"]
     assert after_orders == before_orders
+
+
+def test_business_dashboard_uses_admin_timezone_for_day_boundaries():
+    from types import SimpleNamespace
+
+    from app.services.business_dashboard import admin_today, order_day
+
+    utc_time = datetime(2026, 8, 6, 5, 30, tzinfo=timezone.utc)
+    settings = SimpleNamespace(admin_timezone="America/Edmonton")
+    order = SimpleNamespace(placed_on=utc_time, date_created=None, completed_on=None, created_at=None)
+
+    assert admin_today(utc_time, settings) == datetime(2026, 8, 5).date()
+    assert order_day(order) == datetime(2026, 8, 5).date()

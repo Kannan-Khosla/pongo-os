@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
-from app.core.config import get_settings
+from sqlalchemy import event
+
 from app.db.session import get_db
 from app.main import app
 from app.models.inventory import InventoryItem
@@ -155,6 +156,26 @@ def test_insights_uses_imported_woo_refund_summaries(client, monkeypatch):
     assert all(warning["code"] != "missing_refund_data" for warning in body["data_quality"])
 
 
+def test_customer_metrics_eager_load_refunds_without_per_order_queries(client, monkeypatch):
+    order = woo_order(899, "refund-customer@example.invalid", "REFUND-CUSTOMER", "100.00", "2026-06-22T12:00:00", quantity=2)
+    order["refunds"] = [{"id": 9901, "total": "-25.00"}]
+    patch_woo_orders(monkeypatch, [order])
+    assert client.post("/api/integrations/woocommerce/orders/commit", json={"include_statuses": ["processing"], "limit": 100}).status_code == 200
+
+    override = app.dependency_overrides[get_db]()
+    db = next(override)
+    statements = []
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", lambda _conn, _cursor, statement, _params, _context, _many: statements.append(statement))
+    try:
+        body = client.get("/api/insights/customer-metrics", params={"customer_email": "refund-customer@example.invalid"}).json()
+    finally:
+        override.close()
+
+    assert body["rows"][0]["lifetime_spend"] == 75
+    assert not any("SELECT orders.raw_woo_payload" in statement and "WHERE orders.id" in statement for statement in statements)
+
+
 def test_insights_includes_fully_refunded_orders_in_gross_and_returns(client, monkeypatch):
     order = woo_order(803, "refunded@example.invalid", "REFUNDED-SKU", "100.00", "2026-06-22T12:00:00", status="refunded", quantity=2)
     order["refunds"] = [{"id": 9002, "total": "-100.00"}]
@@ -296,61 +317,33 @@ def test_insights_compare_period_and_weekly_sales(client, monkeypatch):
     assert body["trends"]["daily_revenue"][0]["date"] == "2026-07-06"
 
 
-def test_unfiltered_sales_headlines_use_authoritative_woo_analytics(client, monkeypatch):
-    settings = get_settings().model_copy(update={
-        "app_env": "production",
-        "woocommerce_base_url": "https://woo.example.invalid",
-        "woocommerce_consumer_key": "ck_test",
-        "woocommerce_consumer_secret": "cs_test",
-    })
-    monkeypatch.setattr("app.services.insights.get_settings", lambda: settings)
-    monkeypatch.setattr("app.services.insights.effective_woocommerce_settings", lambda _db, value: value)
-    monkeypatch.setattr(
-        "app.services.insights.WooCommerceClient.analytics_stats",
-        lambda _self, *_args, **_kwargs: {
-            "totals": {
-                "orders_count": 265,
-                "num_items_sold": 1006,
-                "gross_sales": 27497.84,
-                "net_revenue": 26491.41,
-                "avg_order_value": 101.702792,
-                "refunds": 459.83,
-                "coupons": 546.60,
-                "shipping": 109.89,
-                "taxes": 1299.07,
-                "avg_items_per_order": 3.8189,
-                "total_customers": 229,
-            },
-            "intervals": [{
-                "interval": "2026-07-01",
-                "subtotals": {"orders_count": 9, "gross_sales": 900, "net_revenue": 850, "num_items_sold": 31},
-            }],
-        },
-    )
+def test_sales_headlines_use_local_snapshots_without_live_woo(client, monkeypatch):
+    order = woo_order(844, "local@example.invalid", "LOCAL-SKU", "40.00", "2026-07-08T12:00:00", quantity=2)
+    patch_woo_orders(monkeypatch, [order])
+    assert client.post("/api/integrations/woocommerce/orders/commit", json={"include_statuses": ["processing"], "limit": 100}).status_code == 200
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("Insights page requests must never call WooCommerce")
+
+    monkeypatch.setattr("app.services.woocommerce_client.WooCommerceClient.analytics_stats", fail_if_called)
 
     body = client.get(
         "/api/insights/orders-revenue",
         params={"start_date": "2026-07-01", "end_date": "2026-07-31"},
     ).json()
 
-    assert {
-        "total_orders": 265,
-        "gross_sales": 27497.84,
-        "net_sales": 26491.41,
-        "refund_amount": 459.83,
-        "discount_amount": 546.6,
-        "shipping_revenue": 109.89,
-        "tax_total": 1299.07,
-    }.items() <= body["summary"].items()
-    assert body["rows"] == [{"date": "2026-07-01", "order_count": 9, "gross_sales": 900.0, "net_sales": 850.0, "units_sold": 31.0}]
-    assert all(warning["code"] != "missing_refund_data" for warning in body["data_quality"])
+    assert body["summary"]["total_orders"] == 1
+    assert body["summary"]["gross_sales"] == 40
+    assert body["summary"]["net_sales"] == 40
+    assert body["summary"]["units_sold"] == 2
+    assert body["rows"] == [{"date": "2026-07-08", "order_count": 1, "gross_sales": 40.0, "net_sales": 40.0, "units_sold": 2.0}]
 
     overview = client.get(
         "/api/insights/overview",
         params={"start_date": "2026-07-01", "end_date": "2026-07-31"},
     ).json()
-    assert overview["summary"]["total_customers"] == 0
-    assert overview["summary"]["new_customers"] == 0
+    assert overview["summary"]["total_customers"] == 1
+    assert overview["summary"]["new_customers"] == 1
     assert overview["summary"]["returning_customers"] == 0
 
 

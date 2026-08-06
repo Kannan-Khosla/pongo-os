@@ -18,9 +18,10 @@ from app.models.inventory import (
     StockMovement,
 )
 from app.models.orders import Order, OrderItem
+from app.models.performance import MetricCache, MetricVersion
 from app.models.picks import Pick, PickLine
 from app.models.receipts import Receipt, ReceiptItem
-from app.models.reporting import ReportDelivery, ReportRun
+from app.models.reporting import ReportDelivery, ReportJob, ReportRun
 from app.models.routes import Route, RouteStop
 from app.models.scanner import ScannerEvent, ScannerSession
 from app.models.stock_mutations import StockMutationRequest
@@ -50,11 +51,14 @@ __all__ = [
     "MovementType",
     "Order",
     "OrderItem",
+    "MetricCache",
+    "MetricVersion",
     "Pick",
     "PickLine",
     "Receipt",
     "ReceiptItem",
     "ReportDelivery",
+    "ReportJob",
     "ReportRun",
     "Route",
     "RouteStop",

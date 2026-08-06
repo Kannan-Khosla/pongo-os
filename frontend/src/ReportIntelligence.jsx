@@ -358,6 +358,10 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [job, setJob] = useState(null);
+  const requestRef = useRef(0);
+  const pollTimerRef = useRef(null);
+  const pollFailuresRef = useRef(0);
   const report = catalog.reports.find((candidate) => candidate.key === reportKey);
 
   useEffect(() => {
@@ -388,26 +392,138 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
     const nextFilters = defaultFilters(report);
     setFilters(nextFilters);
     setRun(null);
+    setJob(null);
     setNotice('');
-    generate(report.key, nextFilters);
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
+    loadLatest(report.key, nextFilters, requestId);
+    return () => {
+      requestRef.current += 1;
+      window.clearTimeout(pollTimerRef.current);
+    };
   }, [report?.key]);
 
-  async function generate(key = report?.key, selectedFilters = filters) {
-    if (!key) return;
+  async function loadLatest(key, selectedFilters, requestId = requestRef.current) {
     setLoading(true);
     setError('');
     try {
-      const response = await apiFetch(`${apiBaseUrl}/api/reports/runs/${key}`, {
+      const response = await apiFetch(`${apiBaseUrl}/api/reports/jobs/latest/${key}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filters: selectedFilters, generated_by: 'reporting-ui' }),
       });
-      const body = await readResponse(response, 'Report could not be generated.');
-      setRun(body);
+      if (response.status === 404) {
+        if (requestId === requestRef.current) setRun(null);
+        return;
+      }
+      const body = await readResponse(response, 'The latest report snapshot could not be loaded.');
+      if (requestId === requestRef.current) setRun(body?.run_id ? body : null);
     } catch (requestError) {
-      setError(requestError.message);
+      if (requestId === requestRef.current) setError(requestError.message);
     } finally {
-      setLoading(false);
+      if (requestId === requestRef.current) setLoading(false);
+    }
+  }
+
+  async function loadRun(runId, requestId) {
+    const response = await apiFetch(`${apiBaseUrl}/api/reports/runs/${runId}`);
+    const body = await readResponse(response, 'Completed report snapshot could not be loaded.');
+    if (requestId === requestRef.current) setRun(body);
+    return body;
+  }
+
+  function scheduleJobPoll(jobId, requestId, delay = 1500) {
+    window.clearTimeout(pollTimerRef.current);
+    pollTimerRef.current = window.setTimeout(() => pollJob(jobId, requestId), delay);
+  }
+
+  async function pollJob(jobId, requestId) {
+    if (requestId !== requestRef.current) return;
+    try {
+      const response = await apiFetch(`${apiBaseUrl}/api/reports/jobs/${jobId}`);
+      const body = await readResponse(response, 'Report progress could not be checked.');
+      if (requestId !== requestRef.current) return;
+      pollFailuresRef.current = 0;
+      setJob(body);
+      if (body.status === 'completed' && body.run_id) {
+        await loadRun(body.run_id, requestId);
+        setLoading(false);
+      } else if (body.status === 'failed') {
+        setError(body.error || 'Report generation failed.');
+        setLoading(false);
+      } else {
+        scheduleJobPoll(jobId, requestId);
+      }
+    } catch (requestError) {
+      if (requestId === requestRef.current) {
+        pollFailuresRef.current += 1;
+        if (pollFailuresRef.current <= 3) {
+          scheduleJobPoll(jobId, requestId, 1500 * (2 ** pollFailuresRef.current));
+        } else {
+          setError(requestError.message);
+          setLoading(false);
+        }
+      }
+    }
+  }
+
+  async function generateSynchronously(key, selectedFilters, requestId) {
+    const response = await apiFetch(`${apiBaseUrl}/api/reports/runs/${key}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filters: selectedFilters, generated_by: 'reporting-ui' }),
+    });
+    const body = await readResponse(response, 'Report could not be generated.');
+    if (!body?.run_id) throw new Error('Report generation returned no verified run.');
+    if (requestId === requestRef.current) setRun(body);
+  }
+
+  async function generate(key = report?.key, selectedFilters = filters) {
+    if (!key) return;
+    let keepPolling = false;
+    window.clearTimeout(pollTimerRef.current);
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
+    pollFailuresRef.current = 0;
+    setLoading(true);
+    setError('');
+    setJob(null);
+    if (JSON.stringify(run?.filters || {}) !== JSON.stringify(selectedFilters || {})) setRun(null);
+    try {
+      const response = await apiFetch(`${apiBaseUrl}/api/reports/jobs/${key}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filters: selectedFilters, generated_by: 'reporting-ui' }),
+      });
+      if ([404, 405].includes(response.status)) {
+        await generateSynchronously(key, selectedFilters, requestId);
+        return;
+      }
+      const body = await readResponse(response, 'Report could not be queued.');
+      if (body.columns && body.run_id && !body.job_id) {
+        setRun(body);
+        return;
+      }
+      if (!body.job_id) {
+        await generateSynchronously(key, selectedFilters, requestId);
+        return;
+      }
+      setJob(body);
+      if (body.previous_run_id) await loadRun(body.previous_run_id, requestId);
+      else if (requestId === requestRef.current) setRun(null);
+      if (body.status === 'completed' && body.run_id) {
+        await loadRun(body.run_id, requestId);
+      } else if (body.status === 'failed') {
+        throw new Error(body.error || 'Report generation failed.');
+      } else {
+        keepPolling = true;
+        scheduleJobPoll(body.job_id, requestId);
+        return;
+      }
+    } catch (requestError) {
+      if (requestId === requestRef.current) setError(requestError.message);
+    } finally {
+      if (requestId === requestRef.current && !keepPolling) setLoading(false);
     }
   }
 
@@ -493,7 +609,14 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
             {loading && !run && (
               <div className="ri-report-loading" aria-live="polite">
                 <LoaderCircle className="ri-spin" size={25} />
-                Reconciling the report snapshot…
+                {job ? `Generating report… ${Math.round(Number(job.progress || 0))}%` : 'Loading the latest verified snapshot…'}
+              </div>
+            )}
+
+            {loading && run && job && (
+              <div className="ri-report-loading" aria-live="polite">
+                <LoaderCircle className="ri-spin" size={20} />
+                Showing the previous verified run while the new report generates… {Math.round(Number(job.progress || 0))}%
               </div>
             )}
 

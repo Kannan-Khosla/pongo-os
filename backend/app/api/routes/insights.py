@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.insights import InsightResponse
-from app.services.insights import EXPORT_COLUMNS, build_insight, export_insight_csv
+from app.services.insights import EXPORT_COLUMNS, export_insight_csv, get_cached_insight
 
 router = APIRouter(prefix="/insights", tags=["insights"])
 
@@ -49,7 +49,7 @@ def insight_params(
 
 def route_for(dashboard: str):
     def handler(params: dict[str, Any] = Depends(insight_params), db: Session = Depends(get_db)) -> InsightResponse:
-        return build_insight(db, dashboard, params)
+        return get_cached_insight(db, dashboard, params)
 
     return handler
 

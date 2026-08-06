@@ -21,7 +21,7 @@ cookie is never sent over plaintext transport.
 1. Put workers into maintenance mode and stop background jobs.
 2. Create a custom PostgreSQL backup: `make backup-postgres BACKUP=/secure/path/pongo-before-release.dump`.
 3. Verify the backup against a disposable database whose name ends in `_restore_verify`: `RESTORE_VERIFY_DATABASE_URL=... make verify-postgres-backup BACKUP=/secure/path/pongo-before-release.dump`.
-4. Run `alembic upgrade head` (expected revision `20260803_0030`), then `/ready` and the release smoke tests.
+4. Run `alembic upgrade head` (expected revision `20260805_0033`), then `/ready` and the release smoke tests.
 5. If a migration fails, stop the release and restore the verified pre-release backup. Do not improvise a production downgrade; migration downgrades are validated for development recovery, while the database backup is the production rollback boundary.
 
 Keep encrypted backups outside the application host, apply a retention policy, and run a restore verification at least monthly and before every schema release.
@@ -40,7 +40,25 @@ Pongo OS deploys as one Heroku app. The Node.js buildpack builds
 process runs `alembic upgrade head`, and the web process serves both the API and
 the built frontend. A separate `worker` process runs two-minute WooCommerce
 order reconciliation and resumable stock-sync jobs; it also queues the forced
-daily catalog reconciliation after midnight in `ADMIN_TIMEZONE`. Do not run
+daily catalog reconciliation after midnight in `ADMIN_TIMEZONE` and generates
+queued legal/reporting snapshots. Do not run
 schedulers in the web process. Keep `heroku/nodejs` first and `heroku/python` last. Attach
 Heroku Postgres before the first release, set `APP_ENV=production`, and use the
 app's exact HTTPS origin for `BACKEND_CORS_ORIGINS`.
+
+## Performance contract
+
+- API responses larger than 1 KB use gzip compression. Hashed frontend assets
+  are immutable so browsers and Cloudflare may cache them safely.
+- Insights and the business dashboard read local, versioned metric snapshots;
+  they never wait on WooCommerce during navigation.
+- Item and inventory lists use server pagination and SQL-side filtering. The
+  frontend cancels obsolete requests, deduplicates identical GETs, and
+  lazy-loads images and report/chart modules.
+- Operational mutations invalidate affected metric snapshots immediately.
+  WooCommerce sales metrics are refreshed after the two-minute reconciliation.
+- A stale dashboard/filter snapshot is served immediately and marked for worker
+  refresh; custom filters use the same queue as standard dashboard presets.
+- Heavy report calculation and CSV/PDF rendering run on the worker; downloads
+  stream verified artifacts stored in PostgreSQL. Keep both `web=1` and `worker=1` enabled;
+  scaling the web process without revisiting cache/build locking is unsupported.

@@ -241,6 +241,19 @@ def create_report_run(
     raw_filters: dict[str, Any] | None,
     generated_by: str | None = "reporting-ui",
 ) -> dict[str, Any]:
+    run = create_report_run_record(db, report_key, raw_filters, generated_by)
+    persist_report_artifacts(run)
+    db.commit()
+    db.refresh(run)
+    return report_run_to_dict(run)
+
+
+def create_report_run_record(
+    db: Session,
+    report_key: str,
+    raw_filters: dict[str, Any] | None,
+    generated_by: str | None = "reporting-ui",
+) -> ReportRun:
     definition = REPORTS_BY_KEY.get(report_key)
     if not definition:
         raise KeyError(report_key)
@@ -269,9 +282,8 @@ def create_report_run(
         generated_by=generated_by,
     )
     db.add(run)
-    db.commit()
-    db.refresh(run)
-    return report_run_to_dict(run)
+    db.flush()
+    return run
 
 
 def get_report_run(db: Session, run_id: str) -> ReportRun | None:
@@ -297,6 +309,10 @@ class ReportIntegrityError(RuntimeError):
     pass
 
 
+class ReportArtifactUnavailableError(RuntimeError):
+    pass
+
+
 def report_payload_hash(payload: dict[str, Any]) -> str:
     canonical = json.dumps(jsonable_encoder(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -306,6 +322,33 @@ def verify_report_run(run: ReportRun) -> None:
     actual = report_payload_hash(run.payload or {})
     if not hmac.compare_digest(actual, run.data_hash or ""):
         raise ReportIntegrityError(f"Stored report run {run.id} failed SHA-256 integrity verification.")
+
+
+def persist_report_artifacts(run: ReportRun) -> None:
+    csv_artifact = report_csv_bytes(run)
+    pdf_artifact = report_pdf_bytes(run)
+    run.csv_artifact = csv_artifact
+    run.csv_artifact_hash = hashlib.sha256(csv_artifact).hexdigest()
+    run.pdf_artifact = pdf_artifact
+    run.pdf_artifact_hash = hashlib.sha256(pdf_artifact).hexdigest()
+
+
+def report_artifact_bytes(run: ReportRun, artifact_format: str) -> bytes:
+    verify_report_run(run)
+    if artifact_format not in {"csv", "pdf"}:
+        raise ValueError("Report artifact format must be CSV or PDF.")
+    artifact = getattr(run, f"{artifact_format}_artifact")
+    expected_hash = getattr(run, f"{artifact_format}_artifact_hash")
+    if artifact is None or not expected_hash:
+        raise ReportArtifactUnavailableError(
+            "This report predates persisted downloads. Refresh the report to create a verified artifact."
+        )
+    actual_hash = hashlib.sha256(artifact).hexdigest()
+    if not hmac.compare_digest(actual_hash, expected_hash):
+        raise ReportIntegrityError(
+            f"Stored {artifact_format.upper()} artifact for report run {run.id} failed SHA-256 integrity verification."
+        )
+    return artifact
 
 
 def normalize_filters(raw: dict[str, Any], date_mode: str) -> dict[str, Any]:
@@ -2256,9 +2299,9 @@ def email_report(
     email.set_content(body)
     safe_name = run.report_key.replace("_", "-")
     if "csv" in allowed_formats:
-        email.add_attachment(report_csv_bytes(run), maintype="text", subtype="csv", filename=f"pongo-{safe_name}-{run.id}.csv")
+        email.add_attachment(report_artifact_bytes(run, "csv"), maintype="text", subtype="csv", filename=f"pongo-{safe_name}-{run.id}.csv")
     if "pdf" in allowed_formats:
-        email.add_attachment(report_pdf_bytes(run), maintype="application", subtype="pdf", filename=f"pongo-{safe_name}-{run.id}.pdf")
+        email.add_attachment(report_artifact_bytes(run, "pdf"), maintype="application", subtype="pdf", filename=f"pongo-{safe_name}-{run.id}.pdf")
     try:
         if settings.smtp_port == 465:
             with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:

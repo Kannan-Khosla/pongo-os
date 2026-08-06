@@ -223,7 +223,9 @@ def commit_remote_order_records(
         try:
             issue_messages: list[str] = []
             with db.begin_nested():
-                order = db.scalars(select(Order).where(Order.woo_order_id == record.woo_order_id).options(defer(Order.raw_woo_payload), selectinload(Order.items))).one_or_none()
+                # Load the prior payload in the existing lookup so assigning an
+                # identical Woo snapshot remains a true no-op for metric caches.
+                order = db.scalars(select(Order).where(Order.woo_order_id == record.woo_order_id).options(selectinload(Order.items))).one_or_none()
                 is_new_order = order is None
                 if snapshot_only and order is not None and not order.is_historical_snapshot:
                     updated_count += 1

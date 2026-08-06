@@ -5,11 +5,14 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, load_only, selectinload
 
+from app.core.config import get_settings
 from app.models.orders import Order, OrderItem
+from app.services.metric_cache import cached_metric_payload
 
 
 OPEN_STATUSES = {"open", "processing", "on-hold", "pending", "allocated", "partially_allocated", "picked", "partially_picked"}
@@ -25,15 +28,57 @@ CITY_COORDINATES = {
     "spruce grove": (53.5414, -113.9007),
     "fort saskatchewan": (53.7126, -113.2140),
 }
+BUSINESS_ORDER_COLUMNS = (
+    Order.id,
+    Order.woo_order_id,
+    Order.woo_order_number,
+    Order.order_number,
+    Order.woo_status,
+    Order.local_status,
+    Order.status,
+    Order.customer_id,
+    Order.customer_first_name,
+    Order.customer_last_name,
+    Order.customer_name,
+    Order.customer_email,
+    Order.customer_phone,
+    Order.shipping_phone,
+    Order.billing_phone,
+    Order.payment_method,
+    Order.payment_method_title,
+    Order.total,
+    Order.date_created,
+    Order.placed_on,
+    Order.completed_on,
+    Order.created_at,
+    Order.shipping_address_1,
+    Order.shipping_city,
+    Order.shipping_state,
+    Order.shipping_zip,
+    Order.billing_city,
+    Order.billing_zip,
+    Order.is_historical_snapshot,
+    Order.historical_source_present,
+)
+BUSINESS_LINE_COLUMNS = (
+    OrderItem.id,
+    OrderItem.order_id,
+    OrderItem.quantity_ordered,
+    OrderItem.ordered_qty,
+    OrderItem.unit_price,
+    OrderItem.line_total,
+    OrderItem.total_price,
+)
 
 
 def build_business_dashboard(db: Session, target_date: date | None = None) -> dict[str, Any]:
-    target_date = target_date or date.today()
-    today = build_today(db, target_date)
-    open_orders = build_open_orders(db)
-    subscriptions = build_subscriptions(db, target_date)
-    revenue_comparison = build_revenue_comparison(db, target_date)
-    order_map = build_order_map(db, target_date)
+    target_date = target_date or admin_today()
+    orders = load_orders(db, include_payload=True)
+    today = build_today(db, target_date, orders=orders)
+    open_orders = build_open_orders(db, orders=orders)
+    subscriptions = build_subscriptions(db, target_date, orders=orders)
+    revenue_comparison = build_revenue_comparison(db, target_date, orders=orders)
+    order_map = build_order_map(db, target_date, orders=orders)
     warnings = merge_warnings(
         today["data_quality"],
         open_orders["data_quality"],
@@ -52,9 +97,49 @@ def build_business_dashboard(db: Session, target_date: date | None = None) -> di
     }
 
 
-def build_today(db: Session, target_date: date | None = None) -> dict[str, Any]:
-    target_date = target_date or date.today()
-    orders = load_orders(db)
+def get_cached_business_metric(
+    db: Session,
+    section: str,
+    target_date: date | None = None,
+    *,
+    mode: str | None = None,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    effective_date = target_date or admin_today()
+    combined_sections = {
+        "today": "today",
+        "open-orders": "open_orders",
+        "subscriptions": "subscriptions",
+        "revenue-comparison": "revenue_comparison",
+        "order-map": "order_map",
+    }
+    if section in combined_sections and (section != "revenue-comparison" or mode in {None, "month_to_date"}):
+        dashboard = get_cached_business_metric(db, "dashboard", effective_date, force_refresh=force_refresh)
+        return dashboard[combined_sections[section]]
+    params = {
+        "date": None if section == "open-orders" else effective_date.isoformat(),
+        "mode": mode,
+    }
+    builders = {
+        "dashboard": lambda: build_business_dashboard(db, effective_date),
+        "today": lambda: build_today(db, effective_date),
+        "open-orders": lambda: build_open_orders(db),
+        "subscriptions": lambda: build_subscriptions(db, effective_date),
+        "revenue-comparison": lambda: build_revenue_comparison(db, effective_date, mode or "month_to_date"),
+        "order-map": lambda: build_order_map(db, effective_date),
+    }
+    return cached_metric_payload(
+        db,
+        f"business-dashboard:{section}",
+        params,
+        builders[section],
+        force_refresh=force_refresh,
+    )
+
+
+def build_today(db: Session, target_date: date | None = None, *, orders: list[Order] | None = None) -> dict[str, Any]:
+    target_date = target_date or admin_today()
+    orders = orders if orders is not None else load_orders(db, include_payload=True)
     today_orders = [order for order in orders if order_is_on_date(order, target_date)]
     today_sales_orders = [order for order in today_orders if is_sales_order(order)]
     customers_today = {email for order in today_sales_orders if (email := normalized_email(order.customer_email))}
@@ -88,15 +173,15 @@ def build_today(db: Session, target_date: date | None = None) -> dict[str, Any]:
     return {"summary": summary, "data_quality": warnings}
 
 
-def build_open_orders(db: Session) -> dict[str, Any]:
-    orders = load_orders(db)
+def build_open_orders(db: Session, *, orders: list[Order] | None = None) -> dict[str, Any]:
+    orders = orders if orders is not None else load_orders(db)
     rows = open_order_rows(orders)
     warnings = data_quality_warnings(orders=rows, include_limited_history=False)
     return {"summary": {"open_orders_count": len(rows)}, "rows": [order_row(order) for order in rows], "data_quality": warnings}
 
 
-def build_subscriptions(db: Session, target_date: date | None = None) -> dict[str, Any]:
-    orders = load_orders(db)
+def build_subscriptions(db: Session, target_date: date | None = None, *, orders: list[Order] | None = None) -> dict[str, Any]:
+    orders = orders if orders is not None else load_orders(db, include_payload=True)
     rows = []
     for order in orders:
         payload = order.raw_woo_payload or {}
@@ -121,8 +206,8 @@ def build_subscriptions(db: Session, target_date: date | None = None) -> dict[st
     warnings = [] if available else warning("missing_subscription_data", "info", "Subscription data is not synced yet. This section will populate after subscription sync is connected.")
     return {
         "summary": {
-            "upcoming_7_days_count": count_due_within(rows, target_date or date.today(), 7),
-            "upcoming_30_days_count": count_due_within(rows, target_date or date.today(), 30),
+            "upcoming_7_days_count": count_due_within(rows, target_date or admin_today(), 7),
+            "upcoming_30_days_count": count_due_within(rows, target_date or admin_today(), 30),
             "active_subscriptions_count": sum(1 for row in rows if str(row.get("status") or "").lower() == "active"),
             "subscription_data_available": available,
         },
@@ -132,9 +217,15 @@ def build_subscriptions(db: Session, target_date: date | None = None) -> dict[st
     }
 
 
-def build_revenue_comparison(db: Session, target_date: date | None = None, mode: str = "month_to_date") -> dict[str, Any]:
-    target_date = target_date or date.today()
-    orders = load_orders(db)
+def build_revenue_comparison(
+    db: Session,
+    target_date: date | None = None,
+    mode: str = "month_to_date",
+    *,
+    orders: list[Order] | None = None,
+) -> dict[str, Any]:
+    target_date = target_date or admin_today()
+    orders = orders if orders is not None else load_orders(db)
     if mode == "last_7_days":
         current_start = target_date - timedelta(days=6)
     elif mode == "today":
@@ -174,9 +265,10 @@ def build_revenue_comparison(db: Session, target_date: date | None = None, mode:
     }
 
 
-def build_order_map(db: Session, target_date: date | None = None) -> dict[str, Any]:
-    target_date = target_date or date.today()
-    orders = [order for order in load_orders(db) if order_is_on_date(order, target_date) and is_sales_order(order)]
+def build_order_map(db: Session, target_date: date | None = None, *, orders: list[Order] | None = None) -> dict[str, Any]:
+    target_date = target_date or admin_today()
+    source_orders = orders if orders is not None else load_orders(db, include_payload=True)
+    orders = [order for order in source_orders if order_is_on_date(order, target_date) and is_sales_order(order)]
     city_groups = defaultdict(lambda: {"orders": [], "customers": set(), "revenue": Decimal("0")})
     markers = []
     unplotted = 0
@@ -222,11 +314,14 @@ def build_order_map(db: Session, target_date: date | None = None) -> dict[str, A
     }
 
 
-def load_orders(db: Session) -> list[Order]:
+def load_orders(db: Session, *, include_payload: bool = False) -> list[Order]:
+    columns = list(BUSINESS_ORDER_COLUMNS)
+    if include_payload:
+        columns.append(Order.raw_woo_payload)
     return list(db.scalars(
         select(Order)
         .where(or_(Order.is_historical_snapshot.is_(False), Order.historical_source_present.is_(True)))
-        .options(selectinload(Order.items))
+        .options(load_only(*columns), selectinload(Order.items).load_only(*BUSINESS_LINE_COLUMNS))
     ).all())
 
 
@@ -300,7 +395,21 @@ def order_is_on_date(order: Order, day: date) -> bool:
 
 def order_day(order: Order) -> date | None:
     value = order_date(order)
-    return value.date() if value else None
+    if value is None:
+        return None
+    aware = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return aware.astimezone(admin_timezone()).date()
+
+
+def admin_timezone(settings=None) -> ZoneInfo:
+    try:
+        return ZoneInfo((settings or get_settings()).admin_timezone)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("UTC")
+
+
+def admin_today(now: datetime | None = None, settings=None) -> date:
+    return (now or datetime.now(timezone.utc)).astimezone(admin_timezone(settings)).date()
 
 
 def order_date(order: Order) -> datetime | None:

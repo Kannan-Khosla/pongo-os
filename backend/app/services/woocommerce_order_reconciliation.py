@@ -13,6 +13,7 @@ from app.db.session import SessionLocal
 from app.models.orders import Order
 from app.models.woocommerce import WooCommerceSyncRun
 from app.services.woocommerce_access import effective_woocommerce_settings
+from app.services.metric_cache import invalidate_metrics
 from app.services.woocommerce_client import WooCommerceClient
 from app.services.woocommerce_orders import commit_remote_order_records
 
@@ -388,30 +389,28 @@ def finish_order_history_import(db: Session, job: WooCommerceSyncRun, progress: 
 
 
 def reconcile_history_snapshot_presence(db: Session, seen_order_ids: set[int]) -> int:
-    current_ids = {
-        int(value)
-        for value in db.scalars(
-            select(Order.woo_order_id).where(
-                Order.is_historical_snapshot.is_(True),
-                Order.historical_source_present.is_(True),
-                Order.woo_order_id.is_not(None),
-            )
-        ).all()
-    }
-    db.execute(
-        update(Order)
-        .where(Order.is_historical_snapshot.is_(True))
-        .values(historical_source_present=False)
-    )
-    seen_order_id_list = list(seen_order_ids)
-    for offset in range(0, len(seen_order_id_list), 500):
-        batch = seen_order_id_list[offset:offset + 500]
-        db.execute(
-            update(Order)
-            .where(Order.is_historical_snapshot.is_(True), Order.woo_order_id.in_(batch))
-            .values(historical_source_present=True)
+    rows = db.execute(
+        select(Order.woo_order_id, Order.historical_source_present).where(
+            Order.is_historical_snapshot.is_(True),
+            Order.woo_order_id.is_not(None),
         )
-    return len(current_ids - seen_order_ids)
+    ).all()
+    current_ids = {int(order_id) for order_id, present in rows if present}
+    historical_ids = {int(order_id) for order_id, _present in rows}
+    target_ids = historical_ids & seen_order_ids
+    removed_ids = current_ids - target_ids
+    restored_ids = target_ids - current_ids
+    for ids, present in ((removed_ids, False), (restored_ids, True)):
+        values = list(ids)
+        for offset in range(0, len(values), 500):
+            db.execute(
+                update(Order)
+                .where(Order.is_historical_snapshot.is_(True), Order.woo_order_id.in_(values[offset:offset + 500]))
+                .values(historical_source_present=present)
+            )
+    if removed_ids or restored_ids:
+        invalidate_metrics(db)
+    return len(removed_ids)
 
 
 def fail_order_history_import(db: Session, job: WooCommerceSyncRun, message: str) -> dict[str, Any]:

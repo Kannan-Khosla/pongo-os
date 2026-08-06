@@ -110,6 +110,26 @@ def test_report_integrity_failure_blocks_read_and_exports(client):
     assert client.get(f"/api/reports/runs/{run['run_id']}/pdf").status_code == 409
 
 
+def test_report_artifact_tampering_and_legacy_missing_artifacts_fail_closed(client):
+    seed_item(client, sku="ARTIFACT-EVIDENCE", **{"In Stock": 1, "Allocated": 0, "Unit Cost": 2})
+    tampered = client.post("/api/reports/runs/inventory-cost-sku", json={"filters": {}}).json()
+    missing = client.post("/api/reports/runs/inventory-cost-sku", json={"filters": {}}).json()
+    override, db = database_session()
+    try:
+        db.get(ReportRun, tampered["run_id"]).csv_artifact = b"tampered"
+        legacy = db.get(ReportRun, missing["run_id"])
+        legacy.pdf_artifact = None
+        legacy.pdf_artifact_hash = None
+        db.commit()
+    finally:
+        override.close()
+
+    assert client.get(f"/api/reports/runs/{tampered['run_id']}/csv").status_code == 409
+    missing_export = client.get(f"/api/reports/runs/{missing['run_id']}/pdf")
+    assert missing_export.status_code == 409
+    assert "Refresh the report" in missing_export.text
+
+
 def test_identical_report_runs_get_distinct_ids_with_the_same_evidence_hash(client):
     seed_item(client, sku="SAME-RUN", **{"In Stock": 1, "Allocated": 0, "Unit Cost": 2})
 

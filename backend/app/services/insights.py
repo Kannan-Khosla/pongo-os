@@ -11,15 +11,14 @@ from statistics import median
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import and_, func, not_, or_, select
+from sqlalchemy.orm import Session, load_only, selectinload
 
+from app.core.config import get_settings
 from app.models.inventory import InventoryItem
 from app.models.orders import Order, OrderItem
-from app.core.config import get_settings
-from app.schemas.insights import DataQualityWarning, InsightResponse
-from app.services.woocommerce_access import effective_woocommerce_settings
-from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
+from app.schemas.insights import InsightResponse
+from app.services.metric_cache import cached_metric_payload
 
 
 SUCCESS_STATUSES = {"completed", "processing", "fulfilled", "partially_fulfilled", "open", "allocated", "picked", "refunded"}
@@ -32,10 +31,76 @@ EXPORT_COLUMNS = {
     "geography": ["city", "postal_code", "order_count", "customer_count", "revenue", "average_order_value", "repeat_customer_rate", "last_order_date"],
 }
 
+INSIGHT_ORDER_COLUMNS = (
+    Order.id,
+    Order.woo_status,
+    Order.local_status,
+    Order.status,
+    Order.customer_id,
+    Order.customer_first_name,
+    Order.customer_last_name,
+    Order.customer_name,
+    Order.customer_email,
+    Order.customer_phone,
+    Order.shipping_phone,
+    Order.billing_phone,
+    Order.payment_method,
+    Order.payment_method_title,
+    Order.subtotal,
+    Order.discount_total,
+    Order.shipping_total,
+    Order.tax_total,
+    Order.total,
+    Order.date_created,
+    Order.placed_on,
+    Order.completed_on,
+    Order.created_at,
+    Order.shipping_city,
+    Order.billing_city,
+    Order.shipping_zip,
+    Order.billing_zip,
+    Order.is_historical_snapshot,
+    Order.historical_source_present,
+)
+INSIGHT_LINE_COLUMNS = (
+    OrderItem.id,
+    OrderItem.order_id,
+    OrderItem.inventory_item_id,
+    OrderItem.sku,
+    OrderItem.barcode,
+    OrderItem.description,
+    OrderItem.name,
+    OrderItem.quantity_ordered,
+    OrderItem.ordered_qty,
+    OrderItem.unit_cost,
+    OrderItem.unit_price,
+    OrderItem.line_subtotal,
+    OrderItem.line_total,
+    OrderItem.total_price,
+    OrderItem.brand,
+)
+INSIGHT_ITEM_COLUMNS = (
+    InventoryItem.id,
+    InventoryItem.sku,
+    InventoryItem.barcode,
+    InventoryItem.description,
+    InventoryItem.woo_name,
+    InventoryItem.brand,
+    InventoryItem.category,
+    InventoryItem.in_stock,
+    InventoryItem.allocated,
+    InventoryItem.sellable,
+    InventoryItem.unit_cost,
+    InventoryItem.under_par,
+    InventoryItem.default_lead_time_days,
+    InventoryItem.par_level,
+)
+
 
 def build_insight(db: Session, dashboard: str, params: dict[str, Any] | None = None) -> InsightResponse:
     params = params or {}
-    context = build_context(db, params)
+    include_payload = dashboard not in {"subscriptions", "subscription-products"}
+    context = build_context(db, params, include_payload=include_payload)
     builders = {
         "overview": overview,
         "orders-revenue": orders_revenue,
@@ -52,7 +117,6 @@ def build_insight(db: Session, dashboard: str, params: dict[str, Any] | None = N
         "reorder-forecast": reorder_forecast,
     }
     result = builders[dashboard](context)
-    apply_woo_analytics(db, dashboard, params, result)
     if params.get("compare_start_date") and params.get("compare_end_date"):
         comparison_params = {
             **params,
@@ -61,8 +125,9 @@ def build_insight(db: Session, dashboard: str, params: dict[str, Any] | None = N
             "compare_start_date": None,
             "compare_end_date": None,
         }
-        previous = builders[dashboard](build_context(db, comparison_params))
-        apply_woo_analytics(db, dashboard, comparison_params, previous)
+        previous = builders[dashboard](
+            build_context(db, comparison_params, include_payload=include_payload)
+        )
         result.comparison = {
             "start_date": params["compare_start_date"],
             "end_date": params["compare_end_date"],
@@ -72,70 +137,22 @@ def build_insight(db: Session, dashboard: str, params: dict[str, Any] | None = N
     return result
 
 
-def apply_woo_analytics(db: Session, dashboard: str, params: dict[str, Any], result: InsightResponse) -> None:
-    if dashboard not in {"overview", "orders-revenue"} or not params.get("start_date") or not params.get("end_date"):
-        return
-    if any(params.get(key) for key in ("brand", "category", "sku", "customer_email", "city", "postal_code", "payment_method", "order_status")):
-        return
-    settings = get_settings()
-    if settings.app_env in {"test", "e2e"}:
-        return
-    try:
-        client = WooCommerceClient(effective_woocommerce_settings(db, settings))
-        if not client.configured:
-            return
-        stats = client.analytics_stats(
-            "revenue",
-            after=str(params["start_date"]),
-            before=str(params["end_date"]),
-            interval=str(params.get("granularity") or "day"),
-        )
-    except (WooCommerceClientError, ValueError) as error:
-        result.data_quality.append(DataQualityWarning(code="woo_analytics_unavailable", severity="warning", message=f"WooCommerce Analytics could not be loaded: {error.message if isinstance(error, WooCommerceClientError) else str(error)}"))
-        return
-    totals = stats["totals"]
-    total_orders = int(totals.get("orders_count") or 0)
-    exact = {
-        "total_orders": total_orders,
-        "gross_sales": dec(totals.get("gross_sales")),
-        "net_sales": dec(totals.get("net_revenue")),
-        "average_order_value": dec(totals.get("avg_order_value")) if total_orders else None,
-        "units_sold": dec(totals.get("num_items_sold")),
-        "refund_amount": dec(totals.get("refunds")),
-        "refund_rate": percent(totals.get("refunds"), totals.get("gross_sales")),
-        "discount_amount": dec(totals.get("coupons")),
-    }
-    if dashboard == "overview":
-        exact.update({
-            "coupon_discount_total": dec(totals.get("coupons")),
-        })
-    else:
-        exact.update({
-            "units_per_order": dec(totals.get("avg_items_per_order")),
-            "discount_rate": percent(totals.get("coupons"), totals.get("gross_sales")),
-            "shipping_revenue": dec(totals.get("shipping")),
-            "tax_total": dec(totals.get("taxes")),
-        })
-    result.summary.update(exact)
-    if result.metrics:
-        result.metrics.update(exact)
-    trend = []
-    for interval in stats.get("intervals") or []:
-        subtotal = interval.get("subtotals") or {}
-        trend.append({
-            "date": str(interval.get("interval") or interval.get("date_start") or "")[:10],
-            "order_count": int(subtotal.get("orders_count") or 0),
-            "gross_sales": dec(subtotal.get("gross_sales")),
-            "net_sales": dec(subtotal.get("net_revenue")),
-            "units_sold": dec(subtotal.get("num_items_sold")),
-        })
-    result.trends["daily_revenue"] = trend
-    result.trends["revenue_by_day"] = trend
-    result.trends["orders_by_day"] = [{"date": row["date"], "order_count": row["order_count"]} for row in trend]
-    if dashboard == "orders-revenue":
-        result.rows = trend
-    result.data_quality = [entry for entry in result.data_quality if entry.code not in {"missing_refund_data", "limited_order_history"}]
-    result.empty_state = None if total_orders else result.empty_state
+def get_cached_insight(
+    db: Session,
+    dashboard: str,
+    params: dict[str, Any] | None = None,
+    *,
+    force_refresh: bool = False,
+) -> InsightResponse:
+    params = params or {}
+    payload = cached_metric_payload(
+        db,
+        f"insight:{dashboard}",
+        params,
+        lambda: build_insight(db, dashboard, params).model_dump(mode="json"),
+        force_refresh=force_refresh,
+    )
+    return InsightResponse.model_validate(payload)
 
 
 def export_insight_csv(db: Session, dashboard: str, params: dict[str, Any] | None = None) -> str:
@@ -150,25 +167,37 @@ def export_insight_csv(db: Session, dashboard: str, params: dict[str, Any] | Non
     return output.getvalue()
 
 
-def build_context(db: Session, params: dict[str, Any]) -> dict[str, Any]:
-    orders = list(db.scalars(
-        select(Order)
-        .where(or_(Order.is_historical_snapshot.is_(False), Order.historical_source_present.is_(True)))
-        .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
-    ).all())
-    items = list(db.scalars(select(InventoryItem)).all())
-    item_by_id = {item.id: item for item in items}
-    item_by_sku = {clean_key(item.sku): item for item in items if clean_key(item.sku)}
+def build_context(db: Session, params: dict[str, Any], *, include_payload: bool = True) -> dict[str, Any]:
     start = parse_date(params.get("start_date"))
     end = parse_date(params.get("end_date"), end_of_day=True)
-    filtered_orders = [order for order in orders if order_in_range(order, start, end) and order_matches(order, params, item_by_sku)]
+    visible = reporting_order_filter()
+    placed_at = reporting_order_date()
+    statement = select(Order).where(visible)
+    if start is not None:
+        statement = statement.where(placed_at >= start)
+    if end is not None:
+        statement = statement.where(placed_at <= end)
+    statement = apply_order_sql_filters(statement, params)
+    order_columns = list(INSIGHT_ORDER_COLUMNS)
+    if include_payload:
+        order_columns.append(Order.raw_woo_payload)
+    statement = statement.options(
+        load_only(*order_columns),
+        selectinload(Order.items)
+        .load_only(*INSIGHT_LINE_COLUMNS)
+        .selectinload(OrderItem.inventory_item)
+        .load_only(*INSIGHT_ITEM_COLUMNS),
+    )
+    orders = list(db.scalars(statement).all())
+    items = list(db.scalars(select(InventoryItem).options(load_only(*INSIGHT_ITEM_COLUMNS))).all())
+    item_by_id = {item.id: item for item in items}
+    item_by_sku = {clean_key(item.sku): item for item in items if clean_key(item.sku)}
+    filtered_orders = [order for order in orders if order_matches(order, params, item_by_sku)]
     successful_orders = [order for order in filtered_orders if is_success_order(order)]
-    all_successful_orders = [order for order in orders if is_success_order(order)]
     return {
         "orders": filtered_orders,
         "successful_orders": successful_orders,
-        "all_orders": orders,
-        "all_successful_orders": all_successful_orders,
+        "first_order_dates": load_first_order_dates(db),
         "items": items,
         "item_by_id": item_by_id,
         "item_by_sku": item_by_sku,
@@ -177,6 +206,80 @@ def build_context(db: Session, params: dict[str, Any]) -> dict[str, Any]:
         "end": end,
         "warnings": base_warnings(filtered_orders, items),
     }
+
+
+def reporting_order_filter():
+    return or_(Order.is_historical_snapshot.is_(False), Order.historical_source_present.is_(True))
+
+
+def reporting_order_date():
+    return func.coalesce(Order.placed_on, Order.date_created, Order.completed_on, Order.created_at)
+
+
+def successful_order_filter():
+    statuses = [func.lower(func.coalesce(column, "")) for column in (Order.status, Order.woo_status, Order.local_status)]
+    return and_(
+        not_(or_(*(status.in_(FAILED_STATUSES) for status in statuses))),
+        or_(*(status.in_(SUCCESS_STATUSES) for status in statuses)),
+    )
+
+
+def apply_order_sql_filters(statement, params: dict[str, Any]):
+    status = clean(params.get("order_status")).lower()
+    if status:
+        statement = statement.where(
+            or_(*(func.lower(func.coalesce(column, "")) == status for column in (Order.status, Order.local_status, Order.woo_status)))
+        )
+    payment = clean(params.get("payment_method")).lower()
+    if payment:
+        statement = statement.where(func.lower(sql_first_nonblank(Order.payment_method_title, Order.payment_method)).contains(payment))
+    email = normalized_email(params.get("customer_email"))
+    if email:
+        statement = statement.where(func.lower(func.trim(func.coalesce(Order.customer_email, ""))) == email)
+    city = clean(params.get("city")).lower()
+    if city:
+        statement = statement.where(func.lower(sql_first_nonblank(Order.shipping_city, Order.billing_city)).contains(city))
+    postal = clean(params.get("postal_code")).lower()
+    if postal:
+        statement = statement.where(func.lower(sql_first_nonblank(Order.shipping_zip, Order.billing_zip)).contains(postal))
+
+    sku = clean_key(params.get("sku"))
+    brand = clean(params.get("brand")).lower()
+    category = clean(params.get("category")).lower()
+    if sku or brand or category:
+        line_filters = [OrderItem.order_id == Order.id]
+        if sku:
+            line_filters.append(func.lower(sql_first_nonblank(OrderItem.sku, InventoryItem.sku)) == sku.lower())
+        if brand:
+            line_filters.append(func.lower(sql_first_nonblank(OrderItem.brand, InventoryItem.brand)) == brand)
+        if category:
+            line_filters.append(func.lower(func.trim(func.coalesce(InventoryItem.category, ""))) == category)
+        statement = statement.where(
+            select(OrderItem.id)
+            .outerjoin(InventoryItem, InventoryItem.id == OrderItem.inventory_item_id)
+            .where(*line_filters)
+            .exists()
+        )
+    return statement
+
+
+def sql_first_nonblank(*columns):
+    """SQL equivalent of Python's ``a or b or ''`` for text columns."""
+    return func.coalesce(*(func.nullif(func.trim(column), "") for column in columns), "")
+
+
+def load_first_order_dates(db: Session) -> dict[str, datetime]:
+    rows = db.execute(
+        select(func.lower(func.trim(Order.customer_email)), func.min(reporting_order_date()))
+        .where(
+            reporting_order_filter(),
+            successful_order_filter(),
+            Order.customer_email.is_not(None),
+            func.trim(Order.customer_email) != "",
+        )
+        .group_by(func.lower(func.trim(Order.customer_email)))
+    ).all()
+    return {email: make_aware(placed_at) for email, placed_at in rows if email and placed_at}
 
 
 def overview(ctx: dict[str, Any]) -> InsightResponse:
@@ -206,7 +309,7 @@ def overview(ctx: dict[str, Any]) -> InsightResponse:
     trends = daily_trends(sales_ctx["orders"], sales_ctx)
     trends.update(
         {
-            "new_vs_returning_by_month": new_vs_returning_by_month(sales_ctx["orders"], sales_ctx["all_orders"]),
+            "new_vs_returning_by_month": new_vs_returning_by_month(sales_ctx["orders"], sales_ctx["first_order_dates"]),
             "top_brands": top_dimension(product_rows, "brand"),
             "top_categories": top_dimension(product_rows, "category"),
             "top_skus": product_rows[:10],
@@ -473,7 +576,6 @@ def successful_context(ctx: dict[str, Any]) -> dict[str, Any]:
     return {
         **ctx,
         "orders": orders,
-        "all_orders": ctx["all_successful_orders"],
         "warnings": base_warnings(orders, ctx["items"]),
     }
 
@@ -677,7 +779,7 @@ def customer_groups(orders: list[Order]) -> dict[str, dict[str, Any]]:
 
 def identified_customer_groups(ctx: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], set[str], set[str]]:
     groups = {key: value for key, value in customer_groups(ctx["orders"]).items() if value["email"]}
-    first_orders = first_order_dates_by_email(ctx["all_orders"])
+    first_orders = ctx["first_order_dates"]
     new_customers = {
         email
         for email in groups
@@ -686,16 +788,6 @@ def identified_customer_groups(ctx: dict[str, Any]) -> tuple[dict[str, dict[str,
         and (ctx["end"] is None or first_orders[email] <= ctx["end"])
     }
     return groups, new_customers, set(groups) - new_customers
-
-
-def first_order_dates_by_email(orders: list[Order]) -> dict[str, datetime]:
-    first_orders = {}
-    for order in orders:
-        email = normalized_email(order.customer_email)
-        placed_at = make_aware(order_date(order)) if order_date(order) else None
-        if email and placed_at and (email not in first_orders or placed_at < first_orders[email]):
-            first_orders[email] = placed_at
-    return first_orders
 
 
 def customer_rows(customers: dict[str, dict[str, Any]], ctx: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -862,8 +954,7 @@ def coupon_rows(orders: list[Order], ctx: dict[str, Any] | None = None) -> list[
     return rows
 
 
-def new_vs_returning_by_month(orders: list[Order], historical_orders: list[Order]) -> list[dict[str, Any]]:
-    first_orders = first_order_dates_by_email(historical_orders)
+def new_vs_returning_by_month(orders: list[Order], first_orders: dict[str, datetime]) -> list[dict[str, Any]]:
     rows = defaultdict(lambda: {"new_customers": set(), "returning_customers": set()})
     for order in orders:
         od = order_date(order)

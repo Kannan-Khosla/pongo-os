@@ -50,6 +50,7 @@ DATA_QUALITY_FILTERS = {
     "receiving",
     "missing_location",
 }
+ItemStockStatus = Literal["in_stock", "out_of_stock", "under_par", "negative_sellable"]
 
 
 def build_items_statement(
@@ -66,6 +67,7 @@ def build_items_statement(
     woo_product_id: int | None = None,
     woo_variation_id: int | None = None,
     data_quality: str | None = None,
+    stock_status: ItemStockStatus | None = None,
 ):
     statement = select(InventoryItem)
     if search:
@@ -92,6 +94,14 @@ def build_items_statement(
         statement = statement.where(InventoryItem.woo_product_id == woo_product_id)
     if woo_variation_id is not None:
         statement = statement.where(InventoryItem.woo_variation_id == woo_variation_id)
+    if stock_status == "in_stock":
+        statement = statement.where(InventoryItem.in_stock > 0)
+    elif stock_status == "out_of_stock":
+        statement = statement.where(InventoryItem.in_stock <= 0)
+    elif stock_status == "under_par":
+        statement = statement.where(InventoryItem.under_par.is_(True))
+    elif stock_status == "negative_sellable":
+        statement = statement.where(InventoryItem.sellable < 0)
     quality_filters = parse_data_quality_filters(data_quality)
     if quality_filters:
         predicates = []
@@ -213,6 +223,7 @@ def list_items(
     woo_product_id: int | None = None,
     woo_variation_id: int | None = None,
     data_quality: str | None = None,
+    stock_status: ItemStockStatus | None = None,
     page: int | None = Query(default=None, ge=1),
     page_size: int | None = Query(default=None, ge=1, le=100),
     sort_by: Literal["sku", "barcode", "description", "brand", "category", "in_stock", "allocated", "sellable", "unit_cost", "sales_price", "updated_at"] = "sku",
@@ -233,6 +244,7 @@ def list_items(
         woo_product_id=woo_product_id,
         woo_variation_id=woo_variation_id,
         data_quality=data_quality,
+        stock_status=stock_status,
     )
     total = int(db.scalar(select(func.count()).select_from(statement.order_by(None).subquery())) or 0)
     sort_column = ITEM_SORT_COLUMNS[sort_by]
@@ -282,6 +294,7 @@ def export_items(
     woo_product_id: int | None = None,
     woo_variation_id: int | None = None,
     data_quality: str | None = None,
+    stock_status: ItemStockStatus | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
     statement = build_items_statement(
@@ -298,6 +311,7 @@ def export_items(
         woo_product_id=woo_product_id,
         woo_variation_id=woo_variation_id,
         data_quality=data_quality,
+        stock_status=stock_status,
     )
     items = list(db.scalars(statement).all())
     buffer = StringIO()

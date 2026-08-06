@@ -54,7 +54,7 @@ local-only route creation/management.
 - Inventory transfers: `/api/inventory/transfers`
 - Stock adjustments: `/api/inventory/adjustments`
 - Receipts/direct receiving: `/api/receipts`
-- Reports: immutable runs and delivery under `/api/reports/runs/*`, plus legacy received, fulfillment, and SKU-order report endpoints
+- Reports: background jobs under `/api/reports/jobs/*`, immutable runs and delivery under `/api/reports/runs/*`, plus legacy received, fulfillment, and SKU-order report endpoints
 - Cycle counts: `/api/cycle-counts`
 - WooCommerce read-only product sync: `/api/integrations/woocommerce/products/*`
 - WooCommerce read-only order sync: `/api/integrations/woocommerce/orders/*`
@@ -1772,9 +1772,16 @@ reduce stock again.
 - `GET /api/reports` lists the 17-report catalog.
 - `GET /api/reports/sharing/status` returns non-secret delivery readiness.
 - `POST /api/reports/runs/{report_key}` generates and freezes a report snapshot.
+- `POST /api/reports/jobs/{report_key}` queues an asynchronous report run and
+  deduplicates an identical active request.
+- `GET /api/reports/jobs/{job_id}` returns report generation status and progress.
+- `POST /api/reports/jobs/latest/{report_key}` returns the latest immutable run
+  whose normalized filters exactly match the request.
 - `GET /api/reports/runs/{run_id}` returns the frozen snapshot.
 - `GET /api/reports/runs/{run_id}/csv` exports that snapshot as UTF-8 CSV.
 - `GET /api/reports/runs/{run_id}/pdf` exports that snapshot as a paginated PDF.
+  Both endpoints stream worker-rendered, SHA-256-verified artifacts stored with
+  the immutable run; they return `409` when an older run has no artifact.
 - `POST /api/reports/runs/{run_id}/google-sheets` creates and optionally shares
   a Google Sheet from that snapshot.
 - `POST /api/reports/runs/{run_id}/email` emails PDF/CSV attachments and an

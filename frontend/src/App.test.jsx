@@ -585,6 +585,25 @@ describe('App shell and workflows', () => {
     expect(screen.getByRole('button', { name: 'Refresh Items' })).toBeInTheDocument();
   });
 
+  it('loads the item master once with server pagination', async () => {
+    const rows = Array.from({ length: 120 }, (_, index) => ({
+      ...item,
+      id: index + 1,
+      SKU: `ITEM-${String(index + 1).padStart(3, '0')}`,
+      Description: `Item master row ${index + 1}`,
+    }));
+    mockItemsFeed = pagedItemsFeed(rows);
+    window.location.hash = '#items';
+    render(<App />);
+
+    expect(await screen.findByText('ITEM-001')).toBeInTheDocument();
+    expect(screen.getByText('Showing 1–50 of 120 items')).toBeInTheDocument();
+    const itemRequests = fetch.mock.calls.map(([url]) => new URL(String(url))).filter((url) => url.pathname === '/api/items');
+    expect(itemRequests.length).toBeGreaterThan(0);
+    expect(itemRequests.every((url) => url.searchParams.get('page') === '1' && url.searchParams.get('page_size') === '50')).toBe(true);
+    expect(itemRequests.some((url) => !url.searchParams.has('page'))).toBe(false);
+  });
+
   it('invalidates an item import preview when the selected CSV changes', async () => {
     const user = userEvent.setup();
     fetch.mockImplementation((url) => {
@@ -914,6 +933,11 @@ describe('App shell and workflows', () => {
     render(<App />);
 
     const modes = await screen.findByRole('navigation', { name: 'Receiving modes' });
+    const itemRequest = fetch.mock.calls
+      .map(([url]) => new URL(String(url)))
+      .find((url) => url.pathname === '/api/items');
+    expect(itemRequest.searchParams.has('page')).toBe(false);
+    expect(itemRequest.searchParams.has('page_size')).toBe(false);
     expect(within(modes).getByRole('link', { name: 'Direct Receiving' })).toHaveAttribute('aria-current', 'page');
     expect(within(modes).getByRole('link', { name: 'Bulk Receiving Session' })).not.toHaveAttribute('aria-current');
     expect(within(modes).getByRole('link', { name: 'Receipt History' })).not.toHaveAttribute('aria-current');
@@ -1385,6 +1409,18 @@ describe('App shell and workflows', () => {
     filters = document.querySelector('.insights-filter-card');
     expect(within(filters).getByLabelText('Customer Email')).toBeInTheDocument();
     expect(within(filters).queryByLabelText('Payment Method')).not.toBeInTheDocument();
+  });
+
+  it('keeps the verified Insights result visible while draft filters are edited', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/insights/overview';
+    render(<App />);
+
+    expect(await screen.findByText('DOG-FOOD')).toBeInTheDocument();
+    const filters = document.querySelector('.insights-filter-card');
+    await user.type(within(filters).getByLabelText('Brand'), 'Acana');
+
+    expect(screen.getByText('DOG-FOOD')).toBeInTheDocument();
   });
 
   it('loads selected Insights tabs on demand without rendering every dashboard table', async () => {
