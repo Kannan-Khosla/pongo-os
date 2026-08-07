@@ -43,9 +43,14 @@ ITEM_SORT_COLUMNS = {
 }
 
 DATA_QUALITY_FILTERS = {
+    "missing_title",
     "missing_barcode",
     "missing_brand",
+    "missing_category",
     "missing_cost",
+    "missing_image",
+    "duplicate_sku",
+    "duplicate_barcode",
     "unmapped",
     "receiving",
     "missing_location",
@@ -104,34 +109,8 @@ def build_items_statement(
         statement = statement.where(InventoryItem.sellable < 0)
     quality_filters = parse_data_quality_filters(data_quality)
     if quality_filters:
-        predicates = []
-        if "missing_barcode" in quality_filters:
-            predicates.append(func.trim(func.coalesce(InventoryItem.barcode, "")) == "")
-        if "missing_brand" in quality_filters:
-            predicates.append(func.trim(func.coalesce(InventoryItem.brand, "")) == "")
-        if "missing_cost" in quality_filters:
-            predicates.append(InventoryItem.unit_cost.is_(None))
-        if "unmapped" in quality_filters:
-            predicates.append(InventoryItem.woo_product_id.is_(None))
-        if "receiving" in quality_filters:
-            receiving_location = and_(
-                InventoryItemLocation.active.is_(True),
-                func.lower(func.trim(func.coalesce(InventoryItemLocation.inventory_location, ""))) == "receiving",
-            )
-            predicates.append(
-                or_(
-                    func.lower(func.trim(func.coalesce(InventoryItem.inventory_location, ""))) == "receiving",
-                    InventoryItem.locations.any(receiving_location),
-                )
-            )
-        if "missing_location" in quality_filters:
-            usable_location = and_(
-                InventoryItemLocation.active.is_(True),
-                func.trim(func.coalesce(InventoryItemLocation.warehouse, "")) != "",
-                func.trim(func.coalesce(InventoryItemLocation.inventory_location, "")) != "",
-            )
-            predicates.append(~InventoryItem.locations.any(usable_location))
-        statement = statement.where(or_(*predicates))
+        predicates = data_quality_predicates()
+        statement = statement.where(or_(*(predicates[key] for key in quality_filters)))
     return statement.order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())
 
 
@@ -143,6 +122,26 @@ def parse_data_quality_filters(value: str | None) -> set[str]:
     if invalid:
         raise HTTPException(status_code=422, detail=f"Unsupported data_quality filter: {', '.join(sorted(invalid))}")
     return filters
+
+
+def data_quality_predicates() -> dict[str, object]:
+    duplicate_skus = select(func.lower(func.trim(InventoryItem.sku))).where(func.trim(func.coalesce(InventoryItem.sku, "")) != "").group_by(func.lower(func.trim(InventoryItem.sku))).having(func.count(InventoryItem.id) > 1)
+    duplicate_barcodes = select(func.lower(func.trim(InventoryItem.barcode))).where(func.trim(func.coalesce(InventoryItem.barcode, "")) != "").group_by(func.lower(func.trim(InventoryItem.barcode))).having(func.count(InventoryItem.id) > 1)
+    receiving_location = and_(InventoryItemLocation.active.is_(True), func.lower(func.trim(func.coalesce(InventoryItemLocation.inventory_location, ""))) == "receiving")
+    usable_location = and_(InventoryItemLocation.active.is_(True), func.trim(func.coalesce(InventoryItemLocation.warehouse, "")) != "", func.trim(func.coalesce(InventoryItemLocation.inventory_location, "")) != "")
+    return {
+        "missing_title": func.trim(func.coalesce(InventoryItem.woo_name, InventoryItem.description, "")) == "",
+        "missing_barcode": func.trim(func.coalesce(InventoryItem.barcode, "")) == "",
+        "missing_brand": func.trim(func.coalesce(InventoryItem.brand, "")) == "",
+        "missing_category": func.trim(func.coalesce(InventoryItem.category, "")) == "",
+        "missing_cost": InventoryItem.unit_cost.is_(None),
+        "missing_image": func.trim(func.coalesce(InventoryItem.image_url, "")) == "",
+        "duplicate_sku": func.lower(func.trim(InventoryItem.sku)).in_(duplicate_skus),
+        "duplicate_barcode": func.lower(func.trim(InventoryItem.barcode)).in_(duplicate_barcodes),
+        "unmapped": InventoryItem.woo_product_id.is_(None),
+        "receiving": or_(func.lower(func.trim(func.coalesce(InventoryItem.inventory_location, ""))) == "receiving", InventoryItem.locations.any(receiving_location)),
+        "missing_location": ~InventoryItem.locations.any(usable_location),
+    }
 
 
 def get_open_order_totals(db: Session, item_ids: list[int]) -> dict[int, dict[str, float | int]]:
@@ -279,6 +278,42 @@ def list_items(
     )
 
 
+@router.get("/data-quality")
+def get_items_data_quality(active: bool | None = True, db: Session = Depends(get_db)) -> dict:
+    labels = {
+        "missing_title": ("Missing product name", "Add a clear product name before this item is used operationally."),
+        "missing_barcode": ("Missing barcode", "Add a barcode for reliable scanning and receiving."),
+        "missing_brand": ("Missing brand", "Add the manufacturer or retail brand."),
+        "missing_category": ("Missing category", "Assign a category so staff can find and report on this item."),
+        "missing_cost": ("Missing unit cost", "Add a cost for inventory valuation and margin reporting."),
+        "missing_image": ("Missing image", "Add a product image for faster visual verification."),
+        "duplicate_sku": ("Duplicate SKU", "Resolve duplicate item codes before importing or syncing."),
+        "duplicate_barcode": ("Duplicate barcode", "Give each physical product a unique barcode."),
+        "unmapped": ("Not connected to WooCommerce", "Connect storefront items only when they are ready to sync."),
+        "receiving": ("Still in Receiving", "Move received stock to its storage location."),
+        "missing_location": ("Missing location", "Assign an active warehouse location."),
+    }
+    predicates = data_quality_predicates()
+    scope = InventoryItem.active.is_(active) if active is not None else None
+    total_statement = select(func.count(InventoryItem.id))
+    if scope is not None:
+        total_statement = total_statement.where(scope)
+    total = int(db.scalar(total_statement) or 0)
+    issues = []
+    for key, predicate in predicates.items():
+        statement = select(func.count(InventoryItem.id)).where(predicate)
+        if scope is not None:
+            statement = statement.where(scope)
+        count = int(db.scalar(statement) or 0)
+        issues.append({"key": key, "label": labels[key][0], "description": labels[key][1], "count": count, "severity": "critical" if key in {"duplicate_sku", "duplicate_barcode"} else "attention"})
+    affected_statement = select(func.count(InventoryItem.id)).where(or_(*predicates.values()))
+    if scope is not None:
+        affected_statement = affected_statement.where(scope)
+    affected = int(db.scalar(affected_statement) or 0)
+    complete = max(0, total - affected)
+    return {"total_items": total, "complete_items": complete, "items_needing_attention": affected, "completion_percent": round((complete / total) * 100) if total else 100, "issues": issues}
+
+
 @router.get("/export")
 def export_items(
     search: str | None = None,
@@ -381,7 +416,7 @@ async def commit_items_import(file: UploadFile = File(...), db: Session = Depend
         total_rows=parsed.total_rows,
         successful_rows=0,
         failed_rows=len(parsed.errors),
-        status="completed",
+        status="completed_with_errors" if parsed.errors else "completed",
         created_by=actor,
         completed_at=datetime.now(timezone.utc),
     )

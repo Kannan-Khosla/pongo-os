@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'rea
 import { createPortal } from 'react-dom';
 import './ReportIntelligence.css';
 import { API_BASE_URL, apiFetch } from './api';
+import { ItemImportHistory, ItemImportWorkspace } from './ItemImportWorkspace';
 import {
   ArrowLeft,
   BarChart3,
@@ -19,6 +20,8 @@ import {
   Edit3,
   EllipsisVertical,
   Filter,
+  FileSpreadsheet,
+  History,
   LayoutDashboard,
   Link2,
   MapPin,
@@ -517,7 +520,7 @@ const pageMeta = {
   },
   items: {
     title: 'Items',
-    kicker: 'Item master',
+    kicker: 'Items',
     tabs: [
       { label: 'New Item', href: '#/items/new' },
       { label: 'All Items', href: '#items' },
@@ -770,7 +773,7 @@ const genericRows = [
 
 const dashboardCards = [
   ['Orders', '0', 'Open order queue', ShoppingCart],
-  ['Items', '0', 'Item master records', PackageSearch],
+  ['Items', '0', 'Inventory items', PackageSearch],
   ['Low Stock', '0', 'Needs review', TriangleAlert],
   ['Received Today', '0', 'Receipt sessions', PackagePlus],
 ];
@@ -1046,6 +1049,12 @@ function parseHashRoute() {
   }
   if (path === 'items/new') {
     return { pageId: 'items', itemView: 'new' };
+  }
+  if (path === 'items/import') {
+    return { pageId: 'items', itemView: 'import', importPreviewId: query.get('preview') || '' };
+  }
+  if (path === 'items/imports') {
+    return { pageId: 'items', itemView: 'import-history' };
   }
   if (path.startsWith('items/')) {
     return { pageId: 'items', itemView: 'detail', itemId: path.split('/')[1] };
@@ -4255,6 +4264,12 @@ function insightRowsForTab(tabId, data) {
 }
 
 function ItemsPage({ route, items, pagination, itemsLoading, itemsError, onLoadItems, onSaveItem, onCloneItem }) {
+  if (route.itemView === 'import') {
+    return <ItemImportWorkspace initialPreviewId={route.importPreviewId} />;
+  }
+  if (route.itemView === 'import-history') {
+    return <ItemImportHistory />;
+  }
   if (route.itemView === 'new') {
     return <ItemDetail item={emptyItem} onSave={onSaveItem} onClone={onCloneItem} isNew />;
   }
@@ -5171,7 +5186,7 @@ function LocationsList({ locations, loading, error, onLoadLocations }) {
           </button>
         </div>
       </div>
-      <div className="csv-note">Location import/export uses the canonical Warehouse, Location Code, and Location Name CSV foundation.</div>
+      <div className="csv-note">Location import/export uses the required Warehouse, Location Code, and Location Name columns.</div>
       {error && <div className="api-error">{error}</div>}
       {loading && <div className="loading-strip">Loading backend locations...</div>}
       <LocationsTable locations={locations} />
@@ -5305,7 +5320,6 @@ function LocationDetail({ location, onSave, isNew = false }) {
 }
 
 function ItemsList({ items, pagination = emptyItemsPagination, loading, error, onLoadItems }) {
-  const [importOpen, setImportOpen] = useState(false);
   const [mappingOpen, setMappingOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [visibleColumns, setVisibleColumns] = useState(ITEM_DEFAULT_VISIBLE_COLUMNS);
@@ -5318,12 +5332,14 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
   const [message, setMessage] = useState('');
   const [bulkOpen, setBulkOpen] = useState(false);
   const [remapOpen, setRemapOpen] = useState(false);
+  const [dataQuality, setDataQuality] = useState(null);
   const [filters, setFilters] = useState({
     search: '',
     category: '',
     brand: '',
     status: 'active',
     stockStatus: '',
+    dataQuality: '',
     includeNonInventory: true,
   });
   const [searchDraft, setSearchDraft] = useState('');
@@ -5349,6 +5365,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
 
   useEffect(() => {
     loadSavedViews();
+    loadDataQuality();
   }, []);
 
   const displayedItems = useMemo(() => filterItems(items, filters), [items, filters]);
@@ -5367,8 +5384,18 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
       brand: '',
       status: 'active',
       stockStatus: '',
+      dataQuality: '',
       includeNonInventory: true,
     });
+  }
+
+  async function loadDataQuality() {
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/api/items/data-quality?active=true`);
+      if (response.ok) setDataQuality(await response.json());
+    } catch {
+      setDataQuality(null);
+    }
   }
 
   async function loadSavedViews() {
@@ -5447,43 +5474,40 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     await onLoadItems({ ...filters, page, pageSize });
   }
 
+  const filtersChanged = Boolean(filters.search || filters.category || filters.brand || filters.stockStatus || filters.dataQuality || filters.status !== 'active' || !filters.includeNonInventory);
+  const topQualityIssues = (dataQuality?.issues || []).filter((issue) => issue.count > 0).sort((left, right) => right.count - left.count).slice(0, 5);
+
   return (
     <section className="content-panel items-page-pro">
       <div className="items-command-bar">
         <div className="items-command-header">
           <div>
-            <h2>Item Master</h2>
-            <p>{displayedItems.length} visible item(s)</p>
+            <h2>Item catalog</h2>
+            <p>{formatNumber(pagination.total)} matching item(s) · {formatNumber(selectedIds.length)} selected</p>
           </div>
           <div className="button-row items-actions">
-            <button className="primary-button" onClick={() => setMappingOpen(true)} type="button">
-              <Link2 size={17} />
-              Import Mappings
-            </button>
-            <button className="muted-button" onClick={clearFilters} type="button">
-              Clear
-            </button>
-            <button className="action-button" onClick={() => onLoadItems({ ...filters, page, pageSize })} type="button">
-              <RefreshCw size={17} />
-              Refresh Items
-            </button>
-            <button className="action-button" onClick={() => setRemapOpen(true)} type="button">
-              <Link2 size={17} />
-              Remap Exceptions
-            </button>
-            <button className="action-button" disabled={!selectedIds.length} onClick={() => setBulkOpen(true)} type="button">
-              <Edit3 size={17} />
-              Bulk Edit
-            </button>
-            <button className="action-button" onClick={() => setImportOpen(true)} type="button">
-              <Upload size={17} />
-              Import CSV
-            </button>
-            <button className="action-button" onClick={exportEnrichmentCsv} type="button">
-              <Download size={17} />
-              Export Enrichment Template
-            </button>
-            <button className="muted-button" onClick={() => exportItemsCsv(filters)} type="button">Standard Export</button>
+            <a className="primary-button" href="#/items/new"><Plus size={17} /> Add item</a>
+            <a className="action-button items-import-button" href="#/items/import"><Upload size={17} /> Import items</a>
+            <details className="items-command-menu">
+              <summary className="action-button">Export <ChevronDown size={16} /></summary>
+              <div className="items-command-popover">
+                <button onClick={() => exportItemsCsv(filters)} type="button"><Download size={16} /><span><strong>Current view</strong><small>Export the current filters</small></span></button>
+                <button onClick={() => exportItemsCsv({})} type="button"><Download size={16} /><span><strong>All items</strong><small>Export the complete item list</small></span></button>
+                <a href={`${API_BASE_URL}/api/items/import/templates/update_items?include_existing=true`}><FileSpreadsheet size={16} /><span><strong>Editable item details</strong><small>Update existing metadata</small></span></a>
+                <a href={`${API_BASE_URL}/api/items/import/templates/add_items`}><FileSpreadsheet size={16} /><span><strong>New-item template</strong><small>Start a clean add-items file</small></span></a>
+              </div>
+            </details>
+            <details className="items-command-menu">
+              <summary className="action-button">More <ChevronDown size={16} /></summary>
+              <div className="items-command-popover align-right">
+                <button onClick={() => { onLoadItems({ ...filters, page, pageSize }); loadDataQuality(); }} type="button"><RefreshCw size={16} /><span><strong>Refresh items</strong><small>Reload items and quality checks</small></span></button>
+                <a href="#/items/imports"><History size={16} /><span><strong>Import history</strong><small>Jobs, changes, and failures</small></span></a>
+                <button onClick={() => setMappingOpen(true)} type="button"><Link2 size={16} /><span><strong>Sync WooCommerce catalog</strong><small>Preview storefront mappings</small></span></button>
+                <button onClick={() => setRemapOpen(true)} type="button"><Link2 size={16} /><span><strong>Fix connection exceptions</strong><small>Resolve unmatched products</small></span></button>
+              </div>
+            </details>
+            {!!selectedIds.length && <button className="action-button" onClick={() => setBulkOpen(true)} type="button"><Edit3 size={17} /> Bulk edit {selectedIds.length}</button>}
+            {filtersChanged && <button className="muted-button" onClick={clearFilters} type="button">Clear filters</button>}
           </div>
         </div>
         <div className="items-filter-grid-pro">
@@ -5510,6 +5534,12 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
           </label>
         </div>
       </div>
+      {dataQuality && (
+        <section className="items-quality-strip" aria-label="Item data quality">
+          <div className="items-quality-score"><span>{dataQuality.completion_percent}%</span><div><strong>Item data completeness</strong><small>{formatNumber(dataQuality.items_needing_attention)} active item(s) need attention</small></div></div>
+          <div className="items-quality-issues">{topQualityIssues.map((issue) => <button className={filters.dataQuality === issue.key ? 'active' : ''} key={issue.key} onClick={() => updateFilter('dataQuality', filters.dataQuality === issue.key ? '' : issue.key)} title={issue.description} type="button"><strong>{formatNumber(issue.count)}</strong><span>{issue.label}</span></button>)}</div>
+        </section>
+      )}
       <div className="items-view-card">
         <div className="items-view-controls">
           <label className="field compact-field">
@@ -5542,7 +5572,6 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
       {message && <div className="api-success">{message}</div>}
       {loading && <div className="loading-strip">Loading backend items...</div>}
       <ItemsTable items={displayedItems} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: displayedItems.length, noun: 'items', onPageChange: setPage, onPageSizeChange: (nextPageSize) => { setPageSize(nextPageSize); setPage(1); } }} visibleColumns={visibleColumns} selectedIds={selectedIds} onToggleSelected={toggleSelected} onToggleAll={toggleAllDisplayed} onOpenDetail={openDetail} />
-      {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImported={() => onLoadItems({ ...filters, page, pageSize })} />}
       {mappingOpen && <ImportMappingsModal onClose={() => setMappingOpen(false)} onImported={() => onLoadItems({ ...filters, page, pageSize })} />}
       {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onRefresh={() => openDetail(detailId)} />}
       {bulkOpen && <BulkEditModal selectedIds={selectedIds} onCommitted={finishBulkEdit} onClose={() => setBulkOpen(false)} />}
@@ -5589,8 +5618,8 @@ function ImportMappingsModal({ onClose, onImported }) {
     <div className="modal-backdrop" role="presentation">
       <section className="import-modal mapping-import-modal" role="dialog" aria-modal="true" aria-label="Import WooCommerce mappings">
         <div className="modal-header">
-          <div><h2>Import Mappings</h2><p>One local stock item per simple product or purchasable variation. Variable parents stay informational.</p></div>
-          <button className="icon-button modal-close" onClick={onClose} aria-label="Close import mappings" type="button"><X size={20} /></button>
+          <div><h2>WooCommerce connections</h2><p>One local stock item per simple product or purchasable variation. Variable parents stay informational.</p></div>
+          <button className="icon-button modal-close" onClick={onClose} aria-label="Close WooCommerce connections" type="button"><X size={20} /></button>
         </div>
         <div className="import-steps">
           <section className="import-step mapping-workflow-intro">
@@ -6365,7 +6394,7 @@ function LocalRemapSearchModal({ onClose }) {
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="import-modal" role="dialog" aria-modal="true" aria-label="Remap WooCommerce exceptions">
-        <div className="modal-header"><div><h2>Remap Exceptions</h2><p>Search a Woo record, select a local item, preview conflicts, then commit locally. Stock and WooCommerce stay unchanged.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close remap exceptions" title="Close" type="button"><X size={20} /></button></div>
+        <div className="modal-header"><div><h2>Fix WooCommerce connections</h2><p>Search a Woo record, select a local item, preview conflicts, then save the local connection. Stock and WooCommerce stay unchanged.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close WooCommerce connection fixes" title="Close" type="button"><X size={20} /></button></div>
         <div className="import-steps">
           <section className="import-step"><h3>1. Choose WooCommerce record</h3><div className="scanner-input-row"><input value={remoteQuery} onChange={(event) => setRemoteQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && searchRemote()} placeholder="Search product, variation, SKU, or Woo ID" /><button className="primary-button" onClick={() => searchRemote()} type="button"><Search size={16} />Search Woo Records</button></div>
             <TableShell caption={`${candidates.length} Woo record(s)`} columns={['Product', 'Parent / Attributes', 'SKU', 'Woo Identity', 'Stock Snapshot', 'Status', 'Action']}>
@@ -11319,7 +11348,7 @@ function WooRemapPanel({ candidates, mappings, preview, message, loading, onPrev
         </div>
         <button className="muted-button" onClick={onRefresh} disabled={loading} type="button"><RefreshCw size={17} />Refresh Remap</button>
       </div>
-      <div className="csv-note">This only changes local mapping metadata. Manual Pongo OS fields and quantities are preserved. For full SKU/barcode/name/brand search, use Items → Remap Exceptions.</div>
+      <div className="csv-note">This only changes local connection metadata. Manual Pongo OS fields and quantities are preserved. For full SKU/barcode/name/brand search, use Items → Fix WooCommerce connections.</div>
       {message && <div className="success-strip">{message}</div>}
       <div className="receiving-form route-form">
         <div className="receiving-header-fields route-header-fields">
@@ -11483,12 +11512,18 @@ function TablePager({ pagination }) {
 
 function getHeaderMeta(route, items) {
   if (route.pageId === 'items') {
+    if (route.itemView === 'import') {
+      return { title: 'Import Items', kicker: 'Guided CSV workspace', tabs: [] };
+    }
+    if (route.itemView === 'import-history') {
+      return { title: 'Import History', kicker: 'Item import audit trail', tabs: [] };
+    }
     if (route.itemView === 'new') {
-      return { title: 'New Item', kicker: 'Item master entry', tabs: [] };
+      return { title: 'New Item', kicker: 'Item', tabs: [] };
     }
     if (route.itemView === 'detail') {
       const item = items.find((candidate) => String(candidate.id) === String(route.itemId));
-      return { title: item ? `Edit ${item.SKU}` : 'Edit Item', kicker: 'Item master entry', tabs: [] };
+      return { title: item ? `Edit ${item.SKU}` : 'Edit Item', kicker: 'Item', tabs: [] };
     }
     return pageMeta.items;
   }

@@ -12,6 +12,7 @@ from app.models.allocations import AllocationLine
 from app.models.cycle_counts import CycleCountLine
 from app.models.fulfillments import FulfillmentLine
 from app.models.item_notes import ItemNote
+from app.models.imports import ItemImportChange
 from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation, InventoryLocation, InventoryTransferLine, StockAdjustmentLine, StockMovement
 from app.models.orders import OrderItem
 from app.models.picks import PickLine
@@ -297,6 +298,18 @@ def build_item_activity(
         )
     for note in db.scalars(select(ItemNote).where(ItemNote.inventory_item_id == item_id)).all():
         rows.append(activity_row(id=f"note-{note.id}", type="note", title=f"{note.note_type or 'General'} note", description=note.note, created_at=note.created_at, reference_type="item_note", reference_id=note.id))
+    for change in db.scalars(select(ItemImportChange).where(ItemImportChange.item_id == item_id)).all():
+        rows.append(
+            activity_row(
+                id=f"item-import-change-{change.id}",
+                type="metadata_import",
+                title=f"{change.field_name.replace('_', ' ').title()} imported",
+                description=f"{change.previous_value!s} → {change.new_value!s} from {change.source_filename or 'CSV'}",
+                created_at=change.created_at,
+                reference_type="import_job",
+                reference_id=change.import_job_id,
+            )
+        )
     for receipt in db.scalars(select(ReceiptItem).where(ReceiptItem.inventory_item_id == item_id)).all():
         rows.append(activity_row(id=f"receipt-{receipt.id}", type="receipt", title="Receipt line", description=receipt.notes, quantity_change=receipt.quantity_received or receipt.quantity, warehouse=receipt.warehouse, inventory_location=receipt.inventory_location_name, reference_type="receipt", reference_id=receipt.receipt_id, reference_number=receipt.po_or_receipt_number, created_at=receipt.created_at, severity="success"))
     for count in db.scalars(select(CycleCountLine).where(CycleCountLine.item_id == item_id)).all():

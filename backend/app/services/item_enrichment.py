@@ -336,6 +336,7 @@ def commit_enrichment(csv_text: str, db: Session, *, file_name: str | None, impo
         updated += 1
     job.successful_rows = updated + unchanged
     job.failed_rows = failed
+    job.status = "failed" if not job.successful_rows and failed else ("completed_with_errors" if failed else "completed")
     db.commit()
     return {"import_job_id": job.id, "total_rows": job.total_rows, "updated_count": updated, "unchanged_count": unchanged, "created_count": 0, "skipped_count": parsed.skipped_count, "failed_count": failed, "conflict_count": count_action(parsed, "conflict"), "unmatched_count": count_action(parsed, "unmatched"), "errors": [error for row in parsed.rows for error in serialize_errors(row)]}
 

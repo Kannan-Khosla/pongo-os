@@ -359,6 +359,9 @@ def set_opening_balance(
     inventory_location: str,
     idempotency_key: str,
     created_by: str | None = "system",
+    reference_type: str = "opening_balance",
+    reference_id: int | None = None,
+    reason: str = "Explicit opening balance",
 ) -> dict:
     payload = {
         "item_id": item_id,
@@ -367,6 +370,9 @@ def set_opening_balance(
         "warehouse": warehouse,
         "inventory_location": inventory_location,
         "created_by": created_by,
+        "reference_type": reference_type,
+        "reference_id": reference_id,
+        "reason": reason,
     }
     mutation, replay = begin_stock_mutation(db, "opening_balance", idempotency_key, payload)
     if replay is not None:
@@ -400,8 +406,9 @@ def set_opening_balance(
         old_item_stock,
         to_decimal(item.in_stock),
         unit_cost=item.unit_cost,
-        reason="Explicit opening balance",
-        reference_type="opening_balance",
+        reason=reason,
+        reference_type=reference_type,
+        reference_id=reference_id,
         reference_number=idempotency_key,
         created_by=created_by,
     )
@@ -422,9 +429,10 @@ def set_opening_balance(
             new_sellable=to_decimal(item.sellable),
             warehouse=row.warehouse,
             inventory_location=row.inventory_location,
-            reference_type="opening_balance",
+            reference_type=reference_type,
+            reference_id=reference_id,
             reference_number=idempotency_key,
-            notes="Explicit audited opening balance",
+            notes=reason,
             created_by=created_by or "system",
         )
     )

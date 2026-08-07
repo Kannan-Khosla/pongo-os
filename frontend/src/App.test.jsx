@@ -198,6 +198,18 @@ function csvResponse(text) {
   return Promise.resolve({ ok: true, blob: () => Promise.resolve(new Blob([text], { type: 'text/csv' })), text: () => Promise.resolve(text) });
 }
 
+const mockImportSchema = {
+  schema_version: 'test.1',
+  max_file_bytes: 10485760,
+  outcomes: [
+    { key: 'add_items', label: 'Add new items', description: 'Create products that do not yet exist.', changes: 'Creates item records and metadata.', does_not_change: 'Inventory quantities and movement history will not change.', required_fields: ['sku'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['add_items'] }, { key: 'product_name', label: 'Product name', type: 'text', required_for: [] }] },
+    { key: 'update_items', label: 'Update item details', description: 'Update existing products by SKU.', changes: 'Updates approved metadata.', does_not_change: 'On hand, allocated, available, and movement history will not change.', required_fields: ['sku'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_items'] }, { key: 'product_name', label: 'Product name', type: 'text', required_for: [] }] },
+    { key: 'starting_inventory', label: 'Set starting inventory', description: 'Record physical stock at onboarding.', changes: 'Creates audited starting-inventory movements.', does_not_change: 'Existing operational inventory is never overwritten.', required_fields: ['sku', 'starting_quantity', 'starting_warehouse', 'starting_location'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_quantity', label: 'Starting quantity', type: 'decimal', required_for: ['starting_inventory'] }, { key: 'starting_warehouse', label: 'Warehouse', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_location', label: 'Inventory location', type: 'text', required_for: ['starting_inventory'] }] },
+  ],
+};
+
+const mockDataQuality = { total_items: 1, complete_items: 0, items_needing_attention: 1, completion_percent: 0, issues: [{ key: 'missing_image', label: 'Missing image', description: 'Add an image.', count: 1, severity: 'attention' }] };
+
 function mockFetch(url) {
   const target = String(url);
   if (target.includes('/api/integrations/woocommerce/webhooks/events')) return json(typeof mockWebhookFeed === 'function' ? mockWebhookFeed(target) : mockWebhookFeed);
@@ -217,6 +229,9 @@ function mockFetch(url) {
   if (target.includes('/api/insights/overview')) return json(mockInsightOverview);
   if (target.includes('/api/insights/')) return json({ dashboard: 'generic', summary: { total: 0 }, rows: [], data_quality: [] });
   if (target.includes('/api/dashboard')) return json({ inventory_health: {}, order_operations: {}, routes: {}, warnings: [], activity: [] });
+  if (target.includes('/api/items/import/schema')) return json(mockImportSchema);
+  if (target.includes('/api/items/data-quality')) return json(mockDataQuality);
+  if (target.includes('/api/import-jobs')) return json([]);
   if (target.includes('/api/items/enrichment/export')) return csvResponse('Pongo Item ID,Woo Product ID,Woo Variation ID,Woo Mapping Type,Woo Mapping Status,SKU\n1,101,,simple,synced,SMOKE-001\n');
   if (target.includes('/api/items/enrichment/preview')) return json({ total_rows: 1, valid_rows: 1, invalid_rows: 0, create_count: 0, update_count: 1, unchanged_count: 0, conflict_count: 0, unmatched_count: 0, warnings: [], errors: [], preview_rows: [{ row_number: 2, action: 'update', sku: 'SMOKE-001', barcode: 'SMOKE001', match_method: 'pongo_item_id', fields_changing: ['Brand'], warnings: [], errors: [], raw_row: { SKU: 'SMOKE-001' } }] });
   if (target.match(/\/api\/items\/1$/)) return json({ item, stock_by_location: [], recent_activity: [] });
@@ -462,6 +477,7 @@ describe('App shell and workflows', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     window.location.hash = '';
+    window.sessionStorage.clear();
   });
 
   it('renders the new business Dashboard as the default landing page', async () => {
@@ -481,7 +497,7 @@ describe('App shell and workflows', () => {
     expect(document.querySelectorAll('.nav-link.active')).toHaveLength(1);
 
     await user.click(within(nav).getByRole('link', { name: /Items/i }));
-    await screen.findByRole('heading', { name: 'Items' });
+    await screen.findByRole('heading', { name: 'Items', level: 1 });
     expect(document.querySelectorAll('.nav-link.active')).toHaveLength(1);
   });
 
@@ -573,16 +589,16 @@ describe('App shell and workflows', () => {
     expect(searchInput).toHaveValue('70002');
   });
 
-  it('shows the Items mapping and enrichment workflow actions', async () => {
+  it('shows the focused Items command bar and data-quality queue', async () => {
     window.location.hash = '#items';
     render(<App />);
 
     await screen.findByText('Smoke Test Item');
-    expect(screen.getByRole('button', { name: 'Import Mappings' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Export Enrichment Template' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import CSV' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Remap Exceptions' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Refresh Items' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Add item' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Import items' })).toHaveAttribute('href', '#/items/import');
+    expect(screen.getByText('Export')).toBeInTheDocument();
+    expect(screen.getByText('More')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Item data quality' })).toHaveTextContent('Missing image');
   });
 
   it('loads the item master once with server pagination', async () => {
@@ -604,25 +620,31 @@ describe('App shell and workflows', () => {
     expect(itemRequests.some((url) => !url.searchParams.has('page'))).toBe(false);
   });
 
-  it('invalidates an item import preview when the selected CSV changes', async () => {
+  it('opens the dedicated item import workspace and persists a server preview', async () => {
     const user = userEvent.setup();
-    fetch.mockImplementation((url) => {
-      if (String(url).includes('/api/items/import/preview')) return json({ total_rows: 1, valid_rows: 1, invalid_rows: 0, create_count: 1, update_count: 0, warnings: [], errors: [], preview_rows: [] });
+    fetch.mockImplementation((url, init = {}) => {
+      const target = String(url);
+      if (target.includes('/api/items/import/schema')) return json(mockImportSchema);
+      if (target.endsWith('/api/items/import/previews') && init.method === 'POST') return json({
+        preview_id: 'preview-1', outcome: 'add_items', outcome_content: mockImportSchema.outcomes[0],
+        file: { name: 'items.csv', size: 20, row_count: 1, header_count: 2 }, status: 'ready',
+        source_columns: [{ source: 'SKU', destination: 'sku', confidence: 'exact', samples: ['A'] }, { source: 'Product name', destination: 'product_name', confidence: 'exact', samples: ['Food'] }],
+        mapping: { SKU: 'sku', 'Product name': 'product_name' }, options: { allow_blank_clears: false },
+        summary: { total_rows: 1, ready_count: 1, create_count: 1, update_count: 0, no_changes_count: 0 },
+      });
       return mockFetch(url);
     });
-    window.location.hash = '#items';
+    window.location.hash = '#/items/import';
     render(<App />);
 
-    await screen.findByText('Smoke Test Item');
-    await user.click(screen.getByRole('button', { name: 'Import CSV' }));
-    const dialog = screen.getByRole('dialog', { name: 'Import CSV' });
-    const input = dialog.querySelector('input[type="file"]');
-    await user.upload(input, new File(['SKU\nA'], 'a.csv', { type: 'text/csv' }));
-    await user.click(within(dialog).getByRole('button', { name: 'Preview CSV' }));
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Import Valid Rows' })).toBeEnabled());
-
-    await user.upload(input, new File(['SKU\nB'], 'b.csv', { type: 'text/csv' }));
-    expect(within(dialog).getByRole('button', { name: 'Import Valid Rows' })).toBeDisabled();
+    await screen.findByRole('heading', { name: 'What do you want this file to do?' });
+    await user.click(screen.getByRole('button', { name: /Add new items/i }));
+    await user.click(screen.getByRole('button', { name: /^Continue/i }));
+    const input = document.querySelector('.import-dropzone input[type="file"]');
+    await user.upload(input, new File(['SKU,Product name\nA,Food'], 'items.csv', { type: 'text/csv' }));
+    await user.click(screen.getByRole('button', { name: /Upload and match columns/i }));
+    expect(await screen.findByRole('heading', { name: 'Match your columns' })).toBeInTheDocument();
+    expect(window.sessionStorage.getItem('pongo.item-import.preview')).toBe('preview-1');
   });
 
   it('invalidates a location import preview when the selected CSV changes', async () => {
@@ -657,7 +679,7 @@ describe('App shell and workflows', () => {
 
     const itemRow = (await screen.findByText('Smoke Test Item')).closest('tr');
     await user.click(within(itemRow).getByRole('checkbox'));
-    await user.click(screen.getByRole('button', { name: 'Bulk Edit' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk edit 1' }));
     const dialog = screen.getByRole('dialog', { name: 'Bulk edit inventory items' });
     const brand = within(dialog).getByRole('textbox', { name: 'Brand' });
     await user.type(brand, 'Acana');
@@ -856,7 +878,8 @@ describe('App shell and workflows', () => {
     render(<App />);
     await screen.findByText('Smoke Test Item');
 
-    await user.click(screen.getByRole('button', { name: 'Import Mappings' }));
+    await user.click(screen.getByText('More'));
+    await user.click(screen.getByRole('button', { name: /Sync WooCommerce catalog/i }));
     const dialog = screen.getByRole('dialog', { name: 'Import WooCommerce mappings' });
     await user.click(within(dialog).getByRole('button', { name: /Start Import Preview/i }));
 
@@ -868,20 +891,17 @@ describe('App shell and workflows', () => {
     expect(within(dialog).getByText('Variable parent container is informational and will not become a stock item.')).toBeInTheDocument();
   });
 
-  it('offers enrichment mode with protected fields and opening stock off by default', async () => {
+  it('separates metadata updates from explicitly audited starting inventory', async () => {
     const user = userEvent.setup();
-    window.location.hash = '#items';
+    window.location.hash = '#/items/import';
     render(<App />);
-    await screen.findByText('Smoke Test Item');
+    await screen.findByRole('heading', { name: 'What do you want this file to do?' });
 
-    await user.click(screen.getByRole('button', { name: 'Import CSV' }));
-    const dialog = screen.getByRole('dialog', { name: 'Import CSV' });
-    await user.click(within(dialog).getByRole('button', { name: 'Enrich Woo-Mapped Items' }));
-
-    expect(within(dialog).getByText(/Protected Pongo\/Woo IDs/i)).toBeInTheDocument();
-    expect(within(dialog).getByRole('checkbox', { name: /Import opening stock/i })).not.toBeChecked();
-    expect(within(dialog).getByRole('button', { name: 'Export Enrichment Template' })).toBeInTheDocument();
-    expect(within(dialog).queryByPlaceholderText(/Scan/i)).not.toBeInTheDocument();
+    const update = screen.getByRole('button', { name: /Update item details/i });
+    expect(update).toHaveTextContent('On hand, allocated, available, and movement history will not change.');
+    const starting = screen.getByRole('button', { name: /Set starting inventory/i });
+    expect(starting).toHaveTextContent('Creates audited starting-inventory movements.');
+    expect(screen.queryByText(/closing stock/i)).not.toBeInTheDocument();
   });
 
   it('opens searchable remap selection without raw local database ID inputs', async () => {
@@ -890,7 +910,8 @@ describe('App shell and workflows', () => {
     render(<App />);
     await screen.findByText('Smoke Test Item');
 
-    await user.click(screen.getByRole('button', { name: 'Remap Exceptions' }));
+    await user.click(screen.getByText('More'));
+    await user.click(screen.getByRole('button', { name: /Fix connection exceptions/i }));
     const dialog = screen.getByRole('dialog', { name: 'Remap WooCommerce exceptions' });
     expect(within(dialog).getByPlaceholderText('Search product, variation, SKU, or Woo ID')).toBeInTheDocument();
     expect(within(dialog).getByPlaceholderText('Search SKU, barcode, product name, or brand')).toBeInTheDocument();

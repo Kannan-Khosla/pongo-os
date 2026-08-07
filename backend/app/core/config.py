@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     auth_lockout_minutes: int = Field(default=15, ge=1, le=1440, validation_alias=AliasChoices("AUTH_LOCKOUT_MINUTES", "auth_lockout_minutes"))
     registration_enabled: bool = Field(default=True, validation_alias=AliasChoices("REGISTRATION_ENABLED", "registration_enabled"))
     registration_access_code: str = Field(default="", validation_alias=AliasChoices("REGISTRATION_ACCESS_CODE", "registration_access_code"))
+    item_import_max_bytes: int = Field(default=10_485_760, ge=1_024, le=104_857_600, validation_alias=AliasChoices("ITEM_IMPORT_MAX_BYTES", "item_import_max_bytes"))
+    item_import_preview_ttl_hours: int = Field(default=24, ge=1, le=168, validation_alias=AliasChoices("ITEM_IMPORT_PREVIEW_TTL_HOURS", "item_import_preview_ttl_hours"))
     operations_alert_webhook_url: str = Field(default="", validation_alias=AliasChoices("OPERATIONS_ALERT_WEBHOOK_URL", "operations_alert_webhook_url"))
     operations_alert_failure_threshold: int = Field(default=3, ge=1, le=100, validation_alias=AliasChoices("OPERATIONS_ALERT_FAILURE_THRESHOLD", "operations_alert_failure_threshold"))
     backend_cors_origins: str = Field(

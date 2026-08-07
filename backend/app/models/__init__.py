@@ -3,7 +3,7 @@ from app.models.allocations import Allocation, AllocationLine
 from app.models.auth import AuthThrottle, User, UserSession
 from app.models.cycle_counts import CycleCount, CycleCountLine
 from app.models.fulfillments import Fulfillment, FulfillmentLine
-from app.models.imports import ImportError, ImportJob
+from app.models.imports import ImportError, ImportJob, ImportMappingProfile, ImportPreview, ImportPreviewRow, ItemImportChange
 from app.models.item_notes import ItemNote
 from app.models.inventory import (
     InventoryAuditEvent,
@@ -41,6 +41,10 @@ __all__ = [
     "FulfillmentLine",
     "ImportError",
     "ImportJob",
+    "ImportMappingProfile",
+    "ImportPreview",
+    "ImportPreviewRow",
+    "ItemImportChange",
     "ItemNote",
     "InventoryAuditEvent",
     "InventoryItem",

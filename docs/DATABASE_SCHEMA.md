@@ -1254,17 +1254,29 @@ Notes:
 
 Purpose: Track CSV imports.
 
-Current usage: item and location CSV commits create one `import_jobs` row with
-`import_type = items` or `import_type = locations`. Preview does not write
-import job rows.
+Current usage: legacy item/location commits and guided item-import commits. A
+guided job references its persisted preview, outcome, idempotency key, result,
+duration, and detailed row counters.
 
 Fields:
 - id
 - file_name
 - import_type
+- file_sha256
+- preview_id
+- outcome
+- idempotency_key
+- options_json
+- result_json
 - total_rows
 - successful_rows
 - failed_rows
+- created_rows
+- updated_rows
+- unchanged_rows
+- excluded_rows
+- starting_units
+- duration_ms
 - status
 - created_by
 - created_at
@@ -1277,6 +1289,9 @@ API usage:
 - `GET /api/import-jobs` lists jobs.
 - `GET /api/import-jobs/{id}` returns a job and row-level errors.
 - `GET /api/import-jobs/{id}/failed-rows` downloads failed rows as CSV.
+- `GET /api/import-jobs/{id}/source-file` downloads the captured source.
+- `GET /api/import-jobs/{id}/changes` returns field-level metadata changes.
+- `POST /api/import-jobs/{id}/rollback` safely restores eligible metadata.
 
 Index suggestions:
 - Index `import_type`, `status`, `created_by`, and `created_at`.
@@ -1296,6 +1311,11 @@ Fields:
 - sku
 - barcode
 - error_message
+- error_code
+- field_name
+- invalid_value
+- blocking
+- suggested_action
 - raw_row
 - created_at
 
@@ -1304,6 +1324,42 @@ Relationships:
 
 Index suggestions:
 - Index `import_job_id`, `row_number`, `sku`, and `barcode`.
+
+## import_previews
+
+Purpose: Durable, actor-scoped item-import preview and commit boundary.
+
+Stores the outcome, sanitized filename, exact source CSV, SHA-256, schema
+version, detected headers/columns, mapping, options, summary, state, actor,
+expiry, commit idempotency key, result, and optional import job reference.
+
+Rows are retained after commit for history, recovery, and audit. Preview state
+is `draft`, `ready`, `running`, `committed`, `cancelled`, or `expired`.
+
+## import_preview_rows
+
+Purpose: Immutable source rows plus mutable operator corrections and validation.
+
+Stores source/normalized/corrected values, resolved item id, source item hash,
+proposed before/after changes, structured issues, match method, state, and
+exclusion choice. `(preview_id, row_number)` is unique. SKU, barcode, product
+name, state, exclusion, and matched item are indexed for server-side filtering.
+
+## import_mapping_profiles
+
+Purpose: Reusable per-user, per-outcome source column mappings.
+
+Stores name, outcome, normalized source-header signature, original source
+headers, mapping JSON, actor, and timestamps. `(created_by, outcome, name)` is
+unique.
+
+## item_import_changes
+
+Purpose: Field-level audit and safe-rollback ledger for metadata imports.
+
+Stores import job/preview/item, SKU, model field, previous/new JSON values,
+source filename, outcome, optional mapping profile, actor, and timestamp. These
+records appear in item activity and are never stock movements.
 
 ## woocommerce_sync_runs
 

@@ -355,6 +355,73 @@ Export inventory item CSV.
 Implemented. Exports filtered rows using the exact canonical inventory CSV
 header order from `docs/CSV_COLUMNS.md`. Internal fields are not included.
 
+## Guided Item Import Workspace
+
+The Items UI uses the following authenticated, backend-owned contract. Full
+business rules and request flow are in `docs/ITEM_IMPORTS.md`.
+
+### GET /api/items/import/schema
+
+Returns the versioned outcomes, supported fields, labels, types, aliases,
+required fields, examples, upload limit, and preview lifetime.
+
+### GET /api/items/import/templates/{outcome}
+
+Returns an outcome-specific CSV. `outcome` is `add_items`, `update_items`, or
+`starting_inventory`. `include_existing=true` is supported only for
+`update_items` and exports editable metadata for existing items. Metadata
+templates never include inventory quantities.
+
+### POST /api/items/import/previews
+
+Accepts multipart `outcome` and `file`. Validates the upload boundary, persists
+the exact source, source hash, actor, detected columns, suggested mappings, and
+all normalized preview rows. Returns a resumable `preview_id` and summary.
+
+### GET /api/items/import/previews/{preview_id}
+
+Returns preview metadata, mapping, summary, expiry, status, and committed result.
+Previews are actor-scoped.
+
+### GET /api/items/import/previews/{preview_id}/rows
+
+Server-side row pagination and optional `state` / `search` filters. Page size is
+limited to 100.
+
+### PATCH /api/items/import/previews/{preview_id}/mapping
+
+Accepts the complete source-to-destination mapping, `allow_blank_clears`, and
+an optional mapping-profile id. Revalidates all rows.
+
+### PATCH /api/items/import/previews/{preview_id}/rows/{row_number}
+
+Accepts field-level `values` corrections and/or `excluded`. Revalidates the
+preview and preserves the original source row.
+
+### POST /api/items/import/previews/{preview_id}/revalidate
+
+Revalidates persisted rows against current item/location data.
+
+### POST /api/items/import/previews/{preview_id}/commit
+
+Requires JSON `idempotency_key`. Stops on a stale preview. Metadata commits are
+transactional and stock-invariant. Starting inventory delegates to the guarded
+opening-balance mutation and creates audited movement rows.
+
+### POST /api/items/import/previews/{preview_id}/cancel
+
+Marks an uncommitted preview cancelled.
+
+### /api/items/import/profiles
+
+Authenticated-user CRUD for reusable, outcome-specific mapping profiles:
+`GET`, `POST`, `PATCH /{profile_id}`, and `DELETE /{profile_id}`.
+
+### Legacy item import compatibility
+
+The following two endpoints are retained for canonical Zenventory-format files.
+New Items UI work must use the persisted preview endpoints above.
+
 ### POST /api/items/import/preview
 
 Preview a Zenventory-compatible item CSV import.
@@ -449,7 +516,8 @@ Accepted identifiers:
 
 List CSV import jobs, newest first.
 
-Implemented for item and location CSV imports.
+Implemented for item and location CSV imports. Supports `outcome`, `status`,
+`item_imports_only`, and bounded `limit` filters.
 
 ### GET /api/import-jobs/{id}
 
@@ -461,9 +529,23 @@ Implemented for item and location CSV imports.
 
 Download failed rows as CSV.
 
-Implemented. The CSV uses the canonical columns for the import type plus an
-`Error Message` column. This is intended for correcting failed import rows and
-retrying the import.
+Implemented. The CSV uses the fields for the import outcome plus Error Code,
+Error Field, Error Message, and Suggested action columns.
+
+### GET /api/import-jobs/{id}/source-file
+
+Downloads the exact UTF-8 source CSV captured by the guided preview.
+
+### GET /api/import-jobs/{id}/changes
+
+Returns field-level before/after metadata changes with item, filename, actor,
+and timestamp.
+
+### POST /api/import-jobs/{id}/rollback
+
+Guarded all-or-nothing rollback for completed `update_items` metadata. Refuses
+the rollback if any imported field has changed. Never deletes items or reverses
+inventory movements.
 
 ## WooCommerce Integration
 

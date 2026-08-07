@@ -30,6 +30,7 @@ def client():
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
+        test_client.test_engine = engine
         registration = test_client.post(
             "/api/auth/register",
             json={"email": "pytest@example.com", "display_name": "Pytest", "password": "correct-horse-battery-staple"},

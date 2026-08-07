@@ -1,0 +1,132 @@
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, expect, it, vi } from 'vitest';
+import { ItemImportHistory, ItemImportWorkspace } from './ItemImportWorkspace';
+
+const schema = {
+  schema_version: 'test.1',
+  max_file_bytes: 10485760,
+  outcomes: [
+    {
+      key: 'add_items', label: 'Add new items', description: 'Create products.', changes: 'Creates item records.', does_not_change: 'Inventory quantities and stock history will not change.', required_fields: ['sku'],
+      fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['add_items'] }, { key: 'product_name', label: 'Product name', type: 'text', required_for: [] }],
+    },
+    {
+      key: 'update_items', label: 'Update item details', description: 'Update products.', changes: 'Updates approved metadata.', does_not_change: 'On hand, allocated, available, and stock history will not change.', required_fields: ['sku'],
+      fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_items'] }],
+    },
+    {
+      key: 'starting_inventory', label: 'Set starting inventory', description: 'Record onboarding stock.', changes: 'Creates audited starting-inventory movements.', does_not_change: 'Existing operational inventory is never overwritten.', required_fields: ['sku', 'starting_quantity', 'starting_warehouse', 'starting_location'],
+      fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_quantity', label: 'Starting quantity', type: 'decimal', required_for: ['starting_inventory'] }, { key: 'starting_warehouse', label: 'Warehouse', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_location', label: 'Inventory location', type: 'text', required_for: ['starting_inventory'] }],
+    },
+  ],
+};
+
+function response(body, { ok = true, status = 200 } = {}) {
+  return Promise.resolve({ ok, status, json: () => Promise.resolve(body) });
+}
+
+function preview(summary) {
+  return {
+    preview_id: 'preview-qa', outcome: 'add_items', outcome_content: schema.outcomes[0],
+    file: { name: 'items.csv', size: 30, row_count: 1, header_count: 2 }, status: 'ready',
+    source_columns: [{ source: 'SKU', destination: 'sku', confidence: 'exact', samples: ['DUP'] }, { source: 'Product name', destination: 'product_name', confidence: 'exact', samples: ['Food'] }],
+    mapping: { SKU: 'sku', 'Product name': 'product_name' }, options: { allow_blank_clears: false }, summary,
+  };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  window.sessionStorage.clear();
+  window.location.hash = '';
+});
+
+it('keeps a rejected upload in the upload step with a human-readable error', async () => {
+  const user = userEvent.setup();
+  vi.stubGlobal('fetch', vi.fn((url, init = {}) => {
+    if (String(url).endsWith('/schema')) return response(schema);
+    if (String(url).endsWith('/previews') && init.method === 'POST') return response({ detail: { code: 'invalid_encoding', message: 'CSV files must use UTF-8 encoding.' } }, { ok: false, status: 400 });
+    return response({});
+  }));
+  render(<ItemImportWorkspace />);
+
+  await user.click(await screen.findByRole('button', { name: /Add new items/i }));
+  await user.click(screen.getByRole('button', { name: /^Continue/i }));
+  await user.upload(document.querySelector('.import-dropzone input'), new File(['bad'], 'items.csv', { type: 'text/csv' }));
+  await user.click(screen.getByRole('button', { name: /Upload and match columns/i }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('CSV files must use UTF-8 encoding.');
+  expect(screen.getByRole('heading', { name: 'Upload your CSV' })).toBeInTheDocument();
+});
+
+it('fixes a duplicate row inline and carries the corrected diff into confirmation', async () => {
+  const user = userEvent.setup();
+  let corrected = false;
+  const duplicateSummary = { total_rows: 1, ready_count: 0, create_count: 0, update_count: 0, no_changes_count: 0, needs_attention_count: 0, duplicate_count: 1, unmatched_count: 0, blocked_count: 0, excluded_count: 0 };
+  const readySummary = { ...duplicateSummary, ready_count: 1, create_count: 1, duplicate_count: 0 };
+  const duplicateRow = { id: 1, row_number: 2, sku: 'DUP', barcode: null, product_name: 'Food', normalized_data: { sku: 'DUP', product_name: 'Food' }, proposed_changes: {}, issues: [{ code: 'duplicate_sku_in_file', message: 'SKU DUP appears more than once.', suggested_action: 'Enter a unique SKU.' }], state: 'duplicate', excluded: false };
+  const readyRow = { ...duplicateRow, sku: 'UNIQUE', normalized_data: { sku: 'UNIQUE', product_name: 'Food' }, proposed_changes: { sku: { field: 'sku', label: 'SKU', before: null, after: 'UNIQUE' } }, issues: [], state: 'will_create' };
+  vi.stubGlobal('fetch', vi.fn((url, init = {}) => {
+    const target = String(url);
+    if (target.endsWith('/schema')) return response(schema);
+    if (target.endsWith('/previews') && init.method === 'POST') return response(preview(duplicateSummary));
+    if (target.endsWith('/mapping') && init.method === 'PATCH') return response(preview(duplicateSummary));
+    if (target.includes('/rows/2') && init.method === 'PATCH') { corrected = true; return response(readyRow); }
+    if (target.includes('/rows?')) return response({ rows: [corrected ? readyRow : duplicateRow], total: 1, page: 1, page_size: 50, total_pages: 1 });
+    if (target.endsWith('/preview-qa')) return response(preview(corrected ? readySummary : duplicateSummary));
+    return response({});
+  }));
+  render(<ItemImportWorkspace />);
+
+  await user.click(await screen.findByRole('button', { name: /Add new items/i }));
+  await user.click(screen.getByRole('button', { name: /^Continue/i }));
+  await user.upload(document.querySelector('.import-dropzone input'), new File(['SKU,Product name\nDUP,Food'], 'items.csv', { type: 'text/csv' }));
+  await user.click(screen.getByRole('button', { name: /Upload and match columns/i }));
+  await user.click(await screen.findByRole('button', { name: /Validate rows/i }));
+  const reviewTable = await screen.findByRole('table');
+  await user.click(within(reviewTable).getByRole('button', { name: 'Edit row 2' }));
+  let drawer = screen.getByRole('dialog', { name: 'Fix item data' });
+  await waitFor(() => expect(within(drawer).getByRole('textbox', { name: 'SKU' })).toHaveFocus());
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog', { name: 'Fix item data' })).not.toBeInTheDocument();
+  expect(within(reviewTable).getByRole('button', { name: 'Edit row 2' })).toHaveFocus();
+  await user.click(within(reviewTable).getByRole('button', { name: 'Edit row 2' }));
+  drawer = screen.getByRole('dialog', { name: 'Fix item data' });
+  await user.clear(within(drawer).getByRole('textbox', { name: 'SKU' }));
+  await user.type(within(drawer).getByRole('textbox', { name: 'SKU' }), 'UNIQUE');
+  await user.click(within(drawer).getByRole('button', { name: 'Save and revalidate' }));
+
+  await waitFor(() => expect(screen.getAllByText('Will create').length).toBeGreaterThan(0));
+  await user.click(screen.getByRole('button', { name: /Review import/i }));
+  expect(await screen.findByRole('heading', { name: 'Confirm the exact changes' })).toBeInTheDocument();
+  expect(screen.getAllByRole('cell', { name: 'UNIQUE' }).length).toBeGreaterThan(0);
+});
+
+it('reconciles excluded rows in the completed import totals', async () => {
+  const completed = {
+    ...preview({}),
+    status: 'committed',
+    result: { status: 'completed', import_job_id: 9, created_count: 2, updated_count: 0, unchanged_count: 0, excluded_count: 1, failed_count: 0, duration_ms: 24, starting_units: 0 },
+  };
+  vi.stubGlobal('fetch', vi.fn((url) => String(url).endsWith('/schema') ? response(schema) : response(completed)));
+
+  render(<ItemImportWorkspace initialPreviewId="preview-qa" />);
+
+  expect(await screen.findByRole('heading', { name: 'Import completed' })).toBeInTheDocument();
+  expect(screen.getByText('Excluded').nextElementSibling).toHaveTextContent('1');
+});
+
+it('labels completed import jobs as completed in history', async () => {
+  const user = userEvent.setup();
+  sessionStorage.setItem('pongo.item-import.preview', 'completed-preview');
+  vi.stubGlobal('fetch', vi.fn(() => response([{
+    id: 9, outcome: 'add_items', status: 'completed', file_name: 'items.csv', successful_rows: 2, failed_rows: 0, created_by: 'qa@example.com', created_at: '2026-08-06T12:00:00Z',
+  }])));
+
+  render(<ItemImportHistory />);
+
+  expect(within(await screen.findByRole('cell', { name: 'Completed' })).getByText('Completed')).toHaveClass('import-status-completed');
+  expect(screen.queryByText('Will update')).not.toBeInTheDocument();
+  await user.click(screen.getByRole('link', { name: 'New import' }));
+  expect(sessionStorage.getItem('pongo.item-import.preview')).toBeNull();
+});

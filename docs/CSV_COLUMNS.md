@@ -106,43 +106,29 @@ location tables without changing the external CSV contract.
 
 ## Product Import
 
-Product import must use the canonical inventory item CSV header above.
+The primary item-import contract is backend-generated and outcome-specific; it
+does not require users to reshape every file into the legacy canonical export.
+See `docs/ITEM_IMPORTS.md`.
 
-Current implementation:
-- `POST /api/items/import/preview` validates and previews imports without database writes.
-- `POST /api/items/import/commit` creates or updates local item records and stores an import job.
-- `GET /api/import-jobs`, `GET /api/import-jobs/{id}`, and `GET /api/import-jobs/{id}/failed-rows` expose import history and failed row downloads.
-- `docs/csv-reference/sample-items-import.csv` provides fake sample rows for testing the current format.
+- Add-new and update-details templates contain approved item metadata only.
+- Starting inventory has a separate five-column template: `SKU`,
+  `Starting quantity`, `Warehouse`, `Inventory location`, `Reference note`.
+- On hand, Allocated, Sellable/Available, Under Par, On Order, and Storage Volume
+  are not valid metadata-import destinations. They are protected, derived, or
+  workflow-owned values.
+- Source columns are matched through normalized labels and documented aliases;
+  users can confirm, change, ignore, and save those mappings.
+- Existing item updates match by SKU only. Barcode uniqueness is validated but
+  is not an update fallback.
+- Blank update cells preserve current values by default. An explicit preview
+  option can clear nullable metadata fields.
+- Starting inventory is rejected when the item already has stock, allocation,
+  or any movement history.
 
-Import rules:
-- Validate the header row against the canonical column list or a newly supplied real Zenventory header.
-- Accept the legacy product header that omits `Manufacturer` and uses
-  `Default Lead Time (Days)`; the importer maps it to
-  `Default Lead Time Days` and defaults `Manufacturer` to blank.
-- Accept comma-delimited or tab-delimited item import files.
-- Trim header whitespace, but keep column names case-sensitive.
-- Reject files that are missing canonical columns.
-- Ignore extra columns and report warnings.
-- Match existing items by exact SKU first and exact Barcode second.
-- Reject a row when SKU and Barcode match two different existing items.
-- Create missing items.
-- Update existing items.
-- Show a preview before commit.
-- Show failed rows.
-- Allow failed rows CSV download.
-
-Calculated preview fields:
-- Sellable and Under Par are shown from the parsed row for compatibility, but
-  ordinary metadata import commits new items with zero stock and preserves
-  existing item/location quantities.
-- Storage Volume is recalculated as `Storage Length x Storage Width x Storage Height`.
-- If imported calculated values differ, the calculated values are used and warnings are returned.
-
-Current CSV import is a migration/local item upsert path only. It must not call
-WooCommerce, receiving, cycle count, allocation, picking, or route workflows.
-Nonzero `In Stock` or `Allocated` values produce a warning and are not committed.
-Opening stock must use the explicit audited opening-balance workflow, which
-creates stock movement/audit rows.
+Compatibility endpoints `/api/items/import/preview` and
+`/api/items/import/commit` still accept the canonical legacy header above. They
+remain a migration compatibility surface; the Items UI uses persisted previews
+under `/api/items/import/previews`.
 
 ## Product Export / Inventory Export
 

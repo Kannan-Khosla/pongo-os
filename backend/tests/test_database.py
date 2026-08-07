@@ -21,6 +21,10 @@ def test_database_connection_can_initialize():
     assert "inventory_locations" in table_names
     assert "stock_movements" in table_names
     assert "stock_mutation_requests" in table_names
+    assert "import_previews" in table_names
+    assert "import_preview_rows" in table_names
+    assert "import_mapping_profiles" in table_names
+    assert "item_import_changes" in table_names
     assert "routes" in table_names
 
 

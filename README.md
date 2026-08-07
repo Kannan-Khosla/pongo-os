@@ -20,7 +20,8 @@ This is not a WordPress plugin, not a WooCommerce plugin, and not a shortcode ap
 Implemented locally:
 - Command Center dashboard
 - Persistent Items
-- Zenventory-compatible item CSV import/export
+- Guided, resumable item CSV import with column matching, inline correction,
+  mapping profiles, immutable previews, audited history, and safe rollback
 - Locations and inventory by location reporting/export
 - Stock by Location v2 with item-location source-of-truth rows
 - Direct receiving without purchase orders
@@ -262,20 +263,27 @@ Still intentionally delayed:
 - Purchase orders and supplier management.
 - Shipping labels, customer notifications, delivery issue logs, return-to-inventory workflows, and real map/geocode/route optimization provider calls.
 
-## Woo Mapping And Enrichment Workflow
+## Item Import And WooCommerce Catalog Workflows
 
-The Items page supports **Import Mappings → Export Enrichment Template → Enrich
-Woo-Mapped Items**. Import Mappings previews and imports every Woo simple product
-and purchasable variation through the existing backend-only integration. A
-variable parent is reference metadata, not a stock item. Repeated imports refresh
-Woo-owned fields without overwriting barcodes, unit cost, brand, locations,
-operational stock, or history.
+Items → **Import items** is a dedicated six-step workspace for three explicit
+outcomes: Add new items, Update item details, or Set starting inventory. The
+backend owns the field schema and templates, persists resumable previews,
+suggests and saves column mappings, supports row-level correction/exclusion,
+stops stale commits, records field-level audit history, and produces original
+and failed-row downloads. Metadata imports cannot change on hand, allocated,
+available, or movement history. Starting inventory is a separate guarded action
+that is allowed only before operational stock/history exists.
 
-The enrichment template begins with protected Pongo/Woo identity columns. Empty
-editable cells preserve values; `__CLEAR__` clears only approved local metadata.
-Optional opening stock is off by default and writes location-level balances plus
-audited movements when deliberately enabled for a fresh migration. Expiry is
-intentionally excluded.
+WooCommerce catalog sync is separate under Items → More. It previews and imports
+every Woo simple product and purchasable variation through the backend-only
+integration. A variable parent is reference metadata, not a stock item.
+Repeated syncs refresh Woo-owned fields without overwriting operational stock or
+history.
+
+See [`docs/ITEM_IMPORTS.md`](docs/ITEM_IMPORTS.md) for templates, validation,
+concurrency, rollback, API, configuration, and the QA runbook. Legacy canonical
+import and enrichment endpoints remain for compatibility but are not used by the
+new Items workflow.
 
 Development reset commands are guarded and never call WooCommerce:
 

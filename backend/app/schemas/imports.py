@@ -49,6 +49,11 @@ class ImportErrorRead(BaseModel):
     sku: str | None
     barcode: str | None
     error_message: str | None
+    error_code: str | None = None
+    field_name: str | None = None
+    invalid_value: str | None = None
+    blocking: bool = True
+    suggested_action: str | None = None
     raw_row: dict | None
     created_at: datetime
 
@@ -59,9 +64,18 @@ class ImportJobRead(BaseModel):
     id: int
     file_name: str | None
     import_type: str | None
+    preview_id: str | None = None
+    outcome: str | None = None
     total_rows: int
     successful_rows: int
     failed_rows: int
+    created_rows: int = 0
+    updated_rows: int = 0
+    unchanged_rows: int = 0
+    excluded_rows: int = 0
+    starting_units: float = 0
+    duration_ms: int | None = None
+    result_json: dict | None = None
     status: str | None
     created_by: str | None
     created_at: datetime

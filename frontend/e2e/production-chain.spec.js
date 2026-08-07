@@ -26,17 +26,20 @@ test('import → opening balance → automatic allocation → bulk pick → comp
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.getByLabel('Signed in user').getByText('E2E Operator')).toBeVisible();
 
-  const columns = ['Client', 'SKU', 'Description', 'Category', 'Unit of Measurement', 'Warehouse', 'Inventory Location', 'Default Location', 'In Stock', 'Allocated', 'Sellable', 'Under Par', 'On Order', 'Barcode', 'Manufacturer', 'Manufacturer Website', 'Recommended Retail Price', 'Sales Price', 'Unit Cost', 'Weight', 'Default Econ Order', 'Default Lead Time Days', 'Par Level', 'Assembly', 'Serializable', 'Track Lot', 'Perishable', 'Re-Order', 'Storage Length', 'Storage Width', 'Storage Height', 'Storage Volume', 'Brand'];
-  const row = ['Pongo', sku, 'E2E Duck Food', 'Dog Food', 'Each', 'Main Warehouse', 'E2E Rack', 'E2E Rack', '0', '0', '0', 'false', '0', barcode, 'E2E Brand', '', '15.00', '12.00', '5.00', '1', '6', '5', '3', 'false', 'false', 'true', 'false', 'true', '1', '1', '1', '1', 'E2E Brand'];
+  const columns = ['Client', 'SKU', 'Product name', 'Category', 'Unit of measurement', 'Warehouse', 'Inventory location', 'Default location', 'Barcode', 'Manufacturer', 'Recommended retail price', 'Sales price', 'Unit cost', 'Weight', 'Default economic order', 'Default lead time days', 'Par level', 'Track lot', 'Reorder', 'Storage length', 'Storage width', 'Storage height', 'Brand'];
+  const row = ['Pongo', sku, 'E2E Duck Food', 'Dog Food', 'Each', 'Main Warehouse', 'E2E Rack', 'E2E Rack', barcode, 'E2E Brand', '15.00', '12.00', '5.00', '1', '6', '5', '3', 'true', 'true', '1', '1', '1', 'E2E Brand'];
   const csv = `${columns.join(',')}\n${row.join(',')}\n`;
-  await page.goto('/#items');
-  await page.getByRole('button', { name: 'Import CSV' }).click();
-  const importDialog = page.getByRole('dialog', { name: 'Import CSV' });
-  await importDialog.locator('input[type="file"]').setInputFiles({ name: 'e2e-items.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) });
-  await importDialog.getByRole('button', { name: 'Preview CSV' }).click();
-  await expect(importDialog.getByRole('button', { name: 'Import Valid Rows' })).toBeEnabled();
-  await importDialog.getByRole('button', { name: 'Import Valid Rows' }).click();
-  await expect(importDialog.getByText('Created')).toBeVisible();
+  await page.goto('/#/items/import');
+  await page.getByRole('button', { name: /Add new items/ }).click();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.locator('input[type="file"]').setInputFiles({ name: 'e2e-items.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) });
+  await page.getByRole('button', { name: 'Upload and match columns' }).click();
+  await page.getByRole('button', { name: 'Validate rows' }).click();
+  await expect(page.getByText('Every row is ready')).toBeVisible();
+  await page.getByRole('button', { name: 'Review import' }).click();
+  await page.getByRole('checkbox', { name: /I reviewed the outcome/ }).check();
+  await page.getByRole('button', { name: /Import \d+ ready items?/ }).click();
+  await expect(page.getByRole('heading', { name: 'Import completed' })).toBeVisible();
 
   const items = await json(await page.request.get(`${apiBase}/api/items?sku=${encodeURIComponent(sku)}`));
   const item = items.items[0];
