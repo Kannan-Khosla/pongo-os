@@ -21,7 +21,7 @@ from app.models.orders import Order, OrderItem
 from app.models.performance import MetricCache, MetricVersion
 from app.models.picks import Pick, PickLine
 from app.models.receipts import Receipt, ReceiptItem
-from app.models.reporting import ReportDelivery, ReportJob, ReportRun
+from app.models.reporting import GoogleReportsConfiguration, ReportDelivery, ReportJob, ReportRun
 from app.models.routes import Route, RouteStop
 from app.models.scanner import ScannerEvent, ScannerSession
 from app.models.stock_mutations import StockMutationRequest
@@ -61,6 +61,7 @@ __all__ = [
     "PickLine",
     "Receipt",
     "ReceiptItem",
+    "GoogleReportsConfiguration",
     "ReportDelivery",
     "ReportJob",
     "ReportRun",

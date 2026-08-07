@@ -6,11 +6,12 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import select
 
+from app.core.config import Settings
 from app.db.session import get_db
 from app.main import app
 from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.orders import Order, OrderItem
-from app.models.reporting import ReportDelivery, ReportRun
+from app.models.reporting import GoogleReportsConfiguration, ReportDelivery, ReportRun
 from tests.test_fulfillments_api import picked_order
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_locations_api import seed_location
@@ -45,6 +46,55 @@ def test_report_catalog_contains_requested_reports_and_safe_sharing_status(clien
     }
     assert body["google_sheets_configured"] is False
     assert body["email_configured"] is False
+
+
+def test_google_sheets_configuration_is_verified_encrypted_and_used_by_reports(client, monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        woocommerce_configuration_encryption_key="test-encryption-key-that-is-longer-than-32-bytes",
+    )
+    verified = []
+    monkeypatch.setattr("app.api.routes.reports.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "app.api.routes.reports.google_access_token",
+        lambda candidate: verified.append(candidate.google_reports_refresh_token) or "access-token",
+    )
+
+    response = client.post(
+        "/api/reports/google-sheets/configuration",
+        json={
+            "client_id": "private-client-id",
+            "client_secret": "private-client-secret",
+            "refresh_token": "private-refresh-token",
+            "folder_id": "pongo-reports-folder",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert verified == ["private-refresh-token"]
+    assert response.json()["configuration_source"] == "pongo_database"
+    assert "private-client" not in response.text
+    assert "private-refresh" not in response.text
+
+    override, db = database_session()
+    try:
+        row = db.get(GoogleReportsConfiguration, 1)
+        assert row is not None
+        assert "private-client-id" not in row.client_id_ciphertext
+        assert "private-client-secret" not in row.client_secret_ciphertext
+        assert "private-refresh-token" not in row.refresh_token_ciphertext
+        assert row.folder_id == "pongo-reports-folder"
+    finally:
+        override.close()
+
+    status = client.get("/api/reports/google-sheets/configuration")
+    catalog = client.get("/api/reports")
+    assert status.status_code == 200
+    assert status.json()["configured"] is True
+    assert status.json()["client_secret_present"] is True
+    assert "client_secret" not in status.json()
+    assert catalog.json()["google_sheets_configured"] is True
 
 
 def test_inventory_cost_run_is_frozen_and_all_exports_share_its_hash(client):

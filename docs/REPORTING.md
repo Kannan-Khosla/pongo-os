@@ -81,8 +81,10 @@ filters.
 
 ## External delivery
 
-Google Sheets publishing and SMTP email are backend-only integrations.
-Credentials never enter the frontend and are never returned by an API.
+Google Sheets publishing and SMTP email remain backend-only operations. Staff
+configure Google Sheets under Settings → Google Sheets; credentials are sent
+once over the authenticated HTTPS API, stored encrypted in Pongo's database,
+and never returned by an API.
 
 Google Sheets requires an OAuth client and refresh token with Sheets and Drive
 access. A report creates a spreadsheet with `Report` and `Audit` tabs. Optional
@@ -93,7 +95,8 @@ spreadsheet directly, without a local CSV or Excel download.
 Email delivery can attach CSV and PDF versions and include a previously-created
 Google Sheet URL. Each attempt creates a `report_deliveries` audit row.
 
-Required environment variables are documented in `backend/.env.example`.
+The legacy `GOOGLE_REPORTS_*` environment variables remain as a bootstrap
+fallback. App-saved database configuration takes precedence.
 
 ## Accounting boundaries
 

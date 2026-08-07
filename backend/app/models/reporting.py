@@ -1,10 +1,24 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, func, text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+
+class GoogleReportsConfiguration(Base):
+    __tablename__ = "google_reports_configuration"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    client_id_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    client_secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    folder_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    updated_by: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False, index=True)
+
+    __table_args__ = (CheckConstraint("id = 1", name="ck_google_reports_configuration_singleton"),)
 
 
 class ReportRun(Base):

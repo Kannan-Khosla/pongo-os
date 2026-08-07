@@ -1687,6 +1687,14 @@ stores the report run, channel, optional recipient, status, external URL,
 error, and creation time. It never stores OAuth, SMTP, or WooCommerce
 credentials.
 
+### `google_reports_configuration`
+
+A singleton connection record for Google Sheets report publishing. The OAuth
+client ID, client secret, and refresh token are encrypted with Pongo's backend
+integration encryption key. The optional Drive folder ID, updating actor, and
+update timestamp are stored for routing and audit. Credential plaintext is
+never returned by the configuration API.
+
 ## woo_writeback_queue
 
 Purpose: Local guarded queue for explicit WooCommerce writeback operations.

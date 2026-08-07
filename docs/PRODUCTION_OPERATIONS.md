@@ -21,10 +21,19 @@ cookie is never sent over plaintext transport.
 1. Put workers into maintenance mode and stop background jobs.
 2. Create a custom PostgreSQL backup: `make backup-postgres BACKUP=/secure/path/pongo-before-release.dump`.
 3. Verify the backup against a disposable database whose name ends in `_restore_verify`: `RESTORE_VERIFY_DATABASE_URL=... make verify-postgres-backup BACKUP=/secure/path/pongo-before-release.dump`.
-4. Run `alembic upgrade head` (expected revision `20260806_0035`), then `/ready` and the release smoke tests.
+4. Run `alembic upgrade head` (expected revision `20260807_0036`), then `/ready` and the release smoke tests.
 5. If a migration fails, stop the release and restore the verified pre-release backup. Do not improvise a production downgrade; migration downgrades are validated for development recovery, while the database backup is the production rollback boundary.
 
 Keep encrypted backups outside the application host, apply a retention policy, and run a restore verification at least monthly and before every schema release.
+
+## Hosting portability
+
+Google Sheets credentials are configured in Settings → Google Sheets and are
+stored encrypted in PostgreSQL, not in Heroku configuration. When moving Pongo
+to another host, migrate the database and preserve the existing
+`WOOCOMMERCE_CONFIGURATION_ENCRYPTION_KEY`; it is the deployment-neutral master
+key for encrypted integration records. Losing or changing that key makes saved
+WooCommerce and Google credentials unreadable.
 
 ## Readiness and alerts
 

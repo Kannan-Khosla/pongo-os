@@ -36,11 +36,17 @@ from app.services.reporting import (
     create_report_run,
     email_report,
     get_report_run,
+    google_access_token,
     google_sheets_status,
     list_report_catalog,
     publish_report_to_google_sheets,
     report_artifact_bytes,
     report_run_to_dict,
+)
+from app.services.google_reports_configuration import (
+    effective_google_reports_settings,
+    google_reports_configuration_status,
+    save_google_reports_configuration,
 )
 from app.services.report_jobs import (
     enqueue_report_job,
@@ -62,6 +68,13 @@ class GoogleSheetShareRequest(BaseModel):
     share_with: list[EmailStr] = Field(default_factory=list, max_length=50)
 
 
+class GoogleSheetsConfigurationRequest(BaseModel):
+    client_id: str | None = Field(default=None, max_length=500)
+    client_secret: str | None = Field(default=None, max_length=1000)
+    refresh_token: str | None = Field(default=None, max_length=4000)
+    folder_id: str | None = Field(default=None, max_length=255)
+
+
 class EmailReportRequest(BaseModel):
     recipients: list[EmailStr] = Field(min_length=1, max_length=50)
     formats: list[str] = Field(default_factory=lambda: ["pdf", "csv"], max_length=2)
@@ -71,17 +84,46 @@ class EmailReportRequest(BaseModel):
 
 
 @router.get("")
-def list_reports() -> dict[str, object]:
-    return list_report_catalog(get_settings())
+def list_reports(db: Session = Depends(get_db)) -> dict[str, object]:
+    return list_report_catalog(effective_google_reports_settings(db, get_settings()))
 
 
 @router.get("/sharing/status")
-def report_sharing_status() -> dict[str, object]:
+def report_sharing_status(db: Session = Depends(get_db)) -> dict[str, object]:
     settings = get_settings()
     return {
-        "google_sheets": google_sheets_status(settings),
+        "google_sheets": google_sheets_status(effective_google_reports_settings(db, settings)),
         "email": {"configured": bool(settings.smtp_host and settings.smtp_from_email)},
     }
+
+
+@router.get("/google-sheets/configuration")
+def read_google_sheets_configuration(db: Session = Depends(get_db)) -> dict[str, object]:
+    return google_reports_configuration_status(db, get_settings())
+
+
+@router.post("/google-sheets/configuration")
+def configure_google_sheets(
+    payload: GoogleSheetsConfigurationRequest,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> dict[str, object]:
+    try:
+        status = save_google_reports_configuration(
+            db,
+            get_settings(),
+            client_id=payload.client_id,
+            client_secret=payload.client_secret,
+            refresh_token=payload.refresh_token,
+            folder_id=payload.folder_id,
+            changed_by=actor,
+            verifier=google_access_token,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Google rejected these credentials. Check the OAuth client and refresh token, then try again.") from exc
+    return {**status, "message": "Google Sheets is connected and saved securely in Pongo."}
 
 
 @router.post("/runs/{report_key}")
@@ -186,7 +228,7 @@ def open_report_in_google_sheets(
         return publish_report_to_google_sheets(
             db,
             run,
-            get_settings(),
+            effective_google_reports_settings(db, get_settings()),
             [str(recipient) for recipient in payload.share_with],
         )
     except RuntimeError as exc:

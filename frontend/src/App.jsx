@@ -584,6 +584,7 @@ const pageMeta = {
       { label: 'Connection', href: '#/settings/connection' },
       { label: 'Sync & Mapping', href: '#/settings/sync' },
       { label: 'Writeback', href: '#/settings/writeback' },
+      { label: 'Google Sheets', href: '#/settings/google-sheets' },
     ],
   },
 };
@@ -594,6 +595,7 @@ const settingsViews = [
   { id: 'connection', label: 'Connection', href: '#/settings/connection' },
   { id: 'sync', label: 'Sync & Mapping', href: '#/settings/sync' },
   { id: 'writeback', label: 'Writeback', href: '#/settings/writeback' },
+  { id: 'google-sheets', label: 'Google Sheets', href: '#/settings/google-sheets' },
 ];
 
 const settingsViewMeta = {
@@ -608,6 +610,10 @@ const settingsViewMeta = {
   writeback: {
     title: 'Writeback Control',
     kicker: 'Settings / WooCommerce',
+  },
+  'google-sheets': {
+    title: 'Google Sheets',
+    kicker: 'Settings / Integrations',
   },
 };
 
@@ -1300,7 +1306,7 @@ export default function App({ currentUser = null, onLogout = null }) {
       }
     }
     if (route.pageId === 'settings') {
-      loadWooStatus();
+      if (route.settingsView !== 'google-sheets') loadWooStatus();
       if ((route.settingsView || 'connection') === 'sync') {
         loadWooSyncRuns();
         loadWooRemap();
@@ -3664,6 +3670,7 @@ function PageBody({
   }
 
   if (route.pageId === 'settings') {
+    if (route.settingsView === 'google-sheets') return <GoogleSheetsSettingsPage />;
     return (
       <WooCommerceSettingsPage
         view={route.settingsView || 'connection'}
@@ -10573,6 +10580,140 @@ function StatusText(value, context = '') {
   const key = String(value).trim().toLowerCase();
   const presentation = (context === 'risk' ? riskStatusPresentation[key] : null) || statusPresentation[key] || { label: titleize(value), tone: 'neutral' };
   return <span className={`status-pill status-${presentation.tone} order-status-${key.replace(/[^a-z0-9-]/g, '-')}`} aria-label={presentation.help ? `${presentation.label}: ${presentation.help}` : presentation.label} title={presentation.help || undefined}>{presentation.label}</span>;
+}
+
+function GoogleSheetsSettingsPage() {
+  const [status, setStatus] = useState({ configured: false, configuration_source: 'not_configured' });
+  const [form, setForm] = useState({ client_id: '', client_secret: '', refresh_token: '', folder_id: '' });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    async function loadConfiguration() {
+      try {
+        const response = await apiFetch(`${API_BASE_URL}/api/reports/google-sheets/configuration`);
+        const body = await response.json();
+        if (!response.ok) throw new Error(apiErrorDetail(body));
+        if (!active) return;
+        setStatus(body);
+        setForm((current) => ({ ...current, folder_id: body.folder_id || '' }));
+      } catch (loadError) {
+        if (active) setError(loadError.message || 'Could not load the Google Sheets connection.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+    loadConfiguration();
+    return () => { active = false; };
+  }, []);
+
+  async function saveConnection(event) {
+    event.preventDefault();
+    setLoading(true);
+    setError('');
+    setMessage('');
+    try {
+      const body = await postJson('/api/reports/google-sheets/configuration', form);
+      setStatus(body);
+      setForm({ client_id: '', client_secret: '', refresh_token: '', folder_id: body.folder_id || '' });
+      setMessage(body.message);
+    } catch (saveError) {
+      setError(saveError.message || 'Could not save the Google Sheets connection.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="content-panel settings-page">
+      {(loading || error) && <div className="integration-feedback" aria-live="polite">
+        {loading && <div className="loading-strip">Checking the Google Sheets connection…</div>}
+        {error && <div className="api-error">{error}</div>}
+      </div>}
+      <section className="integration-console" aria-labelledby="google-sheets-integration-title">
+        <aside className="integration-rail" aria-label="Connected systems">
+          <div className="integration-rail-heading"><span>Connected systems</span><strong>02</strong></div>
+          <a className="integration-source" href="#/settings/connection">
+            <span className="integration-source-mark">woo</span>
+            <span><strong>WooCommerce</strong><small>Store operations</small></span>
+            <span className="integration-status-dot is-live" aria-hidden="true" />
+          </a>
+          <a className="integration-source active" href="#/settings/google-sheets" aria-current="page">
+            <span className="integration-source-mark"><FileSpreadsheet size={19} /></span>
+            <span><strong>Google Sheets</strong><small>{status.configured ? 'Connected' : 'Needs connection'}</small></span>
+            <span className={`integration-status-dot ${status.configured ? 'is-live' : ''}`} aria-hidden="true" />
+          </a>
+          <div className="integration-rail-note">
+            <span>Portable Pongo storage</span>
+            <p>Credentials are encrypted in Pongo’s database and never returned to this browser.</p>
+          </div>
+        </aside>
+
+        <div className="integration-workspace">
+          <header className="integration-masthead">
+            <div>
+              <span className="integration-eyebrow">Reporting / Google Sheets</span>
+              <h2 id="google-sheets-integration-title">Connect report sharing</h2>
+              <p>Save the Google connection once, then every verified report can open directly in Google Sheets.</p>
+            </div>
+            <div className={`integration-health ${status.configured ? 'is-connected' : ''}`} role="status">
+              <span className="integration-health-pulse" aria-hidden="true" />
+              <div><strong>{status.configured ? 'Connected' : 'Not connected'}</strong><small>Pongo database</small></div>
+            </div>
+          </header>
+
+          <div className="integration-control-grid">
+            <form className="integration-credentials" onSubmit={saveConnection}>
+              <div className="integration-section-label">
+                <span>01</span><div><strong>Google OAuth credentials</strong><small>Verified before anything is saved</small></div>
+              </div>
+              <div className="integration-key-grid">
+                <label className="integration-field">
+                  <span>OAuth client ID</span>
+                  <input type="text" required={!status.client_id_present} value={form.client_id} onChange={(event) => setForm((current) => ({ ...current, client_id: event.target.value }))} placeholder={status.client_id_present ? 'Saved — enter only to replace' : 'Google OAuth client ID'} autoComplete="off" />
+                </label>
+                <label className="integration-field">
+                  <span>OAuth client secret</span>
+                  <input type="password" required={!status.client_secret_present} value={form.client_secret} onChange={(event) => setForm((current) => ({ ...current, client_secret: event.target.value }))} placeholder={status.client_secret_present ? 'Saved — enter only to replace' : 'Google OAuth client secret'} autoComplete="new-password" />
+                </label>
+              </div>
+              <label className="integration-field">
+                <span>OAuth refresh token</span>
+                <input type="password" required={!status.refresh_token_present} value={form.refresh_token} onChange={(event) => setForm((current) => ({ ...current, refresh_token: event.target.value }))} placeholder={status.refresh_token_present ? 'Saved — enter only to replace' : 'Refresh token with Sheets and Drive access'} autoComplete="new-password" />
+              </label>
+              <label className="integration-field">
+                <span>Google Drive folder ID <small>(optional)</small></span>
+                <input type="text" value={form.folder_id} onChange={(event) => setForm((current) => ({ ...current, folder_id: event.target.value }))} placeholder="Leave blank to use My Drive" autoComplete="off" />
+              </label>
+              <div className="integration-form-footer">
+                <p>{status.configuration_source === 'pongo_database'
+                  ? `Encrypted in Pongo${status.configuration_updated_by ? ` · saved by ${status.configuration_updated_by}` : ''}. Blank credential fields keep the saved values.`
+                  : 'Google credentials are stored inside Pongo—not in Heroku or any hosting provider.'}</p>
+                <button className="primary-button integration-connect-button" disabled={loading} type="submit"><CheckCircle2 size={17} />{loading ? 'Verifying…' : 'Save & verify connection'}</button>
+              </div>
+              {message && <div className="integration-inline-success" role="status">{message}</div>}
+            </form>
+
+            <section className="integration-operations" aria-labelledby="google-setup-title">
+              <div className="integration-section-label">
+                <span>02</span><div><strong id="google-setup-title">One-time Google setup</strong><small>Complete these steps in Google Cloud</small></div>
+              </div>
+              <ol className="integration-setup-list">
+                <li><strong>Enable two APIs</strong><span>Google Sheets API and Google Drive API.</span></li>
+                <li><strong>Create an OAuth client</strong><span>Use the Google account that should own Pongo reports.</span></li>
+                <li><strong>Generate a refresh token</strong><span>Grant Sheets and Drive access, then paste the token here.</span></li>
+                <li><strong>Choose a folder</strong><span>Optional: paste the ID from a Google Drive folder URL.</span></li>
+              </ol>
+              <div className="integration-safety-line"><span>Hosting portability</span><strong>Database-backed</strong></div>
+              <p className="integration-access-audit">If Pongo moves hosts, migrate the database and the existing master encryption key. No Google credentials need to be recreated.</p>
+            </section>
+          </div>
+        </div>
+      </section>
+    </section>
+  );
 }
 
 function WooCommerceSettingsPage({ view = 'connection', status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, remapCandidates, remapMappings, remapPreview, remapMessage, writebackQueue, stockSyncJobs, writebackPreview, writebackMessage, loading, error, onCheckConnection, onSaveConfiguration, onChangeAccessMode, onPreview, onCommit, onPreviewOrders, onCommitOrders, onStartOrderHistoryImport, onPreviewRemap, onCommitRemap, onLoadRemap, onPreviewStockWriteback, onPreviewOrderStatusWriteback, onQueueWriteback, onApproveWriteback, onSendWriteback, onCancelWriteback, onRevalidateWriteback, onSyncStock, onResumeStockJob, onCancelStockJob }) {

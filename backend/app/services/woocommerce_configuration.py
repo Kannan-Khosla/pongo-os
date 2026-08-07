@@ -132,7 +132,7 @@ def credential_cipher(settings: Settings, *, env_path: Path = ENV_PATH, create_f
             os.environ.update(values)
             get_settings.cache_clear()
     if len(secret.encode()) < 32:
-        raise ValueError("The backend WooCommerce configuration encryption key must be at least 32 bytes.")
+        raise ValueError("The backend integration configuration encryption key must be at least 32 bytes.")
     derived = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
     return Fernet(derived)
 

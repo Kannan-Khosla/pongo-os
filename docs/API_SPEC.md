@@ -90,6 +90,13 @@ Current response:
 non-secret Google Sheets/email configuration status. Workflow report
 endpoints are implemented under specific report paths.
 
+`GET /api/reports/google-sheets/configuration` returns presence flags, the
+optional Drive folder ID, and configuration audit metadata; it never returns
+OAuth credentials. `POST /api/reports/google-sheets/configuration` verifies the
+submitted OAuth connection before storing the client ID, client secret, and
+refresh token encrypted in Pongo's database. Blank credential fields retain
+already-saved values.
+
 ## Dashboard
 
 ### GET /api/dashboard

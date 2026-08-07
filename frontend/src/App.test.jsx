@@ -210,8 +210,23 @@ const mockImportSchema = {
 
 const mockDataQuality = { total_items: 1, complete_items: 0, items_needing_attention: 1, completion_percent: 0, issues: [{ key: 'missing_cost', label: 'Missing unit cost', description: 'Add the landed unit cost.', count: 1, severity: 'attention' }, { key: 'missing_image', label: 'Missing image', description: 'Add an image.', count: 1, severity: 'attention' }] };
 
-function mockFetch(url) {
+function mockFetch(url, options = {}) {
   const target = String(url);
+  if (target.includes('/api/reports/google-sheets/configuration')) {
+    const saved = String(options.method || 'GET').toUpperCase() === 'POST';
+    return json({
+      configured: saved,
+      client_id_present: saved,
+      client_secret_present: saved,
+      refresh_token_present: saved,
+      folder_id: saved ? 'pongo-folder' : '',
+      folder_configured: saved,
+      configuration_source: saved ? 'pongo_database' : 'not_configured',
+      configuration_updated_by: saved ? 'pytest@example.com' : null,
+      configuration_updated_at: saved ? '2026-08-07T06:00:00Z' : null,
+      message: saved ? 'Google Sheets is connected and saved securely in Pongo.' : undefined,
+    });
+  }
   if (target.includes('/api/integrations/woocommerce/webhooks/events')) return json(typeof mockWebhookFeed === 'function' ? mockWebhookFeed(target) : mockWebhookFeed);
   if (target.includes('/api/business-dashboard')) return json({
     generated_at: '2026-07-08T16:30:00Z',
@@ -1600,6 +1615,36 @@ describe('App shell and workflows', () => {
     expect(screen.queryByRole('heading', { name: 'WooCommerce write policy' })).not.toBeInTheDocument();
     expect(screen.queryByText(/ck_test/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/cs_test/i)).not.toBeInTheDocument();
+  });
+
+  it('configures Google Sheets inside Pongo without exposing credentials', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/settings/google-sheets';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Google Sheets', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connect report sharing' })).toBeInTheDocument();
+    expect(screen.getByText(/not in Heroku or any hosting provider/i)).toBeInTheDocument();
+    await user.type(screen.getByLabelText('OAuth client ID'), 'google-client-id');
+    await user.type(screen.getByLabelText('OAuth client secret'), 'google-client-secret');
+    await user.type(screen.getByLabelText('OAuth refresh token'), 'google-refresh-token');
+    await user.type(screen.getByLabelText(/Google Drive folder ID/i), 'pongo-folder');
+    await user.click(screen.getByRole('button', { name: 'Save & verify connection' }));
+
+    await waitFor(() => {
+      const call = fetch.mock.calls.find(([url, options]) => (
+        String(url).includes('/api/reports/google-sheets/configuration') && options?.method === 'POST'
+      ));
+      expect(JSON.parse(call[1].body)).toEqual({
+        client_id: 'google-client-id',
+        client_secret: 'google-client-secret',
+        refresh_token: 'google-refresh-token',
+        folder_id: 'pongo-folder',
+      });
+    });
+    expect(await screen.findByText('Google Sheets is connected and saved securely in Pongo.')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('google-client-secret')).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue('google-refresh-token')).not.toBeInTheDocument();
   });
 
   it('does not present a historical sync error as a current connection failure', async () => {

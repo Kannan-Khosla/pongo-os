@@ -2143,6 +2143,7 @@ textarea:focus-visible,
   background: transparent;
   color: rgba(255, 255, 255, 0.72);
   cursor: pointer;
+  text-decoration: none;
   text-align: left;
 }
 
@@ -2412,6 +2413,52 @@ textarea:focus-visible,
 
 .app-shell .integration-access-audit {
   margin: 8px 0 16px;
+}
+
+.app-shell .integration-setup-list {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: google-setup;
+}
+
+.app-shell .integration-setup-list li {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 2px 10px;
+  padding: 12px;
+  border: 1px solid #d9dcf4;
+  border-radius: 9px;
+  background: #ffffff;
+  counter-increment: google-setup;
+}
+
+.app-shell .integration-setup-list li::before {
+  display: grid;
+  grid-row: 1 / span 2;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--pongo-50);
+  color: var(--pongo-800);
+  content: counter(google-setup, decimal-leading-zero);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 850;
+}
+
+.app-shell .integration-setup-list strong {
+  color: var(--ink-900);
+  font-size: 11px;
+}
+
+.app-shell .integration-setup-list span {
+  color: var(--ink-500);
+  font-size: 9px;
+  line-height: 1.4;
 }
 
 .app-shell .integration-workflow-label {
