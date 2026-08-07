@@ -3,8 +3,8 @@ from datetime import date
 from io import BytesIO, StringIO
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
@@ -44,9 +44,14 @@ from app.services.reporting import (
     report_run_to_dict,
 )
 from app.services.google_reports_configuration import (
+    exchange_google_oauth_code,
     effective_google_reports_settings,
+    google_oauth_authorization_url,
     google_reports_configuration_status,
     save_google_reports_configuration,
+    save_google_reports_oauth_client,
+    save_google_reports_refresh_token,
+    verify_google_oauth_state,
 )
 from app.services.report_jobs import (
     enqueue_report_job,
@@ -75,6 +80,12 @@ class GoogleSheetsConfigurationRequest(BaseModel):
     folder_id: str | None = Field(default=None, max_length=255)
 
 
+class GoogleSheetsOAuthStartRequest(BaseModel):
+    client_id: str | None = Field(default=None, max_length=500)
+    client_secret: str | None = Field(default=None, max_length=1000)
+    folder_id: str | None = Field(default=None, max_length=255)
+
+
 class EmailReportRequest(BaseModel):
     recipients: list[EmailStr] = Field(min_length=1, max_length=50)
     formats: list[str] = Field(default_factory=lambda: ["pdf", "csv"], max_length=2)
@@ -98,8 +109,11 @@ def report_sharing_status(db: Session = Depends(get_db)) -> dict[str, object]:
 
 
 @router.get("/google-sheets/configuration")
-def read_google_sheets_configuration(db: Session = Depends(get_db)) -> dict[str, object]:
-    return google_reports_configuration_status(db, get_settings())
+def read_google_sheets_configuration(request: Request, db: Session = Depends(get_db)) -> dict[str, object]:
+    return {
+        **google_reports_configuration_status(db, get_settings()),
+        "oauth_redirect_uri": str(request.url_for("google_sheets_oauth_callback")),
+    }
 
 
 @router.post("/google-sheets/configuration")
@@ -124,6 +138,59 @@ def configure_google_sheets(
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail="Google rejected these credentials. Check the OAuth client and refresh token, then try again.") from exc
     return {**status, "message": "Google Sheets is connected and saved securely in Pongo."}
+
+
+@router.post("/google-sheets/oauth/start")
+def start_google_sheets_oauth(
+    request: Request,
+    payload: GoogleSheetsOAuthStartRequest,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> dict[str, str]:
+    settings = get_settings()
+    redirect_uri = str(request.url_for("google_sheets_oauth_callback"))
+    try:
+        save_google_reports_oauth_client(
+            db,
+            settings,
+            client_id=payload.client_id,
+            client_secret=payload.client_secret,
+            folder_id=payload.folder_id,
+            changed_by=actor,
+        )
+        current = effective_google_reports_settings(db, settings)
+        authorization_url = google_oauth_authorization_url(current, actor=actor, redirect_uri=redirect_uri)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"authorization_url": authorization_url, "redirect_uri": redirect_uri}
+
+
+@router.get("/google-sheets/oauth/callback", name="google_sheets_oauth_callback")
+def google_sheets_oauth_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> RedirectResponse:
+    settings = get_settings()
+    redirect_uri = str(request.url_for("google_sheets_oauth_callback"))
+    try:
+        if not state:
+            raise ValueError("Google did not return a verifiable connection request.")
+        verify_google_oauth_state(settings, state=state, actor=actor, redirect_uri=redirect_uri)
+        if error:
+            return RedirectResponse(url="/#/settings/google-sheets?google=denied", status_code=303)
+        if not code:
+            raise ValueError("Google did not return an authorization code.")
+        current = effective_google_reports_settings(db, settings)
+        refresh_token = exchange_google_oauth_code(current, code=code, redirect_uri=redirect_uri)
+        save_google_reports_refresh_token(db, settings, refresh_token=refresh_token, changed_by=actor)
+    except (ValueError, httpx.HTTPError):
+        db.rollback()
+        return RedirectResponse(url="/#/settings/google-sheets?google=failed", status_code=303)
+    return RedirectResponse(url="/#/settings/google-sheets?google=connected", status_code=303)
 
 
 @router.post("/runs/{report_key}")

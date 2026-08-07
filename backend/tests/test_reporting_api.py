@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -95,6 +96,96 @@ def test_google_sheets_configuration_is_verified_encrypted_and_used_by_reports(c
     assert status.json()["client_secret_present"] is True
     assert "client_secret" not in status.json()
     assert catalog.json()["google_sheets_configured"] is True
+
+
+def test_google_oauth_connects_without_exposing_a_refresh_token(client, monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        woocommerce_configuration_encryption_key="test-encryption-key-that-is-longer-than-32-bytes",
+    )
+    exchanged = []
+    monkeypatch.setattr("app.api.routes.reports.get_settings", lambda: settings)
+
+    started = client.post(
+        "/api/reports/google-sheets/oauth/start",
+        json={
+            "client_id": "oauth-client-id",
+            "client_secret": "oauth-client-secret",
+            "folder_id": "pongo-reports-folder",
+        },
+    )
+
+    assert started.status_code == 200, started.text
+    authorization = urlparse(started.json()["authorization_url"])
+    query = parse_qs(authorization.query)
+    assert authorization.netloc == "accounts.google.com"
+    assert query["response_type"] == ["code"]
+    assert query["access_type"] == ["offline"]
+    assert query["prompt"] == ["consent"]
+    assert query["redirect_uri"] == ["http://testserver/api/reports/google-sheets/oauth/callback"]
+    assert set(query["scope"][0].split()) == {
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive.file",
+    }
+    assert "oauth-client-secret" not in started.text
+
+    def fake_exchange(candidate, *, code, redirect_uri):
+        exchanged.append((candidate.google_reports_client_id, code, redirect_uri))
+        return "google-refresh-token"
+
+    monkeypatch.setattr("app.api.routes.reports.exchange_google_oauth_code", fake_exchange)
+    callback = client.get(
+        "/api/reports/google-sheets/oauth/callback",
+        params={"code": "single-use-code", "state": query["state"][0]},
+        follow_redirects=False,
+    )
+
+    assert callback.status_code == 303
+    assert callback.headers["location"] == "/#/settings/google-sheets?google=connected"
+    assert exchanged == [("oauth-client-id", "single-use-code", "http://testserver/api/reports/google-sheets/oauth/callback")]
+    status = client.get("/api/reports/google-sheets/configuration")
+    assert status.json()["configured"] is True
+    assert status.json()["oauth_redirect_uri"] == "http://testserver/api/reports/google-sheets/oauth/callback"
+    assert "google-refresh-token" not in status.text
+
+    override, db = database_session()
+    try:
+        row = db.get(GoogleReportsConfiguration, 1)
+        assert row is not None
+        assert "oauth-client-secret" not in row.client_secret_ciphertext
+        assert "google-refresh-token" not in row.refresh_token_ciphertext
+    finally:
+        override.close()
+
+
+def test_google_oauth_rejects_tampered_state_before_token_exchange(client, monkeypatch):
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        woocommerce_configuration_encryption_key="test-encryption-key-that-is-longer-than-32-bytes",
+    )
+    monkeypatch.setattr("app.api.routes.reports.get_settings", lambda: settings)
+    started = client.post(
+        "/api/reports/google-sheets/oauth/start",
+        json={"client_id": "oauth-client-id", "client_secret": "oauth-client-secret"},
+    )
+    state = parse_qs(urlparse(started.json()["authorization_url"]).query)["state"][0]
+    exchanged = []
+    monkeypatch.setattr(
+        "app.api.routes.reports.exchange_google_oauth_code",
+        lambda *args, **kwargs: exchanged.append(True) or "should-not-be-used",
+    )
+
+    callback = client.get(
+        "/api/reports/google-sheets/oauth/callback",
+        params={"code": "single-use-code", "state": f"x{state[1:]}"},
+        follow_redirects=False,
+    )
+
+    assert callback.status_code == 303
+    assert callback.headers["location"] == "/#/settings/google-sheets?google=failed"
+    assert exchanged == []
 
 
 def test_inventory_cost_run_is_frozen_and_all_exports_share_its_hash(client):

@@ -82,14 +82,17 @@ filters.
 ## External delivery
 
 Google Sheets publishing and SMTP email remain backend-only operations. Staff
-configure Google Sheets under Settings → Google Sheets; credentials are sent
-once over the authenticated HTTPS API, stored encrypted in Pongo's database,
-and never returned by an API.
+configure Google Sheets under Settings → Google Sheets. Pongo displays the
+exact authorized redirect URI for a Google OAuth web client. Staff enter the
+client ID/secret once, click **Connect Google Account**, approve access in
+Google, and return to Pongo. The authorization code is exchanged server-side;
+the resulting refresh token is stored encrypted and is never shown or copied by
+staff.
 
-Google Sheets requires an OAuth client and refresh token with Sheets and Drive
-access. A report creates a spreadsheet with `Report` and `Audit` tabs. Optional
-email addresses receive Google Drive writer permissions. The Google Sheets
-action appears immediately after a verified run is ready and opens the created
+The Google consent requests Sheets access plus file-level Google Drive access.
+A report creates a spreadsheet with `Report` and `Audit` tabs. Optional email
+addresses receive Google Drive writer permissions. The Google Sheets action
+appears immediately after a verified run is ready and opens the created
 spreadsheet directly, without a local CSV or Excel download.
 
 Email delivery can attach CSV and PDF versions and include a previously-created

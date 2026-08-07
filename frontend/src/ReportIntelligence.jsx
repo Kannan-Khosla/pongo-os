@@ -386,7 +386,7 @@ function SharePanel({ run, catalog, apiBaseUrl, onNotice }) {
         </summary>
         <div className="ri-share-body">
           {!catalog.google_sheets_configured && (
-            <div className="ri-config-note"><AlertTriangle size={16} />Google Sheets credentials must be configured in the backend environment first.</div>
+            <div className="ri-config-note"><AlertTriangle size={16} />Connect a Google account under Settings → Google Sheets first.</div>
           )}
           <label className="ri-field">
             <span>Share with (optional)</span>

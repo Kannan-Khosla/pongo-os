@@ -35,6 +35,13 @@ to another host, migrate the database and preserve the existing
 key for encrypted integration records. Losing or changing that key makes saved
 WooCommerce and Google credentials unreadable.
 
+Create a Google OAuth **Web application** client and copy the exact authorized
+redirect URI displayed by Pongo into Google Cloud. For the current production
+origin it is
+`https://inventory.pongo.ca/api/reports/google-sheets/oauth/callback`. If the
+public origin changes, update the Google OAuth client to the new URI shown in
+Settings before reconnecting. Staff never configure or copy a refresh token.
+
 ## Readiness and alerts
 
 - `/health` is the process liveness check.

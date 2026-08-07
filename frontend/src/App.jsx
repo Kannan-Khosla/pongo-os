@@ -49,6 +49,10 @@ import {
 
 const ReportIntelligencePage = lazy(() => import('./ReportIntelligence'));
 
+export const browserNavigation = {
+  assign: (url) => window.location.assign(url),
+};
+
 const CANONICAL_ITEM_COLUMNS = [
   'Client',
   'SKU',
@@ -1125,7 +1129,11 @@ function parseHashRoute() {
   if (path === 'settings' || path.startsWith('settings/')) {
     const requestedView = path.split('/')[1] || 'connection';
     const view = settingsViews.some((candidate) => candidate.id === requestedView) ? requestedView : 'connection';
-    return { pageId: 'settings', settingsView: view };
+    return {
+      pageId: 'settings',
+      settingsView: view,
+      googleOAuthResult: view === 'google-sheets' ? query.get('google') || '' : '',
+    };
   }
   return navItems.some((item) => item.id === path) ? { pageId: path } : { pageId: 'dashboard' };
 }
@@ -3670,7 +3678,7 @@ function PageBody({
   }
 
   if (route.pageId === 'settings') {
-    if (route.settingsView === 'google-sheets') return <GoogleSheetsSettingsPage />;
+    if (route.settingsView === 'google-sheets') return <GoogleSheetsSettingsPage oauthResult={route.googleOAuthResult} />;
     return (
       <WooCommerceSettingsPage
         view={route.settingsView || 'connection'}
@@ -10582,12 +10590,18 @@ function StatusText(value, context = '') {
   return <span className={`status-pill status-${presentation.tone} order-status-${key.replace(/[^a-z0-9-]/g, '-')}`} aria-label={presentation.help ? `${presentation.label}: ${presentation.help}` : presentation.label} title={presentation.help || undefined}>{presentation.label}</span>;
 }
 
-function GoogleSheetsSettingsPage() {
-  const [status, setStatus] = useState({ configured: false, configuration_source: 'not_configured' });
-  const [form, setForm] = useState({ client_id: '', client_secret: '', refresh_token: '', folder_id: '' });
+function GoogleSheetsSettingsPage({ oauthResult = '' }) {
+  const [status, setStatus] = useState({ configured: false, configuration_source: 'not_configured', oauth_redirect_uri: '' });
+  const [form, setForm] = useState({ client_id: '', client_secret: '', folder_id: '' });
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
+  const [error, setError] = useState(oauthResult === 'denied'
+    ? 'Google access was not approved. Nothing was changed.'
+    : oauthResult === 'failed'
+      ? 'Google connection could not be completed. Check the OAuth client and authorized redirect URI, then try again.'
+      : '');
+  const [message, setMessage] = useState(oauthResult === 'connected'
+    ? 'Google Sheets is connected. Verified reports can now open directly in Google Sheets.'
+    : '');
 
   useEffect(() => {
     let active = true;
@@ -10609,18 +10623,16 @@ function GoogleSheetsSettingsPage() {
     return () => { active = false; };
   }, []);
 
-  async function saveConnection(event) {
+  async function connectGoogle(event) {
     event.preventDefault();
     setLoading(true);
     setError('');
     setMessage('');
     try {
-      const body = await postJson('/api/reports/google-sheets/configuration', form);
-      setStatus(body);
-      setForm({ client_id: '', client_secret: '', refresh_token: '', folder_id: body.folder_id || '' });
-      setMessage(body.message);
-    } catch (saveError) {
-      setError(saveError.message || 'Could not save the Google Sheets connection.');
+      const body = await postJson('/api/reports/google-sheets/oauth/start', form);
+      browserNavigation.assign(body.authorization_url);
+    } catch (connectError) {
+      setError(connectError.message || 'Could not start Google sign-in.');
     } finally {
       setLoading(false);
     }
@@ -10665,9 +10677,9 @@ function GoogleSheetsSettingsPage() {
           </header>
 
           <div className="integration-control-grid">
-            <form className="integration-credentials" onSubmit={saveConnection}>
+            <form className="integration-credentials" onSubmit={connectGoogle}>
               <div className="integration-section-label">
-                <span>01</span><div><strong>Google OAuth credentials</strong><small>Verified before anything is saved</small></div>
+                <span>01</span><div><strong>Google OAuth app</strong><small>One-time setup; Google handles account approval</small></div>
               </div>
               <div className="integration-key-grid">
                 <label className="integration-field">
@@ -10680,18 +10692,19 @@ function GoogleSheetsSettingsPage() {
                 </label>
               </div>
               <label className="integration-field">
-                <span>OAuth refresh token</span>
-                <input type="password" required={!status.refresh_token_present} value={form.refresh_token} onChange={(event) => setForm((current) => ({ ...current, refresh_token: event.target.value }))} placeholder={status.refresh_token_present ? 'Saved — enter only to replace' : 'Refresh token with Sheets and Drive access'} autoComplete="new-password" />
+                <span>Authorized redirect URI</span>
+                <input type="text" readOnly value={status.oauth_redirect_uri || ''} aria-describedby="google-redirect-help" />
               </label>
+              <p id="google-redirect-help" className="integration-access-audit">Add this exact URI to the OAuth web client in Google Cloud.</p>
               <label className="integration-field">
                 <span>Google Drive folder ID <small>(optional)</small></span>
                 <input type="text" value={form.folder_id} onChange={(event) => setForm((current) => ({ ...current, folder_id: event.target.value }))} placeholder="Leave blank to use My Drive" autoComplete="off" />
               </label>
               <div className="integration-form-footer">
                 <p>{status.configuration_source === 'pongo_database'
-                  ? `Encrypted in Pongo${status.configuration_updated_by ? ` · saved by ${status.configuration_updated_by}` : ''}. Blank credential fields keep the saved values.`
+                  ? `Encrypted in Pongo${status.configuration_updated_by ? ` · saved by ${status.configuration_updated_by}` : ''}. Blank client fields keep the saved OAuth app.`
                   : 'Google credentials are stored inside Pongo—not in Heroku or any hosting provider.'}</p>
-                <button className="primary-button integration-connect-button" disabled={loading} type="submit"><CheckCircle2 size={17} />{loading ? 'Verifying…' : 'Save & verify connection'}</button>
+                <button className="primary-button integration-connect-button" disabled={loading} type="submit"><Link2 size={17} />{loading ? 'Opening Google…' : status.configured ? 'Reconnect Google Account' : 'Connect Google Account'}</button>
               </div>
               {message && <div className="integration-inline-success" role="status">{message}</div>}
             </form>
@@ -10702,8 +10715,8 @@ function GoogleSheetsSettingsPage() {
               </div>
               <ol className="integration-setup-list">
                 <li><strong>Enable two APIs</strong><span>Google Sheets API and Google Drive API.</span></li>
-                <li><strong>Create an OAuth client</strong><span>Use the Google account that should own Pongo reports.</span></li>
-                <li><strong>Generate a refresh token</strong><span>Grant Sheets and Drive access, then paste the token here.</span></li>
+                <li><strong>Create an OAuth web client</strong><span>Add the authorized redirect URI shown on this page.</span></li>
+                <li><strong>Connect your Google account</strong><span>Click once, choose the account, and approve access in Google.</span></li>
                 <li><strong>Choose a folder</strong><span>Optional: paste the ID from a Google Drive folder URL.</span></li>
               </ol>
               <div className="integration-safety-line"><span>Hosting portability</span><strong>Database-backed</strong></div>
