@@ -208,7 +208,7 @@ const mockImportSchema = {
   ],
 };
 
-const mockDataQuality = { total_items: 1, complete_items: 0, items_needing_attention: 1, completion_percent: 0, issues: [{ key: 'missing_image', label: 'Missing image', description: 'Add an image.', count: 1, severity: 'attention' }] };
+const mockDataQuality = { total_items: 1, complete_items: 0, items_needing_attention: 1, completion_percent: 0, issues: [{ key: 'missing_cost', label: 'Missing unit cost', description: 'Add the landed unit cost.', count: 1, severity: 'attention' }, { key: 'missing_image', label: 'Missing image', description: 'Add an image.', count: 1, severity: 'attention' }] };
 
 function mockFetch(url) {
   const target = String(url);
@@ -231,6 +231,7 @@ function mockFetch(url) {
   if (target.includes('/api/dashboard')) return json({ inventory_health: {}, order_operations: {}, routes: {}, warnings: [], activity: [] });
   if (target.includes('/api/items/import/schema')) return json(mockImportSchema);
   if (target.includes('/api/items/data-quality')) return json(mockDataQuality);
+  if (target.includes('/api/items/export')) return csvResponse('SKU,Unit cost\nSMOKE-001,\n');
   if (target.includes('/api/import-jobs')) return json([]);
   if (target.includes('/api/items/enrichment/export')) return csvResponse('Pongo Item ID,Woo Product ID,Woo Variation ID,Woo Mapping Type,Woo Mapping Status,SKU\n1,101,,simple,synced,SMOKE-001\n');
   if (target.includes('/api/items/enrichment/preview')) return json({ total_rows: 1, valid_rows: 1, invalid_rows: 0, create_count: 0, update_count: 1, unchanged_count: 0, conflict_count: 0, unmatched_count: 0, warnings: [], errors: [], preview_rows: [{ row_number: 2, action: 'update', sku: 'SMOKE-001', barcode: 'SMOKE001', match_method: 'pongo_item_id', fields_changing: ['Brand'], warnings: [], errors: [], raw_row: { SKU: 'SMOKE-001' } }] });
@@ -589,7 +590,8 @@ describe('App shell and workflows', () => {
     expect(searchInput).toHaveValue('70002');
   });
 
-  it('shows the focused Items command bar and data-quality queue', async () => {
+  it('turns a data-quality filter into an export and re-import workflow', async () => {
+    const user = userEvent.setup();
     window.location.hash = '#items';
     render(<App />);
 
@@ -599,6 +601,25 @@ describe('App shell and workflows', () => {
     expect(screen.getByText('Export')).toBeInTheDocument();
     expect(screen.getByText('More')).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Item data quality' })).toHaveTextContent('Missing image');
+
+    await user.click(screen.getByRole('button', { name: /Missing unit cost/i }));
+    const actions = await screen.findByRole('region', { name: 'Missing unit cost actions' });
+    expect(within(actions).getByRole('button', { name: 'Export CSV' })).toBeInTheDocument();
+    expect(within(actions).getByRole('link', { name: 'Import completed CSV' })).toHaveAttribute('href', '#/items/import?outcome=update_items');
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => String(url).includes('data_quality=missing_cost'))).toBe(true));
+  });
+
+  it('keeps sign out in the top-right account menu', async () => {
+    const user = userEvent.setup();
+    const onLogout = vi.fn();
+    render(<App currentUser={{ display_name: 'Kannan', email: 'kannan@example.com' }} onLogout={onLogout} />);
+
+    await user.click(screen.getByLabelText('Account: Kannan'));
+    expect(screen.getByText('kannan@example.com')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Sign out' }));
+
+    expect(onLogout).toHaveBeenCalledOnce();
+    expect(document.querySelector('.auth-account')).not.toBeInTheDocument();
   });
 
   it('loads the item master once with server pagination', async () => {

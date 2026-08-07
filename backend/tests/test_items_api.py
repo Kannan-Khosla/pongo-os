@@ -439,3 +439,17 @@ def test_csv_export_filtered_rows(client):
     rows = list(csv.DictReader(StringIO(response.text)))
     assert len(rows) == 1
     assert rows[0]["SKU"] == "EXPORT-DOG"
+
+
+def test_csv_export_editable_quality_rows_are_safe_to_reimport(client):
+    seed_item(client, sku="MISSING-COST", **{"Unit Cost": None})
+    seed_item(client, sku="HAS-COST")
+
+    response = client.get("/api/items/export", params={"data_quality": "missing_cost", "editable": True})
+
+    assert response.status_code == 200
+    rows = list(csv.DictReader(StringIO(response.text)))
+    assert len(rows) == 1
+    assert rows[0]["SKU"] == "MISSING-COST"
+    assert rows[0]["Unit cost"] == ""
+    assert "In Stock" not in rows[0]

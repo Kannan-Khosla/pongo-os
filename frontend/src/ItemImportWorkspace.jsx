@@ -356,12 +356,12 @@ function ResultsStep({ preview, onNewImport }) {
   );
 }
 
-export function ItemImportWorkspace({ initialPreviewId = '' }) {
+export function ItemImportWorkspace({ initialPreviewId = '', initialOutcome = '' }) {
   const [schema, setSchema] = useState(null);
-  const [outcome, setOutcome] = useState('');
+  const [outcome, setOutcome] = useState(initialOutcome);
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
-  const [step, setStep] = useState(1);
+  const [step, setStep] = useState(initialOutcome ? 2 : 1);
   const [maxStep, setMaxStep] = useState(2);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -372,7 +372,7 @@ export function ItemImportWorkspace({ initialPreviewId = '' }) {
   }, []);
 
   useEffect(() => {
-    const resumeId = initialPreviewId || sessionStorage.getItem(PREVIEW_KEY);
+    const resumeId = initialPreviewId || (!initialOutcome && sessionStorage.getItem(PREVIEW_KEY));
     if (!resumeId) return;
     setBusy(true);
     requestJson(`/api/items/import/previews/${resumeId}`).then((saved) => {
@@ -382,7 +382,7 @@ export function ItemImportWorkspace({ initialPreviewId = '' }) {
       setStep(nextStep);
       setMaxStep(Math.max(nextStep, saved.status === 'ready' ? 5 : nextStep));
     }).catch(() => sessionStorage.removeItem(PREVIEW_KEY)).finally(() => setBusy(false));
-  }, [initialPreviewId]);
+  }, [initialOutcome, initialPreviewId]);
 
   function remember(saved) {
     setPreview(saved);

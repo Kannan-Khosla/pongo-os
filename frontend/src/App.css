@@ -4961,23 +4961,27 @@ tbody tr:nth-child(even) .sticky-col {
   line-height: 1.35;
 }
 
-.items-quality-strip {
-  display: flex;
-  align-items: center;
-  gap: 16px;
+.items-quality-card {
   margin: 12px 0;
-  padding: 13px 15px;
-  overflow-x: auto;
+  overflow: hidden;
   border: 1px solid #dce3ed;
   border-radius: 9px;
   background: #fff;
+}
+
+.items-quality-strip {
+  display: grid;
+  grid-template-columns: minmax(220px, 240px) minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  padding: 13px 15px;
 }
 
 .items-quality-score {
   display: flex;
   align-items: center;
   gap: 11px;
-  min-width: 240px;
+  min-width: 0;
   padding-right: 16px;
   border-right: 1px solid #e5eaf1;
 }
@@ -5005,7 +5009,8 @@ tbody tr:nth-child(even) .sticky-col {
 }
 
 .items-quality-issues {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
   gap: 8px;
 }
 
@@ -5015,7 +5020,7 @@ tbody tr:nth-child(even) .sticky-col {
   align-items: center;
   gap: 7px;
   min-height: 42px;
-  min-width: 145px;
+  min-width: 0;
   padding: 7px 10px;
   border: 1px solid #e0e6ef;
   border-radius: 8px;
@@ -5038,6 +5043,46 @@ tbody tr:nth-child(even) .sticky-col {
 .items-quality-issues button span {
   font-size: 11px;
   font-weight: 800;
+}
+
+.items-quality-remediation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 15px;
+  border-top: 1px solid #dce3ed;
+  background: #f5f8ff;
+}
+
+.items-quality-remediation > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.items-quality-remediation span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .items-quality-remediation {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 1100px) {
+  .items-quality-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .items-quality-score {
+    padding-right: 0;
+    padding-bottom: 12px;
+    border-right: 0;
+    border-bottom: 1px solid #e5eaf1;
+  }
 }
 
 .items-filter-grid-pro {

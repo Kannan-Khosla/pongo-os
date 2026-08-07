@@ -40,6 +40,13 @@ Metadata templates never contain On hand, Allocated, Available, or stock
 movement columns. The starting-inventory template contains only SKU, starting
 quantity, warehouse, inventory location, and an optional reference note.
 
+On the Items page, selecting a missing title, barcode, brand, category, or unit
+cost quality card exposes an `Export CSV` action. It calls the filtered item
+export with `editable=true`, so the downloaded rows use the Update item details
+schema and exclude protected quantity fields. `Import completed CSV` opens the
+update-details upload step directly. Other quality filters remain view-only
+because they require a different repair workflow.
+
 The canonical legacy item export and endpoints at `/api/items/import/preview`
 and `/api/items/import/commit` remain available for compatibility. The Items UI
 uses the guided workspace endpoints.

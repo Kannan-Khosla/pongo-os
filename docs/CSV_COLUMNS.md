@@ -132,10 +132,14 @@ under `/api/items/import/previews`.
 
 ## Product Export / Inventory Export
 
-Product export and inventory export must emit only the canonical inventory item CSV columns in the exact order above unless a separate export mode is explicitly added later.
+The standard product and inventory export emits the canonical inventory item
+CSV columns in the exact order above. A separate editable export mode uses the
+Update item details schema so its output can be safely re-imported.
 
 Current implementation: `GET /api/items/export` exports filtered backend rows
-using this exact header order.
+using this exact header order. Adding `editable=true` preserves the same filters
+but emits only update-safe metadata columns; it never includes stock quantities
+or movement fields.
 
 Do not include frontend-only/internal fields such as:
 - id

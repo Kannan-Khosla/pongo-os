@@ -5,8 +5,8 @@ import AuthGate from './AuthGate';
 
 afterEach(() => vi.unstubAllGlobals());
 
-function Workspace() {
-  return <div>Protected Pongo workspace</div>;
+function Workspace({ currentUser, onLogout }) {
+  return <><div>Protected Pongo workspace</div>{currentUser && <button onClick={onLogout} type="button">Workspace sign out</button>}</>;
 }
 
 it('shows registration after an unauthenticated check and opens the app after success', async () => {
@@ -24,4 +24,17 @@ it('shows registration after an unauthenticated check and opens the app after su
 
   expect(await screen.findByText('Protected Pongo workspace')).toBeInTheDocument();
   await waitFor(() => expect(fetch.mock.calls[1][1].credentials).toBe('include'));
+});
+
+it('passes the authenticated user and logout action into the workspace', async () => {
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ authenticated: true, user: { id: 1, email: 'staff@example.com', display_name: 'Kannan' } }) })
+    .mockResolvedValueOnce({ ok: true, status: 204 }));
+  const user = userEvent.setup();
+  render(<AuthGate><Workspace /></AuthGate>);
+
+  await user.click(await screen.findByRole('button', { name: 'Workspace sign out' }));
+
+  expect(await screen.findByRole('heading', { name: 'Welcome back' })).toBeInTheDocument();
+  expect(fetch.mock.calls[1][0]).toContain('/api/auth/logout');
 });

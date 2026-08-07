@@ -76,7 +76,7 @@ textarea:focus-visible,
 .global-activity-indicator {
   position: fixed;
   bottom: 18px;
-  left: 18px;
+  right: 18px;
   z-index: 300;
   display: grid;
   width: 38px;
@@ -817,6 +817,76 @@ textarea:focus-visible,
   color: var(--ink-650);
   font-size: 12px;
   font-weight: 650;
+}
+
+.app-shell .account-menu {
+  position: relative;
+  z-index: 70;
+}
+
+.app-shell .account-menu summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.app-shell .account-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.app-shell .account-menu[open] .user-chip,
+.app-shell .account-menu .user-chip:hover {
+  color: var(--pongo-800);
+}
+
+.app-shell .account-menu[open] .account-chevron {
+  transform: rotate(180deg);
+}
+
+.app-shell .account-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 240px;
+  padding: 8px;
+  border: 1px solid var(--line-200);
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 20px 48px rgba(14, 16, 50, 0.18);
+}
+
+.app-shell .account-identity {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border-bottom: 1px solid var(--line-200);
+}
+
+.app-shell .account-identity small {
+  overflow: hidden;
+  color: var(--ink-500);
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+.app-shell .account-popover button {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: 9px;
+  margin-top: 6px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #a52626;
+  cursor: pointer;
+  font-weight: 700;
+  text-align: left;
+}
+
+.app-shell .account-popover button:hover {
+  background: #fff1f1;
 }
 
 .app-shell .avatar {
@@ -3270,6 +3340,7 @@ textarea:focus-visible,
   .app-shell .warehouse-control,
   .app-shell .warehouse-context,
   .app-shell .user-chip > span,
+  .app-shell .account-chevron,
   .app-shell .header-actions .chevron {
     display: none;
   }
@@ -3523,10 +3594,6 @@ textarea:focus-visible,
 
   .app-shell .header-page-context strong {
     max-width: 116px;
-  }
-
-  .app-shell .user-chip {
-    display: none;
   }
 
   .app-shell .main-content {

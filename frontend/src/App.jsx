@@ -24,6 +24,7 @@ import {
   History,
   LayoutDashboard,
   Link2,
+  LogOut,
   MapPin,
   Menu,
   PackagePlus,
@@ -1051,7 +1052,8 @@ function parseHashRoute() {
     return { pageId: 'items', itemView: 'new' };
   }
   if (path === 'items/import') {
-    return { pageId: 'items', itemView: 'import', importPreviewId: query.get('preview') || '' };
+    const importOutcome = query.get('outcome') || '';
+    return { pageId: 'items', itemView: 'import', importPreviewId: query.get('preview') || '', importOutcome: ['add_items', 'update_items', 'starting_inventory'].includes(importOutcome) ? importOutcome : '' };
   }
   if (path === 'items/imports') {
     return { pageId: 'items', itemView: 'import-history' };
@@ -1118,7 +1120,7 @@ function parseHashRoute() {
   return navItems.some((item) => item.id === path) ? { pageId: path } : { pageId: 'dashboard' };
 }
 
-export default function App({ currentUser = null }) {
+export default function App({ currentUser = null, onLogout = null }) {
   const [route, setRoute] = useState(parseHashRoute);
   const [navigationOpen, setNavigationOpen] = useState(false);
   const navigationButtonRef = useRef(null);
@@ -2815,6 +2817,7 @@ export default function App({ currentUser = null }) {
         <TopHeader
           meta={activeMeta}
           currentUser={currentUser}
+          onLogout={onLogout}
           notifications={orderNotificationHistory}
           unreadCount={notificationOrderCount(orderNotificationHistory.filter((notification) => unreadOrderNotificationKeys.has(notification.key)))}
           historyOpen={orderNotificationHistoryOpen}
@@ -3176,7 +3179,7 @@ function formatOrderNotificationCurrency(value, currency) {
   return formatCurrency(value, currency || APP_CURRENCY);
 }
 
-function TopHeader({ meta, currentUser, notifications = [], unreadCount = 0, historyOpen, navigationOpen, navigationButtonRef, onMenuToggle, onNavigate, onToggleHistory, onCloseHistory, onViewOpenOrders }) {
+function TopHeader({ meta, currentUser, onLogout, notifications = [], unreadCount = 0, historyOpen, navigationOpen, navigationButtonRef, onMenuToggle, onNavigate, onToggleHistory, onCloseHistory, onViewOpenOrders }) {
   return (
     <header className="top-header">
       <div className="header-primary">
@@ -3251,12 +3254,25 @@ function TopHeader({ meta, currentUser, notifications = [], unreadCount = 0, his
             </section>
           )}
         </div>
-        <div className="user-chip" aria-label="Signed in user">
-          <div className="avatar">
-            <UserCircle size={26} />
+        <details className="account-menu" onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.currentTarget.removeAttribute('open');
+            event.currentTarget.querySelector('summary')?.focus();
+          }
+        }}>
+          <summary className="user-chip" aria-label={`Account: ${currentUser?.display_name || 'Pongo Staff'}`}>
+            <div className="avatar"><UserCircle size={26} aria-hidden="true" /></div>
+            <span>{currentUser?.display_name || 'Pongo Staff'}</span>
+            <ChevronDown className="account-chevron" size={15} aria-hidden="true" />
+          </summary>
+          <div className="account-popover">
+            <div className="account-identity">
+              <strong>{currentUser?.display_name || 'Pongo Staff'}</strong>
+              {currentUser?.email && <small>{currentUser.email}</small>}
+            </div>
+            {onLogout && <button onClick={onLogout} type="button"><LogOut size={16} aria-hidden="true" /> Sign out</button>}
           </div>
-          <span>{currentUser?.display_name || 'Pongo Staff'}</span>
-        </div>
+        </details>
       </div>
     </header>
   );
@@ -4265,7 +4281,7 @@ function insightRowsForTab(tabId, data) {
 
 function ItemsPage({ route, items, pagination, itemsLoading, itemsError, onLoadItems, onSaveItem, onCloneItem }) {
   if (route.itemView === 'import') {
-    return <ItemImportWorkspace initialPreviewId={route.importPreviewId} />;
+    return <ItemImportWorkspace initialPreviewId={route.importPreviewId} initialOutcome={route.importOutcome} />;
   }
   if (route.itemView === 'import-history') {
     return <ItemImportHistory />;
@@ -5476,6 +5492,8 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
 
   const filtersChanged = Boolean(filters.search || filters.category || filters.brand || filters.stockStatus || filters.dataQuality || filters.status !== 'active' || !filters.includeNonInventory);
   const topQualityIssues = (dataQuality?.issues || []).filter((issue) => issue.count > 0).sort((left, right) => right.count - left.count).slice(0, 5);
+  const selectedQualityIssue = (dataQuality?.issues || []).find((issue) => issue.key === filters.dataQuality);
+  const csvRepairableQualityIssue = ['missing_title', 'missing_barcode', 'missing_brand', 'missing_category', 'missing_cost'].includes(selectedQualityIssue?.key) ? selectedQualityIssue : null;
 
   return (
     <section className="content-panel items-page-pro">
@@ -5535,10 +5553,21 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
         </div>
       </div>
       {dataQuality && (
-        <section className="items-quality-strip" aria-label="Item data quality">
-          <div className="items-quality-score"><span>{dataQuality.completion_percent}%</span><div><strong>Item data completeness</strong><small>{formatNumber(dataQuality.items_needing_attention)} active item(s) need attention</small></div></div>
-          <div className="items-quality-issues">{topQualityIssues.map((issue) => <button className={filters.dataQuality === issue.key ? 'active' : ''} key={issue.key} onClick={() => updateFilter('dataQuality', filters.dataQuality === issue.key ? '' : issue.key)} title={issue.description} type="button"><strong>{formatNumber(issue.count)}</strong><span>{issue.label}</span></button>)}</div>
-        </section>
+        <div className="items-quality-card">
+          <section className="items-quality-strip" aria-label="Item data quality">
+            <div className="items-quality-score"><span>{dataQuality.completion_percent}%</span><div><strong>Item data completeness</strong><small>{formatNumber(dataQuality.items_needing_attention)} active item(s) need attention</small></div></div>
+            <div className="items-quality-issues">{topQualityIssues.map((issue) => <button aria-pressed={filters.dataQuality === issue.key} className={filters.dataQuality === issue.key ? 'active' : ''} key={issue.key} onClick={() => updateFilter('dataQuality', filters.dataQuality === issue.key ? '' : issue.key)} title={issue.description} type="button"><strong>{formatNumber(issue.count)}</strong><span>{issue.label}</span></button>)}</div>
+          </section>
+          {csvRepairableQualityIssue && (
+            <section className="items-quality-remediation" aria-label={`${csvRepairableQualityIssue.label} actions`}>
+              <div><strong>{formatNumber(pagination.total)} item(s) in this fix list</strong><span>Export this filtered CSV, fill the missing values, then import it using “Update item details.”</span></div>
+              <div className="button-row">
+                <button className="action-button" onClick={() => exportItemsCsv({ ...filters, editable: true }, `pongo-items-${csvRepairableQualityIssue.key.replaceAll('_', '-')}.csv`)} type="button"><Download size={16} /> Export CSV</button>
+                <a className="primary-button" href="#/items/import?outcome=update_items"><Upload size={16} /> Import completed CSV</a>
+              </div>
+            </section>
+          )}
+        </div>
       )}
       <div className="items-view-card">
         <div className="items-view-controls">
@@ -12075,7 +12104,7 @@ function StatusBadge({ active }) {
   return <span className={active ? 'status-pill' : 'status-pill inactive'}>{active ? 'Active' : 'Inactive'}</span>;
 }
 
-async function exportItemsCsv(filters) {
+async function exportItemsCsv(filters, filename = 'pongo-inventory-items-export.csv') {
   const response = await apiFetch(`${API_BASE_URL}/api/items/export${filtersToQueryString(filters)}`);
   if (!response.ok) {
     showPlaceholder('Unable to export CSV from the backend. Start the FastAPI server and try again.');
@@ -12085,7 +12114,7 @@ async function exportItemsCsv(filters) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = 'pongo-inventory-items-export.csv';
+  link.download = filename;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -12618,6 +12647,7 @@ function filtersToQueryString(filters = {}) {
   if (filters.sortBy) params.set('sort_by', filters.sortBy);
   if (filters.sortDir) params.set('sort_direction', filters.sortDir);
   if (filters.dataQuality) params.set('data_quality', filters.dataQuality);
+  if (filters.editable) params.set('editable', 'true');
   const query = params.toString();
   return query ? `?${query}` : '';
 }

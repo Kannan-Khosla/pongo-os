@@ -21,6 +21,7 @@ from app.services.item_import import create_payload_from_row, parse_items_csv, p
 from app.services.auth import authenticated_actor
 from app.services.item_enrichment import commit_enrichment, enrichment_csv, parse_enrichment_csv, preview_enrichment
 from app.services.item_control import build_item_activity, build_item_detail, commit_bulk_item_update, item_keyword_predicates, preview_bulk_item_update, search_items
+from app.services.item_import_workflow import field_specs_for, safe_csv_value
 from app.services.items import CANONICAL_ITEM_COLUMNS, apply_calculated_fields, apply_item_payload, item_to_csv_row
 from app.services.location_inventory import ensure_default_item_location_from_item, get_or_create_item_location, lock_inventory_stock, recalculate_item_location, recalculate_item_totals, set_default_item_location, set_opening_balance, to_decimal
 from app.services.stock_mutation_guard import IdempotencyConflict
@@ -330,6 +331,7 @@ def export_items(
     woo_variation_id: int | None = None,
     data_quality: str | None = None,
     stock_status: ItemStockStatus | None = None,
+    editable: bool = False,
     db: Session = Depends(get_db),
 ) -> Response:
     statement = build_items_statement(
@@ -350,14 +352,15 @@ def export_items(
     )
     items = list(db.scalars(statement).all())
     buffer = StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=CANONICAL_ITEM_COLUMNS)
+    specs = field_specs_for("update_items") if editable else None
+    writer = csv.DictWriter(buffer, fieldnames=[spec["label"] for spec in specs] if specs else CANONICAL_ITEM_COLUMNS)
     writer.writeheader()
     for item in items:
-        writer.writerow(item_to_csv_row(item))
+        writer.writerow({spec["label"]: safe_csv_value(getattr(item, spec["attribute"], "")) for spec in specs} if specs else item_to_csv_row(item))
     return Response(
         content=buffer.getvalue(),
         media_type="text/csv",
-        headers={"Content-Disposition": 'attachment; filename="pongo-inventory-items-export.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="pongo-inventory-items-{"editable" if editable else "export"}.csv"'},
     )
 
 

@@ -1,5 +1,5 @@
 import { cloneElement, isValidElement, useEffect, useState } from 'react';
-import { CheckCircle2, LogIn, LogOut, ShieldCheck, UserPlus } from 'lucide-react';
+import { CheckCircle2, LogIn, ShieldCheck, UserPlus } from 'lucide-react';
 import { API_BASE_URL, apiFetch } from './api';
 import './AuthGate.css';
 
@@ -95,6 +95,5 @@ export default function AuthGate({ children }) {
       </main>
     );
   }
-  const authenticatedChildren = isValidElement(children) ? cloneElement(children, { currentUser: user }) : children;
-  return <>{authenticatedChildren}{user && <div className="auth-account"><span>{user.display_name}</span><button type="button" onClick={logout}><LogOut size={15} /> Sign out</button></div>}</>;
+  return isValidElement(children) ? cloneElement(children, { currentUser: user, onLogout: logout }) : children;
 }
