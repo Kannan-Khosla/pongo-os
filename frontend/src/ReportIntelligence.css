@@ -236,6 +236,7 @@
 }
 
 .ri-field input,
+.ri-field select,
 .ri-field textarea {
   width: 100%;
   min-height: 40px;
@@ -257,6 +258,7 @@
 }
 
 .ri-field input:focus,
+.ri-field select:focus,
 .ri-field textarea:focus {
   border-color: var(--ri-indigo);
   outline: 3px solid rgba(32, 33, 181, .1);

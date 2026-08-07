@@ -59,18 +59,72 @@ const FILTER_LABELS = {
   status: 'Order status',
   customer_email: 'Customer email',
 };
+const ALL_OPTION_LABELS = {
+  warehouse: 'All warehouses',
+  inventory_location: 'All locations',
+  brand: 'All brands',
+  category: 'All categories',
+  status: 'All order statuses',
+};
+const EMPTY_SCOPE_OPTIONS = { warehouses: [], locations: [], brands: [], categories: [] };
+const ORDER_STATUS_OPTIONS = [
+  ['open', 'Open'],
+  ['processing', 'Processing'],
+  ['on-hold', 'On hold'],
+  ['pending', 'Pending'],
+  ['partially_allocated', 'Partially allocated'],
+  ['allocated', 'Allocated'],
+  ['picked', 'Picked'],
+  ['partially_fulfilled', 'Partially fulfilled'],
+  ['fulfilled', 'Fulfilled'],
+  ['completed', 'Completed'],
+  ['cancelled', 'Cancelled'],
+  ['failed', 'Failed'],
+  ['refunded', 'Refunded'],
+];
 
 function localIsoDate(value = new Date()) {
   const offset = value.getTimezoneOffset() * 60_000;
   return new Date(value.getTime() - offset).toISOString().slice(0, 10);
 }
 
-function defaultFilters(report) {
-  if (report?.date_mode !== 'range') return {};
-  const end = new Date();
-  const start = new Date();
-  start.setDate(end.getDate() - (report.key === 'executive-weekly' ? 6 : 29));
-  return { start_date: localIsoDate(start), end_date: localIsoDate(end) };
+function defaultFilters(report, scopeOptions = EMPTY_SCOPE_OPTIONS) {
+  const defaults = {};
+  if (report?.date_mode === 'range') {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - (report.key === 'executive-weekly' ? 6 : 29));
+    defaults.start_date = localIsoDate(start);
+    defaults.end_date = localIsoDate(end);
+  }
+  if (report?.filters?.includes('warehouse') && scopeOptions.warehouses.length === 1) {
+    [defaults.warehouse] = scopeOptions.warehouses;
+  }
+  return defaults;
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right, 'en-CA', { sensitivity: 'base' }));
+}
+
+function buildScopeOptions(itemBody, locationBody) {
+  const locations = (locationBody?.locations || []).filter((location) => location?.isActive !== false);
+  return {
+    warehouses: uniqueSorted(locations.map((location) => location.warehouse)),
+    locations,
+    brands: uniqueSorted(itemBody?.facets?.brands || []),
+    categories: uniqueSorted(itemBody?.facets?.categories || []),
+  };
+}
+
+async function optionalJson(url) {
+  try {
+    const response = await apiFetch(url);
+    return response.ok ? response.json() : {};
+  } catch {
+    return {};
+  }
 }
 
 function completedMonthRange(months) {
@@ -182,20 +236,48 @@ function ReportChart({ chart }) {
   return <div className="ri-chart-canvas" ref={elementRef} role="img" aria-label={chart.title} />;
 }
 
-function FilterFields({ report, filters, onChange }) {
+function FilterFields({ report, filters, scopeOptions, onChange }) {
+  function optionsFor(key) {
+    if (key === 'warehouse') return scopeOptions.warehouses.map((value) => [value, value]);
+    if (key === 'brand') return scopeOptions.brands.map((value) => [value, value]);
+    if (key === 'category') return scopeOptions.categories.map((value) => [value, value]);
+    if (key === 'status') return ORDER_STATUS_OPTIONS;
+    if (key === 'inventory_location') {
+      return uniqueSorted(
+        scopeOptions.locations
+          .filter((location) => !filters.warehouse || location.warehouse === filters.warehouse)
+          .map((location) => location.name || location.code),
+      ).map((value) => [value, value]);
+    }
+    return null;
+  }
+
   return (
     <div className="ri-filter-grid">
-      {(report.filters || []).map((key) => (
-        <label className="ri-field" key={key}>
-          <span>{FILTER_LABELS[key] || key.replaceAll('_', ' ')}</span>
-          <input
-            type={key.includes('date') ? 'date' : key === 'customer_email' ? 'email' : 'text'}
-            value={filters[key] || ''}
-            onChange={(event) => onChange(key, event.target.value)}
-            placeholder={key === 'sku' ? 'Exact or partial SKU' : ''}
-          />
-        </label>
-      ))}
+      {(report.filters || []).map((key) => {
+        const label = FILTER_LABELS[key] || key.replaceAll('_', ' ');
+        const options = optionsFor(key);
+        const inputId = `report-filter-${key}`;
+        return (
+          <label className="ri-field" htmlFor={inputId} key={key}>
+            <span>{label}</span>
+            {options ? (
+              <select id={inputId} value={filters[key] || ''} onChange={(event) => onChange(key, event.target.value)}>
+                <option value="">{ALL_OPTION_LABELS[key]}</option>
+                {options.map(([value, optionLabel]) => <option key={value} value={value}>{optionLabel}</option>)}
+              </select>
+            ) : (
+              <input
+                id={inputId}
+                type={key.includes('date') ? 'date' : key === 'customer_email' ? 'email' : 'text'}
+                value={filters[key] || ''}
+                onChange={(event) => onChange(key, event.target.value)}
+                placeholder={key === 'sku' ? 'Exact or partial SKU' : ''}
+              />
+            )}
+          </label>
+        );
+      })}
     </div>
   );
 }
@@ -296,7 +378,7 @@ function SharePanel({ run, catalog, apiBaseUrl, onNotice }) {
 
   return (
     <div className="ri-share-row">
-      <details className="ri-share-panel">
+      <details className="ri-share-panel" open>
         <summary>
           <span className="ri-share-icon sheet"><FileSpreadsheet size={20} /></span>
           <span><strong>Open in Google Sheets</strong><small>Create a live spreadsheet from this frozen run</small></span>
@@ -353,6 +435,7 @@ function SharePanel({ run, catalog, apiBaseUrl, onNotice }) {
 
 export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
   const [catalog, setCatalog] = useState({ reports: [] });
+  const [scopeOptions, setScopeOptions] = useState(EMPTY_SCOPE_OPTIONS);
   const [filters, setFilters] = useState({});
   const [run, setRun] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -366,10 +449,14 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
 
   useEffect(() => {
     let active = true;
-    apiFetch(`${apiBaseUrl}/api/reports`)
-      .then((response) => readResponse(response, 'Report library could not be loaded.'))
-      .then((body) => {
+    Promise.all([
+      apiFetch(`${apiBaseUrl}/api/reports`).then((response) => readResponse(response, 'Report library could not be loaded.')),
+      optionalJson(`${apiBaseUrl}/api/items?page=1&page_size=1`),
+      optionalJson(`${apiBaseUrl}/api/locations?active=true`),
+    ])
+      .then(([body, itemBody, locationBody]) => {
         if (active) {
+          setScopeOptions(buildScopeOptions(itemBody, locationBody));
           setCatalog({
             ...body,
             reports: Array.isArray(body?.reports) ? body.reports : [],
@@ -389,7 +476,7 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
 
   useEffect(() => {
     if (!report) return;
-    const nextFilters = defaultFilters(report);
+    const nextFilters = defaultFilters(report, scopeOptions);
     setFilters(nextFilters);
     setRun(null);
     setJob(null);
@@ -596,7 +683,16 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
                   </div>
                 )}
               </div>
-              <FilterFields report={report} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} />
+              <FilterFields
+                report={report}
+                filters={filters}
+                scopeOptions={scopeOptions}
+                onChange={(key, value) => setFilters((current) => (
+                  key === 'warehouse'
+                    ? { ...current, warehouse: value, inventory_location: '' }
+                    : { ...current, [key]: value }
+                ))}
+              />
               <div className="ri-filter-actions">
                 <p>Exports are generated from one immutable report run, so PDF, CSV, Sheets, and email agree.</p>
                 <button className="ri-primary-button" type="button" onClick={() => generate()} disabled={loading}>
@@ -641,6 +737,8 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
                     )}
                   </div>
                 </div>
+
+                <SharePanel key={run.run_id} run={run} catalog={catalog} apiBaseUrl={apiBaseUrl} onNotice={setNotice} />
 
                 <section className="ri-kpis" aria-label="Report summary">
                   {(run.kpis || []).map((metric, index) => (
@@ -714,8 +812,6 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
                     </table>
                   </div>
                 </section>
-
-                <SharePanel key={run.run_id} run={run} catalog={catalog} apiBaseUrl={apiBaseUrl} onNotice={setNotice} />
 
                 <section className="ri-assurance">
                   <div className="ri-assurance-heading">

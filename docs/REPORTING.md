@@ -72,6 +72,13 @@ months, last year, and calendar-year-to-date presets while preserving custom
 date entry. Received Inventory also exposes the same presets directly on its
 operational report page.
 
+Shared report scope controls use the live location and item catalogs. When
+Pongo has one active warehouse it is selected automatically; location, brand,
+category, and order-status filters default to all. Warehouse, location, brand,
+category, and order status are dropdowns, while SKU remains an exact-or-partial
+text search. The same behavior applies to every report that exposes those
+filters.
+
 ## External delivery
 
 Google Sheets publishing and SMTP email are backend-only integrations.
@@ -79,7 +86,9 @@ Credentials never enter the frontend and are never returned by an API.
 
 Google Sheets requires an OAuth client and refresh token with Sheets and Drive
 access. A report creates a spreadsheet with `Report` and `Audit` tabs. Optional
-email addresses receive Google Drive writer permissions.
+email addresses receive Google Drive writer permissions. The Google Sheets
+action appears immediately after a verified run is ready and opens the created
+spreadsheet directly, without a local CSV or Excel download.
 
 Email delivery can attach CSV and PDF versions and include a previously-created
 Google Sheet URL. Each attempt creates a `report_deliveries` audit row.

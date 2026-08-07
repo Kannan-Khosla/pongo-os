@@ -29,6 +29,15 @@ const run = {
   data_hash: 'abc123',
 };
 
+const scopedReport = {
+  ...report,
+  key: 'inventory-export',
+  title: 'Inventory Export',
+  date_mode: 'snapshot',
+  filters: ['warehouse', 'inventory_location', 'brand', 'category', 'sku'],
+  formats: ['csv', 'google_sheets', 'email'],
+};
+
 function response(body, { ok = true, status = 200 } = {}) {
   return Promise.resolve({ ok, status, json: () => Promise.resolve(body) });
 }
@@ -36,6 +45,7 @@ function response(body, { ok = true, status = 200 } = {}) {
 describe('Report Intelligence performance flow', () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -52,6 +62,59 @@ describe('Report Intelligence performance flow', () => {
     expect(await screen.findByRole('heading', { name: report.title })).toBeInTheDocument();
     await waitFor(() => expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/reports/jobs/latest/'))).toBe(true));
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith(`/api/reports/jobs/${report.key}`))).toBe(false);
+  });
+
+  it('prefills the sole warehouse and renders catalog-backed scope dropdowns', async () => {
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      const target = String(url);
+      if (target.endsWith('/api/reports')) return response({ reports: [scopedReport] });
+      if (target.includes('/api/items?')) return response({ facets: { brands: ['Acana', 'Weruva'], categories: ['Cats', 'Dogs'] } });
+      if (target.includes('/api/locations?')) {
+        return response({
+          locations: [
+            { id: 1, warehouse: 'Main Warehouse', code: 'A-01', name: 'Aisle 1', isActive: true },
+            { id: 2, warehouse: 'Main Warehouse', code: 'B-01', name: 'Aisle 2', isActive: true },
+          ],
+        });
+      }
+      if (target.includes('/api/reports/jobs/latest/')) return response({}, { ok: false, status: 404 });
+      return response({});
+    }));
+
+    render(<ReportIntelligencePage apiBaseUrl="" reportKey={scopedReport.key} />);
+
+    expect(await screen.findByRole('heading', { name: scopedReport.title })).toBeInTheDocument();
+    expect(screen.getByLabelText('Warehouse')).toHaveValue('Main Warehouse');
+    expect(screen.getByLabelText('Location')).toHaveValue('');
+    expect(screen.getByLabelText('Brand')).toHaveValue('');
+    expect(screen.getByLabelText('Category')).toHaveValue('');
+    expect(screen.getByLabelText('SKU')).toHaveAttribute('placeholder', 'Exact or partial SKU');
+    expect(screen.getByRole('option', { name: 'All locations' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'All brands' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'All categories' })).toBeInTheDocument();
+    await waitFor(() => {
+      const latestCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/reports/jobs/latest/'));
+      expect(JSON.parse(latestCall[1].body).filters).toEqual({ warehouse: 'Main Warehouse' });
+    });
+  });
+
+  it('creates and opens a Google Sheet directly from a ready report', async () => {
+    const user = userEvent.setup();
+    const replace = vi.fn();
+    vi.spyOn(window, 'open').mockReturnValue({ opener: null, location: { replace }, close: vi.fn() });
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      const target = String(url);
+      if (target.endsWith('/api/reports')) return response({ reports: [scopedReport], google_sheets_configured: true });
+      if (target.includes('/api/reports/jobs/latest/')) return response({ ...run, filters: {}, run_id: 77 });
+      if (target.endsWith('/api/reports/runs/77/google-sheets')) return response({ url: 'https://docs.google.com/spreadsheets/d/pongo-report' });
+      return response({});
+    }));
+
+    render(<ReportIntelligencePage apiBaseUrl="" reportKey={scopedReport.key} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Create and open Sheet' }));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('https://docs.google.com/spreadsheets/d/pongo-report'));
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/api/reports/runs/77/google-sheets'))).toBe(true);
   });
 
   it('queues generation and shows the previous verified run while polling', async () => {
