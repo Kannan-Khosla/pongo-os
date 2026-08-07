@@ -2,13 +2,13 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-07T18:49:34Z
-EXECUTION MODE: Release Approved Scope
-CURRENT PHASE: Release Preparation
-CURRENT RELEASE RECOMMENDATION: APPROVED FOR SCOPED DEPLOYMENT; LOCAL EVIDENCE GREEN
+LAST UPDATED: 2026-08-07T18:54:03Z
+EXECUTION MODE: Operate
+CURRENT PHASE: Complete
+CURRENT RELEASE RECOMMENDATION: DEPLOYED AND VERIFIED FOR PONGO USE
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Pongo Inventory OS is live and its report-to-Google-Sheets credentials are stored encrypted in the Pongo database. The active delivery replaces manual refresh-token entry with a one-click Google OAuth consent flow and then deploys the verified build. Existing production stock authority and WooCommerce writeback remain disabled and out of scope.
+Pongo Inventory OS is live and its report-to-Google-Sheets credentials are stored encrypted in the Pongo database. The active delivery replaces manual refresh-token entry with a one-click Google OAuth consent flow and then deploys the verified build. Existing production stock authority and WooCommerce writeback configuration remained unchanged and out of scope.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary user: authenticated Pongo staff configuring report sharing. Success means the user enters the Google OAuth application client ID/secret once, clicks Connect Google Account, approves access at Google, returns to Pongo with a connected status, and never handles a refresh token. Existing report publishing must continue to use the encrypted database configuration.
@@ -50,7 +50,7 @@ ADR-GOAUTH-004 ACCEPTED: Use the existing encrypted database configuration so mo
 GOAUTH-001 / P0 / COMPLETED / Backend: authorization URL, expiring encrypted state, callback exchange and encrypted refresh-token persistence.
 GOAUTH-002 / P0 / COMPLETED / Frontend: one-click connection screen with accessible status, exact redirect URI, and no refresh-token input.
 GOAUTH-003 / P0 / COMPLETED / QA: OAuth security/route tests, frontend behavior, full regression/build and fresh migration.
-GOAUTH-004 / P0 / IN PROGRESS / Release: documentation complete; commit/push, Heroku deploy and read-only live verification remain.
+GOAUTH-004 / P0 / COMPLETED / Release: commit 99f390a pushed and deployed as Heroku v36; health/auth boundary and authenticated UI passed.
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / HIGH / MITIGATED: OAuth state tampering or callback mix-up. Encrypted authenticated state expires after ten minutes and is bound to actor plus redirect URI; tamper test passes.
@@ -64,6 +64,7 @@ DEPENDENCY-001: Google OAuth web client must be created by Pongo and configured 
 2026-08-07: Added authenticated OAuth start/callback routes, ten-minute encrypted actor/URI-bound state, server-side code exchange, encrypted refresh-token persistence, and safe callback redirects.
 2026-08-07: Replaced manual refresh-token UI with Connect/Reconnect Google Account, exact redirect URI guidance, denial/failure/success states, and updated report/configuration copy.
 2026-08-07: Updated API, reporting, and production operations documentation. No schema or dependency change.
+2026-08-07: Committed 99f390a, pushed the existing branch, and deployed Heroku v36. Release command completed successfully with schema remaining at 20260807_0036.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
 Current delivery evidence at 2026-08-07T18:49Z:
@@ -83,7 +84,8 @@ Rollback: redeploy previous release/commit 99eae99. OAuth data is additive confi
 PRODUCTION APPROVAL: User explicitly requested “have one click google sign on, and deploy it” on 2026-08-07.
 
 === 14. OPERATIONS, OBSERVABILITY, AND SUPPORT READINESS ===
-Post-deploy checks pending: Heroku release success; /health HTTP 200; migration still 20260807_0036; authenticated Settings route renders one-click flow. Do not initiate Google consent or modify a Google account during automated verification.
+Post-deploy evidence: Heroku v36 released commit 99f390a and remains rollback-eligible; release migration succeeded; custom-domain `/health` returned HTTP 200; anonymous `/api/auth/me` returned HTTP 401. The authenticated live Settings page rendered Not connected, Connect Google Account, no refresh-token field, and the exact production callback `https://inventory.pongo.ca/api/reports/google-sheets/oauth/callback`. Google consent was not initiated and no Google account was modified.
+Build observations: Heroku build succeeded; existing test-only npm high-severity advisory and Vite large-chunk warnings remain visible and unchanged.
 Support: callback success/denied/failed states return the user to Settings with an actionable message.
 
 === 15. TECHNICAL DEBT AND DEFERRED WORK ===
@@ -95,10 +97,14 @@ Ponytail decision: reuse existing Settings page, encrypted row, httpx, and platf
 UI guidance applied: one primary CTA, visible keyboard focus through existing controls, aria-live status, precise error copy, and the exact redirect URI rather than a long onboarding wizard.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: stage only delivery-owned files (never user-owned PRODUCT_AUDIT.txt), commit and push the reviewed diff.
-THEN: deploy the exact commit to Heroku and verify release, health, migration and authenticated Settings UI.
-FINAL: record live evidence, append a delivery snapshot, validate state and leave the live Google Sheets Settings page open.
+NEXT: Pongo operator creates/uses a Google OAuth web client, registers the exact callback shown in Settings, enters client ID/secret, and clicks Connect Google Account.
+THEN: approve Google Sheets and Drive-file access in Google's consent screen; Pongo will return to Settings and show Connected.
+APPROVAL REQUIRED: Only the user should grant Google account access. No engineering or hosting change is required.
 APPROVALS: Production deployment is already explicitly approved. Google consent itself remains a user action because it grants access to the user's Google account.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
-No delivery snapshots recorded.
+--- DELIVERY RUN: 2026-08-07T18:54:03Z ---
+MODE: Operate
+SUMMARY: One-click Google Sheets OAuth implemented, deployed, and verified on Pongo production.
+EVIDENCE: Commit 99f390a; Heroku v36; 436 backend tests passed with 7 PostgreSQL-only skips; 107 frontend tests passed; production build and fresh migration 0036 passed; live health 200, anonymous auth 401, authenticated Settings showed Connect Google Account and exact callback URI.
+NEXT ACTION: Pongo operator must register the displayed callback in a Google OAuth web client and approve access through the in-app button.
