@@ -369,11 +369,13 @@ const navigationGroups = [
   { id: 'system', label: 'System', icon: Settings, href: '#settings', pages: ['settings'] },
 ];
 
+const DEFAULT_REPORT_KEY = 'inventory-export';
+
 function navItemHref(item) {
   if (item.id === 'orders') return '#/orders/open';
   if (item.id === 'inventory') return '#/inventory/all';
   if (item.id === 'receiving') return '#/receiving/direct';
-  if (item.id === 'reports') return '#/reports/inventory/inventory-valuation';
+  if (item.id === 'reports') return `#/reports/inventory/${DEFAULT_REPORT_KEY}`;
   if (item.id === 'insights') return '#/insights/overview';
   return `#${item.id}`;
 }
@@ -1098,8 +1100,10 @@ function parseHashRoute() {
   }
   if (path === 'reports' || path.startsWith('reports/')) {
     const segments = path.split('/');
-    const requestedKey = segments[2] || segments[1] || 'inventory-valuation';
-    const report = allReportDefinitions.find((candidate) => candidate.key === requestedKey) || allReportDefinitions[0];
+    const requestedKey = segments[2] || segments[1] || DEFAULT_REPORT_KEY;
+    const resolvedKey = requestedKey === 'inventory-valuation' ? DEFAULT_REPORT_KEY : requestedKey;
+    const report = allReportDefinitions.find((candidate) => candidate.key === resolvedKey)
+      || allReportDefinitions.find((candidate) => candidate.key === DEFAULT_REPORT_KEY);
     return { pageId: 'reports', reportCategory: report.category, reportKey: report.key };
   }
   if (path === 'insights' || path.startsWith('insights/')) {

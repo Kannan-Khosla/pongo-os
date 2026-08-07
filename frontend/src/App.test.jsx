@@ -399,8 +399,21 @@ function mockFetch(url) {
     }],
   });
   if (target.includes('/api/integrations/woocommerce/remap')) return json({ candidates: [], mappings: [] });
+  if (target.endsWith('/api/reports')) return json({
+    reports: [{
+      key: 'inventory-export',
+      title: 'Inventory Export',
+      description: 'Verified inventory export.',
+      category: 'inventory',
+      date_mode: 'snapshot',
+      filters: ['warehouse', 'inventory_location', 'brand', 'category', 'sku'],
+      formats: ['csv'],
+    }],
+  });
   if (target.includes('/api/reports/inventory-valuation/summary')) return json({ total_skus: 1, total_units: 9 });
   if (target.includes('/api/reports/inventory-valuation')) return json([{ sku: 'SMOKE-001', description: 'Smoke Test Item', in_stock: 9 }]);
+  if (target.includes('/api/reports/low-stock/summary')) return json({ total_skus: 1, total_units: 9 });
+  if (target.includes('/api/reports/low-stock')) return json([{ sku: 'SMOKE-001', description: 'Smoke Test Item', in_stock: 9 }]);
   if (target.includes('/api/reports/receiving-cost/summary')) return json({ total_receipts: 0, total_received_value: 0 });
   if (target.includes('/api/reports/receiving-cost')) return json([]);
   if (target.includes('/api/reports/received-inventory/summary')) return json({ total_receipts: 0, total_lines: 0, by_location: [] });
@@ -500,6 +513,24 @@ describe('App shell and workflows', () => {
     await user.click(within(nav).getByRole('link', { name: /Items/i }));
     await screen.findByRole('heading', { name: 'Items', level: 1 });
     expect(document.querySelectorAll('.nav-link.active')).toHaveLength(1);
+  });
+
+  it('opens the report intelligence workspace from every default report entry point', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' });
+    const reportsLink = within(nav).getByRole('link', { name: 'Reports' });
+    expect(reportsLink).toHaveAttribute('href', '#/reports/inventory/inventory-export');
+    await user.click(reportsLink);
+    expect(await screen.findByRole('heading', { name: 'Inventory Export', level: 1 })).toBeInTheDocument();
+    expect(window.location.hash).toBe('#/reports/inventory/inventory-export');
+
+    await user.click(within(nav).getByRole('link', { name: /Items/i }));
+    await screen.findByRole('heading', { name: 'Items', level: 1 });
+    window.location.hash = '#/reports/inventory/inventory-valuation';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(await screen.findByRole('heading', { name: 'Inventory Export', level: 1 })).toBeInTheDocument();
   });
 
   it('exposes the production shell landmarks and closes mobile navigation with Escape', async () => {
@@ -1065,17 +1096,17 @@ describe('App shell and workflows', () => {
 
   it('uses route-backed report categories, scoped secondary navigation, and contextual filters', async () => {
     const user = userEvent.setup();
-    window.location.hash = '#/reports/inventory/inventory-valuation';
+    window.location.hash = '#/reports/inventory/low-stock';
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Inventory Valuation', level: 1 })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Low Stock / Reorder', level: 1 })).toBeInTheDocument();
     expect(await screen.findByText('SMOKE-001')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Received Inventory Report' })).not.toBeInTheDocument();
 
-    const categoryNav = screen.getByRole('navigation', { name: 'Inventory Valuation sections' });
+    const categoryNav = screen.getByRole('navigation', { name: 'Low Stock / Reorder sections' });
     expect(within(categoryNav).getByRole('link', { name: 'Inventory' })).toHaveAttribute('aria-current', 'page');
     const inventoryNav = screen.getByRole('navigation', { name: 'Inventory reports' });
-    expect(within(inventoryNav).getByRole('link', { name: 'Inventory Valuation' })).toHaveAttribute('aria-current', 'page');
+    expect(within(inventoryNav).getByRole('link', { name: 'Low Stock / Reorder' })).toHaveAttribute('aria-current', 'page');
     expect(within(inventoryNav).queryByRole('link', { name: 'Received Inventory' })).not.toBeInTheDocument();
 
     const inventoryFilters = document.querySelector('.report-filter-grid');
@@ -1091,7 +1122,7 @@ describe('App shell and workflows', () => {
     await user.type(within(inventoryFilters).getByLabelText('Brand'), 'Acana');
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => {
-      const reportCalls = fetch.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('/api/reports/inventory-valuation'));
+      const reportCalls = fetch.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('/api/reports/low-stock'));
       expect(reportCalls).toHaveLength(2);
       expect(reportCalls.every((url) => new URL(url).searchParams.get('brand') === 'Acana')).toBe(true);
       expect(reportCalls.every((url) => !new URL(url).searchParams.has('start_date') && !new URL(url).searchParams.has('barcode'))).toBe(true);
@@ -1125,7 +1156,7 @@ describe('App shell and workflows', () => {
   it.each([
     ['#items', 'Items'],
     ['#inventory', 'All Inventory'],
-    ['#/reports/inventory/inventory-valuation', 'Inventory Valuation'],
+    ['#/reports/inventory/inventory-export', 'Inventory Export'],
     ['#scanner', 'Scanner'],
     ['#cycle-count', 'Cycle Count'],
   ])('renders the %s page', async (hash, heading) => {
