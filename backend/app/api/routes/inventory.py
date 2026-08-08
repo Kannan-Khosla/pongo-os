@@ -1,9 +1,9 @@
 import csv
 from io import StringIO
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
@@ -24,7 +24,7 @@ from app.schemas.inventory import (
     StockAdjustmentRead,
     StockAdjustmentRequest,
 )
-from app.services.inventory_reports import INVENTORY_BY_LOCATION_COLUMNS, build_inventory_summary, get_inventory_items, item_to_inventory_by_location_row
+from app.services.inventory_reports import INVENTORY_BY_LOCATION_COLUMNS, get_inventory_items, item_to_inventory_by_location_row, query_inventory_summary
 from app.services.auth import authenticated_actor
 from app.services.location_inventory import create_committed_adjustment_batch, create_committed_transfer_batch, recalculate_item_location
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
@@ -75,13 +75,39 @@ def list_inventory_locations(
     has_stock: bool | None = None,
     negative_sellable: bool | None = None,
     allocated_gt_stock: bool | None = None,
-    limit: int = 100,
-    offset: int = 0,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> InventoryLocationInventoryListResponse:
     parsed_item_ids = parse_item_ids(item_ids)
-    rows = query_inventory_location_rows(db, search, sku, barcode, item_id, parsed_item_ids, warehouse, inventory_location, brand, category, under_par, active, has_stock, negative_sellable, allocated_gt_stock, limit, offset)
-    return InventoryLocationInventoryListResponse(rows=[item_location_to_read(row) for row in rows], total=len(rows))
+    statement = build_inventory_location_statement(search, sku, barcode, item_id, parsed_item_ids, warehouse, inventory_location, brand, category, under_par, active, has_stock, negative_sellable, allocated_gt_stock)
+    total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    total_pages = (total + page_size - 1) // page_size
+    effective_page = min(page, max(total_pages, 1))
+    rows = list(
+        db.scalars(
+            statement
+            .options(selectinload(InventoryItemLocation.inventory_item))
+            .order_by(
+                InventoryItemLocation.warehouse.asc().nullslast(),
+                InventoryItemLocation.inventory_location.asc().nullslast(),
+                InventoryItem.sku.asc().nullslast(),
+                InventoryItemLocation.id.asc(),
+            )
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return InventoryLocationInventoryListResponse(
+        rows=[item_location_to_read(row) for row in rows],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(rows),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.get("/locations/export")
@@ -157,12 +183,38 @@ def commit_inventory_transfer(payload: InventoryTransferRequest, db: Session = D
 
 
 @router.get("/transfers", response_model=InventoryTransferListResponse)
-def list_inventory_transfers(status: str | None = None, db: Session = Depends(get_db)) -> InventoryTransferListResponse:
-    statement = select(InventoryTransfer).options(selectinload(InventoryTransfer.lines)).order_by(InventoryTransfer.created_at.desc(), InventoryTransfer.id.desc())
+def list_inventory_transfers(
+    status: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> InventoryTransferListResponse:
+    predicates = []
     if status:
-        statement = statement.where(InventoryTransfer.status == status)
-    transfers = list(db.scalars(statement).all())
-    return InventoryTransferListResponse(transfers=[transfer_to_read(transfer) for transfer in transfers], total=len(transfers))
+        predicates.append(InventoryTransfer.status == status)
+    total = int(db.scalar(select(func.count(InventoryTransfer.id)).where(*predicates)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    effective_page = min(page, max(total_pages, 1))
+    transfers = list(
+        db.scalars(
+            select(InventoryTransfer)
+            .where(*predicates)
+            .options(selectinload(InventoryTransfer.lines))
+            .order_by(InventoryTransfer.created_at.desc(), InventoryTransfer.id.desc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return InventoryTransferListResponse(
+        transfers=[transfer_to_read(transfer) for transfer in transfers],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(transfers),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.get("/transfers/{transfer_id}", response_model=InventoryTransferDetail)
@@ -209,14 +261,41 @@ def commit_stock_adjustment(payload: StockAdjustmentRequest, db: Session = Depen
 
 
 @router.get("/adjustments", response_model=StockAdjustmentListResponse)
-def list_stock_adjustments(status: str | None = None, adjustment_type: str | None = None, db: Session = Depends(get_db)) -> StockAdjustmentListResponse:
-    statement = select(StockAdjustment).options(selectinload(StockAdjustment.lines)).order_by(StockAdjustment.created_at.desc(), StockAdjustment.id.desc())
+def list_stock_adjustments(
+    status: str | None = None,
+    adjustment_type: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> StockAdjustmentListResponse:
+    predicates = []
     if status:
-        statement = statement.where(StockAdjustment.status == status)
+        predicates.append(StockAdjustment.status == status)
     if adjustment_type:
-        statement = statement.where(StockAdjustment.adjustment_type == adjustment_type)
-    adjustments = list(db.scalars(statement).all())
-    return StockAdjustmentListResponse(adjustments=[adjustment_to_read(adjustment) for adjustment in adjustments], total=len(adjustments))
+        predicates.append(StockAdjustment.adjustment_type == adjustment_type)
+    total = int(db.scalar(select(func.count(StockAdjustment.id)).where(*predicates)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    effective_page = min(page, max(total_pages, 1))
+    adjustments = list(
+        db.scalars(
+            select(StockAdjustment)
+            .where(*predicates)
+            .options(selectinload(StockAdjustment.lines))
+            .order_by(StockAdjustment.created_at.desc(), StockAdjustment.id.desc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return StockAdjustmentListResponse(
+        adjustments=[adjustment_to_read(adjustment) for adjustment in adjustments],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(adjustments),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.get("/adjustments/{adjustment_id}", response_model=StockAdjustmentDetail)
@@ -274,7 +353,7 @@ def summarize_inventory_by_location(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     try:
-        items = get_inventory_items(
+        return query_inventory_summary(
             db,
             search=search,
             warehouse=warehouse,
@@ -288,7 +367,6 @@ def summarize_inventory_by_location(
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return build_inventory_summary(items)
 
 
 def query_inventory_location_rows(
@@ -310,7 +388,38 @@ def query_inventory_location_rows(
     limit: int | None,
     offset: int,
 ) -> list[InventoryItemLocation]:
-    statement = select(InventoryItemLocation).join(InventoryItem).options(selectinload(InventoryItemLocation.inventory_item))
+    statement = build_inventory_location_statement(search, sku, barcode, item_id, item_ids, warehouse, inventory_location, brand, category, under_par, active, has_stock, negative_sellable, allocated_gt_stock)
+    statement = statement.options(selectinload(InventoryItemLocation.inventory_item))
+    statement = statement.order_by(
+        InventoryItemLocation.warehouse.asc().nullslast(),
+        InventoryItemLocation.inventory_location.asc().nullslast(),
+        InventoryItem.sku.asc().nullslast(),
+        InventoryItemLocation.id.asc(),
+    )
+    if offset:
+        statement = statement.offset(offset)
+    if limit is not None:
+        statement = statement.limit(max(1, min(limit, 1000)))
+    return list(db.scalars(statement).all())
+
+
+def build_inventory_location_statement(
+    search: str | None,
+    sku: str | None,
+    barcode: str | None,
+    item_id: int | None,
+    item_ids: list[int] | None,
+    warehouse: str | None,
+    inventory_location: str | None,
+    brand: str | None,
+    category: str | None,
+    under_par: bool | None,
+    active: bool | None,
+    has_stock: bool | None,
+    negative_sellable: bool | None,
+    allocated_gt_stock: bool | None,
+):
+    statement = select(InventoryItemLocation).join(InventoryItem)
     if search:
         pattern = f"%{search}%"
         statement = statement.where(
@@ -354,12 +463,7 @@ def query_inventory_location_rows(
         statement = statement.where(InventoryItemLocation.sellable < 0)
     if allocated_gt_stock:
         statement = statement.where(InventoryItemLocation.allocated > InventoryItemLocation.in_stock)
-    statement = statement.order_by(InventoryItemLocation.warehouse.asc().nullslast(), InventoryItemLocation.inventory_location.asc().nullslast(), InventoryItem.sku.asc().nullslast())
-    if offset:
-        statement = statement.offset(offset)
-    if limit is not None:
-        statement = statement.limit(max(1, min(limit, 1000)))
-    return list(db.scalars(statement).all())
+    return statement
 
 
 def parse_item_ids(value: str | None) -> list[int] | None:
@@ -386,6 +490,10 @@ def item_location_to_read(row: InventoryItemLocation) -> InventoryItemLocationRe
         sku=item.sku if item else None,
         barcode=item.barcode if item else None,
         description=item.description if item else None,
+        brand=item.brand if item else None,
+        category=item.category if item else None,
+        unit_cost=float(item.unit_cost) if item and item.unit_cost is not None else None,
+        item_active=item.active if item else None,
         warehouse=row.warehouse,
         inventory_location=row.inventory_location,
         location_code=row.location_code,

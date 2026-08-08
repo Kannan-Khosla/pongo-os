@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
+import { createActiveLocation, registerOperator } from './support/isolated-workspace.js';
 
 const apiBase = process.env.PONGO_E2E_API_URL || 'http://127.0.0.1:8000';
 
@@ -24,14 +25,16 @@ test('repairs, imports, audits, and updates items without changing stock', async
   const sku = `IMPORT-${runId}-A`;
   const correctedSku = `IMPORT-${runId}-B`;
   const duplicateSku = `IMPORT-${runId}-DUP`;
+  await registerOperator(page, { displayName: 'Import E2E Operator', runId });
+  const location = await createActiveLocation(page, apiBase, runId);
 
   await page.goto('/#/items/import');
   await chooseOutcome(page, /Add new items/);
   await uploadAndValidate(page, 'guided-items.csv', [
-    'SKU,Product name,Barcode,Category,Brand,Unit cost,Active',
-    `${sku},Original product,600${runId}01,Dog Food,Pongo QA,12.50,Yes`,
-    `${duplicateSku},Correct this duplicate,600${runId}02,Cat Treats,Pongo QA,4.25,Yes`,
-    `${duplicateSku},Exclude this duplicate,600${runId}03,Cat Treats,Pongo QA,4.25,Yes`,
+    'SKU,Product name,Barcode,Category,Brand,Unit cost,Warehouse,Inventory location,Default location,Active',
+    `${sku},Original product,600${runId}01,Dog Food,Pongo QA,12.50,${location.warehouse},${location.code},${location.code},Yes`,
+    `${duplicateSku},Correct this duplicate,600${runId}02,Cat Treats,Pongo QA,4.25,${location.warehouse},${location.code},${location.code},Yes`,
+    `${duplicateSku},Exclude this duplicate,600${runId}03,Cat Treats,Pongo QA,4.25,${location.warehouse},${location.code},${location.code},Yes`,
   ].join('\n'));
 
   await page.getByRole('button', { name: 'Edit row 3' }).click();
@@ -55,6 +58,8 @@ test('repairs, imports, audits, and updates items without changing stock', async
 
   let items = await (await page.request.get(`${apiBase}/api/items?sku=${encodeURIComponent(sku)}`)).json();
   expect(items.items[0]['In Stock']).toBe(0);
+  expect(items.items[0].Warehouse).toBe(location.warehouse);
+  expect(items.items[0]['Inventory Location']).toBe(location.code);
 
   await page.getByRole('link', { name: 'View history' }).click();
   await expect(page.getByRole('cell', { name: 'Completed' }).first()).toBeVisible();

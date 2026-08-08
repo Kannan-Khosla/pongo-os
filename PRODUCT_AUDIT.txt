@@ -1,0 +1,1948 @@
+PRODUCT SYSTEM AUDIT
+Report schema version: 1.0
+Purpose: Living current-state review plus complete append-only audit history.
+
+=== 00. CURRENT STATUS UPDATE ===
+Authoritative as of: 2026-08-08T20:53:34Z
+Scope: Release-integrity and performance remediation requested after the 2026-08-08T03:47:47Z audit.
+Result: The requested backup/E2E/dependency/Alembic/pagination/SQL-bounding sequence is implemented and its isolated local release gate is green. No production, Heroku, customer database, or live WooCommerce service was accessed or changed.
+Closed by this remediation: DB-001, QA-001, QA-002, SYS-004, FE-002, FE-003, FE-004, BE-007, QA-004, and DB-007.
+Current validation: 501 backend tests passed with PostgreSQL enabled; 132 frontend tests passed; production build passed; Python and npm audits found no known vulnerabilities; migration upgrade/downgrade/re-upgrade and Alembic drift check passed at 20260807_0037; the hardened backup verifier restored the exact head and all 52 ORM application tables; both active zero-retry Playwright journeys passed from a clean PostgreSQL database (one evidence-capture test remains intentionally skipped).
+Current release posture: The release machinery repaired in this scope is trustworthy locally, but the overall product remains DO NOT DEPLOY until the unrelated inherited P1 safety findings still listed in the open register are resolved or deliberately accepted. In particular, this run does not close Woo write-ownership, cycle-count/manual-allocation locking, false invoice/bulk-preview findings, live data-quality/readiness, or deployment-gate enforcement.
+Supersession note: Sections 01-21 preserve the full 2026-08-08T03:47:47Z audit context and evidence. This section plus the appended 2026-08-08T20:53:34Z run are the authoritative update for the remediated findings.
+
+=== 01. AUDIT METADATA ===
+Project: Pongo Inventory OS (PongoOS)
+Repository root: /Users/kannankhosla/Desktop/Codex/pongoOS
+Audit timestamp: 2026-08-08T03:47:47Z
+Audit mode: Full pre-deployment mock run and release-candidate audit
+Requested scope: Exercise the complete current application before deployment, including backend end-to-end behavior, frontend end-to-end behavior, PostgreSQL migrations/concurrency, dependencies, production build, and a self-directed search for breaking defects.
+Inspected scope: FastAPI routes/services and critical stock/order/Woo contracts; React application routes and primary operator screens; isolated authenticated browser page sweep; Playwright production-chain and item-import journeys; complete backend and frontend test suites; PostgreSQL migration upgrade/downgrade/re-upgrade and concurrency suite; Alembic drift check; backup/restore gate contract; dependency audits; production frontend build; release workflow; current performance bounds; invoice and bulk-edit workflows.
+Uninspected scope: Production/customer data, live Heroku runtime, live WooCommerce, outbound email/Google Sheets, real printer/scanner hardware, production backup artifact, production PostgreSQL query plans/telemetry, destructive external writes, load/soak/penetration testing, and a full assistive-technology session.
+Branch: codex/pongo-os-new-design-by-kannan-july-17
+HEAD: 100970f18086b998925ba000ab41098584bc7baf
+Baseline: Incremental full-system verification against the 2026-08-07T07:07:40Z Full Baseline and the 2026-08-08T03:39:54Z performance follow-up preserved in section 22. Inherited findings remain open unless this run provides explicit closure evidence.
+Deployed state: Not inspected or changed. No deployment, production configuration change, production database access, live WooCommerce operation, email, or Sheets action was performed.
+Dirty working tree: An active, pre-existing implementation contained 33 modified files and two untracked application files plus one untracked migration. Those changes were treated as user/other-agent work and were not edited, staged, committed, or deployed. PRODUCT_AUDIT.txt is the only file written by this audit.
+Instruction and requirement sources: Repository AGENTS.md; README.md; docs/PRODUCT_REQUIREMENTS.md; docs/ARCHITECTURE.md; docs/DEPLOYMENT.md; docs/OPERATIONS.md; docs/REPORTING.md; docs/SECURITY.md; Procfile; app.json; package manifests and lockfiles; GitHub release-gate workflow; audit-product-system skill and all of its role, severity, report-contract, and self-improvement references.
+Specialist execution method: The lead ran the complete isolated test matrix and authenticated browser sweep. Four independent read-only specialists reviewed backend, frontend, database, and program/release behavior; the lead performed the fifth QA perspective and reconciled only independently supported findings. Only the lead wrote this artifact.
+Checks permitted: Read-only code/config inspection; disposable local PostgreSQL and fake WooCommerce services; isolated authentication and application data; local tests/build/audits; and non-mutating repository checks.
+Checks executed: Complete backend pytest on default test configuration and again with PostgreSQL enabled; all PostgreSQL concurrency tests; complete frontend Vitest; Vite production build; npm production and full audits; Python pip-audit; fresh PostgreSQL Alembic upgrade/downgrade/re-upgrade; Alembic drift check; disposable backup and restore probe; Playwright E2E chain; authenticated browser sweep of all principal routes at documented laptop width; source-level five-role audit; git diff checks.
+Checks failed: Playwright's two active journeys failed; full npm audit failed on two high-severity development-only dependency advisories; `alembic check` reported two raw-SQL reporting indexes as removals; the backup verifier remains pinned to migration 0027; one frontend report test was nondeterministic across repeated runs; the Routes screen deterministically crashed during the manual browser sweep.
+Checks skipped or unavailable: One Playwright evidence-capture test is intentionally skipped. Live WooCommerce, Heroku, production PostgreSQL/load/device/printer/scanner, email/Sheets, destructive writes, and assistive-technology checks were not run.
+
+=== 02. CURRENT EXECUTIVE SUMMARY ===
+The release candidate is not safe to deploy. The broad backend regression result is strong: 452 tests passed with PostgreSQL enabled, including all eight real concurrency/advisory-lock tests. The final frontend run passed all 121 tests, the production build passed, Python and production npm dependencies were clean, and a fresh PostgreSQL schema completed upgrade/downgrade/re-upgrade through 20260807_0037.
+
+Those green results do not cover several deterministic failures. Opening Routes throws an unhandled `ReferenceError` and blanks the workspace. Inventory By Location silently stops at 1,000 rows while the current catalog is larger. A keyboard user can change a bulk-edit selection after preview and commit edits to unreviewed items. Invoices printed from open orders always claim `Completed`. The release gate cannot become green because backup verification expects migration 0027, the two active Playwright journeys do not work from a clean authenticated database, and full npm audit fails on test-only packages.
+
+The recent performance work is present for All Inventory and Open/Allocate/Pick queues, but it is incomplete across By Location, Receiving, Completed Orders, histories, and post-mutation refreshes. Woo reconciliation also creates unbounded run history and scans every operational order for every imported batch. These issues will make the application progressively slower even though the present small-dataset tests pass.
+
+Recommendation: NO-GO. Fix the deterministic UI/document defects and restore one green, fresh-database release chain before deployment. Retain the current production write safeguards while inherited stock-safety findings remain open.
+
+=== 03. CURRENT HEALTH SNAPSHOT ===
+Overall: RED for authoritative-production promotion; AMBER for contained internal evaluation.
+Program/product: AMBER. Core modules match the stated MVP, but several UI/API promises do not match behavior and staff authorization remains an explicit unresolved decision.
+Backend: RED-AMBER. Strong service separation and broad tests coexist with P1 writeback, ownership, completion, and concurrency-contract defects.
+Frontend: RED. Unit tests/build pass, but Routes crashes, invoices can be false, bulk-edit preview targets are mutable, location inventory is truncated, and one report test is flaky.
+QA/release: RED. Both active browser E2E journeys fail, full npm audit is non-green, and the backup/restore gate is pinned to an obsolete migration.
+Database/data: RED-AMBER. Fresh PostgreSQL migrations and the full concurrency suite pass, but backup verification, cycle-count locking/idempotency, raw-index metadata drift, and inherited production-data findings remain open.
+Operations/security: AMBER from repository tests and inherited containment evidence. Live health/auth/readiness were not rechecked in this isolated run; alert and authority/writeback decisions remain open.
+Current finding count: P0 0; P1 17; P2 14; P3 0. Total open findings: 31. No finding was closed in this run.
+
+=== 04. RELEASE RECOMMENDATION ===
+DO NOT RELEASE
+
+Meaning: do not perform another production promotion and do not enable PongoOS WooCommerce stock authority/writeback until the listed P1 blockers are resolved and a complete release gate is green. The prior baseline found the deployed app contained by authentication and disabled writeback; this run did not recheck live state and is not a request for an untested rollback.
+
+Current release blockers:
+- FE-004: Routes always throws an unhandled reference error and blanks the workspace.
+- FE-005: bulk-edit commit can target a different item selection than the reviewed preview.
+- FE-006: invoices printed from open orders falsely state that the order is completed.
+- SYS-004: Inventory By Location silently omits rows beyond 1,000 and other operational surfaces remain unbounded.
+- SYS-001: Heroku deployment can complete while the same commit's release gate is failing.
+- DB-001: Backup/restore verification is pinned to migration 20260731_0027 while current schema is 20260807_0037.
+- QA-001: both active isolated browser journeys fail from a fresh database due to missing/stale authentication and location setup.
+- QA-002: the exact full npm audit used by the release workflow fails on two high-severity development-only advisories.
+- DB-002 and DB-003: cycle counts and manual allocations do not share a complete stock lock/idempotency contract.
+- BE-001, BE-002, BE-003: WooCommerce writeback and field-ownership safety contracts are not enforced at the server boundary.
+- SYS-002: orders completed without picking remain eligible as route candidates.
+- DB-004: a historical migration depends on current ORM metadata, making clean historical reconstruction non-deterministic.
+- DB-005 and SYS-003: live readiness is 503 due to missing costs, missing alerting, and deliberately disabled stock authority/writeback.
+
+Evidence supporting the implementation: 452 PostgreSQL-enabled backend tests, 121 final frontend tests, production build, dependency checks for Python/runtime npm, a fresh PostgreSQL migration cycle, and the isolated authenticated route sweep all completed. This is test evidence, not evidence about the live deployment.
+
+=== 05. CRITICAL FINDINGS ===
+No P0 findings.
+
+The most urgent current P1 cluster is deterministic operator-visible failure plus a release chain that cannot prove itself:
+1. Routes crashes every time it renders because it references two variables that are not in scope (FE-004).
+2. Open-order invoices claim `Completed`, creating inaccurate customer/bookkeeping documents (FE-006).
+3. Inventory By Location silently truncates after 1,000 rows, and bulk-edit commit can act on item IDs that were never part of the preview (SYS-004, FE-005).
+4. A correct migration restore at 0037 is rejected because the verifier expects 0027; both active browser E2E journeys also fail from clean state, and full npm audit blocks the same gate (DB-001, QA-001, QA-002).
+5. Cycle counts still do not use the shared stock lock/idempotency ledger, so concurrent or retried counts can produce conflicting audit history (DB-002).
+
+=== 06. CROSS-ROLE CONSENSUS ===
+All five perspectives converged on NO-GO. Program and frontend independently confirmed the Routes crash and false invoice status. Frontend and QA agree that browser-visible behavior is not represented by the passing unit suite. Database and QA agree the current release gate deterministically rejects a valid restored schema. Backend and frontend agree that several remaining unbounded queries and refresh chains will worsen latency as order and sync history grows.
+
+The strongest positive consensus is that core stock/order services have broad automated protection: the full PostgreSQL-enabled suite and concurrency tests are green, Woo calls remain backend-owned, critical mutations generally use locks/idempotency, reporting snapshots are evidence-hashed, and production build/runtime dependency checks pass. The exception is cycle-count mutation, which database review reconfirmed as outside the shared lock/retry contract.
+
+=== 07. RECOMMENDED IMPROVEMENT ORDER ===
+Stage 1 - Fix deterministic user-visible blockers.
+Correct the Routes variable names and add an error boundary/regression test; derive invoice status from the actual order or restrict invoice printing to completed orders; snapshot bulk-edit target IDs at preview and invalidate the preview on any target change; remove the 1,000-row location ceiling with stable server pagination and accurate totals.
+
+Stage 2 - Restore one trustworthy release gate.
+Update the restore verifier to derive current Alembic head; repair Playwright authentication, selector, and fresh-location setup; update compatible development dependencies so full npm audit is green; make the gate mandatory before deployment.
+
+Stage 3 - Keep the safety boundary in place while repairing mutation contracts.
+Leave WOOCOMMERCE_PRODUCTION_STOCK_AUTHORITY unset/not-pongo and keep stock writeback disabled. Do not bypass the readiness result. This prevents the unproven queue and stock paths from changing storefront inventory while fixes are made.
+
+Stage 4 - Repair inventory and order correctness contracts.
+Fix DB-002 and DB-003 with one consistent lock/idempotency order; make Woo stock quantity server-derived and queue sending atomic (BE-001); reject Woo-owned fields from generic item writes (BE-002); honor the order-status suppression flag (BE-003); exclude completed-without-picking orders from routes (SYS-002); add completion idempotency (BE-006). Run PostgreSQL race tests for each stock path.
+
+Stage 5 - Make schema and production data trustworthy.
+Replace the live-metadata initial migration pattern with a reproducible baseline/reconciliation strategy (DB-004), backfill verified unit costs without inventing values (DB-005), configure the HTTPS alert webhook, and verify all readiness checks except authority/writeback are green (SYS-003). Add database enforcement for the sellable-stock invariant where compatible (DB-006).
+
+Stage 6 - Resolve bounded reliability and product decisions.
+Fail authentication closed in production (BE-004), paginate unbounded list surfaces and remove the 1,000-row client ceiling (SYS-004), make logout/expired-session behavior explicit (FE-001), disclose and paginate import confirmation details (FE-002), decide whether all staff truly share equal privileges (PM-001), and hide or relabel unavailable route optimization (PM-002).
+
+Performance sequence inside Stage 6:
+Define PostgreSQL and real-device latency budgets and a repeatable dataset first (QA-003); collapse item data-completeness counts into one conditional aggregate; page report previews and remaining growing histories (FE-003/SYS-004); then use measured query plans to decide whether item-import persistence/audits need batching. Do not add another queue, cache layer, or service until a measured budget is missed.
+
+Stage 7 - Controlled authority promotion.
+Only after Stages 1-6 acceptance criteria are met: take a backup, run a restore drill, obtain an explicit owner decision, enable Pongo stock authority first in a monitored window, then enable writeback. Monitor queue attempts, reconciliation, readiness, stock deltas, and alerts; retain the ability to disable authority without data rollback.
+
+=== 08. PRODUCT REQUIREMENTS AND CONSTRAINTS ===
+- Standalone FastAPI/PostgreSQL/SQLAlchemy/Alembic/React system deployable to Heroku; not a WordPress or WooCommerce plugin.
+- WooCommerce remains the customer-facing storefront. PongoOS is the operational inventory layer.
+- Frontend never calls WooCommerce directly and never receives WooCommerce or map-provider credentials.
+- Every simple product and variation maps to a distinct inventory item.
+- Pongo-owned manual fields survive Woo refresh; ownership/remap boundaries must be explicit.
+- Every stock-changing action creates a movement/audit row.
+- Early and current production stages must avoid destructive WooCommerce calls until read-only sync and local workflows are stable.
+- Core scope: items, Woo sync/refresh/remap, bulk/manual item management, locations, direct receiving, received report, cycle count, open/allocate/pick orders, fulfillment export, SKU/barcode reporting, and separate route creation/optimization.
+- Explicitly deferred unless requested: suppliers, purchase orders, quote portals, complex delivery stages, EOQ/ABC forecasting, and generic warehouse expansion.
+- MVP authentication may be simple, but production must remain authenticated and registration controlled.
+- Operational priority: correct inventory state and auditable transitions over feature breadth.
+
+=== 09. SYSTEM AND WORKFLOW MAP ===
+Runtime:
+Browser -> React/Vite static application -> same-origin FastAPI /api routes -> SQLAlchemy session -> PostgreSQL.
+FastAPI -> WooCommerce REST API for server-side read/sync and guarded queued writeback.
+WooCommerce signed order webhook -> FastAPI webhook service -> local order reconciliation and workflow state.
+Heroku web dyno -> FastAPI/Gunicorn; Heroku worker dyno -> stock-sync/reconciliation worker; Heroku Postgres -> persistent data.
+
+Primary journeys:
+1. Staff authentication: login/register -> HttpOnly session cookie -> global API dependency -> authenticated application.
+2. Item lifecycle: Woo read sync or manual create/import -> ownership-aware local item -> location rows -> item/list/detail/report views.
+3. Inventory mutation: receiving/opening balance/adjustment/transfer/cycle count/pick/unpick/fulfillment -> location and item totals -> stock movement plus inventory audit event -> optional FIFO allocation -> guarded Woo stock queue.
+4. Order lifecycle: Woo webhook/poll/reconciliation -> local operational order -> allocate -> pick -> fulfill/complete -> optional Woo status queue -> completed reporting.
+5. Route lifecycle: eligible local orders -> route candidates -> preview/commit route -> manual stop ordering/geocode/provider status -> CSV/map output; must remain separate from Woo stock mutation.
+6. Reporting: operational and historical local snapshots -> reporting/metrics services -> React report workspace -> CSV/Google Sheets export paths.
+7. Release: GitHub release-gate workflow and manual/direct Heroku Git deployment currently operate independently; this separation is the root of SYS-001.
+
+=== 10. OPEN FINDINGS REGISTER ===
+SYS-001 | Deployment bypasses the failed release gate | DEFECT | CONFIRMED | P1 | CONFIRMED | Platform/Release | 2026-08-07T07:07:40Z
+DB-002 | Cycle counts lack shared locking and idempotency | RISK | CONFIRMED | P1 | HIGH | Backend/Database | 2026-08-07T07:07:40Z
+DB-003 | Manual allocation can mutate stock outside the shared stock lock | RISK | CONFIRMED | P1 | HIGH | Backend/Database | 2026-08-07T07:07:40Z
+BE-001 | Woo stock queue trusts caller quantity and sends non-atomically | RISK | CONFIRMED | P1 | HIGH | Backend/Integrations | 2026-08-07T07:07:40Z
+BE-002 | Generic item writes expose Woo-owned identity fields | DEFECT | CONFIRMED | P1 | CONFIRMED | Backend/Data | 2026-08-07T07:07:40Z
+SYS-002 | Completed-without-picking orders remain route candidates | DEFECT | CONFIRMED | P1 | CONFIRMED | Backend/Product | 2026-08-07T07:07:40Z
+BE-003 | Order completion ignores the Woo status suppression flag | DEFECT | CONFIRMED | P1 | CONFIRMED | Backend/Integrations | 2026-08-07T07:07:40Z
+DB-004 | Initial migration depends on live ORM metadata | RISK | CONFIRMED | P1 | HIGH | Database | 2026-08-07T07:07:40Z
+DB-005 | 223 active stock items have no positive unit cost | GAP | CONFIRMED | P1 | CONFIRMED | Operations/Data | 2026-08-07T07:07:40Z
+SYS-003 | Live environment is not ready for stock-authority promotion | GAP | CONFIRMED | P1 | CONFIRMED | Operations/Product | 2026-08-07T07:07:40Z
+BE-004 | Production authentication can be configured fail-open | RISK | CONFIRMED | P2 | HIGH | Backend/Security | 2026-08-07T07:07:40Z
+BE-006 | Completion retries can duplicate audit or remote side effects | RISK | CONFIRMED | P2 | HIGH | Backend/Integrations | 2026-08-07T07:07:40Z
+FE-001 | Logout and expired-session handling can leave a hidden live session | RISK | CONFIRMED | P2 | HIGH | Frontend/Security | 2026-08-07T07:07:40Z
+DB-006 | Sellable stock equality is enforced only in application code | RISK | CONFIRMED | P2 | HIGH | Database/Backend | 2026-08-07T07:07:40Z
+PM-001 | All authenticated staff have equal mutation privileges | DECISION | NEW | P2 | HIGH | Product/Security | 2026-08-07T07:07:40Z
+PM-002 | Route optimization controls expose an unavailable capability | GAP | CONFIRMED | P2 | CONFIRMED | Product/Frontend | 2026-08-07T07:07:40Z
+QA-003 | No production-like performance baseline or latency gate | GAP | NEW | P2 | CONFIRMED | QA/Platform | 2026-08-08T03:39:54Z
+FE-005 | Bulk-edit commit can target items outside the reviewed preview | DEFECT | CONFIRMED | P1 | CONFIRMED | Frontend/Inventory | 2026-08-08T03:47:47Z
+FE-006 | Open-order invoices falsely state Completed | DEFECT | CONFIRMED | P1 | CONFIRMED | Frontend/Reporting | 2026-08-08T03:47:47Z
+BE-008 | Login throttling exposes account timing and targeted lockout behavior | RISK | CONFIRMED | P2 | HIGH | Backend/Security | 2026-08-08T03:47:47Z
+PM-003 | Edit Order is a visible read-only no-op | GAP | CONFIRMED | P2 | CONFIRMED | Product/Frontend | 2026-08-08T03:47:47Z
+
+=== 11. RESOLVED AND CLOSED FINDINGS REGISTER ===
+DB-001 | Backup verifier derives the single current Alembic head and validates the complete ORM schema | CLOSED | 2026-08-08T20:53:34Z
+QA-001 | Active browser release journeys authenticate and pass from clean PostgreSQL with zero retries | CLOSED | 2026-08-08T20:53:34Z
+QA-002 | Frontend dependency tree has zero known npm audit vulnerabilities | CLOSED | 2026-08-08T20:53:34Z
+SYS-004 | Operational lists, histories, import/report previews, route candidates, Woo views, allocation drill-downs, and item selectors are server-paged and reachable | CLOSED | 2026-08-08T20:53:34Z
+FE-002 | Import confirmation and history changes are paged without a silent 50-row ceiling | CLOSED | 2026-08-08T20:53:34Z
+FE-003 | Report previews are server-paged while immutable full exports remain complete | CLOSED | 2026-08-08T20:53:34Z
+FE-004 | Routes render path uses the correct loading/error state and has regression coverage | CLOSED | 2026-08-08T20:53:34Z
+BE-007 | Woo history/error retention is bounded and reconciliations/dashboard/Insights use bounded SQL work | CLOSED | 2026-08-08T20:53:34Z
+QA-004 | Report Intelligence test passed ten consecutive focused runs and the complete frontend suite | CLOSED | 2026-08-08T20:53:34Z
+DB-007 | Alembic ignores only migration-owned expression indexes and PostgreSQL tests verify their exact definitions | CLOSED | 2026-08-08T20:53:34Z
+
+=== 12. CURRENT PROGRAM MANAGER REVIEW ===
+Product shape: The implemented modules substantially match the documented Pongo MVP and avoid the explicitly deferred supplier/purchase-order scope. The main program risk is not missing breadth; it is that production promotion, user-visible capability, and safety decisions are not consistently bound to objective gates.
+
+FINDING: SYS-001
+TITLE: Deployment bypasses the failed release gate
+TYPE: DEFECT
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Platform/Release Engineering
+EFFORT: M
+AFFECTED AREAS: Heroku releases, GitHub Actions, every production user and workflow
+
+PLAIN-LANGUAGE SUMMARY:
+The exact commit currently running on Heroku was deployed even though its automated release check failed. The check therefore reports problems but does not prevent them from reaching production.
+
+WHY THIS MATTERS:
+The release gate contains the product's backup, database, backend, frontend, security, and browser checks. If deployment does not wait for a green result, none of those checks protects production.
+
+IF NOT FIXED:
+Future code can be released while backup restore, tests, dependency audits, or browser journeys are known to be failing. Operators will have no reliable definition of a safe release.
+
+IF FIXED:
+Every production release has one auditable proof that the required checks passed, and a failed check reliably stops promotion.
+
+WHAT TO DO IN SIMPLE TERMS:
+Repair the gate, make Heroku deployment a final job that depends on every required check, protect the production branch, and remove or restrict direct/manual deploy paths.
+
+TECHNICAL DETAILS:
+GitHub Actions run 31156173674 for d7dce412 failed. Heroku release v34 for the same commit started at 07:04:02Z and succeeded at 07:04:14Z; the CI run completed as failed at 07:04:34Z. Deployment and validation are separate asynchronous paths.
+
+EVIDENCE:
+.github/workflows/release-gate.yml; GitHub run https://github.com/Kannan-Khosla/pongo-os/actions/runs/31156173674; read-only `heroku releases:info` showed v34/d7dce412 succeeded; CI timestamps prove deployment completed before the gate failed. Sensitive Heroku fields were redacted.
+
+TECHNICAL REMEDIATION:
+After DB-001, add a deploy job with `needs` on every required release-gate job and no `if: always()` bypass. Use protected environment approval if desired. Restrict direct Heroku Git pushes to emergency procedure and document who can invoke it.
+
+MIGRATION / ROLLOUT NOTES:
+No data migration. Apply workflow controls before the next production push. Keep a documented emergency deploy route, but require explicit incident approval and a follow-up gate.
+
+VERIFICATION:
+Create a harmless test branch with one intentionally failing required check. Confirm no Heroku release is created. Restore the check, confirm all jobs pass, and confirm exactly one release is created from that green SHA.
+
+DEPENDENCIES AND ORDERING:
+DB-001 must be fixed first so the gate can become green. QA-001 and QA-002 must then be green before making the gate mandatory.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+=== 13. CURRENT BACKEND ENGINEERING REVIEW ===
+Backend shape: FastAPI route modules generally delegate to explicit services, authentication is attached globally, stock movements and audit events are first-class records, Woo calls stay server-side, and retry/queue/readiness mechanisms are present. The principal defects are boundary enforcement: several public schemas or service transitions trust a caller to preserve invariants that the server must own.
+
+FINDING: BE-001
+TITLE: Woo stock queue trusts caller quantity and sends non-atomically
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: HIGH
+OWNER: Backend/Integrations
+EFFORT: L
+AFFECTED AREAS: WooCommerce stock writeback queue, approvals, worker/manual send, storefront stock
+
+PLAIN-LANGUAGE SUMMARY:
+The stock queue can store a quantity supplied by a caller and later send that saved number without proving it still matches current Pongo inventory. Two senders can also attempt the same row before either records completion.
+
+WHY THIS MATTERS:
+Once writeback is enabled, a stale or crafted queued quantity can publish the wrong storefront stock even when Pongo's current local totals are correct.
+
+IF NOT FIXED:
+Retries, delayed approvals, internal API misuse, or concurrent workers can send stale/duplicate updates. Live risk is currently contained because production authority/writeback are disabled.
+
+IF FIXED:
+Every Woo stock update is derived from current authoritative local inventory and exactly one sender owns each attempt.
+
+WHAT TO DO IN SIMPLE TERMS:
+Make the server calculate quantity, re-check it immediately before sending, and atomically mark one queue attempt as in progress.
+
+TECHNICAL DETAILS:
+The request schema permits arbitrary `payload_json`; create stores it. Validation checks only for a `stock_quantity` key. Approval validates mapping, not current quantity. Send loads the row normally and transmits the stored body; the separate revalidate operation is optional rather than part of send.
+
+EVIDENCE:
+backend/app/schemas/woocommerce.py:377 onward; backend/app/services/woocommerce_writeback.py:371-482 and 435-560; production `/ready` confirms authority/writeback false.
+
+TECHNICAL REMEDIATION:
+Remove quantity/body from public create input or ignore it. Generate the payload from current sellable stock and mapped Woo identity. In one transaction, lock the queue row, verify eligible status/approval, recompute quantity, record an attempt token and `sending` state, then perform the remote call with deterministic retry semantics. On completion, conditionally transition the owned attempt.
+
+MIGRATION / ROLLOUT NOTES:
+May require queue status/attempt columns and an index. Add nullable fields first, deploy compatible readers, migrate pending rows by revalidation, then enable atomic claim. Do not enable production authority during rollout.
+
+VERIFICATION:
+PostgreSQL tests must prove: a forged body is ignored/rejected; changing local stock after queue creation sends the recomputed value; two concurrent senders result in one remote attempt; retry after ambiguous failure is visible and safe; disabled authority prevents sending.
+
+DEPENDENCIES AND ORDERING:
+Requires a green PostgreSQL gate and consistent stock locks. Complete before SYS-003 authority promotion.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: BE-002
+TITLE: Generic item writes expose Woo-owned identity fields
+TYPE: DEFECT
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Backend/Data
+EFFORT: M
+AFFECTED AREAS: Item create/update, Woo refresh/remap, order matching, writeback mapping
+
+PLAIN-LANGUAGE SUMMARY:
+Normal item create and edit requests can directly change WooCommerce identity and snapshot fields that are supposed to be controlled by synchronization/remapping.
+
+WHY THIS MATTERS:
+These identifiers decide which storefront product or variation an inventory item represents. A generic edit can silently redirect sync or writeback to the wrong product.
+
+IF NOT FIXED:
+Internal clients can create duplicate mappings or overwrite Woo-owned values outside the reviewed remap workflow, causing order matching and refresh ambiguity.
+
+IF FIXED:
+Pongo-owned fields remain editable while Woo-owned identity changes only through explicit, validated synchronization/remap operations.
+
+WHAT TO DO IN SIMPLE TERMS:
+Remove Woo-owned fields from normal item forms/APIs and require the dedicated remap workflow for identity changes.
+
+TECHNICAL DETAILS:
+Item create/update schemas expose Woo product/variation and snapshot fields. The item update route blocks stock quantities but not these fields, and the service applies provided fields generically. The model does not prove uniqueness of the product/variation identity pair.
+
+EVIDENCE:
+backend/app/schemas/items.py:46-86; backend/app/api/routes/items.py:699 onward; backend/app/services/items.py:86 onward; backend/app/services/woocommerce_remap.py:89 onward; AGENTS.md ownership rule.
+
+TECHNICAL REMEDIATION:
+Split server-owned and Pongo-owned data transfer objects. Reject Woo-owned keys on generic endpoints even if a client sends them. Route identity changes through remap validation. After cleaning duplicates, add the narrowest compatible PostgreSQL uniqueness constraint/index for active Woo identity mappings.
+
+MIGRATION / ROLLOUT NOTES:
+First run a read-only duplicate/ambiguity report. Clean through explicit operator decisions, then add the constraint concurrently or in a controlled migration. Keep old clients readable but return 422 for forbidden writes.
+
+VERIFICATION:
+API tests prove generic create/update cannot set or change Woo identity/snapshot fields; remap can do so only after validation; duplicate active mappings are rejected; Woo refresh preserves documented manual fields.
+
+DEPENDENCIES AND ORDERING:
+Fix before BE-001 queue hardening and before authority promotion because queue mapping depends on trustworthy identity.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: BE-003
+TITLE: Order completion ignores the Woo status suppression flag
+TYPE: DEFECT
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Backend/Integrations
+EFFORT: S
+AFFECTED AREAS: Single-order completion, Woo status updates, recovery and safe local-only operations
+
+PLAIN-LANGUAGE SUMMARY:
+The completion API offers a switch that says “do not queue a WooCommerce status update,” but the handler queues/sends it anyway.
+
+WHY THIS MATTERS:
+The flag is an explicit safety control for completing work locally without changing the storefront. Ignoring it defeats operator intent at an external-write boundary.
+
+IF NOT FIXED:
+A caller using `queue_woo_status_update=false` can still change Woo order status, complicating recovery, testing, and exception handling.
+
+IF FIXED:
+Local completion and remote status synchronization are predictably separable.
+
+WHAT TO DO IN SIMPLE TERMS:
+Honor the switch everywhere or remove it from the public contract and replace it with an explicit endpoint. The smallest correct change is to honor it.
+
+TECHNICAL DETAILS:
+`OrderCompletionRequest.queue_woo_status_update` is documented, but the route never reads it and always invokes the Woo status sync path, returning `woo_sync_requested=true`.
+
+EVIDENCE:
+backend/app/schemas/orders.py:183 onward; backend/app/api/routes/orders.py:241-272 and route documentation around 1066; related order completion tests do not cover false.
+
+TECHNICAL REMEDIATION:
+Branch before queue/sync invocation. When false, complete the local transaction and return a truthful “not requested” result. Add contract tests for true, false, disabled authority, and remote failure.
+
+MIGRATION / ROLLOUT NOTES:
+None. This is a behavior correction; mention it in release notes for any API clients that accidentally relied on the bug.
+
+VERIFICATION:
+Complete an isolated order with the flag false and assert no queue row/client call occurs. Repeat with true and assert exactly one eligible queue action.
+
+DEPENDENCIES AND ORDERING:
+Pair with BE-006 idempotency and BE-001 queue ownership before authority promotion.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: BE-004
+TITLE: Production authentication can be configured fail-open
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P2
+CONFIDENCE: HIGH
+OWNER: Backend/Security
+EFFORT: S
+AFFECTED AREAS: All API routes, production configuration, readiness
+
+PLAIN-LANGUAGE SUMMARY:
+One environment setting can turn off authentication in production. Readiness warns about it, but the application still serves protected routes without a user.
+
+WHY THIS MATTERS:
+A typo or mistaken Heroku configuration should stop the service from starting, not turn an internal inventory system into an unauthenticated application.
+
+IF NOT FIXED:
+A configuration error can expose all authenticated-only operations until someone notices the readiness failure.
+
+IF FIXED:
+Production fails closed: unsafe authentication configuration prevents startup or all protected requests.
+
+WHAT TO DO IN SIMPLE TERMS:
+Reject `AUTH_REQUIRED=false` whenever the environment is production.
+
+TECHNICAL DETAILS:
+Settings default safely to true, but `require_authenticated_user` returns `None` when false. `production_checks` reports false readiness but is not a startup invariant. The current live environment is safe and returned 401 anonymously.
+
+EVIDENCE:
+backend/app/core/config.py:8-20; backend/app/services/auth.py:69-82; backend/app/api/routes/health.py:93-118; live anonymous `/api/auth/me` and `/api/items` both returned 401.
+
+TECHNICAL REMEDIATION:
+Add a production settings validator or startup assertion that rejects false. Keep test/development override if needed. Add a configuration test and ensure webhook exemption still requires its signed-secret validation.
+
+MIGRATION / ROLLOUT NOTES:
+None. Verify current Heroku setting before deploying the assertion; readiness already shows it is true.
+
+VERIFICATION:
+Starting with `APP_ENV=production AUTH_REQUIRED=false` must exit with a clear error. Production true starts and anonymous protected routes return 401.
+
+DEPENDENCIES AND ORDERING:
+P2 because live configuration is safe; complete before expanding staff or deployment automation.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: BE-006
+TITLE: Completion retries can duplicate audit or remote side effects
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P2
+CONFIDENCE: HIGH
+OWNER: Backend/Integrations
+EFFORT: M
+AFFECTED AREAS: Bulk/single order completion, audit records, Woo status queue, client retries
+
+PLAIN-LANGUAGE SUMMARY:
+If a completion request times out and is retried, the server has no client operation key proving that the second request is the same action.
+
+WHY THIS MATTERS:
+Warehouse networks and browsers retry. Stock-sensitive workflows should return the original result rather than create another audit or remote synchronization attempt.
+
+IF NOT FIXED:
+Ambiguous failures can create duplicate completion audit entries or Woo status actions, even when final order state looks correct.
+
+IF FIXED:
+Retries are safe and operators receive one consistent outcome for one business action.
+
+WHAT TO DO IN SIMPLE TERMS:
+Give completion requests the same idempotency-key protection already used by other mutations.
+
+TECHNICAL DETAILS:
+Unpick and several scanner/stock paths use mutation idempotency, while completion request/transition paths do not consistently require and persist a unique operation key across local completion and queued Woo effects.
+
+EVIDENCE:
+backend/app/services/order_workflow.py completion functions; backend/app/api/routes/orders.py completion endpoints; frontend/src/App.jsx bulk completion payload compared with `withMutationIdempotency` use for unpick and inventory mutations.
+
+TECHNICAL REMEDIATION:
+Add a required/generated idempotency key to completion requests, persist it with a unique scope, and return the existing result on replay. Keep local state transition and queue creation in one transaction; remote send remains asynchronously idempotent per BE-001.
+
+MIGRATION / ROLLOUT NOTES:
+Likely a nullable key/result reference plus unique index, followed by client adoption and then server requirement. Do not retroactively invent keys for old completions.
+
+VERIFICATION:
+Send the same completion twice concurrently and sequentially. Assert one state transition, one audit result, one queue action, and identical API response identity.
+
+DEPENDENCIES AND ORDERING:
+Implement with BE-003 and BE-001 using the existing mutation-idempotency pattern.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: BE-007
+TITLE: Woo reconciliation repeatedly scans all operational orders and retains unbounded run history
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P2
+CONFIDENCE: HIGH
+OWNER: Backend/Integrations
+EFFORT: M
+AFFECTED AREAS: Two-minute Woo reconciliation, worker memory, Settings sync history, database growth
+
+PLAIN-LANGUAGE SUMMARY:
+Every Woo order page/status import reloads all operational orders and their lines just to calculate a count, while every reconciliation page also adds a run record that the Settings history later loads without pagination.
+
+WHY THIS MATTERS:
+The two-minute sync is the operational ingestion engine. Work that grows with all historical orders/runs will gradually consume more worker time and memory even when few new orders arrive.
+
+IF NOT FIXED:
+Order freshness degrades, Settings history becomes slow or large, and the web/worker process can approach its memory limit again as history accumulates.
+
+IF FIXED:
+Each reconciliation batch performs bounded SQL work and sync history remains paged/retained without losing required audit evidence.
+
+WHAT TO DO IN SIMPLE TERMS:
+Replace the all-orders load with a SQL count or batch-derived result, page the run-history endpoint, and define safe retention/aggregation for old routine successes.
+
+TECHNICAL DETAILS:
+`commit_remote_order_records` materializes every operational order with `selectinload(Order.items)` solely for `pick_ready_count`. Reconciliation calls it for every status/page. Each call creates an orders sync row, and `/sync-runs` uses `.all()` without pagination or retention.
+
+EVIDENCE:
+backend/app/services/woocommerce_orders.py:214 and 332; backend/app/services/woocommerce_order_reconciliation.py:681; backend/app/api/routes/woocommerce.py:307. Independent backend review confirmed the call frequency and unbounded history path.
+
+TECHNICAL REMEDIATION:
+Use one set-based SQL count or calculate only the current batch delta. Add stable page/page_size/total to sync runs. Retain failures and significant summary evidence; aggregate or expire routine successes only after a documented operational/audit decision.
+
+MIGRATION / ROLLOUT NOTES:
+Pagination is additive. Any retention job must be conservative, observable, and tested on a copy; do not delete failure evidence silently.
+
+VERIFICATION:
+Seed projected order and sync-run volume. Assert SQL queries/rows and response bytes remain bounded per batch/page, order results are unchanged, every retained history row is reachable once, and two-minute freshness meets its budget.
+
+DEPENDENCIES AND ORDERING:
+Measure after current release blockers; implement before large historical import or routine sync history materially grows.
+
+SOURCE RUN: 2026-08-08T03:47:47Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+FINDING: BE-008
+TITLE: Login throttling exposes account timing and targeted lockout behavior
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P2
+CONFIDENCE: HIGH
+OWNER: Backend/Security
+EFFORT: S
+AFFECTED AREAS: Staff login, account discovery, availability
+
+PLAIN-LANGUAGE SUMMARY:
+Unknown emails take a different authentication path from real staff emails, while repeated attempts against a known email can lock that staff member out.
+
+WHY THIS MATTERS:
+An attacker can use response timing to learn which staff emails exist and can repeatedly lock a known employee out of the warehouse system.
+
+IF NOT FIXED:
+Staff account identities can be inferred and a low-cost targeted denial of service remains possible.
+
+IF FIXED:
+Known and unknown identities have similar work/response behavior, and throttling protects the service without letting one remote party repeatedly lock a person out.
+
+WHAT TO DO IN SIMPLE TERMS:
+Perform a constant-cost dummy password check for unknown users and add shared IP/device/email rate limits with safe recovery rather than only account lockout.
+
+TECHNICAL DETAILS:
+The unknown-email branch returns without password hashing and is not tracked by the known-account failure counter. Known accounts enter a lockout path after repeated failures.
+
+EVIDENCE:
+backend/app/api/routes/auth.py:47 onward. Independent backend review confirmed the divergent control flow; no external attack test was performed.
+
+TECHNICAL REMEDIATION:
+Use a precomputed dummy password hash for missing/inactive users, normalize public responses, and introduce bounded rate limiting keyed by more than account identity. Preserve auditable security events without logging passwords or secrets.
+
+MIGRATION / ROLLOUT NOTES:
+No schema migration is required for in-process/shared-store rate limiting; durable security-event changes may be additive. Avoid a new infrastructure dependency unless current scale requires it.
+
+VERIFICATION:
+Benchmark known/unknown login response distributions, prove public bodies/statuses are equivalent, and test one source cannot enumerate or indefinitely lock another staff member out.
+
+DEPENDENCIES AND ORDERING:
+P2 security hardening after deterministic release blockers and before adding more staff accounts.
+
+SOURCE RUN: 2026-08-08T03:47:47Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+FINDING: SYS-002
+TITLE: Completed-without-picking orders remain route candidates
+TYPE: DEFECT
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Backend/Product
+EFFORT: S
+AFFECTED AREAS: Open orders, bulk completion, route candidate list, route creation, delivery operations
+
+PLAIN-LANGUAGE SUMMARY:
+An order that staff deliberately complete without picking can still appear as eligible for a delivery route.
+
+WHY THIS MATTERS:
+The two actions communicate opposite operational states. A completed-without-picking order should not instruct staff to deliver inventory that was never picked.
+
+IF NOT FIXED:
+Staff can add non-pickable orders to routes, creating delivery confusion, wasted handling, and disagreement between order and route records.
+
+IF FIXED:
+Route candidates reflect only orders that are genuinely ready for the delivery workflow.
+
+WHAT TO DO IN SIMPLE TERMS:
+Exclude completed-without-picking orders from candidate, preview, and commit steps, then review existing open routes for such orders.
+
+TECHNICAL DETAILS:
+`complete_order_without_stock_reduction` sets `local_status="completed"` and `completion_status="completed_without_picking"`. The route eligibility set includes completed status, while candidate serialization only emits a warning and commit does not revalidate this completion subtype.
+
+EVIDENCE:
+backend/app/services/order_workflow.py:445-467; backend/app/services/routes.py:56-86 and 492-512; route workflow tests were reviewed but no test proves this exclusion.
+
+TECHNICAL REMEDIATION:
+Centralize an `is_route_eligible_order` predicate that rejects `completion_status == "completed_without_picking"`; use it in list, preview, and commit. Add service/API regression tests and a query/report for existing affected route stops.
+
+MIGRATION / ROLLOUT NOTES:
+No schema migration. Before deployment, identify active route stops whose orders have this status and require an operator decision rather than silently deleting them.
+
+VERIFICATION:
+Complete a test order without picking. Assert it is absent from candidates, rejected by route preview/commit if submitted directly, and remains visible in completed-order reporting.
+
+DEPENDENCIES AND ORDERING:
+Fix after the release gate and before relying on route workflows for live fulfillment.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: SYS-003
+TITLE: Live environment is not ready for stock-authority promotion
+TYPE: GAP
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Operations/Product
+EFFORT: M
+AFFECTED AREAS: Heroku production, readiness, alerting, WooCommerce stock authority and writeback
+
+PLAIN-LANGUAGE SUMMARY:
+The deployed app is online and safely contained, but its own readiness check says it is not ready to become the system that controls storefront stock.
+
+WHY THIS MATTERS:
+Authority promotion is a business cutover, not just a configuration toggle. Missing alerts and unproven writeback safety would make remote stock failures harder to detect and contain.
+
+IF NOT FIXED:
+Enabling authority early could expose WooCommerce to the P1 queue and stock-contract defects without an operations alert channel.
+
+IF FIXED:
+Pongo can promote authority during a monitored, reversible window with clear prerequisites and immediate failure notification.
+
+WHAT TO DO IN SIMPLE TERMS:
+Keep writeback off, configure the HTTPS operations alert webhook, resolve the P1 correctness findings and DB-005, make every other readiness check green, then schedule and approve a controlled cutover.
+
+TECHNICAL DETAILS:
+Live `/ready` returned HTTP 503. `alerts`, `woo_stock_authority`, and `woo_writeback` were false. Authority/writeback failures are currently a deliberate safe state because `WOOCOMMERCE_PRODUCTION_STOCK_AUTHORITY=pongo` is not set.
+
+EVIDENCE:
+Read-only live GET https://pongo-inventory-os-kannan-eaa2cf3464f8.herokuapp.com/ready at 2026-08-07T07:06:42Z; backend/app/api/routes/health.py:93-118; docs/DEPLOYMENT.md and docs/OPERATIONS.md promotion controls.
+
+TECHNICAL REMEDIATION:
+Configure a tested HTTPS alert webhook. Resolve BE-001/BE-003 and stock concurrency findings. Add an authority-cutover checklist that requires a green release SHA, recent verified backup/restore, readiness green except authority, explicit owner approval, monitored enablement, and a disable-only rollback switch.
+
+MIGRATION / ROLLOUT NOTES:
+No schema migration for alerts/authority. This is configuration plus operational rollout. Do not combine authority enablement with unrelated code/schema changes.
+
+VERIFICATION:
+Trigger a safe test alert and confirm receipt. Confirm `/ready` is green except authority/writeback. Enable authority in a scheduled window, verify both checks become green, and monitor queue/reconciliation metrics without unexplained stock deltas.
+
+DEPENDENCIES AND ORDERING:
+DB-005 and all P1 mutation/release findings precede this. This is the last production-promotion stage, not an early fix.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: SYS-004
+TITLE: Location inventory silently truncates and other operational lists remain unbounded
+TYPE: DEFECT
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Backend/Frontend
+EFFORT: M
+AFFECTED AREAS: Open orders, allocations, picks, fulfillments, inventory by location, browser memory and completeness
+
+PLAIN-LANGUAGE SUMMARY:
+The open, allocate, and pick queues now use stable server pagination, but Inventory By Location still requests only 1,000 rows and has no next page. Other growing screens still load complete histories or catalogs.
+
+WHY THIS MATTERS:
+Warehouse decisions require complete lists. The current catalog exceeds 1,000 items, so a fast-looking location screen can already omit valid stock without telling staff.
+
+IF NOT FIXED:
+Order/history endpoints can consume increasing memory and response time, while the location view can omit rows after the fixed ceiling.
+
+IF FIXED:
+Large datasets stay responsive and every screen communicates its total, current page, and remaining records.
+
+WHAT TO DO IN SIMPLE TERMS:
+Finish the same pagination pattern for the remaining history and location screens and show totals/pages in the UI.
+
+TECHNICAL DETAILS:
+`loadLocationRows` hard-codes `limit: 1000`; the backend returns `total=len(rows)` rather than the real matching total, so the UI cannot disclose missing rows. Non-All Inventory views omit paging and receive the full catalog. Completed Orders loads all completed orders with lines and filters in Python. Receiving loads the full catalog plus unbounded receipts/movements, and several mutation handlers await hidden/full-history refreshes sequentially.
+
+EVIDENCE:
+frontend/src/App.jsx:4559 and 4742; backend/app/api/routes/inventory.py:62-84; frontend/src/App.jsx:1284-1310, 2543-2704, 10385-10472, and 13119; backend/app/api/routes/items.py:259-273; backend/app/services/completed_orders.py:51-55; backend/app/api/routes/receipts.py:57-81 and stock_movements.py:17-34. Independent frontend review and authenticated page sweep confirmed the behavior.
+
+TECHNICAL REMEDIATION:
+Reuse page/page_size/total contracts already present in items. Add deterministic ordering, bounded maximum page size, UI navigation or incremental loading, and completeness tests beyond 1,000 rows.
+
+MIGRATION / ROLLOUT NOTES:
+No schema migration. Preserve current filter semantics and version response models if clients depend on bare arrays.
+
+VERIFICATION:
+Seed more than 1,100 location rows and a large order/history dataset. Assert totals are accurate, every row is reachable exactly once, response size is bounded, and filters remain stable between pages.
+
+DEPENDENCIES AND ORDERING:
+Release blocker because current data can be omitted. Reuse current pagination utilities; do not introduce a new framework or cache operational stock quantities.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+FINDING: PM-001
+TITLE: All authenticated staff have equal mutation privileges
+TYPE: DECISION
+STATUS: NEW
+SEVERITY: P2
+CONFIDENCE: HIGH
+OWNER: Product/Security
+EFFORT: M
+AFFECTED AREAS: Authentication, item/stock/order mutations, Woo operations, reports, staff accountability
+
+PLAIN-LANGUAGE SUMMARY:
+Any signed-in staff account can reach the same operational actions. This matches the simple-MVP choice but has not been explicitly accepted for broader production staffing.
+
+WHY THIS MATTERS:
+Receiving, cycle counts, order completion, configuration, and Woo writeback do not have the same business risk. Equal access may be acceptable for one trusted operator but not for a growing team.
+
+IF NOT FIXED:
+As more accounts are added, accidental or inappropriate high-impact actions remain possible without preventive separation of duties.
+
+IF FIXED:
+Pongo has an explicit, proportionate access model and clearer accountability for high-impact actions.
+
+WHAT TO DO IN SIMPLE TERMS:
+Decide whether the current one-role model is accepted. If not, add only the smallest useful split, such as operator versus admin, and protect configuration/writeback/account administration first.
+
+TECHNICAL DETAILS:
+The global dependency proves authentication but returns no authorization role. The frontend explicitly advertises “No role complexity.” The requirement allows simple MVP auth, so this is a product/security decision rather than a current functional defect.
+
+EVIDENCE:
+backend/app/services/auth.py:69-82; frontend/src/AuthGate.jsx:6-99; docs/PRODUCT_REQUIREMENTS.md staff-user descriptions; live readiness reported one active login.
+
+TECHNICAL REMEDIATION:
+Record an accepted-risk decision or add a minimal role/permission column and a small dependency for high-impact routes. Avoid a generic policy engine unless real role complexity appears. Preserve audit actor identity.
+
+MIGRATION / ROLLOUT NOTES:
+If roles are added, create a nullable/default-safe column, backfill the existing account as admin by explicit operator action, deploy authorization before exposing role-management UI, and retain emergency access.
+
+VERIFICATION:
+Document the owner decision. If implemented, test an operator can complete normal warehouse work but receives 403 for admin-only configuration/writeback/account actions; an admin can perform both.
+
+DEPENDENCIES AND ORDERING:
+Decide before adding more production users or enabling writeback. It does not block contained single-operator evaluation.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: PM-002
+TITLE: Route optimization controls expose an unavailable capability
+TYPE: GAP
+STATUS: CONFIRMED
+SEVERITY: P2
+CONFIDENCE: CONFIRMED
+OWNER: Product/Frontend
+EFFORT: XS
+AFFECTED AREAS: Route detail screen, dispatch workflow, operator expectations
+
+PLAIN-LANGUAGE SUMMARY:
+The route screen offers Optimize Preview and Optimize Commit buttons, but the backend never performs live optimization in this MVP.
+
+WHY THIS MATTERS:
+Operators can reasonably believe a route was optimized when the system only returns the current stops and a disabled message.
+
+IF NOT FIXED:
+Dispatchers may waste time or trust an ordering that was never optimized.
+
+IF FIXED:
+The screen accurately communicates the available manual route workflow and no longer promises an inactive feature.
+
+WHAT TO DO IN SIMPLE TERMS:
+Hide or disable the two buttons with a clear “not configured” label until a real provider is enabled.
+
+TECHNICAL DETAILS:
+Both provider functions return unchanged stops. Preview makes no external call; commit sets `provider_not_enabled` and returns disabled even when a provider name is configured.
+
+EVIDENCE:
+frontend/src/App.jsx:10430-10519; backend/app/services/routes.py:349-370.
+
+TECHNICAL REMEDIATION:
+Use the existing public provider configuration/status to conditionally render disabled explanatory controls. Do not build a provider integration as part of this fix.
+
+MIGRATION / ROLLOUT NOTES:
+None.
+
+VERIFICATION:
+With provider disabled, no actionable optimization buttons appear and the manual reorder workflow remains. If a provider is later implemented, acceptance tests must prove preview and commit produce/record a real changed sequence.
+
+DEPENDENCIES AND ORDERING:
+P2 usability correction. It can be fixed independently after release blockers.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: PM-003
+TITLE: Edit Order is a visible read-only no-op
+TYPE: GAP
+STATUS: CONFIRMED
+SEVERITY: P2
+CONFIDENCE: CONFIRMED
+OWNER: Product/Frontend
+EFFORT: XS
+AFFECTED AREAS: Open Orders, operator trust, order corrections
+
+PLAIN-LANGUAGE SUMMARY:
+Open Orders offers an Edit Order action, but it opens the same read-only detail dialog as View Order and provides only Print and Close.
+
+WHY THIS MATTERS:
+The UI promises staff that they can correct an order. A visible action that cannot perform its named job makes operators unsure whether a change was possible or saved.
+
+IF NOT FIXED:
+Staff waste time trying to edit orders, may assume a correction was applied, or use an unsafe workaround outside the documented workflow.
+
+IF FIXED:
+Every visible order action describes a real supported capability.
+
+WHAT TO DO IN SIMPLE TERMS:
+Remove or relabel Edit Order until a real, scoped edit workflow exists. Do not build arbitrary Woo order editing as part of this correction.
+
+TECHNICAL DETAILS:
+`editOpenOrder` simply calls `viewOpenOrder`. The shared dialog contains no editable fields or save action.
+
+EVIDENCE:
+frontend/src/App.jsx:8558-8568, 9918-9924, and 9949-10015; docs/FRONTEND_QA.md:36-41 requires visible actions to work and prohibits clickable fake controls. Independent program review confirmed the control flow.
+
+TECHNICAL REMEDIATION:
+Prefer the minimal truthful fix: remove the action or rename it View Details. If business-approved local edits are later required, define field ownership, audit history, Woo reconciliation behavior, and explicit save validation first.
+
+MIGRATION / ROLLOUT NOTES:
+No migration for relabel/removal.
+
+VERIFICATION:
+Inspect the Open Orders action menu and assert every action has a distinct working outcome. Add a frontend test that prevents Edit Order from being presented without editable controls.
+
+DEPENDENCIES AND ORDERING:
+Independent P2 product-honesty fix after current release blockers.
+
+SOURCE RUN: 2026-08-08T03:47:47Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+=== 14. CURRENT FRONTEND ENGINEERING REVIEW ===
+Frontend shape: The React application provides the requested operational workspaces, avoids direct WooCommerce calls, includes request deduplication/abort guards on several data-heavy views, uses accessible labels in many forms, and has broad Vitest coverage. The current production build succeeds. The remaining material issues are session truth, complete high-consequence confirmation, and accurate behavior at dataset/capability boundaries.
+
+FINDING: FE-001
+TITLE: Logout and expired-session handling can leave a hidden live session
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P2
+CONFIDENCE: HIGH
+OWNER: Frontend/Security
+EFFORT: S
+AFFECTED AREAS: Shared warehouse browsers, logout, mid-session expiry, all authenticated screens
+
+PLAIN-LANGUAGE SUMMARY:
+The UI changes to “signed out” after calling logout without checking that the server actually revoked the session. Separately, a 401 from normal API work does not centrally return the app to the login screen.
+
+WHY THIS MATTERS:
+On a shared device, a network/server failure during logout can leave the HttpOnly cookie valid even though the screen appears signed out. Expired sessions can also produce many generic errors instead of one clear sign-in prompt.
+
+IF NOT FIXED:
+A later user may refresh into the previous user's still-valid session, and staff may repeat failed actions after expiry.
+
+IF FIXED:
+The visible login state always matches server session state, with clear recovery when the session expires.
+
+WHAT TO DO IN SIMPLE TERMS:
+Check logout success before claiming it worked, show a retry/failure message, and make all 401 responses send the app through one sign-out flow.
+
+TECHNICAL DETAILS:
+`AuthGate.logout` awaits `apiFetch` but never checks `response.ok`; state is cleared only if fetch resolves. Initial `/me` handles 401, but the shared fetch layer does not dispatch an authentication-expired event for later requests.
+
+EVIDENCE:
+frontend/src/AuthGate.jsx:6-99, especially 60-65; frontend/src/api.js:20-40; live backend logout/session tests prove server revocation when the request succeeds, not frontend behavior when it fails.
+
+TECHNICAL REMEDIATION:
+In logout, inspect status and only present success after 2xx; on failure keep a blocking message with retry and advise closing the browser. Add one 401 hook/event in the existing fetch wrapper, excluding login/register/me as necessary, and let AuthGate reset state. Avoid per-screen 401 handlers.
+
+MIGRATION / ROLLOUT NOTES:
+None.
+
+VERIFICATION:
+Frontend tests cover successful logout, network failure, 500, and expired-session 401 from a child screen. A failed logout must not silently claim revocation; any mid-session 401 must render the login gate once without a request loop.
+
+DEPENDENCIES AND ORDERING:
+Independent P2 security hardening. Complete before adding more shared-device users.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: FE-002
+TITLE: Import confirmation silently shows only the first 50 changes
+TYPE: DEFECT
+STATUS: CONFIRMED
+SEVERITY: P2
+CONFIDENCE: CONFIRMED
+OWNER: Frontend/Product
+EFFORT: S
+AFFECTED AREAS: Item import, starting inventory, operator confirmation, audit expectations
+
+PLAIN-LANGUAGE SUMMARY:
+The confirmation step says “Confirm the exact changes” but renders only the first 50 field changes from the currently loaded rows, without saying that more changes are hidden.
+
+WHY THIS MATTERS:
+Starting inventory and bulk item changes are high-consequence actions. A required confirmation should not imply that the operator reviewed changes the interface did not show.
+
+IF NOT FIXED:
+Large imports can be approved with undisclosed changes, weakening the value of the confirmation and audit trail.
+
+IF FIXED:
+Operators can see the real count, inspect every proposed change, and knowingly confirm the complete operation.
+
+WHAT TO DO IN SIMPLE TERMS:
+Show “50 of N changes,” provide pages or a downloadable complete change file, and change the checkbox wording to match what was actually reviewed.
+
+TECHNICAL DETAILS:
+`ConfirmStep` flattens proposed changes and applies `.slice(0, 50)`. The saved preview/row APIs already support paged detail and stale-preview revalidation, so this should reuse those contracts rather than load everything blindly.
+
+EVIDENCE:
+frontend/src/ItemImportWorkspace.jsx:325-343, especially line 336; backend/app/services/item_import_workflow.py:430-625 and 940-1049.
+
+TECHNICAL REMEDIATION:
+Return or compute total proposed-change count; add paged review or CSV download using existing preview identifiers; disclose any display cap. Keep the current commit-time revalidation and typed START protection.
+
+MIGRATION / ROLLOUT NOTES:
+None. Response-model extension may be additive if the total is not already present.
+
+VERIFICATION:
+Create a preview with more than 50 changes across more than one row page. Assert the total is accurate, every change is reachable/exported, the cap is disclosed, and commit still rejects stale rows.
+
+DEPENDENCIES AND ORDERING:
+P2 after release/correctness blockers. Reuse the existing import paging endpoints.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: FE-003
+TITLE: Large report snapshots are loaded and rendered as one browser table
+TYPE: RISK
+STATUS: NEW
+SEVERITY: P2
+CONFIDENCE: HIGH
+OWNER: Frontend/Reporting
+EFFORT: M
+AFFECTED AREAS: Report workspace, report-run API payloads, large exports, browser memory, mobile responsiveness
+
+PLAIN-LANGUAGE SUMMARY:
+Reports are generated in the background, but opening a finished report still downloads every report row and creates one table row for each record in the browser. Large reports can therefore make the page heavy or unresponsive even though generation itself no longer blocks the web request.
+
+WHY THIS MATTERS:
+The CSV/PDF/Sheets artifacts are the full deliverables; the on-screen table is only a preview. A preview should stay fast whether the report contains 100 rows or 100,000 rows.
+
+IF NOT FIXED:
+Large report histories can produce large JSON responses, high browser memory use, long DOM work, and poor responsiveness on warehouse phones.
+
+IF FIXED:
+The first report screen remains bounded and responsive while complete exports retain every row and the verified run hash/count.
+
+WHAT TO DO IN SIMPLE TERMS:
+Show a paged preview of roughly 100-200 rows, keep the full CSV/PDF/Sheets exports, and always display the complete record count.
+
+TECHNICAL DETAILS:
+`report_run_to_dict` expands the full stored JSON payload into every run response. `ReportIntelligencePage` assigns that response to state and maps `run.rows` directly into one table body. There is no preview page/limit contract or row virtualization.
+
+EVIDENCE:
+backend/app/services/reporting.py:296-305; frontend/src/ReportIntelligence.jsx:436-851, especially the `run.rows.map` table at approximately line 800. Production build passed, but this run did not execute a large-report browser memory benchmark.
+
+TECHNICAL REMEDIATION:
+Add a small report-run metadata response and a paged preview endpoint keyed by immutable run ID. Return total row count, columns, KPIs, charts, assurance data, and one bounded row slice. Preserve full immutable artifacts and hashes; do not make the browser reconstruct exports from preview pages. A fixed preview limit is simpler than virtualization unless measured UX requires scrolling through thousands of rows.
+
+MIGRATION / ROLLOUT NOTES:
+No data migration is required if the existing payload remains the source. Introduce the preview contract additively, update the UI, then consider artifact/payload storage changes only after measuring database growth.
+
+VERIFICATION:
+Generate synthetic 5,000- and 10,000-row runs. Assert the initial JSON and DOM row counts remain bounded, paging reaches every preview row exactly once, KPI/hash/row count remain correct, and full CSV/PDF/Sheets outputs still contain the complete run. Record mobile and desktop interaction timing/memory.
+
+DEPENDENCIES AND ORDERING:
+After QA-003 establishes budgets. Can be delivered with the remaining SYS-004 pagination work using existing page/total patterns.
+
+SOURCE RUN: 2026-08-08T03:39:54Z
+LAST VERIFIED: 2026-08-08T03:39:54Z
+
+FINDING: FE-004
+TITLE: Routes page crashes on every render
+TYPE: DEFECT
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Frontend/Product
+EFFORT: XS
+AFFECTED AREAS: Routes workspace, dispatch workflow, React application recovery
+
+PLAIN-LANGUAGE SUMMARY:
+Opening Routes always throws a JavaScript error and blanks the workspace until the page is reloaded.
+
+WHY THIS MATTERS:
+Routes is a documented core workflow. Staff cannot view, create, or manage routes, and the app has no error boundary to keep the rest of the shell usable.
+
+IF NOT FIXED:
+Any operator who opens Routes loses the current application view and must reload before continuing other work.
+
+IF FIXED:
+The Routes workspace renders its loading/error state normally and one page failure cannot blank the whole app.
+
+WHAT TO DO IN SIMPLE TERMS:
+Use the props already named `loading` and `error`, add a focused regression test, and add a small application error boundary.
+
+TECHNICAL DETAILS:
+`RoutesPage` destructures `loading` and `error` but evaluates `routesErrorOrLoading(routesLoading, routesError)`. Both referenced identifiers are unbound in that scope. The call site correctly passes `loading={routesLoading}` and `error={routesError}`.
+
+EVIDENCE:
+frontend/src/App.jsx:10477-10500, 10685, and 3840-3851. The isolated authenticated browser sweep reproduced `ReferenceError: routesLoading is not defined`; independent frontend and program reviews confirmed the source path. No React error boundary exists under frontend/src.
+
+TECHNICAL REMEDIATION:
+Replace the unbound names with `loading` and `error`. Add a Routes render test for loading, error, empty, and populated states. Wrap the application content in a truthful recovery boundary that preserves navigation and offers reload/retry.
+
+MIGRATION / ROLLOUT NOTES:
+No migration. Low-code change, high release priority.
+
+VERIFICATION:
+Run Vitest and Playwright from a clean database; navigate to Routes, verify the page renders without console errors, and verify another workspace remains usable after an injected route-render error.
+
+DEPENDENCIES AND ORDERING:
+Immediate release blocker; independent of backend changes.
+
+SOURCE RUN: 2026-08-08T03:47:47Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+FINDING: FE-005
+TITLE: Bulk-edit commit can target items outside the reviewed preview
+TYPE: DEFECT
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Frontend/Inventory
+EFFORT: S
+AFFECTED AREAS: Items and inventory bulk edit, brand, cost, location, tags and metadata
+
+PLAIN-LANGUAGE SUMMARY:
+The bulk-edit preview does not freeze the selected item IDs. A keyboard user can change background checkboxes after preview and commit edits to a different group of products.
+
+WHY THIS MATTERS:
+Bulk edits can change unit cost, brand, location, and other shared fields across many items. Preview is the operator's safety check and must describe exactly what commit will change.
+
+IF NOT FIXED:
+Unreviewed products can receive the wrong cost, location, brand, or metadata while the UI appears to be committing an approved preview.
+
+IF FIXED:
+The reviewed target set and values are immutable until commit, or any change forces a new preview.
+
+WHAT TO DO IN SIMPLE TERMS:
+Snapshot selected IDs and input values when preview succeeds; commit only that snapshot; invalidate preview on any selection/value change; make the background inert while the dialog is open.
+
+TECHNICAL DETAILS:
+Preview reads live `selectedIds`; commit separately rereads live `selectedIds`. The item checkboxes remain keyboard focusable behind an `aria-modal` dialog that has no focus trap or inert background.
+
+EVIDENCE:
+frontend/src/App.jsx:6264-6293, 6484, 6497, and 6508-6545. Independent frontend control-flow review confirmed the mismatch.
+
+TECHNICAL REMEDIATION:
+Store a preview object containing sorted immutable item IDs, normalized fields, and a digest/version. Commit from that object and reject when the current selection or fields differ. Disable/inert the item surface during the modal and restore focus after close.
+
+MIGRATION / ROLLOUT NOTES:
+No database migration. Preserve the current backend bulk-edit contract and audit behavior.
+
+VERIFICATION:
+Preview items A/B, attempt to select C and deselect A using mouse and keyboard, and verify commit is blocked until re-preview. Assert the backend receives exactly the reviewed IDs once.
+
+DEPENDENCIES AND ORDERING:
+Release blocker for safe bulk editing. Can proceed in parallel with FE-004.
+
+SOURCE RUN: 2026-08-08T03:47:47Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+FINDING: FE-006
+TITLE: Open-order invoices falsely state Completed
+TYPE: DEFECT
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Frontend/Reporting
+EFFORT: XS
+AFFECTED AREAS: Open Orders, bulk printing, customer invoices, bookkeeping/legal records
+
+PLAIN-LANGUAGE SUMMARY:
+Every printable invoice says `Order status: Completed`, even when it is printed from an open, processing, partially picked, or unpicked order.
+
+WHY THIS MATTERS:
+The invoice is intended for customers and business records. It must not certify a workflow state that has not happened.
+
+IF NOT FIXED:
+Staff can hand customers or bookkeepers a document that falsely states an order was completed, creating fulfillment disputes and inaccurate records.
+
+IF FIXED:
+Printed status is derived from the verified order snapshot, or printing is limited to orders that are truly completed.
+
+WHAT TO DO IN SIMPLE TERMS:
+Either print the real local/Woo status with a clear label or remove invoice printing from open orders and print only after completion.
+
+TECHNICAL DETAILS:
+`OrderInvoice` hard-codes `Completed`. Open-order row and bulk actions expose Print. The unit fixture is explicitly `woo_status: processing` and `local_status: open`, yet the existing test asserts that its invoice contains `Completed`.
+
+EVIDENCE:
+frontend/src/App.jsx:9702-9725, 9797-9802, and 9918-9924; frontend/src/App.test.jsx:64-72 and 2296-2311. Independent program and frontend reviews confirmed the behavior.
+
+TECHNICAL REMEDIATION:
+Make document status a derived explicit field and include its calculation timestamp. Update print tests for open, picked, and completed orders. Do not silently translate `processing` to `completed` for presentation.
+
+MIGRATION / ROLLOUT NOTES:
+No migration. Product owner should confirm whether the desired document is an invoice, packing slip, or completion receipt; labels must match its purpose.
+
+VERIFICATION:
+Print one open, one partially picked, and one completed order individually and in bulk. Assert each document shows the correct status and order/customer details and remains one document per order.
+
+DEPENDENCIES AND ORDERING:
+Release blocker because the documents are intended for legal/business use.
+
+SOURCE RUN: 2026-08-08T03:47:47Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+Additional frontend observations (not promoted to separate findings in this run):
+- Several modal dialogs use `role="dialog"` and `aria-modal`, but systematic focus trapping, Escape handling, focus restoration, and background inertness were not found across all modals. Add one shared minimal dialog behavior when accessibility testing demonstrates the gap.
+- Scanner-oriented screens support keyboard-style SKU/barcode input, but some direct fetch handlers should consistently check `response.ok` and discard stale lookup responses using the existing request-id/abort patterns.
+- The build warns that chart (574.35 kB raw/194.44 kB gzip) and main (643.43 kB raw/164.42 kB gzip) bundles exceed the 500 kB advisory threshold. The charts/report module is lazy. Treat additional splitting as measured work only if QA-003 shows slow startup on real warehouse devices.
+
+=== 15. CURRENT QA AND TEST REVIEW ===
+QA method: The lead mapped requirements to journeys and ran the complete safe local matrix with disposable PostgreSQL, isolated authentication, and fake WooCommerce. No live mutation or customer-data test was performed. The primary concern is not test quantity; it is that the only active browser journeys and several release-gate checks fail despite green unit/API suites.
+
+Critical journey-to-evidence map:
+- Authentication: backend auth tests pass in isolation; Playwright authentication setup is stale; frontend mid-session expiry behavior has FE-001 gaps.
+- Item sync/import/remap: backend/API and frontend unit tests pass; isolated browser item-import journey fails before reaching the workflow because authentication setup is missing.
+- Receiving/adjustment/transfer/cycle count: broad backend/API coverage and all PostgreSQL concurrency tests pass; DB-002 still lacks a cycle-count-specific lock/idempotency race test.
+- Orders/allocate/pick/complete: unit/API coverage passes; contract defects SYS-002, BE-003, and BE-006 lack the needed negative/retry tests.
+- Woo writeback: authority-disabled readiness passes containment; BE-001 needs forged/stale/concurrent sender tests.
+- Reports/routes: final frontend suite passes but one report test is nondeterministic; authenticated browser sweep proves Routes crashes; PM-002 identifies unavailable optimization.
+- Backup/recovery/release: fresh PostgreSQL upgrade/downgrade/re-upgrade passes; backup verifier fails due DB-001; Alembic metadata drift check fails due DB-007; deployment remains able to bypass the result.
+
+FINDING: QA-001
+TITLE: Active browser release journeys fail on stale authentication contracts
+TYPE: GAP
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: QA/Frontend
+EFFORT: S
+AFFECTED AREAS: Playwright, item import, production chain, release gate confidence
+
+PLAIN-LANGUAGE SUMMARY:
+Both active browser tests fail before proving their intended workflows because they no longer match the login and accessibility behavior of the application.
+
+WHY THIS MATTERS:
+These are the only tests that exercise the real browser, frontend, API, and database together. A green unit suite cannot replace that end-to-end evidence.
+
+IF NOT FIXED:
+Once the earlier CI step is repaired, the release gate will still fail; more importantly, regressions in actual staff journeys can reach production unnoticed.
+
+IF FIXED:
+The release gate proves that a staff user can authenticate and complete the most important cross-layer journeys.
+
+WHAT TO DO IN SIMPLE TERMS:
+Give every browser test a supported test login setup, update the stale user selector, create its own active location, and keep each test independent from prior data.
+
+TECHNICAL DETAILS:
+In a fully isolated PostgreSQL chain with a fake local Woo server, `item-import-workspace.spec.js` waited for “Add new items” while still on the login page. `production-chain.spec.js` registered successfully but expected an accessible label “Signed in user” that no longer exists. Independent reproduction also showed the next step uses `Main Warehouse / E2E Rack` without creating that active location; a clean database returns `needs_attention` / `invalid_location`.
+
+EVIDENCE:
+Exact `npm run test:e2e` against disposable PostgreSQL at head 0037 and fake Woo: 3 tests discovered, 1 evidence-capture test skipped, 2 active tests failed after 90 seconds. Failure screenshots/snapshots showed the login screen and changed authenticated header. Fresh-database API reproduction confirmed the invalid location. frontend/e2e/item-import-workspace.spec.js; frontend/e2e/production-chain.spec.js; frontend/src/AuthGate.jsx; frontend/src/App.jsx.
+
+TECHNICAL REMEDIATION:
+Add one reusable Playwright authentication helper/fixture that registers or logs in through public APIs/UI with isolated credentials, then starts each journey authenticated. Select the user control by current stable role/name or add a truthful accessible label. Run against PostgreSQL in CI and keep fake Woo local/non-destructive.
+
+MIGRATION / ROLLOUT NOTES:
+None. Test-only changes and potentially a stable accessibility label.
+
+VERIFICATION:
+Run the full release-gate environment twice from a clean database. Both active specs must pass without retries or ordering dependence and must prove import commit/audit plus the production-chain outcome.
+
+DEPENDENCIES AND ORDERING:
+Fix after DB-001 exposes later CI stages and before SYS-001 makes the gate mandatory.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+FINDING: QA-002
+TITLE: Full frontend dependency audit blocks the release workflow
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Frontend/QA
+EFFORT: XS
+AFFECTED AREAS: CI dependency audit, jsdom test runtime, development supply chain
+
+PLAIN-LANGUAGE SUMMARY:
+Production frontend packages report no known vulnerabilities, but the exact full audit required by the release workflow fails on two high-severity development dependency advisories.
+
+WHY THIS MATTERS:
+The release workflow runs the full audit, so it will remain non-green after the earlier backup failure is fixed. The affected dependency is test-only, which reduces production exposure but not gate impact.
+
+IF NOT FIXED:
+CI cannot become green under its current policy, and developers keep an avoidable vulnerable transitive dependency in the test environment.
+
+IF FIXED:
+The dependency gate reflects an intentional clean state without weakening production security policy.
+
+WHAT TO DO IN SIMPLE TERMS:
+Update the lockfile/tooling chains to fixed `undici` and `nanoid` versions, then rerun tests, build, Playwright, and both audits.
+
+TECHNICAL DETAILS:
+`npm audit --omit=dev` returns zero vulnerabilities. Full `npm audit` exits 1 with high severity for `nanoid` below 3.3.17 in the Vite/PostCSS toolchain and `undici` 7.0.0-7.28.0 via jsdom. Current resolved versions are nanoid 3.3.16 and undici 7.28.0.
+
+EVIDENCE:
+frontend/package-lock.json; local npm audit commands on d7dce412. Backend `pip-audit` reported no known vulnerabilities.
+
+TECHNICAL REMEDIATION:
+Use npm's minimal compatible lockfile update or upgrade jsdom if required. Do not add audit exceptions unless no fixed compatible version exists; if temporarily accepted, scope and expire the exception.
+
+MIGRATION / ROLLOUT NOTES:
+None. Development dependency only.
+
+VERIFICATION:
+Full `npm audit`, `npm audit --omit=dev`, all 121 Vitest tests, production build, and Playwright suite pass on the updated lockfile.
+
+DEPENDENCIES AND ORDERING:
+Resolve before enforcing SYS-001. Can proceed in parallel with QA-001 after DB-001.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+FINDING: QA-003
+TITLE: No production-like performance baseline or latency gate
+TYPE: GAP
+STATUS: NEW
+SEVERITY: P2
+CONFIDENCE: CONFIRMED
+OWNER: QA/Platform
+EFFORT: M
+AFFECTED AREAS: PostgreSQL, Heroku/runtime sizing, item/search/order/report/import journeys, warehouse desktop and mobile devices
+
+PLAIN-LANGUAGE SUMMARY:
+The app has many performance optimizations and passing tests, but there is no repeatable test that says how fast important screens must be with production-like data and PostgreSQL. Local SQLite timings cannot prove what staff will experience on Heroku or a phone.
+
+WHY THIS MATTERS:
+Without a baseline and budget, the team can spend time optimizing the wrong code, miss a real regression, or add complexity that does not improve staff experience.
+
+IF NOT FIXED:
+Performance decisions remain subjective and regressions can pass CI as long as functional assertions still pass.
+
+IF FIXED:
+Every optimization has a measured before/after result, critical journeys have p50/p95 targets, and regressions are detected before deployment.
+
+WHAT TO DO IN SIMPLE TERMS:
+Create one realistic test dataset, time the most important staff actions on PostgreSQL and real devices, and record a small set of speed budgets.
+
+TECHNICAL DETAILS:
+Request logs record individual `duration_ms` and focused tests check behavior. This run executed every PostgreSQL-only concurrency test, but no repository task collects endpoint/browser p50/p95, query counts/plans, frontend interaction timing, or memory on a seeded production-like dataset.
+
+EVIDENCE:
+Complete backend result with disposable PostgreSQL: 452 passed; production build passed with two large-chunk warnings; no production load, `EXPLAIN ANALYZE`, Heroku telemetry, or warehouse-device timing in this run or the prior baseline limitations.
+
+TECHNICAL REMEDIATION:
+Start with a small deterministic PostgreSQL fixture representing current scale and a projected scale. Measure item list/search/completeness, open and pick queues, dashboard cold/warm reads, report enqueue and preview, and CSV preview/commit. Capture server p50/p95, SQL count/top plans, response bytes, browser LCP/INP or equivalent interaction timing, and memory on one desktop plus one iPhone/Android class device. Set budgets from the first stable baseline, then gate only mature non-flaky metrics.
+
+MIGRATION / ROLLOUT NOTES:
+Test/observability work only. Use synthetic or redacted data; do not copy customer records. Keep the first harness small and standard-library/tooling based rather than adopting a performance platform prematurely.
+
+VERIFICATION:
+The same command runs twice against seeded PostgreSQL with variance reported, produces p50/p95 and query/response/browser metrics, and fails on an intentional controlled regression after budgets are adopted. Results identify a specific bottleneck before any next optimization is approved.
+
+DEPENDENCIES AND ORDERING:
+First performance action. Its results determine whether FE-003, SYS-004, import batching, bundle splitting, cache partitioning, or worker separation is next.
+
+SOURCE RUN: 2026-08-08T03:39:54Z
+LAST VERIFIED: 2026-08-08T03:39:54Z
+
+FINDING: QA-004
+TITLE: Frontend report test is nondeterministic
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P2
+CONFIDENCE: CONFIRMED
+OWNER: QA/Frontend
+EFFORT: S
+AFFECTED AREAS: Vitest release gate, report date presets, developer confidence
+
+PLAIN-LANGUAGE SUMMARY:
+The frontend suite sometimes fails the Report Intelligence warehouse/date prefill assertion and then passes without a code change.
+
+WHY THIS MATTERS:
+A flaky required test makes a real regression indistinguishable from test noise and encourages rerunning the gate until it turns green.
+
+IF NOT FIXED:
+Safe releases can be delayed, unsafe changes can be waved through as “just the flaky test,” and the mandatory gate remains unreliable.
+
+IF FIXED:
+The same source and fixture produce the same report-state assertion every run.
+
+WHAT TO DO IN SIMPLE TERMS:
+Remove real-time, shared-cache, or unresolved asynchronous timing from the test and wait on the actual user-visible state.
+
+TECHNICAL DETAILS:
+One complete 121-test run failed and a later complete run passed. Five isolated repetitions of the Report Intelligence test reproduced one failure. The final release-candidate run was green, so this is nondeterminism rather than a consistently broken product assertion.
+
+EVIDENCE:
+Repeated local Vitest output in this run; frontend/src/ReportIntelligence.test.jsx and its date/warehouse prefill path. Independent frontend review reproduced the intermittent failure.
+
+TECHNICAL REMEDIATION:
+Freeze time, reset request/cache state per test, use deterministic fixtures, and await the rendered state rather than an implementation delay. Run the affected file repeatedly before returning it to the required gate.
+
+MIGRATION / ROLLOUT NOTES:
+Test-only change.
+
+VERIFICATION:
+Run the affected test file at least 20 times and the full suite at least twice with no retries or failures, then introduce a controlled wrong value and confirm the assertion fails deterministically.
+
+DEPENDENCIES AND ORDERING:
+Repair before making the release gate mandatory; lower product severity than deterministic FE-004/FE-006 defects.
+
+SOURCE RUN: 2026-08-08T03:47:47Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+=== 16. CURRENT DATABASE AND DATA REVIEW ===
+Database shape: The product targets PostgreSQL and has a linear single Alembic head at 20260807_0037. Fresh disposable PostgreSQL completed upgrade/downgrade/re-upgrade and the full concurrency-enabled test suite. The model includes extensive audit/history tables. Principal risks remain release-restore revision drift, cycle-count lock/idempotency coverage, raw-index metadata drift, historical migration determinism, and inherited production data-quality findings not rechecked here.
+
+FINDING: DB-001
+TITLE: Backup restore verifier is pinned to migration 0027
+TYPE: DEFECT
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Database/Platform
+EFFORT: XS
+AFFECTED AREAS: GitHub release gate, backup/restore proof, deployment confidence
+
+PLAIN-LANGUAGE SUMMARY:
+The backup is created and restored to the correct current schema, but the verification script calls that a failure because it expects an old migration number.
+
+WHY THIS MATTERS:
+This deterministic defect blocks all later release checks and hides whether backup/restore is truly usable under the current product.
+
+IF NOT FIXED:
+Every release gate fails at the same step, backend/frontend/browser stages are skipped, and teams are encouraged to ignore the gate.
+
+IF FIXED:
+Backup/restore verification becomes meaningful and the complete release suite can run.
+
+WHAT TO DO IN SIMPLE TERMS:
+Stop hard-coding 0027. Derive the expected head from Alembic or one shared release revision and assert that readiness, restore verification, and migration head agree.
+
+TECHNICAL DETAILS:
+`EXPECTED_REVISION = "20260731_0027"` is hard-coded while the linear current head and operations documentation are `20260807_0037`. The release workflow upgrades a disposable PostgreSQL database to head and immediately runs this verifier, so a correct current restore is deterministically rejected.
+
+EVIDENCE:
+backend/scripts/postgres_backup_restore.py:12 and 53-58; .github/workflows/release-gate.yml:44-56; docs/PRODUCTION_OPERATIONS.md:19-27; verified `alembic history`/head 20260807_0037 and fresh PostgreSQL migration cycle in this run. The host-client restore probe also hit a PostgreSQL 17-client/16-server `transaction_timeout` incompatibility, which is a local tool-version limitation separate from this deterministic script defect.
+
+TECHNICAL REMEDIATION:
+Use one authoritative expected-head constant or compare to Alembic's repository heads programmatically. Keep required-table verification. Add a unit/integration test that fails when repository head advances without verifier compatibility.
+
+MIGRATION / ROLLOUT NOTES:
+None. Script-only correction.
+
+VERIFICATION:
+CI PostgreSQL backup -> restore -> verify succeeds at current head 0037 (or its successor), detects a deliberately missing table, and fails for a deliberately stale revision. Later gate stages execute.
+
+DEPENDENCIES AND ORDERING:
+First code fix. It unlocks QA-001, QA-002, and SYS-001 enforcement.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+FINDING: DB-002
+TITLE: Cycle counts lack shared locking and idempotency
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: HIGH
+OWNER: Backend/Database
+EFFORT: M
+AFFECTED AREAS: Cycle count commit, scanner cycle count, receiving/adjustment concurrency, stock movements and audit history
+
+PLAIN-LANGUAGE SUMMARY:
+A cycle count reads a quantity and later replaces stock with the counted number without taking the shared stock lock or using a retry key. A receipt or adjustment occurring at the same time can be overwritten, and a repeated request can create another count/audit.
+
+WHY THIS MATTERS:
+Cycle counts are absolute corrections. They must serialize with every other stock change or explicitly detect that stock changed after the count was prepared.
+
+IF NOT FIXED:
+Under realistic concurrent warehouse use, a valid receipt/adjustment can disappear from the resulting total even though both actions leave audit records. Network retries can also duplicate count records.
+
+IF FIXED:
+Counts either apply to the exact stock version reviewed or stop and ask the operator to refresh; retries return the original result.
+
+WHAT TO DO IN SIMPLE TERMS:
+Put cycle counts behind the existing stock mutation lock, re-read the location row when committing, and require an idempotency key.
+
+TECHNICAL DETAILS:
+Both service and scanner paths call `cycle_count_location`, which obtains/creates the location row and assigns counted quantity. The request schema has no idempotency key. Unlike canonical stock paths, the commit does not first call `lock_inventory_stock`/`lock_stock_mutation_scope` or use row version comparison.
+
+EVIDENCE:
+backend/app/services/cycle_counts.py:172-235; backend/app/schemas/cycle_counts.py:14-20; backend/app/services/location_inventory.py:451-494; canonical protected receiving pattern at backend/app/services/receiving.py:153-173; backend/tests/test_postgres_concurrency.py has no cycle-count interleaving. Independent database review reconfirmed the missing safeguards after all existing PostgreSQL concurrency tests passed.
+
+TECHNICAL REMEDIATION:
+At commit start, acquire the shared global/advisory stock mutation lock then lock affected item/location rows in deterministic order. Recompute current system quantity and reject if it differs from the preview/version unless the operator explicitly re-previews. Persist a scoped unique idempotency key and original response.
+
+MIGRATION / ROLLOUT NOTES:
+May require idempotency/version fields or a separate operation table. Add nullable support, deploy clients, then require keys. Existing count history remains valid and should not be rewritten.
+
+VERIFICATION:
+PostgreSQL tests interleave cycle count with receiving and adjustment transactions, in both start orders, and prove no committed stock delta is lost. Duplicate sequential/concurrent keys produce one count, one movement set, and one response.
+
+DEPENDENCIES AND ORDERING:
+Requires green PostgreSQL CI. Coordinate lock order with DB-003 and all existing stock paths before authority promotion.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+FINDING: DB-003
+TITLE: Manual allocation can mutate stock outside the shared stock lock
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: HIGH
+OWNER: Backend/Database
+EFFORT: M
+AFFECTED AREAS: Manual allocation, FIFO auto-allocation, receiving/adjustment/pick concurrency, sellable stock
+
+PLAIN-LANGUAGE SUMMARY:
+The manual allocation path locks the FIFO process but does not lock current item/location stock before deciding and writing how much to allocate.
+
+WHY THIS MATTERS:
+Two processes can base decisions on the same sellable quantity. Application checks before commit do not prevent a race unless the relevant database rows/transaction scope are locked.
+
+IF NOT FIXED:
+Concurrent manual allocation and stock changes can over-allocate, lose an update, violate location/item totals, or deadlock due to inconsistent lock order.
+
+IF FIXED:
+Every allocation and stock mutation observes one documented lock order and preserves non-negative, reconciled totals.
+
+WHAT TO DO IN SIMPLE TERMS:
+Use the same shared stock lock and deterministic row locks for manual allocation that auto-allocation and stock mutations use.
+
+TECHNICAL DETAILS:
+`commit_allocation` acquires the FIFO allocation advisory lock, previews, then uses ordinary `db.get` and `allocate_from_location`. That helper selects/mutates rows without explicitly acquiring the shared stock lock. `auto_allocate_processing_orders_fifo` acquires FIFO then `lock_inventory_stock`, which itself calls the shared global lock. The paths therefore have different lock coverage/order.
+
+EVIDENCE:
+backend/app/services/allocations.py:129-310; backend/app/services/location_inventory.py:68-94 and 497-519; backend/app/services/order_workflow.py:358-419; code-graph call trace confirmed `allocate_from_location` is called by `commit_allocation` only.
+
+TECHNICAL REMEDIATION:
+Adopt one order, for example FIFO allocation lock -> shared stock mutation lock -> item/location rows ordered by ID -> order lines ordered by ID. Re-run preview/revalidation after locks. Route manual and auto allocation through the same locked mutation entry point where practical.
+
+MIGRATION / ROLLOUT NOTES:
+None unless adding operation idempotency. Monitor lock wait/deadlock logs after rollout; retain the documented global lock until measured throughput requires finer locks.
+
+VERIFICATION:
+PostgreSQL race tests run manual/manual, manual/FIFO, manual/receipt, and manual/pick interleavings. Assert no over-allocation, no negative sellable, totals equal location sums, and no deadlock across repeated runs.
+
+DEPENDENCIES AND ORDERING:
+Design together with DB-002. Complete before BE-001 quantity derivation and stock-authority promotion.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: DB-004
+TITLE: Initial migration depends on live ORM metadata
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: HIGH
+OWNER: Database
+EFFORT: L
+AFFECTED AREAS: Clean database creation, historical migration reproducibility, disaster recovery, schema drift detection
+
+PLAIN-LANGUAGE SUMMARY:
+The first migration creates whatever tables the current application models describe, not the schema that existed when the migration was written.
+
+WHY THIS MATTERS:
+Migrations are meant to be an immutable history. If an old step changes as models change, two clean databases built at different times can take different paths and later conditional migrations can behave differently.
+
+IF NOT FIXED:
+Fresh installs and restores remain difficult to reason about; older databases may miss constraints that current-model test setup silently includes.
+
+IF FIXED:
+Schema reconstruction is deterministic, reviewable, and comparable with production.
+
+WHAT TO DO IN SIMPLE TERMS:
+Stop using current models inside historical migration execution and establish a reviewed, explicit schema baseline plus reconciliation migration.
+
+TECHNICAL DETAILS:
+Migration 0001 calls `Base.metadata.create_all`. Later migrations include conditional column/index creation. Backend tests commonly create current metadata directly, which does not prove the full historical upgrade path produces identical constraints.
+
+EVIDENCE:
+backend/alembic/versions/20260707_0001_initial_schema.py:20; conditional logic in backend/alembic/versions/20260707_0013_stock_by_location_v2_transfers.py; backend test database setup; isolated PostgreSQL upgrade/downgrade/re-upgrade to 0037 passed, but production catalog was not inspected.
+
+TECHNICAL REMEDIATION:
+Do not rewrite already-applied history without a deliberate baseline strategy. Create a catalog-diff tool/check against SQLAlchemy metadata, inspect production, add a forward reconciliation migration for missing constraints/indexes, and create an explicit squashed baseline for new installations if operationally acceptable.
+
+MIGRATION / ROLLOUT NOTES:
+Requires production catalog inspection and backup. Add constraints with validation phases where supported, avoid long table locks, verify data first, and retain compatibility with existing 0037 databases. Rollback should be backup-based for destructive constraint changes.
+
+VERIFICATION:
+Build databases from the legacy chain and new baseline, compare tables/columns/types/defaults/nullability/FKs/unique/check/index definitions, and compare with a redacted production catalog. CI fails on unexplained drift.
+
+DEPENDENCIES AND ORDERING:
+After the release gate is trustworthy and before major new migrations. No unsupported claim of current production drift is made in this audit.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: DB-005
+TITLE: 223 active stock items have no positive unit cost
+TYPE: GAP
+STATUS: CONFIRMED
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Operations/Data
+EFFORT: M
+AFFECTED AREAS: Inventory valuation, margin and cost reporting, cycle count variance value, production readiness
+
+PLAIN-LANGUAGE SUMMARY:
+The live database has 223 active inventory items with stock but no usable positive unit cost.
+
+WHY THIS MATTERS:
+Pongo cannot trust inventory value, cost of goods, margin, or count-variance dollars when cost is missing. The application correctly treats this as a readiness blocker.
+
+IF NOT FIXED:
+Financial/operational reports remain incomplete or understated, and authority promotion stays blocked.
+
+IF FIXED:
+Every active stock item contributes a verified cost to valuation and variance reporting.
+
+WHAT TO DO IN SIMPLE TERMS:
+Export the missing-cost list, have the business supply verified costs, import them through an audited local-field workflow, and review exceptions.
+
+TECHNICAL DETAILS:
+Readiness counts active, inventory-managed items whose `unit_cost` is null or <= 0. The audit did not inspect or infer individual costs and will not recommend fabricated defaults.
+
+EVIDENCE:
+Live `/ready` at 2026-08-07T07:06:42Z: `inventory_costs` false, count 223; backend/app/api/routes/health.py:46 onward; current reporting/cycle-count services use unit cost.
+
+TECHNICAL REMEDIATION:
+Provide a backend export of affected IDs/SKUs/current metadata if not already available; use the ownership-safe bulk/import workflow with validation and audit events; reject negative costs and decide whether zero is ever valid only through an explicit business rule.
+
+MIGRATION / ROLLOUT NOTES:
+Data correction, not schema migration. Take a backup; import in reviewable batches; preserve before/after audit; do not derive cost from retail price without explicit approved methodology.
+
+VERIFICATION:
+`/ready` reports count 0; reconciliation query finds no active inventory-managed item with stock and non-positive cost; sample valuation/cycle-count reports match independently calculated totals.
+
+DEPENDENCIES AND ORDERING:
+Complete after BE-002 ownership safety and before SYS-003 authority promotion.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: DB-006
+TITLE: Sellable stock equality is enforced only in application code
+TYPE: RISK
+STATUS: CONFIRMED
+SEVERITY: P2
+CONFIDENCE: HIGH
+OWNER: Database/Backend
+EFFORT: M
+AFFECTED AREAS: Inventory items, item locations, direct SQL/import errors, reporting and Woo quantity derivation
+
+PLAIN-LANGUAGE SUMMARY:
+The database stores in-stock, allocated, and sellable values, but relies on application functions to keep `sellable = in_stock - allocated` and totals equal to location sums.
+
+WHY THIS MATTERS:
+Multiple stored versions of the same fact can disagree after a bug, partial migration, manual database action, or uncovered code path.
+
+IF NOT FIXED:
+Reports and Woo writeback can read a stale sellable value even when the component quantities reveal the correct answer.
+
+IF FIXED:
+Invalid stock states are rejected or detected immediately and reconciliation is simpler.
+
+WHAT TO DO IN SIMPLE TERMS:
+Use the database for the invariants it can enforce and add a recurring reconciliation check for cross-row totals.
+
+TECHNICAL DETAILS:
+Service assertions validate non-negative/equality after mutations, but no confirmed database check/generated-column contract protects the equality. Cross-row item total equals sum(location totals) requires a transaction/service/reconciliation mechanism rather than a simple check constraint.
+
+EVIDENCE:
+backend/app/models/items.py and location models; backend/app/services/location_inventory.py recalculation/assertion helpers; live readiness checks some coverage/duplicates but not all stock equalities.
+
+TECHNICAL REMEDIATION:
+Evaluate a PostgreSQL check constraint for row-local non-negative/equality invariants or derive sellable at query time/generated column. Add a reconciliation query/job for item-versus-location totals and alert on drift. Do not add triggers unless simpler mechanisms cannot meet the requirement.
+
+MIGRATION / ROLLOUT NOTES:
+First run a non-mutating drift query. Backfill/reconcile through audited repair if needed, add constraints as NOT VALID where supported, validate after cleanup, then enforce.
+
+VERIFICATION:
+Catalog contains the intended constraints/derived definition; direct attempts to create invalid rows fail; reconciliation returns zero mismatches after every stock concurrency test.
+
+DEPENDENCIES AND ORDERING:
+After DB-002/DB-003 define canonical mutation behavior; before enabling authority if any drift is found.
+
+SOURCE RUN: 2026-08-07T07:07:40Z
+LAST VERIFIED: 2026-08-07T07:07:40Z
+
+FINDING: DB-007
+TITLE: Alembic drift check reports raw reporting indexes as removals
+TYPE: GAP
+STATUS: CONFIRMED
+SEVERITY: P2
+CONFIDENCE: CONFIRMED
+OWNER: Database/Platform
+EFFORT: XS
+AFFECTED AREAS: Schema drift detection, reporting indexes, migration review
+
+PLAIN-LANGUAGE SUMMARY:
+A fresh database reaches the correct schema, but `alembic check` says two valid reporting indexes should be removed because Alembic's model metadata does not know they are intentional.
+
+WHY THIS MATTERS:
+Schema drift detection cannot be trusted while expected database objects appear as pending removals. A developer could generate a migration that deletes useful performance indexes.
+
+IF NOT FIXED:
+Drift checks remain noisy or unused, and future autogeneration can propose removing the order reporting indexes.
+
+IF FIXED:
+`alembic check` is quiet on a fresh head schema and reports only real unexplained model/database differences.
+
+WHAT TO DO IN SIMPLE TERMS:
+Represent the indexes in SQLAlchemy metadata or explicitly exclude only these intentional expression/partial indexes from autogeneration comparison.
+
+TECHNICAL DETAILS:
+Migration 0032 creates `ix_orders_reporting_date` and `ix_orders_reporting_customer_date` with raw SQL. They are absent from `Base.metadata`, and `backend/alembic/env.py` has no targeted `include_object` rule, so Alembic proposes two remove-index operations.
+
+EVIDENCE:
+Fresh disposable PostgreSQL at head 20260807_0037; `alembic check` reported exactly `ix_orders_reporting_date` and `ix_orders_reporting_customer_date` as removed. backend/alembic/versions/20260805_0032_fast_metric_cache.py:47-51; backend/alembic/env.py.
+
+TECHNICAL REMEDIATION:
+Prefer declaring equivalent SQLAlchemy indexes when expression/partial metadata is stable. Otherwise add a narrow named-index exclusion with a comment and test; do not suppress general index comparison.
+
+MIGRATION / ROLLOUT NOTES:
+No data migration is required. Avoid emitting a migration that drops/recreates working indexes merely to silence the tool.
+
+VERIFICATION:
+Upgrade a fresh PostgreSQL database to head, run `alembic check`, and assert no new operations. Query `pg_indexes` and verify both reporting index definitions still exist.
+
+DEPENDENCIES AND ORDERING:
+Fix alongside DB-001 before treating schema/recovery checks as mandatory release evidence.
+
+SOURCE RUN: 2026-08-08T03:47:47Z
+LAST VERIFIED: 2026-08-08T03:47:47Z
+
+=== 17. CROSS-CUTTING RISKS AND OPPORTUNITIES ===
+1. The optimization architecture is proportionate. Existing SQL pagination, request cancellation, immutable caching, metric caching, and report jobs address real bottlenecks without adding a new service. Preserve this bias toward measured, local fixes.
+2. Cache invalidation is intentionally broad. A single metric version invalidates all dashboard/insight namespaces and serializes version changes on one row. That is simple and appropriate for current single-organization volume; split versions by domain only if PostgreSQL lock/rebuild measurements show contention.
+3. One worker handles operational sync, reports, history, and metric warming in priority order. Priority protects queued operational work before starting a report, but a report already running can occupy the single worker. Add worker separation only if measured report duration delays operational freshness.
+4. Item import matching is set-based and memory/response sizes are bounded, but persistence and audit creation remain per row. Batching is the next likely backend improvement only if production PostgreSQL timing for real import sizes misses the agreed budget; background import processing is not justified by current local results alone.
+5. Report data is stored three ways in PostgreSQL: JSON payload plus CSV and PDF binary artifacts. No formal cleanup/retention path was found for report runs/jobs. Define a business retention policy before history volume affects database size, backups, or the linear matching scan; do not delete audit evidence without product/legal approval.
+6. The item data-completeness endpoint performs roughly one total count plus one count per missing-field predicate. It is the smallest immediate query optimization candidate: one conditional aggregate can calculate the same counts in one round trip, followed by focused API parity tests.
+7. The main bundle remains large, but raw chunk size is not sufficient proof of slow user experience. Measure cold/warm startup and interaction timing on actual phones before splitting the 13k-line application or introducing more build abstractions.
+
+=== 18. TEST AND VALIDATION EVIDENCE ===
+Code discovery and architecture:
+- The existing repository knowledge graph (more than 4,000 nodes and 21,000 edges) was used first for architecture, call paths, routes, and current snippets. Changed/high-value source was then checked directly where exact literals/configuration were required.
+- Four independent specialist reviews plus lead QA covered program, backend, frontend, QA/release, and database perspectives. The Routes crash and false invoice status were independently confirmed by both frontend and program reviews.
+
+Backend tests:
+- Default isolated suite: 444 passed, 8 PostgreSQL-only skipped, 1 Starlette/httpx deprecation warning in 61.91 seconds.
+- Complete suite with disposable PostgreSQL 16: 452 passed, no skips, the same warning, in 60.80 seconds.
+- The eight PostgreSQL concurrency/advisory-lock tests also passed separately in 1.09 seconds.
+- Coverage includes authentication, stock constraints, mutation idempotency, locking, duplicate SKU/barcode fail-closed matching, completion rules, Woo guards/webhook signing, readiness, pagination parity, aggregation, report jobs, and sync-error deduplication. No live Woo call was made.
+
+Frontend tests and build at final HEAD:
+- Final `npm test -- --run`: 6 files and 121 tests passed in 8.39 seconds.
+- A prior full run and one of five isolated Report Intelligence repetitions failed the warehouse/date prefill assertion, then passed without source changes (QA-004).
+- `npm run build`: passed; 2,175 modules transformed in 1.89 seconds. Charts were 574.35 kB raw/194.44 gzip and main 643.43/164.42; Vite emitted large-chunk advisories.
+
+Browser and cross-layer evidence:
+- Disposable PostgreSQL database migrated to 0037, fake local Woo server, isolated backend, isolated frontend, and test-only account were used. Fake Woo recorded no writes before/after the failing journeys.
+- Playwright discovered 3 tests: 1 intentionally skipped and 2 active failures. Item import remained on login; production chain failed on a stale signed-in-user selector and would next fail because its clean database lacks the hard-coded active location (QA-001).
+- Authenticated manual page sweep rendered Dashboard, Inventory Overview, Items, all Inventory views, Locations, Receiving, Scanner, Cycle Count, Open, Allocate, Pick, Completed, History, Insights, Reports, and all three Woo Settings pages. Routes alone threw an unhandled `ReferenceError` and blanked the React workspace (FE-004).
+- Document width at the documented 1,280 px laptop viewport had no horizontal overflow on Open Orders. A 1,024 px intermediate width showed 98 px overflow, while the 768 px responsive layout did not; this is a recorded limitation, not a release finding under the current 1,280/1,440 contract.
+
+Database, recovery, and dependency checks:
+- Fresh PostgreSQL Alembic upgrade to 0037 passed; downgrade to base passed; re-upgrade to 0037 passed.
+- `alembic check` failed only because two intentional raw-SQL reporting indexes are absent from ORM metadata (DB-007).
+- A disposable backup was created (315,671 bytes). Local restore using a PostgreSQL 17 client against PostgreSQL 16 hit unsupported `SET transaction_timeout`; separately, source/workflow evidence proves the release verifier will reject a valid 0037 restore because it expects 0027 (DB-001).
+- `pip-audit -r backend/requirements.txt`: no known vulnerabilities.
+- `npm audit --omit=dev`: zero vulnerabilities. Full `npm audit`: exit 1 with two high-severity development-only advisories in nanoid and undici (QA-002).
+- All disposable servers and the disposable PostgreSQL container were stopped/removed after testing.
+
+Repository checks:
+- `git diff --check`: passed.
+- Audit snapshot remained at HEAD 100970f with the same pre-existing modified/untracked application files recorded at scope start. No application code, test, configuration, credential, external service, deployment, or production data was changed by this audit.
+
+=== 19. COVERAGE, LIMITATIONS, AND BLIND SPOTS ===
+- PostgreSQL functional/concurrency behavior was exercised locally, but no production `EXPLAIN (ANALYZE, BUFFERS)`, lock-wait, pool, cache-hit, p50/p95, table-size, or Heroku memory/CPU measurement was taken.
+- No production browser/customer data, live WooCommerce call, deployment, dyno/config change, email/Sheets action, printer/scanner hardware action, production mutation, or production restore occurred.
+- The Playwright chain used a fully disposable PostgreSQL/fake-Woo environment. It failed before completing the mutation flow, so no browser E2E proof exists for import -> allocation -> bulk pick -> completion -> Woo update -> report.
+- The working tree contains active pre-existing uncommitted implementation. Findings describe the exact local snapshot at 2026-08-08T03:47:47Z, not a clean merge candidate or deployed release.
+- Inherited live-data findings such as DB-005/SYS-003 were not rechecked because this run deliberately avoided production. They remain open rather than being presented as current live measurements.
+- Report-preview risk is confirmed structurally, not by a 10,000-row browser measurement. Severity should be revalidated after QA-003.
+- Report-run/job/artifact retention was not promoted to a separate finding because retention duration is a product/audit decision and current production volume was unavailable. It should be specified before scale grows.
+- Vite's large-chunk warning and Starlette's TestClient/httpx deprecation warning remain. Neither failed a test or proves a user-visible slowdown.
+- Real print pagination/logo output, screen-reader focus behavior, and intermediate 1,024 px responsive behavior were not fully validated. Dedicated lint, type-check, axe, and performance tasks remain absent.
+
+=== 20. AUDIT SELF-IMPROVEMENT ===
+Comparison with prior review:
+- The previous performance follow-up reported green local suites but did not run PostgreSQL concurrency or browser E2E. This run supplied both and changed the release conclusion based on deterministic browser/release-gate evidence.
+- Findings were promoted only when reproduced or independently confirmed. Routes and invoice findings were independently identified by program and frontend reviewers; the lead reproduced Routes in the browser.
+- Passing unit counts were not treated as an E2E result. The report distinguishes 452 green backend tests and 121 final frontend tests from the two failed browser journeys.
+- Test-environment failures were separated: the PostgreSQL 17-client/16-server restore incompatibility is a local limitation; the hard-coded 0027 verifier is a deterministic product gate defect.
+- Pre-existing dirty-tree work was preserved. No application fix, commit, deployment, external write, or production access was performed.
+
+PROPOSED SKILL IMPROVEMENTS
+1. Require a disposable-environment preflight for browser chains: auth mode, seeded locations, fake external endpoints, and proof of zero external writes.
+2. Add an explicit “manual page sweep versus automated E2E” distinction so a broad render sweep never substitutes for workflow assertions.
+3. Require release audits to execute the exact CI commands, including dependency policy and backup verifier, rather than a nearby command.
+4. Extend the report validator to compare register IDs/status/severity totals with detailed finding blocks and append-only history.
+5. Keep the dirty-tree ownership checkpoint before and after long audits so active implementation is never mistaken for audit output.
+
+=== 21. NEXT AUDIT PLAN ===
+Recommended trigger: after FE-004/FE-005/FE-006, SYS-004, DB-001, QA-001/QA-002/QA-004, and DB-007 are repaired on a clean release-candidate commit.
+
+Required evidence for the next run:
+1. A clean immutable SHA and exact GitHub release-gate commands green: PostgreSQL migration cycle, current-head backup/restore, 452+ backend tests, clean Python/full npm audits, 121+ deterministic frontend tests, build, and Playwright.
+2. Two independent fresh-database browser journeys covering authenticated item import/opening balance -> allocation -> bulk pick -> completion -> fake Woo status/stock write -> immutable report, with no retries/order dependence.
+3. Routes renders loading/error/empty/populated states without console error and an application error boundary preserves navigation after injected failure.
+4. Bulk-edit target/value changes always invalidate preview and commit exactly the reviewed IDs.
+5. Open, partially picked, and completed print outputs display truthful status; bulk print remains fail-closed and one document per order.
+6. Inventory By Location seeds more than 1,300 rows, reports the real total, and reaches every row once through bounded pages. Remaining histories and receiving surfaces have explicit stable bounds.
+7. Cycle-count concurrent/retry PostgreSQL tests prove one mutation/audit result and no lost update or deadlock.
+8. `alembic check` is clean while both reporting indexes remain present; restore/readiness/current head all agree on 0037 or its successor.
+9. After release correctness is green, add QA-003 production-like latency/device evidence and resolve FE-003/BE-007 based on measured budgets.
+
+Next audit mode: Focused release-gate re-audit for current P1 blockers, followed by a full authority/writeback audit before enabling production stock writes.
+
+=== 22. COMPLETE APPEND-ONLY AUDIT RUN HISTORY ===
+--- AUDIT RUN: 2026-08-07T07:07:40Z ---
+Schema: 1.0
+Mode: Full Baseline
+Project/root: Pongo Inventory OS / /Users/kannankhosla/Desktop/Codex/pongoOS
+Branch/HEAD: codex/pongo-os-new-design-by-kannan-july-17 / d7dce4126d2ac4484f75fd3f6db380aea05e74a9
+Deployed state: Heroku v34 at d7dce412; health 200; anonymous protected APIs 401; readiness 503.
+Execution: Four independent specialist subagents (program, backend, frontend, database) plus a separate sequential lead QA pass and reconciliation. Read-only except this report and isolated temporary test state.
+Release recommendation: DO NOT RELEASE. Keep stock authority/writeback disabled; repair/enforce the gate and P1 mutation contracts before promotion.
+Health: RED for authoritative-production promotion; AMBER for contained internal evaluation.
+Finding totals: P0 0; P1 12; P2 9; P3 0; open 21; closed 0.
+
+Complete finding snapshot:
+- SYS-001 / P1 / DEFECT / CONFIRMED: Heroku deployed d7dce412 before the same SHA's failed release gate completed. Required outcome: deploy only from a fully green required gate.
+- DB-001 / P1 / DEFECT / CONFIRMED: restore verifier expects 20260731_0027 while restored/current head is 20260806_0035. Required outcome: derive/check current head and run later jobs.
+- QA-001 / P1 / GAP / CONFIRMED: two active Playwright journeys fail on missing auth setup and stale “Signed in user” selector. Required outcome: clean-database authenticated journeys pass without retry.
+- DB-002 / P1 / RISK / HIGH: cycle counts replace stock without the shared lock/idempotency contract. Required outcome: PostgreSQL interleavings lose no delta and duplicate keys return one result.
+- DB-003 / P1 / RISK / HIGH: manual allocation uses FIFO lock but does not explicitly share stock lock coverage/order. Required outcome: all allocation/stock races preserve non-negative reconciled totals without deadlock.
+- BE-001 / P1 / RISK / HIGH: Woo stock queue accepts caller payload, optional revalidation, and non-atomic send claim. Required outcome: server-derived current quantity and one owned send attempt.
+- BE-002 / P1 / DEFECT / CONFIRMED: generic item writes expose Woo-owned identity/snapshot fields. Required outcome: generic routes reject them; remap alone controls identity; duplicate mapping prevented after cleanup.
+- SYS-002 / P1 / DEFECT / CONFIRMED: completed-without-picking orders remain eligible for route candidates. Required outcome: list/preview/commit all reject that subtype.
+- BE-003 / P1 / DEFECT / CONFIRMED: completion ignores `queue_woo_status_update=false`. Required outcome: false creates no Woo action and response is truthful.
+- DB-004 / P1 / RISK / HIGH: migration 0001 runs current `Base.metadata.create_all`. Required outcome: deterministic baseline/reconciliation and zero unexplained catalog drift.
+- DB-005 / P1 / GAP / CONFIRMED: live readiness counts 223 active stock items without positive unit cost. Required outcome: verified audited cost backfill and count zero.
+- SYS-003 / P1 / GAP / CONFIRMED: alerts absent and authority/writeback deliberately disabled. Required outcome: alert tested, all prerequisite readiness green, controlled approved promotion last.
+- QA-002 / P2 / RISK / CONFIRMED: full npm audit fails on test-only jsdom/undici chain; production audit clean. Required outcome: compatible fixed lockfile and all frontend checks green.
+- BE-004 / P2 / RISK / HIGH: production can be configured with auth disabled and only readiness fails. Required outcome: production startup rejects fail-open configuration.
+- SYS-004 / P2 / RISK / HIGH: several order/history lists are unbounded while location inventory silently caps at 1,000. Required outcome: deterministic pagination and every row reachable.
+- BE-006 / P2 / RISK / HIGH: completion lacks complete operation idempotency across audit/queue effects. Required outcome: duplicate concurrent/sequential key produces one business action.
+- FE-001 / P2 / RISK / HIGH: frontend logout does not verify revocation and later 401s are not centralized. Required outcome: visible state matches server session, with one expiry flow.
+- FE-002 / P2 / DEFECT / CONFIRMED: import confirmation silently slices field changes to 50. Required outcome: truthful total and complete paged/exportable review.
+- DB-006 / P2 / RISK / HIGH: sellable equality and item/location reconciliation rely on application code. Required outcome: feasible DB constraints plus zero-drift reconciliation.
+- PM-001 / P2 / DECISION / NEW: all authenticated staff share mutation privileges. Required outcome: explicit accepted risk or minimal operator/admin split before broader staffing/writeback.
+- PM-002 / P2 / GAP / CONFIRMED: optimization controls call backend functions that return disabled/unchanged stops. Required outcome: hide/disable and explain until real capability exists.
+
+Validation snapshot:
+- Backend: 433 passed, 7 PostgreSQL-only skipped, 1 deprecation warning.
+- Frontend final HEAD: 105 passed; production build passed with two >500 kB chunk warnings.
+- Alembic: fresh upgrade to 0035 passed; SQLite downgrade probe failed and is not production rollback evidence.
+- Dependencies: pip-audit clean; npm production audit clean; full npm audit non-green (QA-002).
+- Browser: 2 active failed, 1 evidence spec skipped (QA-001).
+- Live: health/auth containment passed; readiness failed on 223 costs, alerts, authority, writeback.
+- CI/deploy: PostgreSQL migration cycle passed; backup/restore verifier failed despite correct restored head/no missing tables; deployment nevertheless succeeded.
+
+Coverage/limitations snapshot:
+No authenticated production/customer-data access, live writes, Woo changes, production restore, catalog dump, load/penetration test, or assistive-technology session. PostgreSQL concurrency evidence requires the next green CI run. Sensitive tool output was redacted.
+
+Improvement order snapshot:
+Contain writeback -> repair backup verifier and mandatory gate -> repair stock/order/writeback contracts -> reconcile schema and costs/alerts -> bounded reliability/product decisions -> controlled authority promotion.
+
+Proposed skill improvements snapshot:
+Standard deployed-SHA drift check; distinguish present CI from enforced CI; transparent sequential-role fallback; live-output redaction checklist; shared stock invariant checklist; semantic validator for register/detail/count consistency.
+
+End of run 2026-08-07T07:07:40Z.
+
+--- AUDIT RUN: 2026-08-08T03:39:54Z ---
+Schema: 1.0
+Mode: Focused Follow-up - Performance and scalability
+Project/root: Pongo Inventory OS / /Users/kannankhosla/Desktop/Codex/pongoOS
+Branch/HEAD: codex/pongo-os-new-design-by-kannan-july-17 / 100970f18086b998925ba000ab41098584bc7baf
+Deployed state: Not inspected or changed. This run covers a dirty local snapshot with active implementation owned by another task.
+Execution: Five sequential read-only program/backend/frontend/QA/database passes by the lead; no subagents. Application code, git state, production, and WooCommerce were not mutated.
+Release recommendation: The baseline DO NOT RELEASE posture remains until its P1 findings are separately revalidated/resolved. No new P0/P1 performance blocker was found.
+Performance health: AMBER. Recent optimizations are present and regression checks pass; production PostgreSQL and warehouse-device performance remain unproven.
+Finding totals: P0 0; P1 12; P2 11; P3 0; open 23; closed 0. Two new P2 findings; SYS-004 moved to IN_PROGRESS.
+
+Complete finding snapshot:
+- SYS-001 / P1 / DEFECT / CONFIRMED: deployment bypasses the failed release gate. Retained from baseline; not revalidated in this focused run.
+- DB-001 / P1 / DEFECT / CONFIRMED: backup verifier is pinned to an old revision. Retained from baseline; not revalidated.
+- QA-001 / P1 / GAP / CONFIRMED: active browser release journeys had stale authentication contracts. Retained from baseline; full external-chain suite not rerun.
+- DB-002 / P1 / RISK / HIGH: cycle counts lacked the shared lock/idempotency contract. Retained from baseline; not revalidated.
+- DB-003 / P1 / RISK / HIGH: manual allocation could mutate outside the complete shared stock lock. Retained from baseline; current active code changes require a later clean-tree review.
+- BE-001 / P1 / RISK / HIGH: Woo stock queue trusted caller quantity and sent non-atomically. Retained from baseline; not revalidated.
+- BE-002 / P1 / DEFECT / CONFIRMED: generic item writes exposed Woo-owned identity fields. Retained from baseline; not revalidated.
+- SYS-002 / P1 / DEFECT / CONFIRMED: completed-without-picking orders remained route candidates. Retained from baseline; not revalidated.
+- BE-003 / P1 / DEFECT / CONFIRMED: completion ignored the Woo-status suppression flag. Retained from baseline; not revalidated.
+- DB-004 / P1 / RISK / HIGH: initial migration depends on current ORM metadata. Retained from baseline; fresh current SQLite upgrade passed but does not resolve historical determinism.
+- DB-005 / P1 / GAP / CONFIRMED: baseline live readiness reported 223 active stock items without positive cost. Production data not queried in this run.
+- SYS-003 / P1 / GAP / CONFIRMED: baseline production was not ready for stock-authority promotion. Production not queried or changed in this run.
+- QA-002 / P2 / RISK / CONFIRMED: baseline full frontend dependency audit was non-green. Not rerun in this performance scope.
+- BE-004 / P2 / RISK / HIGH: production authentication could be configured fail-open. Retained from baseline; not revalidated.
+- SYS-004 / P2 / RISK / IN_PROGRESS / HIGH: open/pick queues now have stable server pagination and a 21-row completeness test; allocation/pick/fulfillment history and inventory-location continuation remain.
+- BE-006 / P2 / RISK / HIGH: completion retries could duplicate side effects. Retained from baseline; not revalidated.
+- FE-001 / P2 / RISK / HIGH: logout/session expiry could leave UI/server truth inconsistent. Retained from baseline; not revalidated.
+- FE-002 / P2 / DEFECT / CONFIRMED: baseline import confirmation silently showed only 50 changes. Current active changes exist but were not assigned a resolved status in a dirty snapshot.
+- DB-006 / P2 / RISK / HIGH: sellable stock equality relied on application enforcement. Retained from baseline; not revalidated.
+- PM-001 / P2 / DECISION / NEW: all authenticated staff share mutation privileges. Product decision remains open.
+- PM-002 / P2 / GAP / CONFIRMED: route optimization UI exposed an unavailable capability. Retained from baseline; not revalidated.
+- FE-003 / P2 / RISK / NEW / HIGH: report-run responses contain the full payload and the browser maps every row into one table. Required outcome: bounded paged preview with full immutable exports preserved.
+- QA-003 / P2 / GAP / NEW / CONFIRMED: no repeatable seeded PostgreSQL/real-device performance baseline or latency gate. Required outcome: p50/p95/query/response/browser budgets for critical journeys before further optimization.
+
+Optimization integrity snapshot:
+- Versioned metric caching, stale-while-refresh behavior, advisory-lock stampede control, worker warming, and broad mutation invalidation are present.
+- Report jobs are asynchronous and deduplicated; one worker prioritizes order sync, stock sync, report, history, then metric warming.
+- Item list/search uses server pagination; facets can be omitted from repeated page requests; stale requests are aborted.
+- Open and pick order queues use stable server pagination; inventory summary is grouped in one SQL aggregation.
+- Catalog matching in item import is set-based. Persistence and audit rows remain per-row and synchronous by design.
+- Report module/charts are lazy; API GET deduplication and per-view abort behavior are present; static assets use compression/cache headers.
+
+Validation snapshot:
+- Backend focused performance selection: 92 passed in 26.18 seconds.
+- Backend complete: 444 passed, 8 PostgreSQL-only skipped, 1 deprecation warning in 60.16 seconds.
+- Frontend: 121 passed in 8.17 seconds.
+- Production build: passed in 2.17 seconds; main 643.43 kB raw/164.42 kB gzip and lazy charts 574.35/194.44 triggered the existing advisory.
+- Alembic: fresh isolated SQLite upgrade passed to 20260807_0037; temporary DB 2,088,960 bytes.
+- Near-limit CSV: 5,000 rows/9,045,017 bytes; preview 2.089 seconds and 5,014 SQL executions; commit 13.436 seconds and 35,011 SQL executions; measured peaks about 111 MB/102 MB.
+- `git diff --check`: passed. Application dirty-tree scope remained unchanged by the audit.
+
+Coverage/limitations snapshot:
+No production PostgreSQL/load/query-plan/lock/latency evidence; no authenticated live UI, real warehouse mobile device, production data, external Woo chain, deployment, or live mutation. Timings are local SQLite evidence, not Heroku performance claims. Report retention requires a product policy before cleanup can be specified.
+
+Improvement order snapshot:
+Seeded PostgreSQL and device budgets -> one-query item completeness -> bounded report preview and remaining list pagination -> measured import batching if needed -> only then consider cache partitioning, worker separation, or additional bundle splitting.
+
+Proposed skill improvements snapshot:
+Separate server/SQL/network/browser/device performance dimensions; require repeated samples/variance; standard cache review; dirty-tree ownership checkpoint; semantic register/detail/count validation.
+
+End of run 2026-08-08T03:39:54Z.
+
+--- AUDIT RUN: 2026-08-08T03:47:47Z ---
+Schema: 1.0
+Mode: Full pre-deployment mock run and release-candidate audit
+Project/root: Pongo Inventory OS / /Users/kannankhosla/Desktop/Codex/pongoOS
+Branch/HEAD: codex/pongo-os-new-design-by-kannan-july-17 / 100970f18086b998925ba000ab41098584bc7baf
+Execution: Lead full isolated test/browser matrix plus independent program, backend, frontend, and database reviewers. Disposable PostgreSQL/fake Woo/auth data only; no production access, external write, application edit, commit, or deployment.
+Release recommendation: NO-GO. Deterministic user-visible failures and a non-green release chain block deployment.
+Health: RED for release; strong automated backend foundation but incomplete browser/document/list correctness.
+Finding totals: P0 0; P1 17; P2 14; P3 0; open 31; closed 0.
+
+Complete current finding snapshot:
+- SYS-001 / P1 / DEFECT / CONFIRMED: deployment can bypass a failed release gate.
+- DB-001 / P1 / DEFECT / CONFIRMED: restore verifier expects 0027 while current head is 0037.
+- QA-001 / P1 / GAP / CONFIRMED: both active Playwright journeys fail from clean state; auth/selector/location setup is stale.
+- DB-002 / P1 / RISK / CONFIRMED: cycle counts lack shared stock locking and idempotency.
+- DB-003 / P1 / RISK / CONFIRMED: manual allocation shared-lock contract remains open from baseline.
+- BE-001 / P1 / RISK / CONFIRMED: Woo stock queue quantity/send ownership remains open from baseline.
+- BE-002 / P1 / DEFECT / CONFIRMED: generic item writes expose Woo-owned identity fields.
+- SYS-002 / P1 / DEFECT / CONFIRMED: completed-without-picking orders can remain route candidates.
+- BE-003 / P1 / DEFECT / CONFIRMED: order completion ignores status-write suppression.
+- DB-004 / P1 / RISK / CONFIRMED: initial migration depends on current ORM metadata.
+- DB-005 / P1 / GAP / CONFIRMED: inherited live cost gaps; not remeasured in this isolated run.
+- SYS-003 / P1 / GAP / CONFIRMED: inherited authority/alert readiness remains open; not remeasured live.
+- QA-002 / P1 / RISK / CONFIRMED: full npm audit required by CI fails on nanoid/undici development advisories.
+- SYS-004 / P1 / DEFECT / CONFIRMED: location inventory silently truncates after 1,000; other operational lists remain unbounded.
+- FE-004 / P1 / DEFECT / CONFIRMED: Routes always throws an unhandled ReferenceError and blanks the workspace.
+- FE-005 / P1 / DEFECT / CONFIRMED: bulk-edit commit can target a different selection than preview.
+- FE-006 / P1 / DEFECT / CONFIRMED: invoices printed from open orders falsely state Completed.
+- BE-004 / P2 / RISK / CONFIRMED: production auth can be configured fail-open.
+- BE-006 / P2 / RISK / CONFIRMED: completion retry idempotency remains incomplete.
+- FE-001 / P2 / RISK / CONFIRMED: logout/mid-session expiry handling remains incomplete.
+- FE-002 / P2 / DEFECT / CONFIRMED: import confirmation silently limits displayed changes to 50.
+- DB-006 / P2 / RISK / CONFIRMED: sellable equality remains application-only.
+- PM-001 / P2 / DECISION / NEW: equal staff mutation privileges require an explicit decision before broader use.
+- PM-002 / P2 / GAP / CONFIRMED: route optimization controls expose a disabled capability.
+- FE-003 / P2 / RISK / NEW: large report preview payload/DOM remains unbounded.
+- QA-003 / P2 / GAP / NEW: no production-like performance baseline/latency gate.
+- BE-007 / P2 / RISK / CONFIRMED: Woo reconciliation scans all operational orders and retains unbounded run history.
+- BE-008 / P2 / RISK / CONFIRMED: login path permits timing enumeration and targeted lockout behavior.
+- QA-004 / P2 / RISK / CONFIRMED: Report Intelligence frontend test is nondeterministic.
+- DB-007 / P2 / GAP / CONFIRMED: Alembic drift check proposes removing two intentional reporting indexes.
+- PM-003 / P2 / GAP / CONFIRMED: Edit Order is a visible read-only no-op.
+
+Validation snapshot:
+- Backend default: 444 passed, 8 PostgreSQL skips; PostgreSQL-enabled: 452 passed, no skips; 1 deprecation warning.
+- Frontend final: 121 passed; production build passed; one report test reproduced nondeterministically in prior/repeated runs.
+- PostgreSQL: upgrade/downgrade/re-upgrade through 0037 passed; all concurrency tests passed; `alembic check` failed on two unmanaged raw indexes.
+- Dependencies: Python and runtime npm clean; full npm audit failed on two high development advisories.
+- Browser: manual authenticated sweep rendered every principal page except Routes; Routes crashed. Playwright: 2 active failed, 1 skipped.
+- Recovery: disposable backup created; local PG client/server mismatch limited restore; source/workflow prove stale 0027 verifier rejects current 0037.
+- Cleanup: isolated frontend/backend/fake Woo services and disposable PostgreSQL container stopped/removed; no external writes observed.
+
+Limitations snapshot:
+No production/customer data, Heroku telemetry, live Woo, real printer/scanner/device, production restore, external email/Sheets, load/soak/penetration, or full assistive-technology test. Pre-existing dirty application changes were preserved.
+
+Improvement order snapshot:
+Fix Routes/bulk-preview/invoice/location correctness -> repair backup/Playwright/npm gate and make it mandatory -> repair cycle count/inherited mutation contracts -> re-run exact clean PostgreSQL/browser release chain -> measure performance -> controlled authority/writeback promotion only after explicit approval.
+
+End of run 2026-08-08T03:47:47Z.
+
+--- AUDIT RUN: 2026-08-08T20:53:34Z ---
+Schema: 1.0
+Mode: Targeted release-integrity and bounded-data remediation with full isolated release revalidation
+Project/root: Pongo Inventory OS / /Users/kannankhosla/Desktop/Codex/pongoOS
+Branch/HEAD: codex/pongo-os-new-design-by-kannan-july-17 / 100970f18086b998925ba000ab41098584bc7baf
+Execution: Multi-reviewer implementation and verification in the existing dirty worktree. No commit, push, deployment, production/customer database access, or live WooCommerce operation.
+Result: Requested remediation complete; local release gate green. Overall product release recommendation remains DO NOT DEPLOY because unrelated inherited P1 findings remain open.
+
+Closed findings:
+- DB-001: backup verification discovers the single current head, rejects extra restored revisions, and requires every current ORM table.
+- QA-001: clean-database authenticated Playwright workflows pass with retries disabled.
+- QA-002: npm dependency audit is clean after compatible dependency updates.
+- SYS-004: growing operational/history/Woo/import/report/route/allocation surfaces are server-paged; every tested page remains reachable.
+- FE-002: import confirmation/history no longer hides changes beyond the old display cap.
+- FE-003: report previews are paged without truncating immutable exports or their hashes.
+- FE-004: Routes no longer crashes from out-of-scope loading/error variables.
+- BE-007: Woo history/error retention is bounded; order/dashboard/Insights computations no longer require full ORM history hydration.
+- QA-004: the formerly flaky report test passed ten consecutive focused runs and the complete suite.
+- DB-007: migration-owned index drift is suppressed narrowly and exact PostgreSQL definitions are regression-tested.
+
+Implementation snapshot:
+- Backup/recovery: expected revision comes from the migration graph; restore requires exactly that revision and all 52 ORM application tables.
+- CI: Ubuntu 24.04 and PostgreSQL client 16 are pinned; migrations include `alembic check`; E2E starts from a reset schema; checkout credentials are not persisted; workflow permissions are read-only; service logs upload on failure.
+- Browser tests: deterministic staff registration/authentication and isolated location setup; one worker; zero retries.
+- Woo data: sync runs, errors, remap mappings/candidates, writeback queue, stock jobs, and fetch histories use exact SQL totals and bounded pages; remap error completeness is not capped at 200.
+- Operational data: receipts, movements, completed orders, allocations, picks, fulfillments, routes/candidates, transfers, adjustments, cycle counts, inventory-by-location, order history, and item selectors use bounded server contracts.
+- Allocation Items: page-sized SQL group summaries with a separate paged affected-order drill-down; FIFO allocation still evaluates the complete eligible set server-side.
+- Order queues: PostgreSQL filtering/counting and stable pages; raw Woo payload blobs are deferred while required shipping lines are selected explicitly.
+- Dashboards/Insights: exact SQL aggregates replace full order/item graph scans; interactive detail is capped at 100 rows and paged; comparison periods are independently aggregated; full CSV exports remain full.
+- Reporting/imports: report rows and import changes are server-paged; full evidence-hashed exports remain immutable and complete.
+- Frontend request behavior: obsolete requests are cancelled/deduplicated, active Woo/history pages are preserved during polling/mutations, and order refresh cadence is two minutes.
+
+Validation snapshot:
+- PostgreSQL 16 migrations: clean upgrade -> downgrade base -> re-upgrade through 20260807_0037.
+- Alembic drift: `No new upgrade operations detected`.
+- Backup/restore: custom-format backup restored and verified at 20260807_0037 with the complete expected ORM schema.
+- Backend: 501 passed with PostgreSQL enabled; one non-failing Starlette/httpx deprecation warning.
+- PostgreSQL Insights smoke: all 13 dashboard query builders executed successfully against the isolated E2E dataset.
+- Frontend: 132 passed.
+- Report flake probe: 10 consecutive focused passes.
+- Production frontend build: passed. Vite retained a non-failing advisory for two chunks above 500 kB.
+- Dependencies: npm audit found 0 vulnerabilities; pip-audit found no known vulnerabilities.
+- Playwright clean-database chain: 2 active passed with zero retries; 1 evidence-capture test intentionally skipped. Covered guided item import and import -> opening balance -> automatic allocation -> bulk pick -> completion -> fake Woo stock/status writes -> report.
+- `git diff --check`: passed.
+
+Limitations and remaining risk:
+- This was isolated test evidence, not production performance evidence. No Heroku telemetry, live Woo contract, customer data, real printer/scanner/device, load/soak/penetration, email, or Google Sheets delivery was exercised.
+- The Vite chunk-size advisory and Starlette/httpx deprecation warning are non-blocking maintenance items.
+- Existing P1 findings outside this requested sequence remain open in the register, including release/deployment enforcement, cycle-count/manual-allocation mutation contracts, Woo write ownership/suppression, initial-migration determinism, live data/readiness, bulk-edit preview integrity, and invoice truthfulness.
+
+End of run 2026-08-08T20:53:34Z.

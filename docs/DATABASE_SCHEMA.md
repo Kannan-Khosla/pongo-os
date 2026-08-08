@@ -1286,11 +1286,13 @@ Relationships:
 - Has many `import_errors`.
 
 API usage:
-- `GET /api/import-jobs` lists jobs.
+- `GET /api/import-jobs` lists jobs. Legacy `limit` requests retain the array
+  response; `page`/`page_size` opt into an exact-total paginated envelope.
 - `GET /api/import-jobs/{id}` returns a job and row-level errors.
 - `GET /api/import-jobs/{id}/failed-rows` downloads failed rows as CSV.
 - `GET /api/import-jobs/{id}/source-file` downloads the captured source.
-- `GET /api/import-jobs/{id}/changes` returns field-level metadata changes.
+- `GET /api/import-jobs/{id}/changes` returns exact-total, server-paged
+  field-level metadata changes (maximum page size `100`).
 - `POST /api/import-jobs/{id}/rollback` safely restores eligible metadata.
 
 Index suggestions:
@@ -1413,8 +1415,14 @@ Fields:
 - sku
 - barcode
 - error_message
+- fingerprint (SHA-256 of normalized error identity fields)
 - raw_payload
 - created_at
+
+Constraints and indexes:
+- Unique `(sync_run_id, fingerprint)` prevents duplicate error rows within one
+  sync run, including concurrent producers.
+- `created_at` supports bounded retention cleanup.
 
 Relationships:
 - Belongs to `woocommerce_sync_runs`.
@@ -1422,6 +1430,10 @@ Relationships:
 Safety:
 - Raw payloads must not contain credentials. The sync service stores normalized
   preview row details, not request URLs or secrets.
+- Identical errors are stored once within each sync run. Separate runs retain
+  separate audit details. Error detail older than
+  `WOOCOMMERCE_SYNC_ERROR_RETENTION_DAYS` is removed when the next error is
+  stored; sync-run summaries remain available.
 
 ## woocommerce_webhook_deliveries
 

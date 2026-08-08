@@ -1,8 +1,8 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
@@ -62,9 +62,11 @@ def list_receipts(
     date_from: date | None = None,
     date_to: date | None = None,
     reference_number: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> ReceiptListResponse:
-    statement = select(Receipt).options(selectinload(Receipt.items)).order_by(Receipt.created_at.desc(), Receipt.id.desc())
+    statement = select(Receipt)
     if receipt_type:
         statement = statement.where(Receipt.receipt_type == receipt_type)
     if status:
@@ -77,8 +79,28 @@ def list_receipts(
         statement = statement.where(Receipt.received_date <= date_to)
     if reference_number:
         statement = statement.where(Receipt.reference_number == reference_number)
-    receipts = list(db.scalars(statement).all())
-    return ReceiptListResponse(receipts=[receipt_to_read(receipt) for receipt in receipts], total=len(receipts))
+    total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    total_pages = (total + page_size - 1) // page_size
+    effective_page = min(page, max(total_pages, 1))
+    receipts = list(
+        db.scalars(
+            statement
+            .options(selectinload(Receipt.items))
+            .order_by(Receipt.created_at.desc(), Receipt.id.desc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return ReceiptListResponse(
+        receipts=[receipt_to_read(receipt) for receipt in receipts],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(receipts),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.get("/{receipt_id}", response_model=ReceiptDetail)

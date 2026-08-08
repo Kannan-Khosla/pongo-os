@@ -66,6 +66,9 @@ Use this checklist before calling a Pongo Inventory OS frontend pass complete.
 - Orders sidebar subpage links update the route and active state immediately on
   one click. Each subpage loads only its own required data, and stale Open
   Orders responses must not overwrite the Pick Orders queue.
+- Allocate paginates Orders by exception line and Items by complete item group.
+  Item totals and affected-order drill-downs must never be split by a line-page
+  boundary; its export always contains the complete applied filter.
 - Open Orders uses the Zenventory-style Open Customer Orders composition:
   dedicated order/customer/item/warehouse filters, Search/Clear, record and
   page-size rails, a dark Filters/Actions band, a table rendered directly in
@@ -79,7 +82,7 @@ Use this checklist before calling a Pongo Inventory OS frontend pass complete.
   cursor without showing stale notifications. Later polling uses
   `after_id=next_after_id`, drains while `has_more=true`, and never skips a
   paginated event by jumping directly to `latest_event_id`.
-- The event feed is polled globally every 2 seconds while the document is
+- The event feed is polled globally every 15 seconds while the document is
   visible and on focus/visibility changes. A later newly created order shows
   one internal staff notice; replayed deliveries and repeated feed reads must
   not show it again.

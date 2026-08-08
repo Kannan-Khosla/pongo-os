@@ -1,6 +1,10 @@
 import csv
+from datetime import datetime, timezone
 from io import StringIO
 
+from sqlalchemy.orm import Session
+
+from app.models.orders import Order
 from tests.test_fulfillments_api import picked_order
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
@@ -63,6 +67,36 @@ def test_route_candidates_include_fulfilled_and_partial_with_warning(client, mon
     assert partial["id"] in ids
     partial_row = [row for row in candidates if row["order_id"] == partial["id"]][0]
     assert partial_row["route_warning"] == "Order is partially fulfilled."
+
+
+def test_route_candidates_filter_and_page_in_postgres_order(client, monkeypatch):
+    first = fulfilled_route_order(client, monkeypatch, sku="ROUTE-PAGE-1", barcode="ROUTE-PAGE-BAR-1", woo_id=911, product_id=511)
+    second = fulfilled_route_order(client, monkeypatch, sku="ROUTE-PAGE-2", barcode="ROUTE-PAGE-BAR-2", woo_id=912, product_id=512)
+    outside_date = fulfilled_route_order(client, monkeypatch, sku="ROUTE-PAGE-3", barcode="ROUTE-PAGE-BAR-3", woo_id=913, product_id=513)
+    with Session(client.test_engine) as db:
+        db.get(Order, first["id"]).date_created = datetime(2026, 7, 7, 10, tzinfo=timezone.utc)
+        db.get(Order, second["id"]).date_created = datetime(2026, 7, 7, 11, tzinfo=timezone.utc)
+        db.get(Order, outside_date["id"]).date_created = datetime(2026, 7, 8, 9, tzinfo=timezone.utc)
+        db.commit()
+
+    first_page = client.get("/api/routes/candidates", params={"route_date": "2026-07-07", "page": 1, "page_size": 1})
+    second_page = client.get("/api/routes/candidates", params={"route_date": "2026-07-07", "page": 2, "page_size": 1})
+    beyond_last_page = client.get("/api/routes/candidates", params={"route_date": "2026-07-07", "page": 99, "page_size": 1})
+
+    assert first_page.status_code == second_page.status_code == beyond_last_page.status_code == 200
+    first_body = first_page.json()
+    assert first_body["total_candidates"] == 2
+    assert first_body["page"] == 1
+    assert first_body["page_size"] == 1
+    assert first_body["total_pages"] == 2
+    assert first_body["returned_count"] == 1
+    assert first_body["has_previous"] is False
+    assert first_body["has_next"] is True
+    assert first_body["candidates"][0]["order_id"] == first["id"]
+    assert second_page.json()["candidates"][0]["order_id"] == second["id"]
+    assert beyond_last_page.json()["page"] == 2
+    assert beyond_last_page.json()["candidates"][0]["order_id"] == second["id"]
+    assert client.get("/api/routes/candidates", params={"page_size": 101}).status_code == 422
 
 
 def test_route_candidates_exclude_ineligible_and_active_routed_orders(client, monkeypatch):

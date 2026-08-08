@@ -240,12 +240,15 @@ def create_report_run(
     report_key: str,
     raw_filters: dict[str, Any] | None,
     generated_by: str | None = "reporting-ui",
+    *,
+    row_page: int = 1,
+    row_page_size: int = 100,
 ) -> dict[str, Any]:
     run = create_report_run_record(db, report_key, raw_filters, generated_by)
     persist_report_artifacts(run)
     db.commit()
     db.refresh(run)
-    return report_run_to_dict(run)
+    return report_run_to_dict(run, row_page=row_page, row_page_size=row_page_size)
 
 
 def create_report_run_record(
@@ -293,15 +296,43 @@ def get_report_run(db: Session, run_id: str) -> ReportRun | None:
     return run
 
 
-def report_run_to_dict(run: ReportRun) -> dict[str, Any]:
+def report_run_to_dict(
+    run: ReportRun,
+    *,
+    row_page: int = 1,
+    row_page_size: int = 100,
+) -> dict[str, Any]:
+    """Return a bounded preview without changing the immutable report evidence.
+
+    The stored payload, evidence hash, and persisted CSV/PDF artifacts always
+    contain the complete report. Pagination is applied only to the response
+    copy returned to interactive clients.
+    """
     verify_report_run(run)
+    payload = dict(run.payload or {})
+    all_rows = payload.get("rows") or []
+    total = len(all_rows)
+    total_pages = (total + row_page_size - 1) // row_page_size if total else 0
+    effective_page = min(row_page, max(total_pages, 1))
+    start = (effective_page - 1) * row_page_size
+    rows = all_rows[start : start + row_page_size]
+    payload["rows"] = rows
     return {
         "run_id": run.id,
         "generated_at": run.generated_at.isoformat() if run.generated_at else None,
         "generated_by": run.generated_by,
         "data_hash": run.data_hash,
         "row_count": run.row_count,
-        **(run.payload or {}),
+        **payload,
+        "row_pagination": {
+            "page": effective_page,
+            "page_size": row_page_size,
+            "total": total,
+            "total_pages": total_pages,
+            "returned_count": len(rows),
+            "has_previous": effective_page > 1,
+            "has_next": effective_page < total_pages,
+        },
     }
 
 

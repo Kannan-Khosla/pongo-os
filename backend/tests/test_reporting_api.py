@@ -1,5 +1,7 @@
+import csv
 from datetime import datetime, timezone
 from decimal import Decimal
+from io import StringIO
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
@@ -228,6 +230,95 @@ def test_inventory_cost_run_is_frozen_and_all_exports_share_its_hash(client):
     assert frozen.json()["data_hash"] == body["data_hash"]
     assert csv_export.status_code == 200
     assert body["data_hash"] in csv_export.text
+    assert pdf_export.status_code == 200
+    assert pdf_export.content.startswith(b"%PDF")
+
+
+def test_large_report_preview_is_paginated_while_frozen_payload_and_exports_remain_complete(client):
+    override, db = database_session()
+    try:
+        db.add_all(
+            [
+                InventoryItem(
+                    sku=f"PREVIEW-{index:03d}",
+                    description=f"Preview item {index:03d}",
+                    brand="Preview Pagination",
+                    category="Preview Test",
+                    unit_cost=Decimal("1.00"),
+                    in_stock=Decimal("0"),
+                    allocated=Decimal("0"),
+                    sellable=Decimal("0"),
+                    on_order=Decimal("0"),
+                    active=True,
+                    non_inventory=False,
+                )
+                for index in range(1, 126)
+            ]
+        )
+        db.commit()
+    finally:
+        override.close()
+
+    filters = {"brand": "Preview Pagination"}
+    created = client.post(
+        "/api/reports/runs/inventory-cost-sku",
+        params={"row_page": 1, "row_page_size": 40},
+        json={"filters": filters},
+    )
+
+    assert created.status_code == 200, created.text
+    first = created.json()
+    assert first["row_count"] == 125
+    assert len(first["rows"]) == 40
+    assert first["row_pagination"] == {
+        "page": 1,
+        "page_size": 40,
+        "total": 125,
+        "total_pages": 4,
+        "returned_count": 40,
+        "has_previous": False,
+        "has_next": True,
+    }
+
+    final_page = client.get(
+        f"/api/reports/runs/{first['run_id']}",
+        params={"row_page": 4, "row_page_size": 40},
+    )
+    latest_page = client.post(
+        "/api/reports/jobs/latest/inventory-cost-sku",
+        params={"row_page": 3, "row_page_size": 50},
+        json={"filters": filters},
+    )
+    oversized = client.get(
+        f"/api/reports/runs/{first['run_id']}",
+        params={"row_page_size": 101},
+    )
+
+    assert final_page.status_code == 200
+    assert final_page.json()["data_hash"] == first["data_hash"]
+    assert final_page.json()["row_pagination"]["returned_count"] == 5
+    assert final_page.json()["rows"][-1]["sku"] == "PREVIEW-125"
+    assert latest_page.status_code == 200
+    assert latest_page.json()["row_pagination"]["page"] == 3
+    assert latest_page.json()["row_pagination"]["returned_count"] == 25
+    assert latest_page.json()["rows"][0]["sku"] == "PREVIEW-101"
+    assert oversized.status_code == 422
+
+    override, db = database_session()
+    try:
+        stored = db.get(ReportRun, first["run_id"])
+        assert len(stored.payload["rows"]) == 125
+        assert stored.csv_artifact is not None
+        assert stored.pdf_artifact is not None
+    finally:
+        override.close()
+
+    csv_export = client.get(f"/api/reports/runs/{first['run_id']}/csv")
+    pdf_export = client.get(f"/api/reports/runs/{first['run_id']}/pdf")
+    exported_rows = list(csv.DictReader(StringIO(csv_export.content.decode("utf-8-sig"))))
+    assert len(exported_rows) == 125
+    assert exported_rows[0]["sku"] == "PREVIEW-001"
+    assert exported_rows[-1]["sku"] == "PREVIEW-125"
     assert pdf_export.status_code == 200
     assert pdf_export.content.startswith(b"%PDF")
 

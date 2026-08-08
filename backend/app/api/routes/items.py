@@ -198,6 +198,11 @@ def search_items_endpoint(
     return search_items(db, q=q, sku=sku, barcode=barcode, brand=brand, category=category, limit=limit)
 
 
+@router.get("/facets")
+def list_item_facets(db: Session = Depends(get_db)) -> dict[str, list[str]]:
+    return get_item_facets(db)
+
+
 @router.post("/bulk/preview")
 def preview_items_bulk_update(payload: InventoryItemBulkUpdateRequest, db: Session = Depends(get_db)) -> dict:
     return preview_bulk_item_update(db, payload.item_ids, payload.updates)
@@ -219,6 +224,7 @@ def list_items(
     brand: str | None = None,
     active: bool | None = None,
     include_non_inventory: bool = True,
+    include_facets: bool = True,
     woo_sync_status: str | None = None,
     woo_product_id: int | None = None,
     woo_variation_id: int | None = None,
@@ -275,7 +281,7 @@ def list_items(
         returned_count=len(items),
         has_previous=effective_page > 1,
         has_next=effective_page < total_pages,
-        facets=get_item_facets(db),
+        facets=get_item_facets(db) if include_facets else {"categories": [], "brands": []},
     )
 
 
@@ -740,6 +746,10 @@ def item_location_to_read(row: InventoryItemLocation, item: InventoryItem | None
         sku=item.sku if item else None,
         barcode=item.barcode if item else None,
         description=item.description if item else None,
+        brand=item.brand if item else None,
+        category=item.category if item else None,
+        unit_cost=float(item.unit_cost) if item and item.unit_cost is not None else None,
+        item_active=item.active if item else None,
         warehouse=row.warehouse,
         inventory_location=row.inventory_location,
         location_code=row.location_code,

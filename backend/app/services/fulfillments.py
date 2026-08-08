@@ -432,7 +432,71 @@ def list_fulfillments(
     date_to: datetime | None = None,
     created_by: str | None = None,
 ):
-    statement = select(Fulfillment).options(selectinload(Fulfillment.lines)).order_by(Fulfillment.created_at.desc(), Fulfillment.id.desc())
+    statement = build_fulfillments_statement(
+        status=status,
+        fulfillment_type=fulfillment_type,
+        order_id=order_id,
+        woo_order_id=woo_order_id,
+        woo_order_number=woo_order_number,
+        date_from=date_from,
+        date_to=date_to,
+        created_by=created_by,
+    )
+    return list(db.scalars(statement.options(selectinload(Fulfillment.lines)).order_by(Fulfillment.created_at.desc(), Fulfillment.id.desc())).all())
+
+
+def list_fulfillments_page(
+    db: Session,
+    *,
+    page: int,
+    page_size: int,
+    clamp_page: bool = True,
+    status: str | None = None,
+    fulfillment_type: str | None = None,
+    order_id: int | None = None,
+    woo_order_id: int | None = None,
+    woo_order_number: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    created_by: str | None = None,
+) -> tuple[list[Fulfillment], int, int, int]:
+    statement = build_fulfillments_statement(
+        status=status,
+        fulfillment_type=fulfillment_type,
+        order_id=order_id,
+        woo_order_id=woo_order_id,
+        woo_order_number=woo_order_number,
+        date_from=date_from,
+        date_to=date_to,
+        created_by=created_by,
+    )
+    total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    total_pages = (total + page_size - 1) // page_size
+    effective_page = min(page, max(total_pages, 1)) if clamp_page else page
+    rows = list(
+        db.scalars(
+            statement
+            .options(selectinload(Fulfillment.lines))
+            .order_by(Fulfillment.created_at.desc(), Fulfillment.id.desc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return rows, total, effective_page, total_pages
+
+
+def build_fulfillments_statement(
+    *,
+    status: str | None = None,
+    fulfillment_type: str | None = None,
+    order_id: int | None = None,
+    woo_order_id: int | None = None,
+    woo_order_number: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    created_by: str | None = None,
+):
+    statement = select(Fulfillment)
     if status:
         statement = statement.where(Fulfillment.status == status)
     if fulfillment_type:
@@ -449,7 +513,7 @@ def list_fulfillments(
         statement = statement.where(Fulfillment.created_at <= date_to)
     if created_by:
         statement = statement.where(Fulfillment.created_by == created_by)
-    return list(db.scalars(statement).all())
+    return statement
 
 
 def get_fulfillment_detail(db: Session, fulfillment_id: int) -> FulfillmentDetail | None:

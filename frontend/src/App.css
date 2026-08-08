@@ -4607,6 +4607,20 @@ tbody tr:nth-child(even) .sticky-col {
   font-weight: 800;
 }
 
+.scanner-input-row > .operational-item-lookup {
+  flex: 1 1 280px;
+}
+
+.operational-item-lookup .keyword-search-input input {
+  width: 100%;
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.receiving-line-table .operational-item-lookup {
+  min-width: 210px;
+}
+
 .scanner-page {
   min-width: 0;
   overflow: hidden;

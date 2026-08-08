@@ -139,6 +139,12 @@ class AllocationDetail(AllocationRead):
 class AllocationListResponse(BaseModel):
     allocations: list[AllocationRead]
     total: int
+    page: int = 1
+    page_size: int = 0
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class AllocationExceptionLineRead(BaseModel):
@@ -163,13 +169,43 @@ class AllocationExceptionLineRead(BaseModel):
     exception_reason: str
 
 
+class AllocationExceptionItemGroupRead(BaseModel):
+    key: str
+    item_id: int | None = None
+    unmatched_line_id: int | None = None
+    representative_order_line_id: int
+    sku: str | None = None
+    barcode: str | None = None
+    description: str | None = None
+    warehouse: str | None = None
+    inventory_location: str | None = None
+    affected_order_count: int
+    quantity_ordered: float
+    quantity_allocated: float
+    quantity_unallocated: float
+    quantity_picked: float
+    quantity_available: float
+    exception_reason: str
+
+
 class AllocationExceptionListResponse(BaseModel):
     lines: list[AllocationExceptionLineRead] = []
+    item_groups: list[AllocationExceptionItemGroupRead] = []
     total_orders: int
     total_lines: int
+    total_item_groups: int = 0
     total_quantity_unallocated: float
     lines_with_available_stock: int
     lines_out_of_stock: int
+    warehouses: list[str] = Field(default_factory=list)
+    view: str = "orders"
+    page: int = 1
+    page_size: int = 0
+    total_pages: int = 0
+    returned_count: int = 0
+    returned_item_groups: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class AutoAllocationQueueResponse(BaseModel):

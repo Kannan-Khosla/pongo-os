@@ -1,15 +1,19 @@
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
 import httpx
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from tests.test_items_api import client, seed_item  # noqa: F401
 from app.core.config import Settings
 from app.db.base import Base
 from app.models.orders import Order
-from app.models.woocommerce import WooCommerceConfiguration
+from app.models.woocommerce import WooCommerceConfiguration, WooCommerceSyncError, WooCommerceSyncRun
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.woocommerce_configuration import save_woocommerce_configuration, settings_with_persisted_woocommerce_configuration
+from app.services.woocommerce_sync_errors import prune_sync_errors, store_sync_error_once
 from app.api.routes.woocommerce import woo_status_payload
 
 
@@ -29,6 +33,50 @@ class FakeWooClient:
 
     def check_connection(self):
         return None
+
+
+def test_sync_errors_are_deduplicated_per_run_and_expire(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    monkeypatch.setattr(
+        "app.services.woocommerce_sync_errors.get_settings",
+        lambda: SimpleNamespace(woocommerce_sync_error_retention_days=30),
+    )
+    with Session(engine) as db:
+        old_run = WooCommerceSyncRun(sync_type="orders", status="completed")
+        current_run = WooCommerceSyncRun(sync_type="orders", status="completed")
+        latest_run = WooCommerceSyncRun(sync_type="orders", status="completed")
+        db.add_all([old_run, current_run, latest_run])
+        db.flush()
+        db.add(WooCommerceSyncError(
+            sync_run_id=old_run.id,
+            remote_order_id=1,
+            error_message="expired",
+            fingerprint="expired",
+            created_at=datetime.now(timezone.utc) - timedelta(days=31),
+        ))
+        db.commit()
+        prune_sync_errors(db)
+        assert db.get(WooCommerceSyncError, 1) is None
+
+        values = {
+            "sync_run_id": current_run.id,
+            "remote_order_id": 2,
+            "error_message": "same failure",
+            "raw_payload": {"order": 2},
+        }
+        assert store_sync_error_once(db, **values) is True
+        assert store_sync_error_once(db, **values) is False
+        db.flush()
+        assert store_sync_error_once(db, **{**values, "sync_run_id": latest_run.id}) is True
+        db.commit()
+
+        errors = list(db.scalars(select(WooCommerceSyncError).order_by(WooCommerceSyncError.sync_run_id)).all())
+        assert [(error.remote_order_id, error.error_message) for error in errors] == [
+            (2, "same failure"),
+            (2, "same failure"),
+        ]
+        assert [error.sync_run_id for error in errors] == [current_run.id, latest_run.id]
 
 
 def test_woocommerce_credentials_use_basic_auth_and_never_enter_error_urls(monkeypatch):
@@ -820,6 +868,56 @@ def test_woocommerce_sync_runs_list(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["total"] == 1
+
+
+def test_woocommerce_sync_runs_are_bounded_and_deterministically_paginated(client):
+    started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with Session(client.test_engine) as db:
+        db.add_all([
+            WooCommerceSyncRun(
+                sync_type="products",
+                status="completed_with_errors" if index >= 100 else "completed",
+                started_at=started_at,
+                created_by=f"run-{index}",
+            )
+            for index in range(105)
+        ])
+        db.add(WooCommerceSyncRun(sync_type="order_job", status="queued", created_by="excluded-order-job"))
+        db.commit()
+
+    first = client.get("/api/integrations/woocommerce/sync-runs").json()
+    second = client.get(
+        "/api/integrations/woocommerce/sync-runs",
+        params={"page": 2, "page_size": 50},
+    ).json()
+    last = client.get(
+        "/api/integrations/woocommerce/sync-runs",
+        params={"page": 99, "page_size": 50},
+    ).json()
+    failures = client.get(
+        "/api/integrations/woocommerce/sync-runs",
+        params={"status": "completed_with_errors", "page_size": 10},
+    ).json()
+
+    assert first["total"] == 105
+    assert first["page"] == 1
+    assert first["page_size"] == 50
+    assert first["total_pages"] == 3
+    assert first["returned_count"] == 50
+    assert first["has_previous"] is False
+    assert first["has_next"] is True
+    assert [row["created_by"] for row in first["sync_runs"]] == [f"run-{index}" for index in range(104, 54, -1)]
+    assert [row["created_by"] for row in second["sync_runs"]] == [f"run-{index}" for index in range(54, 4, -1)]
+    assert last["page"] == 3
+    assert last["returned_count"] == 5
+    assert last["has_previous"] is True
+    assert last["has_next"] is False
+    assert [row["created_by"] for row in last["sync_runs"]] == [f"run-{index}" for index in range(4, -1, -1)]
+    assert failures["total"] == 5
+    assert failures["returned_count"] == 5
+
+    assert client.get("/api/integrations/woocommerce/sync-runs", params={"page": 0}).status_code == 422
+    assert client.get("/api/integrations/woocommerce/sync-runs", params={"page_size": 101}).status_code == 422
 
 
 def test_variable_parent_with_three_variations_creates_three_items_and_is_idempotent(client, monkeypatch):

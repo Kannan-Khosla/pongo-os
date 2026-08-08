@@ -84,7 +84,7 @@ describe('Report Intelligence performance flow', () => {
     render(<ReportIntelligencePage apiBaseUrl="" reportKey={scopedReport.key} />);
 
     expect(await screen.findByRole('heading', { name: scopedReport.title })).toBeInTheDocument();
-    expect(screen.getByLabelText('Warehouse')).toHaveValue('Main Warehouse');
+    await waitFor(() => expect(screen.getByLabelText('Warehouse')).toHaveValue('Main Warehouse'));
     expect(screen.getByLabelText('Location')).toHaveValue('');
     expect(screen.getByLabelText('Brand')).toHaveValue('');
     expect(screen.getByLabelText('Category')).toHaveValue('');
@@ -125,8 +125,8 @@ describe('Report Intelligence performance flow', () => {
       if (target.includes('/api/reports/jobs/latest/')) return response({}, { ok: false, status: 404 });
       if (target.endsWith(`/api/reports/jobs/${report.key}`)) return response({ job_id: 91, report_key: report.key, status: 'queued', progress: 0, previous_run_id: 7 }, { status: 202 });
       if (target.endsWith('/api/reports/jobs/91')) return response({ job_id: 91, report_key: report.key, status: 'completed', progress: 100, run_id: 8 });
-      if (target.endsWith('/api/reports/runs/7')) return response(run);
-      if (target.endsWith('/api/reports/runs/8')) return response({ ...run, run_id: 8, generated_at: '2026-08-05T18:01:00Z' });
+      if (target.includes('/api/reports/runs/7?')) return response(run);
+      if (target.includes('/api/reports/runs/8?')) return response({ ...run, run_id: 8, generated_at: '2026-08-05T18:01:00Z' });
       return response({});
     }));
     render(<ReportIntelligencePage apiBaseUrl="" reportKey={report.key} />);
@@ -138,7 +138,7 @@ describe('Report Intelligence performance flow', () => {
     expect(screen.getByText(/Showing the previous verified run/)).toBeInTheDocument();
     await waitFor(() => expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/api/reports/jobs/91'))).toBe(true), { timeout: 3000 });
     await waitFor(() => expect(screen.queryByText(/Showing the previous verified run/)).not.toBeInTheDocument());
-    expect(fetch.mock.calls.some(([url]) => String(url).endsWith(`/api/reports/runs/${report.key}`))).toBe(false);
+    expect(fetch.mock.calls.some(([url]) => String(url).includes(`/api/reports/runs/${report.key}?`))).toBe(false);
   });
 
   it('clears a report from a different filter scope before exposing exports', async () => {
@@ -175,7 +175,7 @@ describe('Report Intelligence performance flow', () => {
         if (statusAttempts === 1) return Promise.reject(new Error('temporary network error'));
         return response({ job_id: 93, report_key: report.key, status: 'completed', progress: 100, run_id: 9 });
       }
-      if (target.endsWith('/api/reports/runs/9')) return response({ ...run, run_id: 9 });
+      if (target.includes('/api/reports/runs/9?')) return response({ ...run, run_id: 9 });
       return response({});
     }));
     render(<ReportIntelligencePage apiBaseUrl="" reportKey={report.key} />);
@@ -193,5 +193,54 @@ describe('Report Intelligence performance flow', () => {
 
     expect(screen.getByText('SMOKE-001')).toBeInTheDocument();
     expect(statusAttempts).toBe(2);
+  });
+
+  it('pages a large immutable report preview on the server and reaches rows after 100', async () => {
+    const user = userEvent.setup();
+    const pageBody = (page) => {
+      const start = ((page - 1) * 50) + 1;
+      const end = Math.min(125, start + 49);
+      const rows = Array.from(
+        { length: Math.max(0, end - start + 1) },
+        (_, index) => ({ sku: `SKU-${String(start + index).padStart(3, '0')}` }),
+      );
+      return {
+        ...run,
+        run_id: 125,
+        row_count: 125,
+        rows,
+        row_pagination: {
+          page,
+          page_size: 50,
+          total: 125,
+          total_pages: 3,
+          returned_count: rows.length,
+          has_previous: page > 1,
+          has_next: page < 3,
+        },
+      };
+    };
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      const target = String(url);
+      if (target.endsWith('/api/reports')) return response({ reports: [report] });
+      if (target.includes('/api/reports/jobs/latest/')) return response(pageBody(1));
+      if (target.includes('/api/reports/runs/125?')) {
+        const page = Number(new URL(target, 'http://localhost').searchParams.get('row_page'));
+        return response(pageBody(page));
+      }
+      return response({});
+    }));
+
+    render(<ReportIntelligencePage apiBaseUrl="" reportKey={report.key} />);
+
+    expect(await screen.findByText('SKU-001')).toBeInTheDocument();
+    expect(screen.getByText('Showing 1–50 of 125 records')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Next report page' }));
+    expect(await screen.findByText('SKU-051')).toBeInTheDocument();
+    expect(screen.getByText('Showing 51–100 of 125 records')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Next report page' }));
+    expect(await screen.findByText('SKU-101')).toBeInTheDocument();
+    expect(screen.getByText('Showing 101–125 of 125 records')).toBeInTheDocument();
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('row_page=3&row_page_size=50'))).toBe(true);
   });
 });

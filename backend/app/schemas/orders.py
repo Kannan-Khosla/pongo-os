@@ -106,6 +106,12 @@ class OpenOrderListResponse(BaseModel):
     partial_count: int
     unavailable_count: int
     unknown_count: int
+    page: int = 1
+    page_size: int = 0
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class BulkOrderActionRequest(BaseModel):
@@ -169,6 +175,12 @@ class CompletedOrderRead(BaseModel):
 class CompletedOrderListResponse(BaseModel):
     orders: list[CompletedOrderRead]
     total: int
+    page: int = 1
+    page_size: int = 0
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class OrderWorkflowPreviewResponse(BaseModel):

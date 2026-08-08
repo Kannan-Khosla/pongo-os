@@ -67,10 +67,15 @@ class WooCommerceSyncError(Base):
     sku: Mapped[str | None] = mapped_column(String(120), index=True)
     barcode: Mapped[str | None] = mapped_column(String(120), index=True)
     error_message: Mapped[str | None] = mapped_column(Text)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     raw_payload: Mapped[dict | None] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
     sync_run: Mapped[WooCommerceSyncRun] = relationship(back_populates="errors")
+
+    __table_args__ = (
+        UniqueConstraint("sync_run_id", "fingerprint", name="uq_woocommerce_sync_errors_run_fingerprint"),
+    )
 
 
 class WooItemMapping(Base):

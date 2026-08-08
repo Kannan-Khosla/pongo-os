@@ -24,6 +24,12 @@ class RouteCandidateRead(BaseModel):
 class RouteCandidateListResponse(BaseModel):
     total_candidates: int
     candidates: list[RouteCandidateRead]
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class RouteRequest(BaseModel):
@@ -136,6 +142,12 @@ class RouteDetail(RouteRead):
 class RouteListResponse(BaseModel):
     routes: list[RouteRead]
     total: int
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class RouteUpdateRequest(BaseModel):

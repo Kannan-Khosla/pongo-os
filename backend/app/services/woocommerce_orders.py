@@ -7,13 +7,13 @@ from decimal import Decimal, InvalidOperation
 from io import StringIO
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import String, and_, case, cast, exists, false, func, or_, select, text
 from sqlalchemy.orm import Session, defer, selectinload
 
 from app.core.config import get_settings
 from app.models.inventory import InventoryItem
 from app.models.orders import Order, OrderItem
-from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun
+from app.models.woocommerce import WooCommerceSyncRun
 from app.schemas.orders import OpenOrderDetail, OpenOrderLineRead, OpenOrderListResponse, OpenOrderRead
 from app.schemas.woocommerce import (
     WooCommerceOrderPreviewLine,
@@ -22,8 +22,12 @@ from app.schemas.woocommerce import (
     WooCommerceOrderSyncRequest,
 )
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
+from app.services.woocommerce_sync_errors import prune_sync_errors, store_sync_error_once
 from app.services.location_inventory import lock_inventory_stock
 from app.services.order_workflow import (
+    BLOCKING_ALLOCATION_EXCEPTION_REASONS,
+    BLOCKING_MATCH_STATUSES,
+    COMPLETED_LOCAL_STATUSES,
     append_note,
     auto_allocate_processing_orders_fifo,
     operational_order_clause,
@@ -38,6 +42,8 @@ BARCODE_META_KEYS = {"barcode", "_barcode", "_ywbc_barcode", "upc", "gtin"}
 WOO_QUANTITY_BELOW_ALLOCATED_REASON = "woo_quantity_below_allocated"
 RETIRED_WOO_LINE_STATUS = "removed_from_woocommerce"
 POSTGRES_ORDER_IMPORT_LOCK_KEY = int.from_bytes(b"PONGOORD", byteorder="big")
+PICK_READY_STATUSES = ("ready_to_pick", "partially_picked", "picked")
+SHIPPING_LINES_UNSET = object()
 
 
 @dataclass
@@ -180,6 +186,19 @@ def commit_recent_order_sync(db: Session, client: WooCommerceClient, payload: Wo
     return commit_remote_order_records(db, remote_orders, statuses, payload.created_by or "auto-order-poll")
 
 
+def count_pick_ready_operational_orders(db: Session) -> int:
+    """Count the current pick-ready queue without hydrating orders or lines."""
+    return int(
+        db.scalar(
+            select(func.count(Order.id)).where(
+                operational_order_clause(),
+                Order.pick_status.in_(PICK_READY_STATUSES),
+            )
+        )
+        or 0
+    )
+
+
 def commit_remote_order_records(
     db: Session,
     remote_orders: list[dict[str, Any]],
@@ -190,6 +209,7 @@ def commit_remote_order_records(
     snapshot_only: bool = False,
 ) -> tuple[WooCommerceSyncRun, WooCommerceOrderPreviewResponse]:
     acquire_order_import_transaction_lock(db)
+    prune_sync_errors(db)
     started_at = datetime.now(timezone.utc)
     normalized_orders = [normalize_order(order) for order in remote_orders]
     if snapshot_only:
@@ -324,11 +344,7 @@ def commit_remote_order_records(
             allocation_exception_count,
             fifo_summary["partially_allocated_orders"] + fifo_summary["exception_orders"],
         )
-        pick_ready_count = sum(
-            1
-            for order in db.scalars(select(Order).where(operational_order_clause()).options(defer(Order.raw_woo_payload), selectinload(Order.items))).all()
-            if order.pick_status in {"ready_to_pick", "partially_picked", "picked"}
-        )
+        pick_ready_count = count_pick_ready_operational_orders(db)
         if fifo_summary["errors"]:
             error_count += len(fifo_summary["errors"])
             commit_errors.extend(fifo_summary["errors"])
@@ -839,6 +855,110 @@ def upsert_order_lines(
     return issues, reconciliation_notes
 
 
+def _active_order_clause(*, normalize_operational: bool = False):
+    if normalize_operational:
+        # Woo operational status plus final local completion is the source of
+        # truth. Older cached local statuses are normalized after ingestion.
+        return ~func.coalesce(Order.completion_status, "").in_(("completed", "completed_without_picking"))
+    closed_local_statuses = COMPLETED_LOCAL_STATUSES
+    closed_local_statuses = closed_local_statuses | {"cancelled", "canceled", "failed", "refunded"}
+    return and_(
+        ~func.coalesce(Order.completion_status, "").in_(("completed", "completed_without_picking")),
+        ~func.coalesce(Order.local_status, "").in_(tuple(closed_local_statuses)),
+    )
+
+
+def _order_line_exists(*predicates, include_inventory: bool = False):
+    statement = select(1).select_from(OrderItem)
+    if include_inventory:
+        statement = statement.outerjoin(InventoryItem, InventoryItem.id == OrderItem.inventory_item_id)
+    return exists(statement.where(OrderItem.order_id == Order.id, *predicates))
+
+
+def _aggregate_availability_expression():
+    has_lines = _order_line_exists()
+    status = func.coalesce(OrderItem.availability_status, "")
+    return case(
+        (~has_lines, "unknown"),
+        (_order_line_exists(status == "unknown"), "unknown"),
+        (and_(has_lines, ~_order_line_exists(status != "allocated")), "allocated"),
+        (_order_line_exists(status == "unavailable"), "unavailable"),
+        (_order_line_exists(status == "partial"), "partial"),
+        (and_(has_lines, ~_order_line_exists(status != "available")), "available"),
+        else_="unknown",
+    )
+
+
+def _aggregate_matched_expression():
+    has_lines = _order_line_exists()
+    status = func.coalesce(OrderItem.matched_status, "")
+    return case(
+        (_order_line_exists(status == "conflict"), "conflict"),
+        (_order_line_exists(status == "unmatched"), "unmatched"),
+        (and_(has_lines, ~_order_line_exists(status != "matched")), "matched"),
+        else_="unknown",
+    )
+
+
+def _workflow_view_clause(workflow_view: str):
+    if workflow_view == "completed":
+        return and_(Order.is_historical_snapshot.is_(False), ~_active_order_clause())
+
+    operational = and_(operational_order_clause(), _active_order_clause(normalize_operational=True))
+    required_line = or_(InventoryItem.id.is_(None), InventoryItem.non_inventory.is_(False))
+    blocking_line = _order_line_exists(or_(
+        OrderItem.matched_status.in_(tuple(BLOCKING_MATCH_STATUSES)),
+        OrderItem.allocation_exception_reason.in_(tuple(BLOCKING_ALLOCATION_EXCEPTION_REASONS)),
+    ))
+    if workflow_view == "allocate":
+        line_needs_attention = _order_line_exists(
+            OrderItem.matched_status == "matched",
+            required_line,
+            func.coalesce(OrderItem.quantity_allocated, 0) < func.coalesce(OrderItem.quantity_ordered, 0),
+            include_inventory=True,
+        )
+        return and_(operational, or_(blocking_line, line_needs_attention))
+    if workflow_view == "pick":
+        invalid_required_line = _order_line_exists(
+            required_line,
+            or_(
+                func.coalesce(OrderItem.matched_status, "") != "matched",
+                func.coalesce(OrderItem.quantity_allocated, 0) < func.coalesce(OrderItem.quantity_ordered, 0),
+            ),
+            include_inventory=True,
+        )
+        return and_(
+            operational,
+            _order_line_exists(required_line, include_inventory=True),
+            ~blocking_line,
+            ~invalid_required_line,
+            _order_line_exists(required_line, func.coalesce(OrderItem.quantity_allocated, 0) > func.coalesce(OrderItem.quantity_picked, 0), include_inventory=True),
+        )
+    return operational
+
+
+def _order_text_predicate(value: str, *columns):
+    escaped_value = value.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped_value}%"
+    return or_(*(column.ilike(pattern, escape="\\") for column in columns))
+
+
+def _order_item_text_predicate(value: str):
+    return _order_line_exists(
+        _order_text_predicate(
+            value,
+            OrderItem.sku,
+            OrderItem.barcode,
+            OrderItem.name,
+            OrderItem.description,
+            InventoryItem.sku,
+            InventoryItem.barcode,
+            InventoryItem.description,
+        ),
+        include_inventory=True,
+    )
+
+
 def list_open_orders(
     db: Session,
     search: str | None = None,
@@ -846,44 +966,100 @@ def list_open_orders(
     availability_status: str | None = None,
     matched_status: str | None = None,
     workflow_view: str = "open",
+    order_number: str | None = None,
+    customer: str | None = None,
+    containing_item: str | None = None,
+    warehouse: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
 ) -> OpenOrderListResponse:
-    orders = list(db.scalars(
-        select(Order)
-        .where(Order.is_historical_snapshot.is_(False))
-        .options(defer(Order.raw_woo_payload), selectinload(Order.items).selectinload(OrderItem.inventory_item))
+    availability_expression = _aggregate_availability_expression()
+    matched_expression = _aggregate_matched_expression()
+    predicates = [_workflow_view_clause(workflow_view)]
+    if search and search.strip():
+        predicates.append(or_(
+            _order_text_predicate(
+                search,
+                Order.woo_order_number,
+                cast(Order.woo_order_id, String),
+                Order.customer_name,
+                Order.customer_email,
+                Order.customer_phone,
+            ),
+            _order_item_text_predicate(search),
+        ))
+    if order_number and order_number.strip():
+        predicates.append(_order_text_predicate(order_number, Order.woo_order_number, cast(Order.woo_order_id, String)))
+    if customer and customer.strip():
+        predicates.append(_order_text_predicate(customer, Order.customer_name))
+    if containing_item and containing_item.strip():
+        predicates.append(_order_item_text_predicate(containing_item))
+    if warehouse and warehouse.strip().casefold() != "main warehouse":
+        predicates.append(false())
+    if woo_status:
+        predicates.append(Order.woo_status == woo_status)
+    if availability_status:
+        predicates.append(availability_expression == availability_status)
+    if matched_status:
+        predicates.append(matched_expression == matched_status)
+
+    summary_rows = select(
+        Order.id.label("order_id"),
+        availability_expression.label("availability_status"),
+    ).where(*predicates).subquery()
+    total, available_count, partial_count, unavailable_count, unknown_count = db.execute(
+        select(
+            func.count(summary_rows.c.order_id),
+            func.coalesce(func.sum(case((summary_rows.c.availability_status == "available", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((summary_rows.c.availability_status == "partial", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((summary_rows.c.availability_status == "unavailable", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((summary_rows.c.availability_status == "unknown", 1), else_=0)), 0),
+        )
+    ).one()
+    total = int(total or 0)
+    pagination_requested = page is not None or page_size is not None
+    effective_page_size = page_size or 20
+    total_pages = (total + effective_page_size - 1) // effective_page_size if effective_page_size else 0
+    effective_page = min(page or 1, max(total_pages, 1)) if pagination_requested else 1
+    order_ids_statement = (
+        select(Order.id, Order.raw_woo_payload["shipping_lines"].label("shipping_lines"))
+        .where(*predicates)
         .order_by(Order.date_created.desc().nullslast(), Order.id.desc())
-    ).all())
+    )
+    if pagination_requested:
+        order_ids_statement = order_ids_statement.offset((effective_page - 1) * effective_page_size).limit(effective_page_size)
+    order_page = db.execute(order_ids_statement).all()
+    order_ids = [row.id for row in order_page]
+    shipping_lines_by_order_id = {row.id: row.shipping_lines for row in order_page}
+    loaded_orders = list(db.scalars(
+        select(Order)
+        .where(Order.id.in_(order_ids))
+        .options(
+            defer(Order.raw_woo_payload, raiseload=True),
+            selectinload(Order.items).selectinload(OrderItem.inventory_item),
+        )
+    ).all()) if order_ids else []
+    orders_by_id = {order.id: order for order in loaded_orders}
+    orders = [orders_by_id[order_id] for order_id in order_ids]
     for order in orders:
         sync_order_workflow_statuses(order)
-    if workflow_view == "allocate":
-        orders = [order for order in orders if workflow_flags(order)["shows_in_allocate"]]
-    elif workflow_view == "pick":
-        orders = [order for order in orders if workflow_flags(order)["shows_in_pick_orders"]]
-    elif workflow_view == "completed":
-        orders = [order for order in orders if workflow_flags(order)["shows_in_completed_orders"]]
-    else:
-        orders = [
-            order
-            for order in orders
-            if workflow_flags(order)["shows_in_open_orders"]
-        ]
-    if search:
-        needle = search.casefold()
-        orders = [order for order in orders if order_matches_search(order, needle)]
-    rows = [order_to_read(order) for order in orders]
-    if woo_status:
-        rows = [row for row in rows if row.woo_status == woo_status]
-    if availability_status:
-        rows = [row for row in rows if row.availability_status == availability_status]
-    if matched_status:
-        rows = [row for row in rows if row.matched_status == matched_status]
+    rows = [order_to_read(order, shipping_lines=shipping_lines_by_order_id.get(order.id)) for order in orders]
+    if not pagination_requested:
+        effective_page_size = len(rows)
+        total_pages = 1 if rows else 0
     return OpenOrderListResponse(
         orders=rows,
-        total=len(rows),
-        available_count=sum(1 for row in rows if row.availability_status == "available"),
-        partial_count=sum(1 for row in rows if row.availability_status == "partial"),
-        unavailable_count=sum(1 for row in rows if row.availability_status == "unavailable"),
-        unknown_count=sum(1 for row in rows if row.availability_status == "unknown"),
+        total=total,
+        available_count=int(available_count or 0),
+        partial_count=int(partial_count or 0),
+        unavailable_count=int(unavailable_count or 0),
+        unknown_count=int(unknown_count or 0),
+        page=effective_page,
+        page_size=effective_page_size,
+        total_pages=total_pages,
+        returned_count=len(rows),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
     )
 
 
@@ -925,10 +1101,14 @@ def export_open_orders_csv(db: Session, **filters) -> str:
     return output.getvalue()
 
 
-def order_to_read(order: Order) -> OpenOrderRead:
+def order_to_read(order: Order, *, shipping_lines=SHIPPING_LINES_UNSET) -> OpenOrderRead:
     line_reads = [line_to_read(line) for line in order.items]
     flags = workflow_flags(order)
-    raw_shipping_lines = (order.raw_woo_payload or {}).get("shipping_lines") or []
+    raw_shipping_lines = (
+        (order.raw_woo_payload or {}).get("shipping_lines")
+        if shipping_lines is SHIPPING_LINES_UNSET
+        else shipping_lines
+    ) or []
     shipping_methods = [
         str(line.get("method_title") or line.get("method_id") or "").strip()
         for line in raw_shipping_lines
@@ -1057,18 +1237,17 @@ def line_to_read(line: OrderItem) -> OpenOrderLineRead:
 
 
 def store_order_sync_error(db: Session, sync_run_id: int, order: WooCommerceOrderPreviewOrder, line: WooCommerceOrderPreviewLine | None, messages: list[str]) -> None:
-    db.add(
-        WooCommerceSyncError(
-            sync_run_id=sync_run_id,
-            remote_order_id=order.woo_order_id,
-            remote_line_item_id=line.woo_line_item_id if line else None,
-            remote_product_id=line.woo_product_id if line else None,
-            remote_variation_id=line.woo_variation_id if line else None,
-            sku=line.sku if line else None,
-            barcode=line.barcode if line else None,
-            error_message=" ".join(messages) if messages else "WooCommerce order sync row was not committed cleanly.",
-            raw_payload={"order": order.model_dump(mode="json"), "line": line.model_dump(mode="json") if line else None},
-        )
+    store_sync_error_once(
+        db,
+        sync_run_id=sync_run_id,
+        remote_order_id=order.woo_order_id,
+        remote_line_item_id=line.woo_line_item_id if line else None,
+        remote_product_id=line.woo_product_id if line else None,
+        remote_variation_id=line.woo_variation_id if line else None,
+        sku=line.sku if line else None,
+        barcode=line.barcode if line else None,
+        error_message=" ".join(messages) if messages else "WooCommerce order sync row was not committed cleanly.",
+        raw_payload={"order": order.model_dump(mode="json"), "line": line.model_dump(mode="json") if line else None},
     )
 
 

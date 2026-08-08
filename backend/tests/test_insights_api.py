@@ -5,6 +5,8 @@ from sqlalchemy import event
 from app.db.session import get_db
 from app.main import app
 from app.models.inventory import InventoryItem
+from app.models.orders import Order, OrderItem
+from app.services.insights import build_insight
 from tests.test_items_api import client, seed_item  # noqa: F401
 
 
@@ -599,3 +601,171 @@ def test_insights_endpoints_do_not_mutate_inventory_or_orders(client, monkeypatc
     assert after_item["In Stock"] == before_item["In Stock"]
     assert after_item["Allocated"] == before_item["Allocated"]
     assert after_orders == before_orders
+
+
+def test_insights_sql_summaries_stay_complete_while_drilldowns_are_bounded(client):
+    """Large Insights pages must not trade exact totals for a 100-row UI page."""
+
+    override = app.dependency_overrides[get_db]()
+    db = next(override)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    try:
+        items = [
+            InventoryItem(
+                sku=f"BOUND-{index:03d}",
+                description=f"Bounded item {index}",
+                brand="Scale Test",
+                category="Scale",
+                in_stock=1,
+                allocated=0,
+                sellable=1,
+                unit_cost=1,
+            )
+            for index in range(125)
+        ]
+        db.add_all(items)
+        db.flush()
+        for index, item in enumerate(items):
+            order = Order(
+                status="processing",
+                local_status="open",
+                woo_status="processing",
+                customer_id=index + 1,
+                customer_name=f"Customer {index}",
+                customer_email=f"customer-{index}@example.invalid",
+                subtotal=1,
+                discount_total=0,
+                shipping_total=0,
+                tax_total=0,
+                total=1,
+                placed_on=now - timedelta(minutes=index),
+                date_created=now - timedelta(minutes=index),
+                is_historical_snapshot=False,
+                historical_source_present=True,
+                raw_woo_payload={"refunds": []},
+            )
+            db.add(order)
+            db.flush()
+            db.add(
+                OrderItem(
+                    order_id=order.id,
+                    inventory_item_id=item.id,
+                    sku=item.sku,
+                    name=item.description,
+                    quantity_ordered=1,
+                    ordered_qty=1,
+                    unit_cost=1,
+                    unit_price=1,
+                    line_subtotal=1,
+                    line_total=1,
+                    total_price=1,
+                )
+            )
+        db.commit()
+        db.expunge_all()
+
+        loaded_models = []
+        statements = []
+        engine = db.get_bind()
+
+        def record_load(_session, instance):
+            if isinstance(instance, (Order, OrderItem, InventoryItem)):
+                loaded_models.append(type(instance).__name__)
+
+        def record_statement(_conn, _cursor, statement, _params, _context, _many):
+            statements.append(statement)
+
+        event.listen(db, "loaded_as_persistent", record_load)
+        event.listen(engine, "before_cursor_execute", record_statement)
+        try:
+            first = build_insight(db, "product-sku", {"limit": 100, "offset": 0})
+            first_query_count = len(statements)
+            statements.clear()
+            second = build_insight(db, "product-sku", {"limit": 100, "offset": 100})
+            second_query_count = len(statements)
+            statements.clear()
+            customers = build_insight(db, "customer-metrics", {"limit": 100, "offset": 0})
+            customer_query_count = len(statements)
+        finally:
+            event.remove(db, "loaded_as_persistent", record_load)
+            event.remove(engine, "before_cursor_execute", record_statement)
+
+        assert first.summary["sku_count"] == 125
+        assert first.summary["units_sold"] == 125
+        assert len(first.rows) == 100
+        assert len(second.rows) == 25
+        assert {row["sku"] for row in first.rows}.isdisjoint({row["sku"] for row in second.rows})
+        assert customers.summary["total_customers"] == 125
+        assert len(customers.rows) == 100
+        assert loaded_models == []
+        assert first_query_count <= 20
+        assert second_query_count == first_query_count
+        assert customer_query_count <= 20
+    finally:
+        override.close()
+
+
+def test_insights_comparison_uses_bounded_sql_queries_and_keeps_both_periods_exact(client):
+    override = app.dependency_overrides[get_db]()
+    db = next(override)
+    try:
+        for index in range(120):
+            month = 7 if index < 80 else 6
+            order = Order(
+                status="processing",
+                local_status="open",
+                woo_status="processing",
+                customer_email=f"compare-{index}@example.invalid",
+                subtotal=2,
+                discount_total=0,
+                shipping_total=0,
+                tax_total=0,
+                total=2,
+                placed_on=datetime(2026, month, 10, 12, tzinfo=timezone.utc),
+                date_created=datetime(2026, month, 10, 12, tzinfo=timezone.utc),
+                is_historical_snapshot=False,
+                historical_source_present=True,
+                raw_woo_payload={"refunds": []},
+            )
+            db.add(order)
+            db.flush()
+            db.add(OrderItem(order_id=order.id, sku="COMPARE-BOUND", quantity_ordered=1, ordered_qty=1, unit_price=2, line_subtotal=2, line_total=2, total_price=2))
+        db.commit()
+        db.expunge_all()
+
+        loaded_models = []
+        statements = []
+        engine = db.get_bind()
+
+        def record_load(_session, instance):
+            if isinstance(instance, (Order, OrderItem, InventoryItem)):
+                loaded_models.append(type(instance).__name__)
+
+        def record_statement(_conn, _cursor, statement, _params, _context, _many):
+            statements.append(statement)
+
+        event.listen(db, "loaded_as_persistent", record_load)
+        event.listen(engine, "before_cursor_execute", record_statement)
+        try:
+            result = build_insight(
+                db,
+                "orders-revenue",
+                {
+                    "start_date": "2026-07-01",
+                    "end_date": "2026-07-31",
+                    "compare_start_date": "2026-06-01",
+                    "compare_end_date": "2026-06-30",
+                },
+            )
+        finally:
+            event.remove(db, "loaded_as_persistent", record_load)
+            event.remove(engine, "before_cursor_execute", record_statement)
+
+        assert result.summary["total_orders"] == 80
+        assert result.summary["net_sales"] == 160
+        assert result.comparison["summary"]["total_orders"] == 40
+        assert result.comparison["summary"]["net_sales"] == 80
+        assert loaded_models == []
+        assert len(statements) <= 24
+    finally:
+        override.close()

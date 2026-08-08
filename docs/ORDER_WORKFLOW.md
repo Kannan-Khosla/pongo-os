@@ -47,7 +47,7 @@ and the payload hash, not a second copy of the customer payload.
 immutable new-order notification rows created by successful `order.created`
 transactions. Successful updates also retain an immutable order-event audit row
 but are excluded from this staff new-order cursor. The frontend
-starts with `initialize=true`, then polls every 2 seconds while visible and
+starts with `initialize=true`, then polls every 15 seconds while visible and
 advances through `next_after_id`, draining all pages while `has_more` is true.
 It uses later new-order events for a dismissible toast and session-only Bell
 history. Update events reconcile the local order immediately but are not
@@ -127,7 +127,13 @@ Items tabs. It reads `GET /api/allocations/exceptions`, defaults to unresolved
 processing-order lines only, and shows ordered, allocated, unallocated, picked,
 and available quantities. Staff can search by order, item, SKU, or barcode,
 filter by ordered date and warehouse, optionally include 100% allocated lines,
-and open an audited Update Stock Levels action.
+and open an audited Update Stock Levels action. Filtering, summaries, and
+stable pagination are evaluated in PostgreSQL. The CSV export uses the same
+filters but includes every matching line, not only the visible page.
+The Items tab returns bounded SQL aggregate rows rather than embedding every
+affected order line for a SKU. `View affected orders` opens a separately paged
+line drill-down for that exact item (or unmatched line), keeping all records
+reachable without allowing a popular product to create an unbounded response.
 
 `POST /api/allocations/auto/commit` reruns the same FIFO allocator manually. It
 is safe to rerun: already allocated quantities are preserved and only remaining

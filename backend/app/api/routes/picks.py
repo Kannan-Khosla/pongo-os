@@ -1,11 +1,11 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.picks import PickCommitRequest, PickCommitResponse, PickDetail, PickListResponse, PickPreviewResponse, PickRequest, PickScanCommitRequest, PickScanRequest, PickScanResponse, PickScannerOrder
-from app.services.picks import commit_pick, commit_scan, export_pick_csv, get_pick_detail, get_scanner_order, list_picks, pick_to_read, preview_pick, preview_scan
+from app.services.picks import commit_pick, commit_scan, export_pick_csv, get_pick_detail, get_scanner_order, list_picks_page, pick_to_read, preview_pick, preview_scan
 from app.services.auth import authenticated_actor
 from app.services.stock_mutation_guard import IdempotencyConflict
 
@@ -64,10 +64,33 @@ def list_pick_records(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     created_by: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> PickListResponse:
-    picks = list_picks(db, status=status, pick_type=pick_type, order_id=order_id, woo_order_id=woo_order_id, woo_order_number=woo_order_number, date_from=date_from, date_to=date_to, created_by=created_by)
-    return PickListResponse(picks=[pick_to_read(pick) for pick in picks], total=len(picks))
+    picks, total, effective_page, total_pages = list_picks_page(
+        db,
+        page=page,
+        page_size=page_size,
+        status=status,
+        pick_type=pick_type,
+        order_id=order_id,
+        woo_order_id=woo_order_id,
+        woo_order_number=woo_order_number,
+        date_from=date_from,
+        date_to=date_to,
+        created_by=created_by,
+    )
+    return PickListResponse(
+        picks=[pick_to_read(pick) for pick in picks],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(picks),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.get("/{pick_id}", response_model=PickDetail)

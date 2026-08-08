@@ -1,9 +1,9 @@
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import Numeric, and_, case, cast, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.inventory import InventoryItem
+from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.services.calculations import calculate_inventory_value, calculate_sellable, calculate_storage_volume, calculate_under_par
 
 INVENTORY_DATA_QUALITY_FILTERS = {
@@ -61,8 +61,11 @@ def build_inventory_items_query(
     brand: str | None = None,
     under_par: bool | None = None,
     non_inventory: bool | None = None,
+    load_locations: bool = True,
 ):
-    statement = select(InventoryItem).options(selectinload(InventoryItem.locations))
+    statement = select(InventoryItem)
+    if load_locations:
+        statement = statement.options(selectinload(InventoryItem.locations))
     if warehouse:
         statement = statement.where(InventoryItem.warehouse == warehouse)
     if inventory_location:
@@ -136,6 +139,81 @@ def get_inventory_items(db: Session, **filters) -> list[InventoryItem]:
     if under_par is not None:
         items = [item for item in items if calculate_under_par(item.in_stock, item.par_level) is under_par]
     return items
+
+
+def query_inventory_summary(db: Session, **filters) -> dict[str, object]:
+    search = str(filters.pop("search", "") or "").strip()
+    quality_filters = parse_inventory_data_quality_filters(filters.pop("data_quality", None))
+    statement, under_par = build_inventory_items_query(load_locations=False, **filters)
+    if search:
+        escaped_search = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped_search}%"
+        statement = statement.where(or_(
+            InventoryItem.sku.ilike(pattern, escape="\\"),
+            InventoryItem.barcode.ilike(pattern, escape="\\"),
+            InventoryItem.woo_name.ilike(pattern, escape="\\"),
+            InventoryItem.description.ilike(pattern, escape="\\"),
+            InventoryItem.category.ilike(pattern, escape="\\"),
+            InventoryItem.brand.ilike(pattern, escape="\\"),
+            InventoryItem.manufacturer.ilike(pattern, escape="\\"),
+            InventoryItem.warehouse.ilike(pattern, escape="\\"),
+            InventoryItem.inventory_location.ilike(pattern, escape="\\"),
+        ))
+
+    usable_location = InventoryItem.locations.any(and_(
+        InventoryItemLocation.active.is_(True),
+        func.trim(func.coalesce(InventoryItemLocation.warehouse, "")) != "",
+        func.trim(func.coalesce(InventoryItemLocation.inventory_location, "")) != "",
+    ))
+    receiving_location = InventoryItem.locations.any(and_(
+        InventoryItemLocation.active.is_(True),
+        func.trim(func.coalesce(InventoryItemLocation.warehouse, "")) != "",
+        func.lower(func.trim(func.coalesce(InventoryItemLocation.inventory_location, ""))) == "receiving",
+    ))
+    quality_predicates = {
+        "missing_barcode": func.trim(func.coalesce(InventoryItem.barcode, "")) == "",
+        "missing_brand": func.trim(func.coalesce(InventoryItem.brand, "")) == "",
+        "missing_cost": InventoryItem.unit_cost.is_(None),
+        "unmapped": InventoryItem.woo_product_id.is_(None),
+        "receiving": or_(
+            func.lower(func.trim(func.coalesce(InventoryItem.inventory_location, ""))) == "receiving",
+            receiving_location,
+        ),
+        "missing_location": ~usable_location,
+    }
+    if quality_filters:
+        statement = statement.where(or_(*(quality_predicates[name] for name in quality_filters)))
+
+    under_par_predicate = and_(InventoryItem.par_level.is_not(None), InventoryItem.in_stock <= InventoryItem.par_level)
+    if under_par is True:
+        statement = statement.where(under_par_predicate)
+    elif under_par is False:
+        statement = statement.where(~under_par_predicate)
+
+    warehouse = func.coalesce(InventoryItem.warehouse, "")
+    inventory_location = func.coalesce(InventoryItem.inventory_location, "")
+    aggregate_statement = statement.order_by(None).with_only_columns(
+        warehouse.label("warehouse"),
+        inventory_location.label("inventory_location"),
+        func.count(InventoryItem.id).label("item_count"),
+        func.coalesce(func.sum(InventoryItem.in_stock), 0).label("total_in_stock"),
+        func.coalesce(func.sum(InventoryItem.allocated), 0).label("total_allocated"),
+        func.coalesce(func.sum(InventoryItem.in_stock - InventoryItem.allocated), 0).label("total_sellable"),
+        func.coalesce(func.sum(InventoryItem.on_order), 0).label("total_on_order"),
+        func.coalesce(func.sum(cast(InventoryItem.in_stock * func.coalesce(InventoryItem.unit_cost, 0), Numeric(30, 5))), 0).label("total_inventory_value"),
+        func.coalesce(func.sum(case((under_par_predicate, 1), else_=0)), 0).label("under_par_count"),
+    ).group_by(warehouse, inventory_location).order_by(warehouse, inventory_location)
+    groups = [dict(row._mapping) for row in db.execute(aggregate_statement).all()]
+    totals = {
+        "total_items": sum(int(group["item_count"] or 0) for group in groups),
+        "total_in_stock": sum((group["total_in_stock"] or Decimal("0") for group in groups), Decimal("0")),
+        "total_allocated": sum((group["total_allocated"] or Decimal("0") for group in groups), Decimal("0")),
+        "total_sellable": sum((group["total_sellable"] or Decimal("0") for group in groups), Decimal("0")),
+        "total_on_order": sum((group["total_on_order"] or Decimal("0") for group in groups), Decimal("0")),
+        "total_inventory_value": sum((group["total_inventory_value"] or Decimal("0") for group in groups), Decimal("0")),
+        "under_par_count": sum(int(group["under_par_count"] or 0) for group in groups),
+    }
+    return {**totals, "groups": groups}
 
 
 def recalculate_item_fields(item: InventoryItem) -> dict[str, Decimal | bool]:

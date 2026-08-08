@@ -3,14 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import and_, case, exists, func, or_, select
+from sqlalchemy.orm import Session
 
 from app.models.allocations import Allocation
 from app.models.cycle_counts import CycleCount
 from app.models.fulfillments import Fulfillment
 from app.models.imports import ImportJob
-from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryTransfer, StockAdjustment, StockMovement
+from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryTransfer, MovementType, StockAdjustment, StockMovement
 from app.models.orders import Order, OrderItem
 from app.models.picks import Pick
 from app.models.receipts import Receipt
@@ -25,104 +25,200 @@ from app.schemas.dashboard import (
     OrderOperationsCards,
     RouteCards,
 )
-from app.services.routes import ROUTE_ELIGIBLE_STATUSES, order_has_active_route
+from app.services.routes import ROUTE_ELIGIBLE_STATUSES
 
 
 def build_dashboard(db: Session, activity_limit: int = 25) -> DashboardResponse:
     activity_limit = max(1, min(activity_limit, 100))
-    items = list(db.scalars(select(InventoryItem)).all())
-    orders = list(db.scalars(select(Order).options(selectinload(Order.items), selectinload(Order.route_stops).selectinload(RouteStop.route))).all())
-    routes = list(db.scalars(select(Route).options(selectinload(Route.stops))).all())
-    warnings = build_warnings(db, items, orders)
     return DashboardResponse(
         generated_at=datetime.now(timezone.utc),
-        inventory_health=build_inventory_health(db, items),
-        order_operations=build_order_operations(orders),
-        routes=build_route_cards(orders, routes),
-        warnings=warnings,
+        inventory_health=build_inventory_health(db),
+        order_operations=build_order_operations(db),
+        routes=build_route_cards(db),
+        warnings=build_warnings(db),
         activity=build_activity(db, activity_limit),
     )
 
 
-def build_inventory_health(db: Session, items: list[InventoryItem]) -> InventoryHealthCards:
+def build_inventory_health(db: Session) -> InventoryHealthCards:
     now = datetime.now(timezone.utc)
     week_start = now - timedelta(days=7)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    damage_loss_movements = [
-        row
-        for row in db.scalars(select(StockMovement).where(StockMovement.created_at >= month_start)).all()
-        if (row.movement_type.value if hasattr(row.movement_type, "value") else str(row.movement_type)) in {"damage", "loss"}
-    ]
+    missing_sku = func.trim(func.coalesce(InventoryItem.sku, "")) == ""
+    selected_location = case(
+        (
+            and_(InventoryItem.default_location.is_not(None), InventoryItem.default_location != ""),
+            InventoryItem.default_location,
+        ),
+        else_=InventoryItem.inventory_location,
+    )
+    missing_location = func.trim(func.coalesce(selected_location, "")) == ""
+    values = db.execute(
+        select(
+            func.count(InventoryItem.id).label("total_items"),
+            _count_when(InventoryItem.active.is_(True)).label("active_items"),
+            func.coalesce(
+                func.sum(func.coalesce(InventoryItem.in_stock, 0) * func.coalesce(InventoryItem.unit_cost, 0)),
+                0,
+            ).label("total_inventory_value"),
+            _count_when(func.coalesce(InventoryItem.in_stock, 0) <= 0).label("low_stock_count"),
+            _count_when(and_(InventoryItem.reorder.is_(True), InventoryItem.under_par.is_(True))).label("reorder_count"),
+            _count_when(InventoryItem.under_par.is_(True)).label("under_par_count"),
+            _count_when(func.coalesce(InventoryItem.sellable, 0) < 0).label("negative_sellable_count"),
+            _count_when(func.coalesce(InventoryItem.allocated, 0) > func.coalesce(InventoryItem.in_stock, 0)).label(
+                "allocated_greater_than_stock_count"
+            ),
+            _count_when(missing_sku).label("missing_sku_count"),
+            _count_when(missing_location).label("missing_default_location_count"),
+            _count_when(InventoryItem.unit_cost.is_(None)).label("missing_unit_cost_count"),
+            _count_when(InventoryItem.sales_price.is_(None)).label("missing_sales_price_count"),
+            _count_when(InventoryItem.woo_product_id.is_not(None)).label("woo_synced_items_count"),
+            _count_when(InventoryItem.woo_sync_status.in_({"unmatched", "conflict", "error"})).label("woo_unmatched_items_count"),
+        )
+    ).mappings().one()
+    damage_loss_value = db.scalar(
+        select(
+            func.coalesce(
+                func.sum(func.coalesce(StockMovement.quantity_change, 0) * func.coalesce(StockMovement.unit_cost, 0)),
+                0,
+            )
+        ).where(
+            StockMovement.created_at >= month_start,
+            StockMovement.movement_type.in_({MovementType.damage, MovementType.loss}),
+        )
+    )
     return InventoryHealthCards(
-        total_items=len(items),
-        active_items=sum(1 for item in items if item.active),
-        total_inventory_value=decimal_to_float(sum(((item.in_stock or Decimal("0")) * (item.unit_cost or Decimal("0")) for item in items), Decimal("0"))),
-        low_stock_count=sum(1 for item in items if (item.in_stock or Decimal("0")) <= 0),
-        reorder_count=sum(1 for item in items if item.reorder and item.under_par),
-        under_par_count=sum(1 for item in items if item.under_par),
-        negative_sellable_count=sum(1 for item in items if (item.sellable or Decimal("0")) < 0),
-        allocated_greater_than_stock_count=sum(1 for item in items if (item.allocated or Decimal("0")) > (item.in_stock or Decimal("0"))),
-        missing_sku_count=sum(1 for item in items if not clean(item.sku)),
-        missing_default_location_count=sum(1 for item in items if not clean(item.default_location or item.inventory_location)),
-        missing_unit_cost_count=sum(1 for item in items if item.unit_cost is None),
-        missing_sales_price_count=sum(1 for item in items if item.sales_price is None),
-        woo_synced_items_count=sum(1 for item in items if item.woo_product_id is not None),
-        woo_unmatched_items_count=sum(1 for item in items if item.woo_sync_status in {"unmatched", "conflict", "error"}),
-        damage_loss_value_this_month=decimal_to_float(sum(((row.quantity_change or Decimal("0")) * (row.unit_cost or Decimal("0")) for row in damage_loss_movements), Decimal("0"))),
+        total_items=values["total_items"],
+        active_items=values["active_items"],
+        total_inventory_value=decimal_to_float(values["total_inventory_value"]),
+        low_stock_count=values["low_stock_count"],
+        reorder_count=values["reorder_count"],
+        under_par_count=values["under_par_count"],
+        negative_sellable_count=values["negative_sellable_count"],
+        allocated_greater_than_stock_count=values["allocated_greater_than_stock_count"],
+        missing_sku_count=values["missing_sku_count"],
+        missing_default_location_count=values["missing_default_location_count"],
+        missing_unit_cost_count=values["missing_unit_cost_count"],
+        missing_sales_price_count=values["missing_sales_price_count"],
+        woo_synced_items_count=values["woo_synced_items_count"],
+        woo_unmatched_items_count=values["woo_unmatched_items_count"],
+        damage_loss_value_this_month=decimal_to_float(damage_loss_value),
         transfers_this_week=db.scalar(select(func.count(InventoryTransfer.id)).where(InventoryTransfer.created_at >= week_start)) or 0,
         receiving_this_week=db.scalar(select(func.count(Receipt.id)).where(Receipt.created_at >= week_start)) or 0,
         adjustment_count_this_week=db.scalar(select(func.count(StockAdjustment.id)).where(StockAdjustment.created_at >= week_start)) or 0,
     )
 
 
-def build_order_operations(orders: list[Order]) -> OrderOperationsCards:
-    orders = [order for order in orders if not order.is_historical_snapshot]
-    attention_ids = {order.id for order in orders if order_needs_attention(order)}
+def build_order_operations(db: Session) -> OrderOperationsCards:
+    unmatched_line = _order_line_exists(OrderItem.matched_status.in_({"unmatched", "conflict"}))
+    attention_line = _order_line_exists(
+        or_(
+            OrderItem.matched_status.in_({"unmatched", "conflict"}),
+            func.coalesce(OrderItem.sellable_snapshot, 0) < 0,
+            _impossible_line_condition(),
+        )
+    )
+    values = db.execute(
+        select(
+            _count_when(func.coalesce(func.nullif(Order.local_status, ""), "open") == "open").label("open_orders_count"),
+            _count_when(unmatched_line).label("orders_with_unmatched_lines_count"),
+            _count_when(Order.local_status == "allocated").label("allocated_orders_count"),
+            _count_when(Order.local_status == "partially_allocated").label("partially_allocated_orders_count"),
+            _count_when(Order.local_status == "picked").label("picked_orders_count"),
+            _count_when(Order.local_status == "partially_picked").label("partially_picked_orders_count"),
+            _count_when(Order.local_status == "fulfilled").label("fulfilled_orders_count"),
+            _count_when(Order.local_status == "partially_fulfilled").label("partially_fulfilled_orders_count"),
+            _count_when(Order.local_status.in_({"fulfilled", "partially_fulfilled"})).label("completed_orders_count"),
+            _count_when(attention_line).label("orders_needing_attention_count"),
+        ).where(Order.is_historical_snapshot.is_(False))
+    ).mappings().one()
     return OrderOperationsCards(
-        open_orders_count=sum(1 for order in orders if (order.local_status or "open") == "open"),
-        orders_with_unmatched_lines_count=sum(1 for order in orders if any(line.matched_status in {"unmatched", "conflict"} for line in order.items)),
-        allocated_orders_count=sum(1 for order in orders if order.local_status == "allocated"),
-        partially_allocated_orders_count=sum(1 for order in orders if order.local_status == "partially_allocated"),
-        picked_orders_count=sum(1 for order in orders if order.local_status == "picked"),
-        partially_picked_orders_count=sum(1 for order in orders if order.local_status == "partially_picked"),
-        fulfilled_orders_count=sum(1 for order in orders if order.local_status == "fulfilled"),
-        partially_fulfilled_orders_count=sum(1 for order in orders if order.local_status == "partially_fulfilled"),
-        completed_orders_count=sum(1 for order in orders if order.local_status in {"fulfilled", "partially_fulfilled"}),
-        orders_needing_attention_count=len(attention_ids),
+        **values,
     )
 
 
-def build_route_cards(orders: list[Order], routes: list[Route]) -> RouteCards:
-    route_candidates = [
-        order
-        for order in orders
-        if not order.is_historical_snapshot
-        and order.local_status in ROUTE_ELIGIBLE_STATUSES
-        and not order_has_active_route(order)
-    ]
+def build_route_cards(db: Session) -> RouteCards:
+    active_route = exists(
+        select(RouteStop.id)
+        .join(Route, Route.id == RouteStop.route_id)
+        .where(
+            RouteStop.order_id == Order.id,
+            or_(Route.status.is_(None), Route.status != "cancelled"),
+        )
+    )
+    route_candidates_count = db.scalar(
+        select(func.count(Order.id)).where(
+            Order.is_historical_snapshot.is_(False),
+            Order.local_status.in_(ROUTE_ELIGIBLE_STATUSES),
+            ~active_route,
+        )
+    ) or 0
+    route_values = db.execute(
+        select(
+            _count_when(Route.status == "draft").label("draft_routes_count"),
+            _count_when(Route.status == "finalized").label("finalized_routes_count"),
+            _count_when(Route.status == "in_progress").label("in_progress_routes_count"),
+            _count_when(Route.status == "completed").label("completed_routes_count"),
+            _count_when(Route.status == "cancelled").label("cancelled_routes_count"),
+        )
+    ).mappings().one()
     return RouteCards(
-        route_candidates_count=len(route_candidates),
-        draft_routes_count=sum(1 for route in routes if route.status == "draft"),
-        finalized_routes_count=sum(1 for route in routes if route.status == "finalized"),
-        in_progress_routes_count=sum(1 for route in routes if route.status == "in_progress"),
-        completed_routes_count=sum(1 for route in routes if route.status == "completed"),
-        cancelled_routes_count=sum(1 for route in routes if route.status == "cancelled"),
+        route_candidates_count=route_candidates_count,
+        **route_values,
     )
 
 
-def build_warnings(db: Session, items: list[InventoryItem], orders: list[Order]) -> list[DashboardWarningGroup]:
-    orders = [order for order in orders if not order.is_historical_snapshot]
-    groups = [
-        warning_group("items_missing_sku", "error", "Items missing SKU", [item for item in items if not clean(item.sku)], "Items without SKUs cannot be matched reliably.", "#/items", item_sample),
-        warning_group("items_negative_sellable", "error", "Items with negative sellable", [item for item in items if (item.sellable or Decimal("0")) < 0], "Sellable below zero usually means allocation exceeds stock.", "#/items", item_sample),
-        warning_group("items_allocated_gt_stock", "error", "Items allocated greater than stock", [item for item in items if (item.allocated or Decimal("0")) > (item.in_stock or Decimal("0"))], "Allocated quantity should not exceed local stock.", "#/items", item_sample),
-        warning_group("items_under_par", "warning", "Items under par", [item for item in items if item.under_par], "Items at or below par level may need review.", "#/items", item_sample),
-        warning_group("items_missing_default_location", "warning", "Items missing default location", [item for item in items if not clean(item.default_location or item.inventory_location)], "Missing locations slow receiving, counts, and picking.", "#/items", item_sample),
-        warning_group("items_missing_unit_cost", "warning", "Items missing unit cost", [item for item in items if item.unit_cost is None], "Missing costs reduce report accuracy.", "#/items", item_sample),
-        warning_group("items_missing_sales_price", "info", "Items missing sales price", [item for item in items if item.sales_price is None], "Missing sales prices reduce margin reporting.", "#/items", item_sample),
-        warning_group("orders_unmatched_lines", "error", "Orders with unmatched lines", [order for order in orders if any(line.matched_status in {"unmatched", "conflict"} for line in order.items)], "Unmatched lines cannot be allocated or picked cleanly.", "#/orders", order_sample),
-        warning_group("orders_impossible_quantities", "error", "Orders with impossible quantities", [order for order in orders if any(line_has_impossible_quantity(line) for line in order.items)], "Picked, allocated, or fulfilled quantities exceed expected limits.", "#/orders", order_sample),
+def build_warnings(db: Session) -> list[DashboardWarningGroup]:
+    selected_location = case(
+        (
+            and_(InventoryItem.default_location.is_not(None), InventoryItem.default_location != ""),
+            InventoryItem.default_location,
+        ),
+        else_=InventoryItem.inventory_location,
+    )
+    item_warning_specs = [
+        ("items_missing_sku", "error", "Items missing SKU", func.trim(func.coalesce(InventoryItem.sku, "")) == "", "Items without SKUs cannot be matched reliably."),
+        ("items_negative_sellable", "error", "Items with negative sellable", func.coalesce(InventoryItem.sellable, 0) < 0, "Sellable below zero usually means allocation exceeds stock."),
+        ("items_allocated_gt_stock", "error", "Items allocated greater than stock", func.coalesce(InventoryItem.allocated, 0) > func.coalesce(InventoryItem.in_stock, 0), "Allocated quantity should not exceed local stock."),
+        ("items_under_par", "warning", "Items under par", InventoryItem.under_par.is_(True), "Items at or below par level may need review."),
+        ("items_missing_default_location", "warning", "Items missing default location", func.trim(func.coalesce(selected_location, "")) == "", "Missing locations slow receiving, counts, and picking."),
+        ("items_missing_unit_cost", "warning", "Items missing unit cost", InventoryItem.unit_cost.is_(None), "Missing costs reduce report accuracy."),
+        ("items_missing_sales_price", "info", "Items missing sales price", InventoryItem.sales_price.is_(None), "Missing sales prices reduce margin reporting."),
     ]
+    groups = [
+        warning_group_from_query(db, code, severity, title, condition, description, "#/items", InventoryItem, item_sample)
+        for code, severity, title, condition, description in item_warning_specs
+    ]
+    order_warning_specs = [
+        (
+            "orders_unmatched_lines",
+            "error",
+            "Orders with unmatched lines",
+            _order_line_exists(OrderItem.matched_status.in_({"unmatched", "conflict"})),
+            "Unmatched lines cannot be allocated or picked cleanly.",
+        ),
+        (
+            "orders_impossible_quantities",
+            "error",
+            "Orders with impossible quantities",
+            _order_line_exists(_impossible_line_condition()),
+            "Picked, allocated, or fulfilled quantities exceed expected limits.",
+        ),
+    ]
+    groups.extend(
+        warning_group_from_query(
+            db,
+            code,
+            severity,
+            title,
+            and_(Order.is_historical_snapshot.is_(False), condition),
+            description,
+            "#/orders",
+            Order,
+            order_sample,
+        )
+        for code, severity, title, condition, description in order_warning_specs
+    )
     recent_sync_errors = list(db.scalars(select(WooCommerceSyncError).order_by(WooCommerceSyncError.created_at.desc()).limit(20)).all())
     failed_imports = list(db.scalars(select(ImportJob).where(ImportJob.failed_rows > 0).order_by(ImportJob.created_at.desc()).limit(20)).all())
     groups.append(warning_group("woo_sync_errors", "warning", "Recent Woo sync errors", recent_sync_errors, "Recent read-only sync runs produced row-level errors.", "#/settings", sync_error_sample))
@@ -165,6 +261,46 @@ def warning_group(code: str, severity: str, title: str, records: list, descripti
         link_target=link_target,
         sample_records=[sample_builder(record) for record in records[:5]],
     )
+
+
+def warning_group_from_query(
+    db: Session,
+    code: str,
+    severity: str,
+    title: str,
+    condition,
+    description: str,
+    link_target: str,
+    model,
+    sample_builder,
+) -> DashboardWarningGroup:
+    count = db.scalar(select(func.count(model.id)).where(condition)) or 0
+    samples = list(db.scalars(select(model).where(condition).order_by(model.id.asc()).limit(5)).all()) if count else []
+    return DashboardWarningGroup(
+        code=code,
+        severity=severity,
+        title=title,
+        count=count,
+        description=description,
+        link_target=link_target,
+        sample_records=[sample_builder(record) for record in samples],
+    )
+
+
+def _count_when(condition):
+    return func.coalesce(func.sum(case((condition, 1), else_=0)), 0)
+
+
+def _order_line_exists(condition):
+    return exists(select(OrderItem.id).where(OrderItem.order_id == Order.id, condition))
+
+
+def _impossible_line_condition():
+    ordered = func.coalesce(OrderItem.quantity_ordered, 0)
+    allocated = func.coalesce(OrderItem.quantity_allocated, 0)
+    picked = func.coalesce(OrderItem.quantity_picked, 0)
+    fulfilled = func.coalesce(OrderItem.quantity_fulfilled, 0)
+    return or_(allocated > ordered, picked > allocated, picked > ordered, fulfilled > picked, fulfilled > ordered)
 
 
 def item_sample(item: InventoryItem) -> DashboardWarningSample:

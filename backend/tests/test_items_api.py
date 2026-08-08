@@ -242,6 +242,38 @@ def test_list_items_facets_cover_the_full_catalog_and_preserve_raw_values(client
     assert [item["SKU"] for item in filtered["items"]] == ["FACET-2"]
 
 
+def test_list_items_can_skip_facets_and_load_them_separately(client, monkeypatch):
+    seed_item(client, sku="FACET-SPLIT-1", Category="Dogs", Brand="Alpha")
+    seed_item(client, sku="FACET-SPLIT-2", Category="Cats", Brand="Beta")
+
+    from app.api.routes import items as items_routes
+
+    original_get_item_facets = items_routes.get_item_facets
+    calls = []
+
+    def tracked_get_item_facets(db):
+        calls.append(True)
+        return original_get_item_facets(db)
+
+    monkeypatch.setattr(items_routes, "get_item_facets", tracked_get_item_facets)
+
+    item_list = client.get(
+        "/api/items",
+        params={"page": 1, "page_size": 1, "include_facets": False},
+    )
+    assert item_list.status_code == 200
+    assert item_list.json()["facets"] == {"categories": [], "brands": []}
+    assert calls == []
+
+    facets = client.get("/api/items/facets")
+    assert facets.status_code == 200
+    assert facets.json() == {
+        "categories": ["Cats", "Dogs"],
+        "brands": ["Alpha", "Beta"],
+    }
+    assert calls == [True]
+
+
 def test_list_items_pagination_handles_empty_and_out_of_range_pages(client):
     seed_item(client, sku="ONLY-ITEM")
 

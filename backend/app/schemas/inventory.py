@@ -32,6 +32,10 @@ class InventoryItemLocationRead(BaseModel):
     sku: str | None = None
     barcode: str | None = None
     description: str | None = None
+    brand: str | None = None
+    category: str | None = None
+    unit_cost: float | None = None
+    item_active: bool | None = None
     warehouse: str | None = None
     inventory_location: str | None = None
     location_code: str | None = None
@@ -72,6 +76,12 @@ class InventoryItemLocationUpdate(BaseModel):
 class InventoryLocationInventoryListResponse(BaseModel):
     rows: list[InventoryItemLocationRead]
     total: int
+    page: int = 1
+    page_size: int = 0
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class InventoryTransferLineInput(BaseModel):
@@ -129,6 +139,12 @@ class InventoryTransferDetail(InventoryTransferRead):
 class InventoryTransferListResponse(BaseModel):
     transfers: list[InventoryTransferRead]
     total: int
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class StockAdjustmentLineInput(BaseModel):
@@ -184,3 +200,9 @@ class StockAdjustmentDetail(StockAdjustmentRead):
 class StockAdjustmentListResponse(BaseModel):
     adjustments: list[StockAdjustmentRead]
     total: int
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False

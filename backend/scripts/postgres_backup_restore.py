@@ -7,9 +7,51 @@ from pathlib import Path
 import subprocess
 from urllib.parse import parse_qs, unquote, urlparse
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 import psycopg
 
-EXPECTED_REVISION = "20260731_0027"
+
+def current_alembic_head() -> str:
+    """Return the single schema revision represented by this checkout."""
+    backend_root = Path(__file__).resolve().parents[1]
+    config = Config(str(backend_root / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_root / "alembic"))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    if len(heads) != 1:
+        raise SystemExit(
+            "Restore verification requires exactly one Alembic head; "
+            f"found {len(heads)}: {', '.join(heads) or 'none'}."
+        )
+    return heads[0]
+
+
+def current_application_tables() -> set[str]:
+    """Return every application table declared by the current ORM models."""
+    # Import lazily so command help and backup creation do not initialize the
+    # full model graph. The verifier, however, must prove that a restored
+    # database can support the complete application represented by this
+    # checkout rather than a hand-maintained subset of "important" tables.
+    from app.models import Base
+
+    return {table.name for table in Base.metadata.sorted_tables}
+
+
+def validate_restored_schema(conn, expected_revision: str) -> str:
+    revision_rows = list(conn.execute("SELECT version_num FROM alembic_version"))
+    restored_revisions = [str(row[0]) for row in revision_rows]
+    tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")}
+    required_tables = current_application_tables()
+    missing_tables = sorted(required_tables - tables)
+
+    if restored_revisions != [expected_revision] or missing_tables:
+        raise SystemExit(
+            "Restore verification failed: "
+            f"restored_revisions={restored_revisions}, "
+            f"expected_revision={expected_revision}, "
+            f"missing_tables={missing_tables}"
+        )
+    return restored_revisions[0]
 
 
 def connection(url: str) -> tuple[dict[str, str], str]:
@@ -46,18 +88,13 @@ def verify(backup_file: Path, target_url: str, keep: bool = False) -> None:
     env, database = connection(target_url)
     if not database.endswith("_restore_verify"):
         raise SystemExit("Safety stop: the restore target database name must end with _restore_verify.")
+    expected_revision = current_alembic_head()
     subprocess.run(["dropdb", "--if-exists", database], env=env, check=True)
     try:
         subprocess.run(["createdb", database], env=env, check=True)
         subprocess.run(["pg_restore", "--no-owner", "--no-privileges", "--exit-on-error", "--dbname", database, str(backup_file)], env=env, check=True)
         with psycopg.connect(target_url.replace("postgresql+psycopg://", "postgresql://", 1)) as conn:
-            revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            tables = {row[0] for row in conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")}
-            required = {"inventory_items", "stock_movements", "orders", "users", "woo_stock_sync_jobs"}
-            if revision != EXPECTED_REVISION or not required.issubset(tables):
-                raise SystemExit(f"Restore verification failed: revision={revision}, missing_tables={sorted(required - tables)}")
-            conn.execute("SELECT COUNT(*) FROM inventory_items").fetchone()
-            conn.execute("SELECT COUNT(*) FROM stock_movements").fetchone()
+            revision = validate_restored_schema(conn, expected_revision)
         print(f"Restore verified at revision {revision} in {database}.")
     finally:
         if not keep:

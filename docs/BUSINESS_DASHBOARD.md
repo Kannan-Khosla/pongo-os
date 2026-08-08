@@ -23,9 +23,15 @@ Read-only endpoints:
 - `GET /api/business-dashboard/order-map`
 
 The combined endpoint returns all sections needed for the initial Dashboard
-page load. It loads the applicable local order snapshot once, not once per
-section. Results are versioned in PostgreSQL and reused until an order, stock,
-allocation, receipt, pick, fulfillment, or movement changes the source version.
+page load. PostgreSQL calculates counts, revenue, units, customer cohorts, and
+daily comparisons with aggregate queries; the API no longer loads the complete
+order and line history into application memory. The map query is limited to the
+selected business day, and the open-order card returns at most the 200 newest
+rows while its displayed total remains the exact full open-order count.
+Subscription processing selects only local payloads containing subscription
+data instead of loading every raw WooCommerce payload. Results are versioned in
+PostgreSQL and reused until an order, stock, allocation, receipt, pick,
+fulfillment, or movement changes the source version.
 When the source changes, an existing verified snapshot is returned immediately
 while the worker refreshes it. Dashboard requests never contact WooCommerce
 directly.

@@ -9,7 +9,7 @@ from typing import Any, Callable
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.models.performance import MetricCache, MetricVersion, bump_metric_version
+from app.models.performance import MetricCache, MetricVersion, bump_metric_version, ensure_metric_version
 
 
 # The local lock covers SQLite/tests. PostgreSQL's transaction lock coordinates
@@ -73,9 +73,11 @@ def current_metric_version(db: Session) -> int:
     version = db.scalar(select(MetricVersion.version).where(MetricVersion.id == 1))
     if version is not None:
         return int(version)
-    db.add(MetricVersion(id=1, version=0))
-    db.flush()
-    return 0
+    ensure_metric_version(db)
+    version = db.scalar(select(MetricVersion.version).where(MetricVersion.id == 1))
+    if version is None:
+        raise RuntimeError("Unable to initialize the metric cache version.")
+    return int(version)
 
 
 def invalidate_metrics(db: Session) -> None:

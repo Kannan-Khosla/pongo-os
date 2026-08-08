@@ -16,18 +16,124 @@ from app.models.auth import User
 from app.models.allocations import Allocation, AllocationLine
 from app.models.inventory import InventoryItem, InventoryItemLocation, InventoryLocation, StockMovement
 from app.models.orders import Order, OrderItem
+from app.models.performance import MetricVersion
 from app.models.receipts import Receipt
-from app.models.woocommerce import WooStockSyncJob
+from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun, WooStockSyncJob
 from app.schemas.picks import PickRequest
 from app.schemas.receipts import DirectReceiptRequest
 from app.schemas.auth import LoginRequest
 from app.services.auth import hash_password
 from app.services.location_inventory import create_committed_adjustment
+from app.services.metric_cache import current_metric_version, invalidate_metrics
 from app.api.routes.locations import ensure_location_has_no_stock
 from app.services.order_workflow import complete_picked_order
 from app.services.picks import commit_pick, unpick_orders
 from app.services.receiving import commit_direct_receipt
 from app.services.woocommerce_stock_sync_jobs import POSTGRES_STOCK_JOB_WORKER_LOCK_KEY, process_next_stock_sync_job
+from app.services.woocommerce_sync_errors import store_sync_error_once
+
+
+@pytest.mark.skipif(not os.environ.get("PONGO_TEST_POSTGRES_URL"), reason="PONGO_TEST_POSTGRES_URL is required for migration index verification")
+def test_postgres_reporting_indexes_keep_intended_expressions_and_predicates():
+    engine = make_engine(os.environ["PONGO_TEST_POSTGRES_URL"])
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT index_class.relname AS name, "
+                "pg_get_expr(index_row.indexprs, index_row.indrelid) AS expressions, "
+                "pg_get_expr(index_row.indpred, index_row.indrelid) AS predicate "
+                "FROM pg_index AS index_row "
+                "JOIN pg_class AS index_class ON index_class.oid = index_row.indexrelid "
+                "JOIN pg_class AS table_class ON table_class.oid = index_row.indrelid "
+                "JOIN pg_namespace AS namespace ON namespace.oid = table_class.relnamespace "
+                "WHERE namespace.nspname = 'public' AND table_class.relname = 'orders' "
+                "AND index_class.relname IN "
+                "('ix_orders_reporting_date', 'ix_orders_reporting_customer_date')"
+            )
+        ).mappings().all()
+
+    definitions = {row["name"]: row for row in rows}
+    assert set(definitions) == {"ix_orders_reporting_date", "ix_orders_reporting_customer_date"}
+    expected_date = "coalesce(placed_on, date_created, completed_on, created_at)"
+    expected_predicate_parts = {"is_historical_snapshot = false", "historical_source_present = true"}
+
+    for definition in definitions.values():
+        expressions = " ".join((definition["expressions"] or "").lower().split())
+        predicate = " ".join((definition["predicate"] or "").lower().split())
+        assert expected_date in expressions
+        assert all(part in predicate for part in expected_predicate_parts)
+
+    customer_expressions = " ".join(definitions["ix_orders_reporting_customer_date"]["expressions"].lower().split())
+    assert "lower(trim(both from customer_email))" in customer_expressions
+
+
+@pytest.mark.skipif(not os.environ.get("PONGO_TEST_POSTGRES_URL"), reason="PONGO_TEST_POSTGRES_URL is required for real transaction locking")
+def test_concurrent_postgres_metric_version_initialization_is_atomic():
+    engine = make_engine(os.environ["PONGO_TEST_POSTGRES_URL"])
+    sessions = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    with sessions() as db:
+        db.execute(delete(MetricVersion).where(MetricVersion.id == 1))
+        db.commit()
+
+    barrier = Barrier(4)
+
+    def read_version() -> int:
+        with sessions() as db:
+            barrier.wait()
+            version = current_metric_version(db)
+            db.commit()
+            return version
+
+    def invalidate() -> None:
+        with sessions() as db:
+            barrier.wait()
+            invalidate_metrics(db)
+            db.commit()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(read_version) for _ in range(2)]
+        futures.extend(pool.submit(invalidate) for _ in range(2))
+        results = [future.result() for future in futures]
+
+    assert all(version in {0, 1, 2} for version in results[:2])
+    with sessions() as db:
+        assert db.scalar(select(func.count(MetricVersion.id)).where(MetricVersion.id == 1)) == 1
+        assert current_metric_version(db) == 2
+
+
+@pytest.mark.skipif(not os.environ.get("PONGO_TEST_POSTGRES_URL"), reason="PONGO_TEST_POSTGRES_URL is required for real transaction locking")
+def test_concurrent_postgres_sync_error_deduplication_is_atomic():
+    engine = make_engine(os.environ["PONGO_TEST_POSTGRES_URL"])
+    sessions = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    suffix = uuid4().hex[:10]
+    with sessions() as db:
+        run = WooCommerceSyncRun(sync_type="products", status="completed")
+        db.add(run)
+        db.commit()
+        run_id = run.id
+
+    barrier = Barrier(2)
+
+    def store() -> bool:
+        with sessions() as db:
+            barrier.wait()
+            created = store_sync_error_once(
+                db,
+                sync_run_id=run_id,
+                remote_product_id=991,
+                sku=f"PG-SYNC-ERROR-{suffix}",
+                error_message="same concurrent failure",
+                raw_payload={"test": suffix},
+            )
+            db.commit()
+            return created
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: store(), range(2)))
+
+    assert sorted(outcomes) == [False, True]
+    with sessions() as db:
+        assert db.scalar(select(func.count(WooCommerceSyncError.id)).where(WooCommerceSyncError.sync_run_id == run_id)) == 1
 
 
 @pytest.mark.skipif(not os.environ.get("PONGO_TEST_POSTGRES_URL"), reason="PONGO_TEST_POSTGRES_URL is required for real transaction locking")

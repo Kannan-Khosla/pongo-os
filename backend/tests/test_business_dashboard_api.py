@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
+
 from tests.test_items_api import client, seed_item  # noqa: F401
 
 
@@ -175,6 +178,108 @@ def test_business_dashboard_combined_endpoint_returns_all_sections(client, monke
     body = client.get("/api/business-dashboard", params={"date": "2026-07-08"}).json()
 
     assert {"today", "open_orders", "subscriptions", "revenue_comparison", "order_map", "data_quality"}.issubset(body.keys())
+
+
+def test_business_dashboard_sql_paths_match_legacy_metric_semantics(client, monkeypatch):
+    seed_business_orders(client, monkeypatch)
+
+    from app.services.business_dashboard import (
+        build_open_orders,
+        build_order_map,
+        build_revenue_comparison,
+        build_subscriptions,
+        build_today,
+        eligible_order_condition,
+    )
+
+    target = datetime(2026, 7, 8).date()
+    with Session(client.test_engine) as db:
+        from app.models.orders import Order
+
+        order = db.scalar(select(Order).where(Order.woo_order_id == 803))
+        order.total = None
+        order.raw_woo_payload = {
+            "subscriptions": [
+                {
+                    "id": 9001,
+                    "name": "Monthly food",
+                    "next_payment_date": "2026-07-10",
+                    "quantity": 2,
+                    "status": "active",
+                    "sku": "BD-SKU",
+                }
+            ]
+        }
+        db.commit()
+        legacy_orders = list(
+            db.scalars(
+                select(Order)
+                .where(eligible_order_condition())
+                .options(selectinload(Order.items))
+                .order_by(Order.id.asc())
+            ).all()
+        )
+
+        assert build_today(db, target) == build_today(db, target, orders=legacy_orders)
+        assert build_open_orders(db) == build_open_orders(db, orders=legacy_orders)
+        assert build_subscriptions(db, target) == build_subscriptions(db, target, orders=legacy_orders)
+        assert build_revenue_comparison(db, target) == build_revenue_comparison(db, target, orders=legacy_orders)
+        assert build_order_map(db, target) == build_order_map(db, target, orders=legacy_orders)
+
+
+def test_business_dashboard_open_order_preview_is_bounded_but_count_is_exact(client):
+    from app.models.orders import Order
+    from app.services.business_dashboard import BUSINESS_OPEN_ORDER_ROW_LIMIT, build_open_orders
+
+    with Session(client.test_engine) as db:
+        db.add_all(
+            [
+                Order(
+                    woo_order_id=10_000 + index,
+                    woo_order_number=str(10_000 + index),
+                    local_status="open",
+                    status="processing",
+                    is_historical_snapshot=False,
+                    historical_source_present=True,
+                    placed_on=datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc),
+                )
+                for index in range(BUSINESS_OPEN_ORDER_ROW_LIMIT + 7)
+            ]
+        )
+        db.commit()
+
+        result = build_open_orders(db)
+
+    assert result["summary"]["open_orders_count"] == BUSINESS_OPEN_ORDER_ROW_LIMIT + 7
+    assert len(result["rows"]) == BUSINESS_OPEN_ORDER_ROW_LIMIT
+
+
+def test_business_dashboard_sql_day_bounds_use_admin_timezone(client):
+    from app.models.orders import Order
+    from app.services.business_dashboard import build_today
+
+    with Session(client.test_engine) as db:
+        db.add(
+            Order(
+                woo_order_id=20_001,
+                woo_order_number="20001",
+                local_status="open",
+                status="processing",
+                customer_email="boundary@example.invalid",
+                total=10,
+                is_historical_snapshot=False,
+                historical_source_present=True,
+                placed_on=datetime(2026, 8, 6, 5, 30, tzinfo=timezone.utc),
+            )
+        )
+        db.commit()
+
+        edmonton_day = build_today(db, datetime(2026, 8, 5).date())["summary"]
+        following_day = build_today(db, datetime(2026, 8, 6).date())["summary"]
+
+    assert edmonton_day["today_orders_count"] == 1
+    assert edmonton_day["today_revenue"] == 10
+    assert following_day["today_orders_count"] == 0
 
 
 def test_business_dashboard_endpoints_are_read_only(client, monkeypatch):

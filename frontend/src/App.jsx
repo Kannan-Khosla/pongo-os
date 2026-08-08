@@ -229,9 +229,32 @@ const emptyBusinessDashboard = {
   order_map: { summary: {}, city_breakdown: [], markers: [], data_quality: [] },
   data_quality: [],
 };
+function emptyServerPagination(pageSize = 20) {
+  return {
+    page: 1,
+    page_size: pageSize,
+    total: 0,
+    total_pages: 1,
+    returned_count: 0,
+    has_previous: false,
+    has_next: false,
+  };
+}
+
+function preservePagedRequest(filters, currentFilters, defaultPageSize) {
+  const requested = filters && Object.keys(filters).length
+    ? { ...(currentFilters || {}), ...filters }
+    : { ...(currentFilters || {}) };
+  const { pageSize, ...query } = requested;
+  return {
+    ...query,
+    page: Math.max(1, Number(requested.page) || 1),
+    page_size: Math.max(1, Number(requested.page_size || pageSize) || defaultPageSize),
+  };
+}
 const emptyCompletedOrders = {
   orders: [],
-  total: 0,
+  ...emptyServerPagination(),
 };
 const emptyWooStatus = {
   configured: false,
@@ -286,13 +309,12 @@ const emptyWooStatus = {
   message: 'WooCommerce status has not been checked.',
 };
 const wooOrderSyncStatuses = ['processing', 'on-hold', 'pending', 'completed', 'failed', 'cancelled', 'refunded'];
-const ORDER_VIEW_REFRESH_INTERVAL_MS = 10000;
+const ORDER_VIEW_REFRESH_INTERVAL_MS = 120000;
 const WOO_SYNC_HEALTH_POLL_INTERVAL_MS = 120000;
 const WEBHOOK_EVENT_POLL_INTERVAL_MS = 15000;
 const WEBHOOK_EVENT_POLL_LIMIT = 50;
 const ORDER_NOTIFICATION_HISTORY_LIMIT = 50;
 const DEFAULT_ITEM_PAGE_FILTERS = Object.freeze({ page: 1, pageSize: 50, includeNonInventory: false });
-const OPERATIONAL_ITEM_SELECTOR_FILTERS = Object.freeze({ includeNonInventory: false });
 const emptyOpenOrders = {
   orders: [],
   total: 0,
@@ -300,6 +322,12 @@ const emptyOpenOrders = {
   partial_count: 0,
   unavailable_count: 0,
   unknown_count: 0,
+  page: 1,
+  page_size: 20,
+  total_pages: 1,
+  returned_count: 0,
+  has_previous: false,
+  has_next: false,
 };
 
 export function withMutationIdempotency(ref, operation, payload) {
@@ -629,7 +657,7 @@ function submitSearchOnEnter(event, submit) {
   submit();
 }
 
-function InventoryKeywordSearch({ value, onChange, onSearch, label, placeholder, className = '', autoFocus = false }) {
+function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect = null, onSubmit = null, label, placeholder, className = '', autoFocus = false, hideLabel = false }) {
   const listboxId = useId();
   const [suggestions, setSuggestions] = useState([]);
   const [open, setOpen] = useState(false);
@@ -694,6 +722,7 @@ function InventoryKeywordSearch({ value, onChange, onSearch, label, placeholder,
   function chooseSuggestion(item) {
     const nextValue = item.sku || item.barcode || item.product_name || item.description || '';
     onChange(nextValue);
+    onSelect?.(item);
     submit(nextValue);
   }
 
@@ -718,7 +747,10 @@ function InventoryKeywordSearch({ value, onChange, onSearch, label, placeholder,
     if (event.key === 'Enter') {
       event.preventDefault();
       if (open && activeIndex >= 0) chooseSuggestion(suggestions[activeIndex]);
-      else submit();
+      else {
+        submit();
+        onSubmit?.(value.trim());
+      }
     }
   }
 
@@ -726,7 +758,7 @@ function InventoryKeywordSearch({ value, onChange, onSearch, label, placeholder,
     <div className={`keyword-item-search ${className}`} onBlur={(event) => {
       if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
     }}>
-      <span>{label}</span>
+      {!hideLabel && <span>{label}</span>}
       <div className="keyword-search-input">
         <input
           aria-label={label}
@@ -1153,9 +1185,11 @@ export default function App({ currentUser = null, onLogout = null }) {
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [inventoryError, setInventoryError] = useState('');
   const [receipts, setReceipts] = useState([]);
+  const [receiptsPagination, setReceiptsPagination] = useState(() => emptyServerPagination());
   const [receiptsLoading, setReceiptsLoading] = useState(false);
   const [receiptsError, setReceiptsError] = useState('');
   const [stockMovements, setStockMovements] = useState([]);
+  const [stockMovementsPagination, setStockMovementsPagination] = useState(() => emptyServerPagination());
   const [stockMovementsLoading, setStockMovementsLoading] = useState(false);
   const [stockMovementsError, setStockMovementsError] = useState('');
   const [receivedInventoryRows, setReceivedInventoryRows] = useState([]);
@@ -1177,6 +1211,7 @@ export default function App({ currentUser = null, onLogout = null }) {
   const [businessDashboardLoading, setBusinessDashboardLoading] = useState(false);
   const [businessDashboardError, setBusinessDashboardError] = useState('');
   const [cycleCounts, setCycleCounts] = useState([]);
+  const [cycleCountsPagination, setCycleCountsPagination] = useState(() => emptyServerPagination(50));
   const [cycleCountsLoading, setCycleCountsLoading] = useState(false);
   const [cycleCountsError, setCycleCountsError] = useState('');
   const [wooStatus, setWooStatus] = useState(emptyWooStatus);
@@ -1185,12 +1220,17 @@ export default function App({ currentUser = null, onLogout = null }) {
   const [wooOrderPreview, setWooOrderPreview] = useState(null);
   const [wooOrderCommitSummary, setWooOrderCommitSummary] = useState(null);
   const [wooSyncRuns, setWooSyncRuns] = useState([]);
+  const [wooSyncRunsPagination, setWooSyncRunsPagination] = useState(() => emptyServerPagination(50));
   const [wooRemapCandidates, setWooRemapCandidates] = useState({ candidates: [], total: 0 });
+  const [wooRemapCandidatesPagination, setWooRemapCandidatesPagination] = useState(() => emptyServerPagination(100));
   const [wooRemapMappings, setWooRemapMappings] = useState({ mappings: [], total: 0 });
+  const [wooRemapMappingsPagination, setWooRemapMappingsPagination] = useState(() => emptyServerPagination(100));
   const [wooRemapPreview, setWooRemapPreview] = useState(null);
   const [wooRemapMessage, setWooRemapMessage] = useState('');
   const [wooWritebackQueue, setWooWritebackQueue] = useState({ queue: [], total: 0 });
+  const [wooWritebackQueuePagination, setWooWritebackQueuePagination] = useState(() => emptyServerPagination(50));
   const [wooStockSyncJobs, setWooStockSyncJobs] = useState([]);
+  const [wooStockSyncJobsPagination, setWooStockSyncJobsPagination] = useState(() => emptyServerPagination(25));
   const [wooWritebackPreview, setWooWritebackPreview] = useState(null);
   const [wooWritebackMessage, setWooWritebackMessage] = useState('');
   const [wooLoading, setWooLoading] = useState(false);
@@ -1207,27 +1247,32 @@ export default function App({ currentUser = null, onLogout = null }) {
   const [allocationPreview, setAllocationPreview] = useState(null);
   const [allocationCommitSummary, setAllocationCommitSummary] = useState(null);
   const [allocationHistory, setAllocationHistory] = useState([]);
+  const [allocationHistoryPagination, setAllocationHistoryPagination] = useState(() => emptyServerPagination());
   const [allocationDetail, setAllocationDetail] = useState(null);
   const [allocationLoading, setAllocationLoading] = useState(false);
   const [allocationError, setAllocationError] = useState('');
   const [pickPreview, setPickPreview] = useState(null);
   const [pickCommitSummary, setPickCommitSummary] = useState(null);
   const [pickHistory, setPickHistory] = useState([]);
+  const [pickHistoryPagination, setPickHistoryPagination] = useState(() => emptyServerPagination());
   const [pickDetail, setPickDetail] = useState(null);
   const [pickLoading, setPickLoading] = useState(false);
   const [pickError, setPickError] = useState('');
   const [fulfillmentPreview, setFulfillmentPreview] = useState(null);
   const [fulfillmentCommitSummary, setFulfillmentCommitSummary] = useState(null);
   const [fulfillmentHistory, setFulfillmentHistory] = useState([]);
+  const [fulfillmentHistoryPagination, setFulfillmentHistoryPagination] = useState(() => emptyServerPagination());
   const [fulfillmentDetail, setFulfillmentDetail] = useState(null);
   const [fulfillmentLoading, setFulfillmentLoading] = useState(false);
   const [fulfillmentError, setFulfillmentError] = useState('');
   const [routeCandidates, setRouteCandidates] = useState({ total_candidates: 0, candidates: [] });
+  const [routeCandidatesPagination, setRouteCandidatesPagination] = useState(() => emptyServerPagination(50));
   const [routeCandidatesLoading, setRouteCandidatesLoading] = useState(false);
   const [routeCandidatesError, setRouteCandidatesError] = useState('');
   const [routePreview, setRoutePreview] = useState(null);
   const [routeCommitSummary, setRouteCommitSummary] = useState(null);
   const [routesHistory, setRoutesHistory] = useState({ routes: [], total: 0 });
+  const [routesHistoryPagination, setRoutesHistoryPagination] = useState(() => emptyServerPagination(50));
   const [routeDetail, setRouteDetail] = useState(null);
   const [routeMapPayload, setRouteMapPayload] = useState(null);
   const [routeProviderMessage, setRouteProviderMessage] = useState('');
@@ -1244,9 +1289,28 @@ export default function App({ currentUser = null, onLogout = null }) {
   const activeRouteRef = useRef(route);
   const openOrderFiltersRef = useRef({});
   const openOrdersRequestIdRef = useRef(0);
+  const openOrdersAbortControllerRef = useRef(null);
   const itemsRequestIdRef = useRef(0);
   const itemsAbortControllerRef = useRef(null);
+  const itemFacetsLoadedRef = useRef(false);
+  const itemFacetsRequestIdRef = useRef(0);
+  const itemFacetsRequestRef = useRef(null);
   const inventorySummaryRequestIdRef = useRef(0);
+  const inventorySummaryAbortControllerRef = useRef(null);
+  const wooSyncRunsQueryRef = useRef({ page: 1, page_size: 50 });
+  const wooSyncRunsRequestIdRef = useRef(0);
+  const wooRemapCandidatesQueryRef = useRef({ page: 1, page_size: 100 });
+  const wooRemapCandidatesRequestIdRef = useRef(0);
+  const wooRemapMappingsQueryRef = useRef({ page: 1, page_size: 100 });
+  const wooRemapMappingsRequestIdRef = useRef(0);
+  const wooWritebackQueueQueryRef = useRef({ page: 1, page_size: 50 });
+  const wooWritebackQueueRequestIdRef = useRef(0);
+  const wooStockSyncJobsQueryRef = useRef({ page: 1, page_size: 25 });
+  const wooStockSyncJobsRequestIdRef = useRef(0);
+  const wooStockSyncTrackingTimeoutRef = useRef(null);
+  const wooStockSyncTrackedJobRef = useRef(null);
+  const wooOrderFetchTrackingTimeoutRef = useRef(null);
+  const wooOrderFetchTrackedJobRef = useRef(null);
   const pickMutationRef = useRef(null);
   const wooStockSyncMutationRef = useRef(null);
   activeRouteRef.current = route;
@@ -1272,16 +1336,11 @@ export default function App({ currentUser = null, onLogout = null }) {
     }
     if (route.pageId === 'inventory') {
       loadItems(inventoryRouteToItemFilters(route));
-      loadLocations({ status: 'active' });
-      if ((route.inventoryView || 'all') === 'movements') {
-        loadStockMovements();
-      }
     }
     if (route.pageId === 'receiving') {
-      loadItems(OPERATIONAL_ITEM_SELECTOR_FILTERS);
       loadLocations({ status: 'active' });
-      loadReceipts();
-      loadStockMovements({ movement_type: 'receive_direct' });
+      if ((route.receivingView || 'direct') === 'history') loadReceipts();
+      if ((route.receivingView || 'direct') !== 'bulk') loadStockMovements({ movement_type: 'receive_direct' });
     }
     if (route.pageId === 'scanner') {
       loadLocations({ status: 'active' });
@@ -1295,7 +1354,6 @@ export default function App({ currentUser = null, onLogout = null }) {
       if (route.reportKey === 'sku-orders') loadSkuOrdersReport();
     }
     if (route.pageId === 'cycle-count') {
-      loadItems(OPERATIONAL_ITEM_SELECTOR_FILTERS);
       loadLocations({ status: 'active' });
       loadCycleCounts();
     }
@@ -1328,12 +1386,69 @@ export default function App({ currentUser = null, onLogout = null }) {
       loadRouteCandidates();
       loadRoutes();
     }
-  }, [route.pageId, route.inventoryView, route.inventoryPage, route.inventoryPageSize, route.inventorySearch, route.inventoryCategory, route.inventoryBrand, route.inventoryDataQuality, route.inventorySortBy, route.inventorySortDir, route.ordersView, route.reportKey, route.settingsView]);
+  }, [route.pageId, route.inventoryView, route.inventoryPage, route.inventoryPageSize, route.inventorySearch, route.inventoryCategory, route.inventoryBrand, route.inventoryDataQuality, route.inventorySortBy, route.inventorySortDir, route.receivingView, route.ordersView, route.reportKey, route.settingsView]);
+
+  useEffect(() => {
+    const operationalOrdersView = route.pageId === 'orders' && ['open', 'pick'].includes(route.ordersView || 'open');
+    if (operationalOrdersView) return;
+    openOrdersAbortControllerRef.current?.abort();
+    openOrdersAbortControllerRef.current = null;
+    openOrdersRequestIdRef.current += 1;
+    setOpenOrdersLoading(false);
+  }, [route.pageId, route.ordersView]);
+
+  useEffect(() => {
+    const itemCollectionView = route.pageId === 'inventory'
+      || (route.pageId === 'items' && !route.itemView);
+    if (itemCollectionView) return;
+    itemsAbortControllerRef.current?.abort();
+    itemsAbortControllerRef.current = null;
+    itemsRequestIdRef.current += 1;
+    setItemsLoading(false);
+  }, [route.pageId, route.itemView]);
+
+  useEffect(() => {
+    if (route.pageId === 'inventory') return;
+    inventorySummaryAbortControllerRef.current?.abort();
+    inventorySummaryAbortControllerRef.current = null;
+    inventorySummaryRequestIdRef.current += 1;
+    setInventoryLoading(false);
+  }, [route.pageId]);
+
+  useEffect(() => {
+    if (route.pageId === 'inventory') loadLocations({ status: 'active' });
+  }, [route.pageId]);
+
+  useEffect(() => {
+    const itemCollectionView = route.pageId === 'inventory' || (route.pageId === 'items' && !route.itemView);
+    if (itemCollectionView) loadItemFacets();
+  }, [route.pageId, route.itemView]);
 
   useEffect(() => {
     if (route.pageId !== 'settings' || route.settingsView !== 'writeback') return undefined;
-    const intervalId = window.setInterval(loadWooStockSyncJobs, 3000);
+    const intervalId = window.setInterval(
+      () => loadWooStockSyncJobs(wooStockSyncJobsQueryRef.current),
+      3000,
+    );
     return () => window.clearInterval(intervalId);
+  }, [route.pageId, route.settingsView]);
+
+  useEffect(() => {
+    const isWritebackView = route.pageId === 'settings' && route.settingsView === 'writeback';
+    if (!isWritebackView) {
+      stopWooStockSyncJobTracking();
+      return undefined;
+    }
+    return stopWooStockSyncJobTracking;
+  }, [route.pageId, route.settingsView]);
+
+  useEffect(() => {
+    const isSyncView = route.pageId === 'settings' && route.settingsView === 'sync';
+    if (!isSyncView) {
+      stopWooOrderFetchJobTracking();
+      return undefined;
+    }
+    return stopWooOrderFetchJobTracking;
   }, [route.pageId, route.settingsView]);
 
   useEffect(() => {
@@ -1378,7 +1493,7 @@ export default function App({ currentUser = null, onLogout = null }) {
     if (route.pageId !== 'settings' || route.settingsView !== 'sync' || !['queued', 'running'].includes(wooStatus.order_history_import?.status)) return undefined;
     const pollHistoryImport = () => {
       if (document.visibilityState !== 'hidden') {
-        Promise.all([loadWooStatus(false, { silent: true }), loadWooSyncRuns()]);
+        Promise.all([loadWooStatus(false, { silent: true }), loadWooSyncRuns(wooSyncRunsQueryRef.current)]);
       }
     };
     const intervalId = window.setInterval(pollHistoryImport, 3000);
@@ -1453,7 +1568,7 @@ export default function App({ currentUser = null, onLogout = null }) {
     setItemsLoading(true);
     setItemsError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/items${filtersToQueryString(filters)}`, { signal: controller.signal });
+      const response = await apiFetch(`${API_BASE_URL}/api/items${filtersToQueryString(filters, { includeFacets: false })}`, { signal: controller.signal });
       if (!response.ok) {
         throw new Error(`Items API returned ${response.status}`);
       }
@@ -1461,14 +1576,14 @@ export default function App({ currentUser = null, onLogout = null }) {
       if (requestId !== itemsRequestIdRef.current) return;
       setItems((body.items || []).map(normalizeItem));
       const responsePage = body.page || 1;
-      setItemsPagination({
+      setItemsPagination((current) => ({
         page: responsePage,
         page_size: body.page_size ?? (body.items || []).length,
         total: body.total ?? (body.items || []).length,
         total_pages: body.total_pages ?? ((body.items || []).length ? 1 : 1),
         returned_count: body.returned_count ?? (body.items || []).length,
-        facets: body.facets || { categories: [], brands: [] },
-      });
+        facets: current.facets || { categories: [], brands: [] },
+      }));
       const currentRoute = activeRouteRef.current;
       if (filters.page && responsePage !== filters.page && currentRoute.pageId === 'inventory' && (currentRoute.inventoryView || 'all') === 'all') {
         window.location.hash = inventoryRouteHref(currentRoute, { page: responsePage });
@@ -1483,6 +1598,36 @@ export default function App({ currentUser = null, onLogout = null }) {
         setItemsLoading(false);
       }
     }
+  }
+
+  async function loadItemFacets({ force = false } = {}) {
+    if (!force && itemFacetsLoadedRef.current) return;
+    if (!force && itemFacetsRequestRef.current) return itemFacetsRequestRef.current;
+    const requestId = itemFacetsRequestIdRef.current + 1;
+    itemFacetsRequestIdRef.current = requestId;
+    const request = (async () => {
+      try {
+        const response = await apiFetch(`${API_BASE_URL}/api/items/facets`, { signal: new AbortController().signal });
+        if (!response.ok) throw new Error(`Item facets API returned ${response.status}`);
+        const body = await response.json();
+        if (requestId !== itemFacetsRequestIdRef.current) return;
+        const facets = body.facets || body;
+        setItemsPagination((current) => ({
+          ...current,
+          facets: {
+            categories: facets.categories || [],
+            brands: facets.brands || [],
+          },
+        }));
+        itemFacetsLoadedRef.current = true;
+      } catch {
+        if (requestId === itemFacetsRequestIdRef.current) itemFacetsLoadedRef.current = false;
+      } finally {
+        if (requestId === itemFacetsRequestIdRef.current) itemFacetsRequestRef.current = null;
+      }
+    })();
+    itemFacetsRequestRef.current = request;
+    return request;
   }
 
   async function saveItem(nextItem) {
@@ -1503,6 +1648,7 @@ export default function App({ currentUser = null, onLogout = null }) {
       const existing = current.some((item) => item.id === saved.id);
       return existing ? current.map((item) => (item.id === saved.id ? saved : item)) : [...current, saved];
     });
+    await loadItemFacets({ force: true });
     navigate(`/items/${saved.id}`);
   }
 
@@ -1558,32 +1704,40 @@ export default function App({ currentUser = null, onLogout = null }) {
   async function loadInventorySummary(filters = {}) {
     const requestId = inventorySummaryRequestIdRef.current + 1;
     inventorySummaryRequestIdRef.current = requestId;
+    inventorySummaryAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    inventorySummaryAbortControllerRef.current = controller;
     setInventoryLoading(true);
     setInventoryError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/inventory/summary/by-location${inventoryFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/inventory/summary/by-location${inventoryFiltersToQueryString(filters)}`, { signal: controller.signal });
       if (!response.ok) {
         throw new Error(`Inventory API returned ${response.status}`);
       }
       const body = await response.json();
       if (requestId === inventorySummaryRequestIdRef.current) setInventorySummary(body);
     } catch (error) {
-      if (requestId === inventorySummaryRequestIdRef.current) setInventoryError('Unable to load inventory summary from the backend. Start the FastAPI server and try again.');
+      if (error?.name !== 'AbortError' && requestId === inventorySummaryRequestIdRef.current) setInventoryError('Unable to load inventory summary from the backend. Start the FastAPI server and try again.');
     } finally {
-      if (requestId === inventorySummaryRequestIdRef.current) setInventoryLoading(false);
+      if (requestId === inventorySummaryRequestIdRef.current) {
+        inventorySummaryAbortControllerRef.current = null;
+        setInventoryLoading(false);
+      }
     }
   }
 
   async function loadReceipts(filters = {}) {
+    const requestFilters = { ...filters, page: filters.page || 1, page_size: filters.page_size || filters.pageSize || 20 };
     setReceiptsLoading(true);
     setReceiptsError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/receipts${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/receipts${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) {
         throw new Error(`Receipts API returned ${response.status}`);
       }
       const body = await response.json();
       setReceipts(body.receipts || []);
+      setReceiptsPagination(paginationFromResponse(body, requestFilters.page_size));
     } catch (error) {
       setReceiptsError('Unable to load receipt history from the backend.');
     } finally {
@@ -1592,15 +1746,17 @@ export default function App({ currentUser = null, onLogout = null }) {
   }
 
   async function loadStockMovements(filters = {}) {
+    const requestFilters = { ...filters, page: filters.page || 1, page_size: filters.page_size || filters.pageSize || 20 };
     setStockMovementsLoading(true);
     setStockMovementsError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/stock-movements${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/stock-movements${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) {
         throw new Error(`Stock movements API returned ${response.status}`);
       }
       const body = await response.json();
       setStockMovements(body.movements || []);
+      setStockMovementsPagination(paginationFromResponse(body, requestFilters.page_size));
     } catch (error) {
       setStockMovementsError('Unable to load stock movement history from the backend.');
     } finally {
@@ -1709,15 +1865,17 @@ export default function App({ currentUser = null, onLogout = null }) {
   }
 
   async function loadCycleCounts(filters = {}) {
+    const requestFilters = { ...filters, page: filters.page || 1, page_size: filters.page_size || filters.pageSize || 50 };
     setCycleCountsLoading(true);
     setCycleCountsError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/cycle-counts${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/cycle-counts${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) {
         throw new Error(`Cycle Counts API returned ${response.status}`);
       }
       const body = await response.json();
       setCycleCounts(body.cycle_counts || []);
+      setCycleCountsPagination(paginationFromResponse(body, requestFilters.page_size));
     } catch (error) {
       setCycleCountsError('Unable to load cycle count history from the backend.');
     } finally {
@@ -1756,58 +1914,127 @@ export default function App({ currentUser = null, onLogout = null }) {
     }
   }
 
-  async function loadWooSyncRuns() {
+  async function loadWooSyncRuns(filters = {}) {
+    const requestFilters = preservePagedRequest(filters, wooSyncRunsQueryRef.current, 50);
+    const requestId = wooSyncRunsRequestIdRef.current + 1;
+    wooSyncRunsRequestIdRef.current = requestId;
+    wooSyncRunsQueryRef.current = requestFilters;
     setWooError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/sync-runs`);
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/sync-runs${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) {
         throw new Error(`WooCommerce sync runs returned ${response.status}`);
       }
       const body = await response.json();
+      if (requestId !== wooSyncRunsRequestIdRef.current) return null;
+      const pagination = paginationFromResponse(body, requestFilters.page_size);
       setWooSyncRuns(body.sync_runs || []);
+      setWooSyncRunsPagination(pagination);
+      wooSyncRunsQueryRef.current = { ...requestFilters, page: pagination.page, page_size: pagination.page_size };
+      return body;
     } catch (error) {
+      if (requestId !== wooSyncRunsRequestIdRef.current) return null;
       setWooError('Unable to load WooCommerce sync run history.');
+      return null;
+    }
+  }
+
+  async function loadWooRemapCandidates(filters = {}) {
+    const requestFilters = preservePagedRequest(filters, wooRemapCandidatesQueryRef.current, 100);
+    const requestId = wooRemapCandidatesRequestIdRef.current + 1;
+    wooRemapCandidatesRequestIdRef.current = requestId;
+    wooRemapCandidatesQueryRef.current = requestFilters;
+    setWooError('');
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/candidates${plainFiltersToQueryString(requestFilters)}`);
+      if (!response.ok) throw new Error(`Remap candidates returned ${response.status}`);
+      const body = await response.json();
+      if (requestId !== wooRemapCandidatesRequestIdRef.current) return null;
+      const pagination = paginationFromResponse(body, requestFilters.page_size);
+      setWooRemapCandidates({ candidates: body.candidates || [], total: body.total || 0 });
+      setWooRemapCandidatesPagination(pagination);
+      wooRemapCandidatesQueryRef.current = { ...requestFilters, page: pagination.page, page_size: pagination.page_size };
+      return body;
+    } catch (error) {
+      if (requestId !== wooRemapCandidatesRequestIdRef.current) return null;
+      setWooError('Unable to load WooCommerce remap candidates.');
+      return null;
+    }
+  }
+
+  async function loadWooRemapMappings(filters = {}) {
+    const requestFilters = preservePagedRequest(filters, wooRemapMappingsQueryRef.current, 100);
+    const requestId = wooRemapMappingsRequestIdRef.current + 1;
+    wooRemapMappingsRequestIdRef.current = requestId;
+    wooRemapMappingsQueryRef.current = requestFilters;
+    setWooError('');
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/mappings${plainFiltersToQueryString(requestFilters)}`);
+      if (!response.ok) throw new Error(`Remap mappings returned ${response.status}`);
+      const body = await response.json();
+      if (requestId !== wooRemapMappingsRequestIdRef.current) return null;
+      const pagination = paginationFromResponse(body, requestFilters.page_size);
+      setWooRemapMappings({ mappings: body.mappings || [], total: body.total || 0 });
+      setWooRemapMappingsPagination(pagination);
+      wooRemapMappingsQueryRef.current = { ...requestFilters, page: pagination.page, page_size: pagination.page_size };
+      return body;
+    } catch (error) {
+      if (requestId !== wooRemapMappingsRequestIdRef.current) return null;
+      setWooError('Unable to load WooCommerce remap mappings.');
+      return null;
     }
   }
 
   async function loadWooRemap() {
-    setWooError('');
-    try {
-      const [candidatesResponse, mappingsResponse] = await Promise.all([
-        apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/candidates`),
-        apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/remap/mappings`),
-      ]);
-      if (!candidatesResponse.ok || !mappingsResponse.ok) {
-        throw new Error('Remap API returned an error.');
-      }
-      setWooRemapCandidates(await candidatesResponse.json());
-      setWooRemapMappings(await mappingsResponse.json());
-    } catch (error) {
-      setWooError('Unable to load WooCommerce remap data.');
-    }
+    await Promise.all([loadWooRemapCandidates(), loadWooRemapMappings()]);
   }
 
-  async function loadWooWritebackQueue() {
+  async function loadWooWritebackQueue(filters = null) {
+    const requestFilters = filters === null
+      ? { page: 1, page_size: 50 }
+      : preservePagedRequest(filters, wooWritebackQueueQueryRef.current, 50);
+    const requestId = wooWritebackQueueRequestIdRef.current + 1;
+    wooWritebackQueueRequestIdRef.current = requestId;
+    wooWritebackQueueQueryRef.current = requestFilters;
     setWooError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/writeback/queue`);
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/writeback/queue${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) {
         throw new Error(`WooCommerce writeback queue returned ${response.status}`);
       }
-      setWooWritebackQueue(await response.json());
+      const body = await response.json();
+      if (requestId !== wooWritebackQueueRequestIdRef.current) return null;
+      const pagination = paginationFromResponse(body, requestFilters.page_size);
+      setWooWritebackQueue({ queue: body.queue || [], total: body.total || 0 });
+      setWooWritebackQueuePagination(pagination);
+      wooWritebackQueueQueryRef.current = { ...requestFilters, page: pagination.page, page_size: pagination.page_size };
+      return body;
     } catch (error) {
+      if (requestId !== wooWritebackQueueRequestIdRef.current) return null;
       setWooError('Unable to load WooCommerce writeback queue.');
+      return null;
     }
   }
 
-  async function loadWooStockSyncJobs() {
+  async function loadWooStockSyncJobs(filters = {}) {
+    const requestFilters = preservePagedRequest(filters, wooStockSyncJobsQueryRef.current, 25);
+    const requestId = wooStockSyncJobsRequestIdRef.current + 1;
+    wooStockSyncJobsRequestIdRef.current = requestId;
+    wooStockSyncJobsQueryRef.current = requestFilters;
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/writeback/stock/jobs`);
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/writeback/stock/jobs${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) throw new Error(`Stock sync jobs returned ${response.status}`);
       const body = await response.json();
+      if (requestId !== wooStockSyncJobsRequestIdRef.current) return null;
+      const pagination = paginationFromResponse(body, requestFilters.page_size);
       setWooStockSyncJobs(body.jobs || []);
+      setWooStockSyncJobsPagination(pagination);
+      wooStockSyncJobsQueryRef.current = { ...requestFilters, page: pagination.page, page_size: pagination.page_size };
+      return body;
     } catch (error) {
+      if (requestId !== wooStockSyncJobsRequestIdRef.current) return null;
       setWooError(error.message || 'Unable to load stock sync jobs.');
+      return null;
     }
   }
 
@@ -1816,12 +2043,26 @@ export default function App({ currentUser = null, onLogout = null }) {
     setWooError('');
     try {
       await postJson(`/api/integrations/woocommerce/writeback/stock/jobs/${jobId}/${action}`, {});
-      await loadWooStockSyncJobs();
+      await loadWooStockSyncJobs(wooStockSyncJobsQueryRef.current);
     } catch (error) {
       setWooError(error.message || `Unable to ${action} stock sync job.`);
     } finally {
       setWooLoading(false);
     }
+  }
+
+  function stopWooStockSyncJobTracking() {
+    if (wooStockSyncTrackingTimeoutRef.current !== null) {
+      window.clearTimeout(wooStockSyncTrackingTimeoutRef.current);
+      wooStockSyncTrackingTimeoutRef.current = null;
+    }
+    wooStockSyncTrackedJobRef.current = null;
+  }
+
+  function startWooStockSyncJobTracking(jobId) {
+    stopWooStockSyncJobTracking();
+    wooStockSyncTrackedJobRef.current = jobId;
+    trackWooStockSyncJob(jobId);
   }
 
   async function saveWooConfiguration(payload) {
@@ -1869,8 +2110,8 @@ export default function App({ currentUser = null, onLogout = null }) {
       });
       const result = await postJson('/api/integrations/woocommerce/writeback/stock/sync', payload);
       setWooWritebackMessage(`Stock update queued: 0 of ${result.total_items} item(s). You can leave this page safely.`);
-      trackWooStockSyncJob(result.id);
-      await loadWooStockSyncJobs();
+      startWooStockSyncJobTracking(result.id);
+      await loadWooStockSyncJobs(wooStockSyncJobsQueryRef.current);
       return result;
     } catch (error) {
       setWooError(error.message || 'Unable to update WooCommerce stock.');
@@ -1881,25 +2122,31 @@ export default function App({ currentUser = null, onLogout = null }) {
   }
 
   async function trackWooStockSyncJob(jobId) {
+    if (wooStockSyncTrackedJobRef.current !== jobId) return;
     try {
       const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/writeback/stock/jobs/${jobId}`);
       if (!response.ok) throw new Error(`Stock sync job returned ${response.status}`);
       const job = await response.json();
-      await loadWooStockSyncJobs();
-      const terminal = ['completed', 'completed_with_errors', 'paused', 'cancelled'].includes(job.status);
+      if (wooStockSyncTrackedJobRef.current !== jobId) return;
+      const terminal = ['completed', 'completed_with_errors', 'failed', 'paused', 'cancelled'].includes(job.status);
       setWooWritebackMessage(
         terminal
           ? `Stock update ${job.status.replaceAll('_', ' ')}: ${job.sent_count + job.dry_run_count} sent/dry-run, ${job.failed_count} failed.`
           : `Stock update ${job.progress_percent}%: ${job.processed_items} of ${job.total_items} item(s). You can leave this page safely.`,
       );
       if (terminal) {
+        stopWooStockSyncJobTracking();
         resetMutationIdempotency(wooStockSyncMutationRef);
+        await loadWooStockSyncJobs(wooStockSyncJobsQueryRef.current);
         await loadWooStatus(false, { silent: true });
       } else {
-        window.setTimeout(() => trackWooStockSyncJob(jobId), 2000);
+        wooStockSyncTrackingTimeoutRef.current = window.setTimeout(() => trackWooStockSyncJob(jobId), 2000);
       }
     } catch (error) {
-      setWooError(error.message || 'Unable to read stock update progress.');
+      if (wooStockSyncTrackedJobRef.current === jobId) {
+        stopWooStockSyncJobTracking();
+        setWooError(error.message || 'Unable to read stock update progress.');
+      }
     }
   }
 
@@ -1946,10 +2193,11 @@ export default function App({ currentUser = null, onLogout = null }) {
   async function refreshLocalOrderDataAfterNotification() {
     const activeRoute = activeRouteRef.current;
     if (activeRoute.pageId === 'orders') {
-      await Promise.all([
-        loadOpenOrders(openOrderFiltersRef.current, { silent: true, preserveFilters: true, preserveDetail: true, ordersView: activeRoute.ordersView }),
-        loadCompletedOrders({}, { silent: true }),
-      ]);
+      if (activeRoute.ordersView === 'completed') {
+        await loadCompletedOrders({}, { silent: true });
+      } else if (['open', 'pick'].includes(activeRoute.ordersView || 'open')) {
+        await refreshVisibleOperationalOrders({ silent: true, preserveDetail: true });
+      }
     }
     if (activeRoute.pageId === 'dashboard') {
       await loadBusinessDashboard({ silent: true });
@@ -2019,10 +2267,11 @@ export default function App({ currentUser = null, onLogout = null }) {
   async function refreshOrderAwarePage() {
     const activeRoute = activeRouteRef.current;
     if (activeRoute.pageId === 'orders') {
-      await Promise.all([
-        loadOpenOrders(openOrderFiltersRef.current, { silent: true, preserveFilters: true, preserveDetail: true, ordersView: activeRoute.ordersView }),
-        loadCompletedOrders({}, { silent: true }),
-      ]);
+      if (activeRoute.ordersView === 'completed') {
+        await loadCompletedOrders({}, { silent: true });
+      } else if (['open', 'pick'].includes(activeRoute.ordersView || 'open')) {
+        await refreshVisibleOperationalOrders({ silent: true, preserveDetail: true });
+      }
     }
     if (activeRoute.pageId === 'dashboard') {
       await loadBusinessDashboard({ silent: true });
@@ -2036,13 +2285,33 @@ export default function App({ currentUser = null, onLogout = null }) {
     }
   }
 
+  async function refreshVisibleOperationalOrders({ silent = false, preserveDetail = false } = {}) {
+    const activeRoute = activeRouteRef.current;
+    const ordersView = activeRoute.ordersView || 'open';
+    if (activeRoute.pageId !== 'orders' || !['open', 'pick'].includes(ordersView)) return;
+    await loadOpenOrders(openOrderFiltersRef.current, {
+      silent,
+      preserveFilters: true,
+      preserveDetail,
+      ordersView,
+    });
+  }
+
   async function loadOpenOrders(filters = {}, options = {}) {
     const requestId = openOrdersRequestIdRef.current + 1;
     openOrdersRequestIdRef.current = requestId;
+    openOrdersAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    openOrdersAbortControllerRef.current = controller;
     const silent = options.silent === true;
-    const effectiveFilters = options.preserveFilters ? openOrderFiltersRef.current : filters;
+    const sourceFilters = options.preserveFilters ? openOrderFiltersRef.current : filters;
+    const effectiveFilters = {
+      ...sourceFilters,
+      page: sourceFilters.page || 1,
+      pageSize: sourceFilters.pageSize || 20,
+    };
     if (!options.preserveFilters) {
-      openOrderFiltersRef.current = filters;
+      openOrderFiltersRef.current = effectiveFilters;
     }
     if (!silent) {
       setOpenOrdersLoading(true);
@@ -2055,7 +2324,7 @@ export default function App({ currentUser = null, onLogout = null }) {
     try {
       const ordersView = options.ordersView || activeRouteRef.current.ordersView || 'open';
       const endpoint = ordersView === 'allocate' ? '/api/orders/allocate' : (ordersView === 'pick' ? '/api/orders/pick' : '/api/orders/open');
-      const response = await apiFetch(`${API_BASE_URL}${endpoint}${plainFiltersToQueryString(openOrderFiltersToApi(effectiveFilters))}`);
+      const response = await apiFetch(`${API_BASE_URL}${endpoint}${plainFiltersToQueryString(openOrderFiltersToApi(effectiveFilters))}`, { signal: controller.signal });
       if (!response.ok) {
         throw new Error(`Open Orders API returned ${response.status}`);
       }
@@ -2066,29 +2335,31 @@ export default function App({ currentUser = null, onLogout = null }) {
         setOpenOrderDetail(null);
       }
     } catch (error) {
-      if (requestId === openOrdersRequestIdRef.current) {
+      if (error?.name !== 'AbortError' && requestId === openOrdersRequestIdRef.current) {
         setOpenOrdersError('Unable to load open orders from the backend.');
       }
     } finally {
-      if (!silent && requestId === openOrdersRequestIdRef.current) {
+      if (requestId === openOrdersRequestIdRef.current) {
+        openOrdersAbortControllerRef.current = null;
         setOpenOrdersLoading(false);
       }
     }
   }
 
   async function loadCompletedOrders(filters = {}, options = {}) {
+    const requestFilters = { ...filters, page: filters.page || 1, pageSize: filters.pageSize || filters.page_size || 20 };
     const silent = options.silent === true;
     if (!silent) {
       setCompletedOrdersLoading(true);
     }
     setCompletedOrdersError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/orders/completed${plainFiltersToQueryString(completedOrderFiltersToApi(filters))}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/orders/completed${plainFiltersToQueryString(completedOrderFiltersToApi(requestFilters))}`);
       if (!response.ok) {
         throw new Error(`Completed Orders API returned ${response.status}`);
       }
       const body = await response.json();
-      setCompletedOrders({ ...emptyCompletedOrders, ...body });
+      setCompletedOrders({ ...emptyCompletedOrders, ...body, ...paginationFromResponse(body, requestFilters.pageSize) });
     } catch (error) {
       setCompletedOrdersError('Unable to load completed orders from the backend.');
     } finally {
@@ -2118,14 +2389,16 @@ export default function App({ currentUser = null, onLogout = null }) {
   }
 
   async function loadAllocations(filters = {}) {
+    const requestFilters = { ...filters, page: filters.page || 1, page_size: filters.page_size || filters.pageSize || 20 };
     setAllocationError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/allocations${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/allocations${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) {
         throw new Error(`Allocations API returned ${response.status}`);
       }
       const body = await response.json();
       setAllocationHistory(body.allocations || []);
+      setAllocationHistoryPagination(paginationFromResponse(body, requestFilters.page_size));
     } catch (error) {
       setAllocationError('Unable to load allocation history from the backend.');
     }
@@ -2149,28 +2422,32 @@ export default function App({ currentUser = null, onLogout = null }) {
   }
 
   async function loadPicks(filters = {}) {
+    const requestFilters = { ...filters, page: filters.page || 1, page_size: filters.page_size || filters.pageSize || 20 };
     setPickError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/picks${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/picks${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) {
         throw new Error(`Picks API returned ${response.status}`);
       }
       const body = await response.json();
       setPickHistory(body.picks || []);
+      setPickHistoryPagination(paginationFromResponse(body, requestFilters.page_size));
     } catch (error) {
       setPickError('Unable to load pick history from the backend.');
     }
   }
 
   async function loadFulfillments(filters = {}) {
+    const requestFilters = { ...filters, page: filters.page || 1, page_size: filters.page_size || filters.pageSize || 20 };
     setFulfillmentError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/fulfillments${plainFiltersToQueryString(filters)}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/fulfillments${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) {
         throw new Error(`Fulfillments API returned ${response.status}`);
       }
       const body = await response.json();
       setFulfillmentHistory(body.fulfillments || []);
+      setFulfillmentHistoryPagination(paginationFromResponse(body, requestFilters.page_size));
     } catch (error) {
       setFulfillmentError('Unable to load fulfillment history from the backend.');
     }
@@ -2194,15 +2471,21 @@ export default function App({ currentUser = null, onLogout = null }) {
   }
 
   async function loadRouteCandidates(filters = {}) {
+    const requestFilters = {
+      ...routeCandidateFiltersToApi(filters),
+      page: filters.page || 1,
+      page_size: filters.page_size || filters.pageSize || 50,
+    };
     setRouteCandidatesLoading(true);
     setRouteCandidatesError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/routes/candidates${plainFiltersToQueryString(routeCandidateFiltersToApi(filters))}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/routes/candidates${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) {
         throw new Error(`Route candidates API returned ${response.status}`);
       }
       const body = await response.json();
       setRouteCandidates({ total_candidates: body.total_candidates || 0, candidates: body.candidates || [] });
+      setRouteCandidatesPagination(paginationFromResponse(body, requestFilters.page_size));
     } catch (error) {
       setRouteCandidatesError('Unable to load route candidates from the backend.');
     } finally {
@@ -2211,15 +2494,21 @@ export default function App({ currentUser = null, onLogout = null }) {
   }
 
   async function loadRoutes(filters = {}) {
+    const requestFilters = {
+      ...routeFiltersToApi(filters),
+      page: filters.page || 1,
+      page_size: filters.page_size || filters.pageSize || 50,
+    };
     setRoutesLoading(true);
     setRoutesError('');
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/routes${plainFiltersToQueryString(routeFiltersToApi(filters))}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/routes${plainFiltersToQueryString(requestFilters)}`);
       if (!response.ok) {
         throw new Error(`Routes API returned ${response.status}`);
       }
       const body = await response.json();
       setRoutesHistory({ routes: body.routes || [], total: body.total || 0 });
+      setRoutesHistoryPagination(paginationFromResponse(body, requestFilters.page_size));
       if (!body.routes?.length) {
         setRouteDetail(null);
       }
@@ -2458,10 +2747,9 @@ export default function App({ currentUser = null, onLogout = null }) {
         setPickError((result.errors || []).join(' ') || 'The pick could not be posted. Review the quantities and try again.');
         return result;
       }
-      await loadOpenOrders();
+      await refreshVisibleOperationalOrders();
       await loadOpenOrderDetail(orderId);
       await loadPicks();
-      await loadItems();
       await loadInventorySummary();
       resetMutationIdempotency(pickMutationRef);
       return result;
@@ -2500,9 +2788,8 @@ export default function App({ currentUser = null, onLogout = null }) {
       if (result.woo_sync_status !== 'sent') {
         setOpenOrdersError(result.woo_sync_error || `Order completed locally, but WooCommerce synchronization is ${result.woo_sync_status || 'pending'}. Review the WooCommerce writeback queue.`);
       }
-      await loadOpenOrders();
+      await refreshVisibleOperationalOrders();
       await loadCompletedOrders({}, { silent: true });
-      await loadItems();
       await loadInventorySummary();
     } catch (error) {
       setOpenOrdersError(error.message || 'Unable to complete order.');
@@ -2542,10 +2829,9 @@ export default function App({ currentUser = null, onLogout = null }) {
     try {
       const result = await postJson('/api/fulfillments/commit', { order_ids: [orderId], fulfillment_strategy: 'picked_first', allow_partial: true, created_by: 'system', notes: 'Fulfilled from Open Orders' });
       setFulfillmentCommitSummary(result);
-      await loadOpenOrders();
+      await refreshVisibleOperationalOrders();
       await loadOpenOrderDetail(orderId);
       await loadFulfillments();
-      await loadItems();
       await loadInventorySummary();
     } catch (error) {
       setFulfillmentError(error.message || 'Unable to commit fulfillment.');
@@ -2585,10 +2871,9 @@ export default function App({ currentUser = null, onLogout = null }) {
     try {
       const result = await postJson('/api/allocations/commit', { order_ids: [orderId], allocation_strategy: 'available_first', allow_partial: true, created_by: 'system', notes: 'Allocated from Open Orders' });
       setAllocationCommitSummary(result);
-      await loadOpenOrders();
+      await refreshVisibleOperationalOrders();
       await loadOpenOrderDetail(orderId);
       await loadAllocations();
-      await loadItems();
       await loadInventorySummary();
     } catch (error) {
       setAllocationError(error.message || 'Unable to commit allocation.');
@@ -2637,8 +2922,8 @@ export default function App({ currentUser = null, onLogout = null }) {
     try {
       const job = await postJson('/api/integrations/woocommerce/orders/fetch-now', {});
       setWooOrderCommitSummary(job);
-      await loadWooSyncRuns();
-      trackWooOrderFetchJob(job.id);
+      await loadWooSyncRuns(wooSyncRunsQueryRef.current);
+      startWooOrderFetchJobTracking(job.id);
     } catch (error) {
       setWooError(error.message || 'Unable to queue the WooCommerce order fetch.');
     } finally {
@@ -2654,7 +2939,7 @@ export default function App({ currentUser = null, onLogout = null }) {
     try {
       const job = await postJson('/api/integrations/woocommerce/orders/history-import', {});
       setWooStatus((current) => ({ ...current, order_history_import: job }));
-      await loadWooSyncRuns();
+      await loadWooSyncRuns(wooSyncRunsQueryRef.current);
     } catch (error) {
       setWooError(error.message || 'Unable to queue the WooCommerce historical order import.');
     } finally {
@@ -2662,20 +2947,40 @@ export default function App({ currentUser = null, onLogout = null }) {
     }
   }
 
+  function stopWooOrderFetchJobTracking() {
+    if (wooOrderFetchTrackingTimeoutRef.current !== null) {
+      window.clearTimeout(wooOrderFetchTrackingTimeoutRef.current);
+      wooOrderFetchTrackingTimeoutRef.current = null;
+    }
+    wooOrderFetchTrackedJobRef.current = null;
+  }
+
+  function startWooOrderFetchJobTracking(jobId) {
+    stopWooOrderFetchJobTracking();
+    wooOrderFetchTrackedJobRef.current = jobId;
+    trackWooOrderFetchJob(jobId);
+  }
+
   async function trackWooOrderFetchJob(jobId) {
+    if (wooOrderFetchTrackedJobRef.current !== jobId) return;
     try {
       const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/sync-runs/${jobId}`);
       if (!response.ok) throw new Error(`Order fetch job returned ${response.status}`);
       const job = await response.json();
+      if (wooOrderFetchTrackedJobRef.current !== jobId) return;
       setWooOrderCommitSummary(job);
       const terminal = ['completed', 'completed_with_errors', 'failed'].includes(job.status);
       if (terminal) {
-        await Promise.all([loadWooStatus(false, { silent: true }), loadWooSyncRuns(), loadOpenOrders(), loadBusinessDashboard()]);
+        stopWooOrderFetchJobTracking();
+        await Promise.all([loadWooStatus(false, { silent: true }), loadWooSyncRuns(wooSyncRunsQueryRef.current), refreshVisibleOperationalOrders({ silent: true, preserveDetail: true }), loadBusinessDashboard()]);
       } else {
-        window.setTimeout(() => trackWooOrderFetchJob(jobId), 2000);
+        wooOrderFetchTrackingTimeoutRef.current = window.setTimeout(() => trackWooOrderFetchJob(jobId), 2000);
       }
     } catch (error) {
-      setWooError(error.message || 'Unable to read WooCommerce order fetch progress.');
+      if (wooOrderFetchTrackedJobRef.current === jobId) {
+        stopWooOrderFetchJobTracking();
+        setWooError(error.message || 'Unable to read WooCommerce order fetch progress.');
+      }
     }
   }
 
@@ -2689,8 +2994,8 @@ export default function App({ currentUser = null, onLogout = null }) {
     try {
       const result = await runWooCatalogBatches('/api/integrations/woocommerce/products/commit', wooPreview?.duplicate_skus || []);
       setWooCommitSummary(result);
-      await loadWooSyncRuns();
-      await loadItems();
+      await loadWooSyncRuns(wooSyncRunsQueryRef.current);
+      await loadItemFacets({ force: true });
     } catch (error) {
       setWooError(error.message || 'Unable to commit WooCommerce product sync.');
     } finally {
@@ -2724,14 +3029,14 @@ export default function App({ currentUser = null, onLogout = null }) {
     }
   }
 
-  async function queueWooWriteback(previewPayload) {
+  async function queueWooWriteback(previewPayload, refreshFilters = null) {
     setWooLoading(true);
     setWooError('');
     try {
       const result = await postJson('/api/integrations/woocommerce/writeback/queue', previewPayload);
       setWooWritebackMessage(`Queued ${result.operation_type} as item ${result.id}.`);
       setWooWritebackPreview(null);
-      await loadWooWritebackQueue();
+      await loadWooWritebackQueue(refreshFilters || wooWritebackQueueQueryRef.current);
     } catch (error) {
       setWooError(error.message || 'Unable to queue writeback.');
     } finally {
@@ -2739,12 +3044,12 @@ export default function App({ currentUser = null, onLogout = null }) {
     }
   }
 
-  async function approveWooWriteback(queueId) {
+  async function approveWooWriteback(queueId, refreshFilters = null) {
     setWooLoading(true);
     setWooError('');
     try {
       await postJson(`/api/integrations/woocommerce/writeback/queue/${queueId}/approve`, {});
-      await loadWooWritebackQueue();
+      await loadWooWritebackQueue(refreshFilters || wooWritebackQueueQueryRef.current);
     } catch (error) {
       setWooError(error.message || 'Unable to approve writeback.');
     } finally {
@@ -2752,13 +3057,13 @@ export default function App({ currentUser = null, onLogout = null }) {
     }
   }
 
-  async function sendWooWriteback(queueId) {
+  async function sendWooWriteback(queueId, refreshFilters = null) {
     setWooLoading(true);
     setWooError('');
     try {
       const result = await postJson(`/api/integrations/woocommerce/writeback/queue/${queueId}/send`, {});
       setWooWritebackMessage(result.status === 'sent' ? 'Send to Staging completed and response was logged.' : `Writeback ${result.status}.`);
-      await loadWooWritebackQueue();
+      await loadWooWritebackQueue(refreshFilters || wooWritebackQueueQueryRef.current);
     } catch (error) {
       setWooError(error.message || 'Unable to send writeback.');
     } finally {
@@ -2766,12 +3071,12 @@ export default function App({ currentUser = null, onLogout = null }) {
     }
   }
 
-  async function cancelWooWriteback(queueId) {
+  async function cancelWooWriteback(queueId, refreshFilters = null) {
     setWooLoading(true);
     setWooError('');
     try {
       await postJson(`/api/integrations/woocommerce/writeback/queue/${queueId}/cancel`, {});
-      await loadWooWritebackQueue();
+      await loadWooWritebackQueue(refreshFilters || wooWritebackQueueQueryRef.current);
     } catch (error) {
       setWooError(error.message || 'Unable to cancel writeback.');
     } finally {
@@ -2779,13 +3084,13 @@ export default function App({ currentUser = null, onLogout = null }) {
     }
   }
 
-  async function revalidateWooWriteback(queueId) {
+  async function revalidateWooWriteback(queueId, refreshFilters = null) {
     setWooLoading(true);
     setWooError('');
     try {
       const result = await postJson(`/api/integrations/woocommerce/writeback/queue/${queueId}/revalidate`, {});
       setWooWritebackMessage(`Writeback ${result.id} was regenerated from the current mapping and must be approved again.`);
-      await loadWooWritebackQueue();
+      await loadWooWritebackQueue(refreshFilters || wooWritebackQueueQueryRef.current);
     } catch (error) {
       setWooError(error.message || 'Unable to revalidate writeback mapping.');
     } finally {
@@ -2818,7 +3123,6 @@ export default function App({ currentUser = null, onLogout = null }) {
       setWooRemapMessage(result.safe_message || `Mapping ${result.status}.`);
       setWooRemapPreview(null);
       await loadWooRemap();
-      await loadItems();
     } catch (error) {
       setWooError(error.message || 'Unable to commit remap.');
     } finally {
@@ -2862,6 +3166,7 @@ export default function App({ currentUser = null, onLogout = null }) {
             itemsLoading={itemsLoading}
             itemsError={itemsError}
             onLoadItems={loadItems}
+            onRefreshItemFacets={() => loadItemFacets({ force: true })}
             onSaveItem={saveItem}
             onCloneItem={cloneItem}
             locations={locations}
@@ -2874,10 +3179,12 @@ export default function App({ currentUser = null, onLogout = null }) {
             inventoryError={inventoryError}
             onLoadInventorySummary={loadInventorySummary}
             receipts={receipts}
+            receiptsPagination={receiptsPagination}
             receiptsLoading={receiptsLoading}
             receiptsError={receiptsError}
             onLoadReceipts={loadReceipts}
             stockMovements={stockMovements}
+            stockMovementsPagination={stockMovementsPagination}
             stockMovementsLoading={stockMovementsLoading}
             stockMovementsError={stockMovementsError}
             onLoadStockMovements={loadStockMovements}
@@ -2905,6 +3212,7 @@ export default function App({ currentUser = null, onLogout = null }) {
             businessDashboardError={businessDashboardError}
             onLoadBusinessDashboard={loadBusinessDashboard}
             cycleCounts={cycleCounts}
+            cycleCountsPagination={cycleCountsPagination}
             cycleCountsLoading={cycleCountsLoading}
             cycleCountsError={cycleCountsError}
             onLoadCycleCounts={loadCycleCounts}
@@ -2914,12 +3222,22 @@ export default function App({ currentUser = null, onLogout = null }) {
             wooOrderPreview={wooOrderPreview}
             wooOrderCommitSummary={wooOrderCommitSummary}
             wooSyncRuns={wooSyncRuns}
+            wooSyncRunsPagination={wooSyncRunsPagination}
+            onLoadWooSyncRuns={loadWooSyncRuns}
             wooRemapCandidates={wooRemapCandidates}
+            wooRemapCandidatesPagination={wooRemapCandidatesPagination}
+            onLoadWooRemapCandidates={loadWooRemapCandidates}
             wooRemapMappings={wooRemapMappings}
+            wooRemapMappingsPagination={wooRemapMappingsPagination}
+            onLoadWooRemapMappings={loadWooRemapMappings}
             wooRemapPreview={wooRemapPreview}
             wooRemapMessage={wooRemapMessage}
             wooWritebackQueue={wooWritebackQueue}
+            wooWritebackQueuePagination={wooWritebackQueuePagination}
+            onLoadWooWritebackQueue={loadWooWritebackQueue}
             wooStockSyncJobs={wooStockSyncJobs}
+            wooStockSyncJobsPagination={wooStockSyncJobsPagination}
+            onLoadWooStockSyncJobs={loadWooStockSyncJobs}
             wooWritebackPreview={wooWritebackPreview}
             wooWritebackMessage={wooWritebackMessage}
             wooLoading={wooLoading}
@@ -2960,6 +3278,8 @@ export default function App({ currentUser = null, onLogout = null }) {
             allocationPreview={allocationPreview}
             allocationCommitSummary={allocationCommitSummary}
             allocationHistory={allocationHistory}
+            allocationHistoryPagination={allocationHistoryPagination}
+            onLoadAllocations={loadAllocations}
             allocationDetail={allocationDetail}
             allocationLoading={allocationLoading}
             allocationError={allocationError}
@@ -2969,6 +3289,8 @@ export default function App({ currentUser = null, onLogout = null }) {
             pickPreview={pickPreview}
             pickCommitSummary={pickCommitSummary}
             pickHistory={pickHistory}
+            pickHistoryPagination={pickHistoryPagination}
+            onLoadPicks={loadPicks}
             pickDetail={pickDetail}
             pickLoading={pickLoading}
             pickError={pickError}
@@ -2978,6 +3300,8 @@ export default function App({ currentUser = null, onLogout = null }) {
             fulfillmentPreview={fulfillmentPreview}
             fulfillmentCommitSummary={fulfillmentCommitSummary}
             fulfillmentHistory={fulfillmentHistory}
+            fulfillmentHistoryPagination={fulfillmentHistoryPagination}
+            onLoadFulfillments={loadFulfillments}
             fulfillmentDetail={fulfillmentDetail}
             fulfillmentLoading={fulfillmentLoading}
             fulfillmentError={fulfillmentError}
@@ -2985,11 +3309,13 @@ export default function App({ currentUser = null, onLogout = null }) {
             onCommitFulfillment={commitFulfillment}
             onLoadFulfillmentDetail={loadFulfillmentDetail}
             routeCandidates={routeCandidates}
+            routeCandidatesPagination={routeCandidatesPagination}
             routeCandidatesLoading={routeCandidatesLoading}
             routeCandidatesError={routeCandidatesError}
             routePreview={routePreview}
             routeCommitSummary={routeCommitSummary}
             routesHistory={routesHistory}
+            routesHistoryPagination={routesHistoryPagination}
             routeDetail={routeDetail}
             routeMapPayload={routeMapPayload}
             routeProviderMessage={routeProviderMessage}
@@ -3392,6 +3718,7 @@ function PageBody({
   itemsLoading,
   itemsError,
   onLoadItems,
+  onRefreshItemFacets,
   onSaveItem,
   onCloneItem,
   locations,
@@ -3404,10 +3731,12 @@ function PageBody({
   inventoryError,
   onLoadInventorySummary,
   receipts,
+  receiptsPagination,
   receiptsLoading,
   receiptsError,
   onLoadReceipts,
   stockMovements,
+  stockMovementsPagination,
   stockMovementsLoading,
   stockMovementsError,
   onLoadStockMovements,
@@ -3435,6 +3764,7 @@ function PageBody({
   businessDashboardError,
   onLoadBusinessDashboard,
   cycleCounts,
+  cycleCountsPagination,
   cycleCountsLoading,
   cycleCountsError,
   onLoadCycleCounts,
@@ -3444,12 +3774,22 @@ function PageBody({
   wooOrderPreview,
   wooOrderCommitSummary,
   wooSyncRuns,
+  wooSyncRunsPagination,
+  onLoadWooSyncRuns,
   wooRemapCandidates,
+  wooRemapCandidatesPagination,
+  onLoadWooRemapCandidates,
   wooRemapMappings,
+  wooRemapMappingsPagination,
+  onLoadWooRemapMappings,
   wooRemapPreview,
   wooRemapMessage,
   wooWritebackQueue,
+  wooWritebackQueuePagination,
+  onLoadWooWritebackQueue,
   wooStockSyncJobs,
+  wooStockSyncJobsPagination,
+  onLoadWooStockSyncJobs,
   wooWritebackPreview,
   wooWritebackMessage,
   wooLoading,
@@ -3490,6 +3830,8 @@ function PageBody({
   allocationPreview,
   allocationCommitSummary,
   allocationHistory,
+  allocationHistoryPagination,
+  onLoadAllocations,
   allocationDetail,
   allocationLoading,
   allocationError,
@@ -3499,6 +3841,8 @@ function PageBody({
   pickPreview,
   pickCommitSummary,
   pickHistory,
+  pickHistoryPagination,
+  onLoadPicks,
   pickDetail,
   pickLoading,
   pickError,
@@ -3508,6 +3852,8 @@ function PageBody({
   fulfillmentPreview,
   fulfillmentCommitSummary,
   fulfillmentHistory,
+  fulfillmentHistoryPagination,
+  onLoadFulfillments,
   fulfillmentDetail,
   fulfillmentLoading,
   fulfillmentError,
@@ -3515,11 +3861,13 @@ function PageBody({
   onCommitFulfillment,
   onLoadFulfillmentDetail,
   routeCandidates,
+  routeCandidatesPagination,
   routeCandidatesLoading,
   routeCandidatesError,
   routePreview,
   routeCommitSummary,
   routesHistory,
+  routesHistoryPagination,
   routeDetail,
   routeMapPayload,
   routeProviderMessage,
@@ -3538,7 +3886,7 @@ function PageBody({
   onRouteProviderAction,
 }) {
   if (route.pageId === 'items') {
-    return <ItemsPage route={route} items={items} pagination={itemsPagination} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
+    return <ItemsPage route={route} items={items} pagination={itemsPagination} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onRefreshItemFacets={onRefreshItemFacets} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
   }
 
   if (route.pageId === 'insights') {
@@ -3560,8 +3908,10 @@ function PageBody({
         loading={inventoryLoading}
         error={inventoryError || itemsError}
         onLoadItems={onLoadItems}
+        onRefreshItemFacets={onRefreshItemFacets}
         onLoadSummary={onLoadInventorySummary}
         stockMovements={stockMovements}
+        stockMovementsPagination={stockMovementsPagination}
         stockMovementsLoading={stockMovementsLoading}
         stockMovementsError={stockMovementsError}
         onLoadStockMovements={onLoadStockMovements}
@@ -3576,10 +3926,12 @@ function PageBody({
         items={items}
         locations={locations}
         receipts={receipts}
+        receiptsPagination={receiptsPagination}
         receiptsLoading={receiptsLoading}
         receiptsError={receiptsError}
         onLoadReceipts={onLoadReceipts}
         stockMovements={stockMovements}
+        stockMovementsPagination={stockMovementsPagination}
         stockMovementsLoading={stockMovementsLoading}
         stockMovementsError={stockMovementsError}
         onLoadStockMovements={onLoadStockMovements}
@@ -3589,7 +3941,7 @@ function PageBody({
   }
 
   if (route.pageId === 'scanner') {
-    return <ScannerWorkflowsPage locations={locations} onLoadItems={onLoadItems} onLoadInventorySummary={onLoadInventorySummary} />;
+    return <ScannerWorkflowsPage locations={locations} onLoadInventorySummary={onLoadInventorySummary} />;
   }
 
   if (route.pageId === 'reports') {
@@ -3621,10 +3973,10 @@ function PageBody({
         items={items}
         locations={locations}
         cycleCounts={cycleCounts}
+        cycleCountsPagination={cycleCountsPagination}
         cycleCountsLoading={cycleCountsLoading}
         cycleCountsError={cycleCountsError}
         onLoadCycleCounts={onLoadCycleCounts}
-        onLoadItems={onLoadItems}
         onLoadInventorySummary={onLoadInventorySummary}
       />
     );
@@ -3649,6 +4001,8 @@ function PageBody({
         allocationPreview={allocationPreview}
         allocationCommitSummary={allocationCommitSummary}
         allocationHistory={allocationHistory}
+        allocationHistoryPagination={allocationHistoryPagination}
+        onLoadAllocations={onLoadAllocations}
         allocationDetail={allocationDetail}
         allocationLoading={allocationLoading}
         allocationError={allocationError}
@@ -3658,6 +4012,8 @@ function PageBody({
         pickPreview={pickPreview}
         pickCommitSummary={pickCommitSummary}
         pickHistory={pickHistory}
+        pickHistoryPagination={pickHistoryPagination}
+        onLoadPicks={onLoadPicks}
         pickDetail={pickDetail}
         pickLoading={pickLoading}
         pickError={pickError}
@@ -3667,6 +4023,8 @@ function PageBody({
         fulfillmentPreview={fulfillmentPreview}
         fulfillmentCommitSummary={fulfillmentCommitSummary}
         fulfillmentHistory={fulfillmentHistory}
+        fulfillmentHistoryPagination={fulfillmentHistoryPagination}
+        onLoadFulfillments={onLoadFulfillments}
         fulfillmentDetail={fulfillmentDetail}
         fulfillmentLoading={fulfillmentLoading}
         fulfillmentError={fulfillmentError}
@@ -3688,12 +4046,22 @@ function PageBody({
         orderPreview={wooOrderPreview}
         orderCommitSummary={wooOrderCommitSummary}
         syncRuns={wooSyncRuns}
+        syncRunsPagination={wooSyncRunsPagination}
+        onLoadSyncRuns={onLoadWooSyncRuns}
         remapCandidates={wooRemapCandidates}
+        remapCandidatesPagination={wooRemapCandidatesPagination}
+        onLoadRemapCandidates={onLoadWooRemapCandidates}
         remapMappings={wooRemapMappings}
+        remapMappingsPagination={wooRemapMappingsPagination}
+        onLoadRemapMappings={onLoadWooRemapMappings}
         remapPreview={wooRemapPreview}
         remapMessage={wooRemapMessage}
         writebackQueue={wooWritebackQueue}
+        writebackQueuePagination={wooWritebackQueuePagination}
+        onLoadWritebackQueue={onLoadWooWritebackQueue}
         stockSyncJobs={wooStockSyncJobs}
+        stockSyncJobsPagination={wooStockSyncJobsPagination}
+        onLoadStockSyncJobs={onLoadWooStockSyncJobs}
         writebackPreview={wooWritebackPreview}
         writebackMessage={wooWritebackMessage}
         loading={wooLoading}
@@ -3727,11 +4095,13 @@ function PageBody({
     return (
       <RoutesPage
         candidatesData={routeCandidates}
+        candidatesPagination={routeCandidatesPagination}
         candidatesLoading={routeCandidatesLoading}
         candidatesError={routeCandidatesError}
         preview={routePreview}
         commitSummary={routeCommitSummary}
         routesData={routesHistory}
+        routesPagination={routesHistoryPagination}
         detail={routeDetail}
         mapPayload={routeMapPayload}
         providerMessage={routeProviderMessage}
@@ -4298,12 +4668,12 @@ function insightRowsForTab(tabId, data) {
   return data.rows || Object.values(data.tables || {})[0] || [];
 }
 
-function ItemsPage({ route, items, pagination, itemsLoading, itemsError, onLoadItems, onSaveItem, onCloneItem }) {
+function ItemsPage({ route, items, pagination, itemsLoading, itemsError, onLoadItems, onRefreshItemFacets, onSaveItem, onCloneItem }) {
   if (route.itemView === 'import') {
-    return <ItemImportWorkspace initialPreviewId={route.importPreviewId} initialOutcome={route.importOutcome} />;
+    return <ItemImportWorkspace initialPreviewId={route.importPreviewId} initialOutcome={route.importOutcome} onCommitted={onRefreshItemFacets} />;
   }
   if (route.itemView === 'import-history') {
-    return <ItemImportHistory />;
+    return <ItemImportHistory onRolledBack={onRefreshItemFacets} />;
   }
   if (route.itemView === 'new') {
     return <ItemDetail item={emptyItem} onSave={onSaveItem} onClone={onCloneItem} isNew />;
@@ -4338,10 +4708,10 @@ function ItemsPage({ route, items, pagination, itemsLoading, itemsError, onLoadI
     );
   }
 
-  return <ItemsList items={items} pagination={pagination} loading={itemsLoading} error={itemsError} onLoadItems={onLoadItems} />;
+  return <ItemsList items={items} pagination={pagination} loading={itemsLoading} error={itemsError} onLoadItems={onLoadItems} onRefreshItemFacets={onRefreshItemFacets} />;
 }
 
-function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsLoading, summary, loading, error, onLoadItems, onLoadSummary, stockMovements, stockMovementsLoading, stockMovementsError, onLoadStockMovements }) {
+function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsLoading, summary, loading, error, onLoadItems, onRefreshItemFacets, onLoadSummary, stockMovements, stockMovementsPagination = emptyServerPagination(), stockMovementsLoading, stockMovementsError, onLoadStockMovements }) {
   const inventoryView = route.inventoryView || 'all';
   const [queryDraft, setQueryDraft] = useState(route.inventorySearch || '');
   const activeSearch = route.inventorySearch || '';
@@ -4353,9 +4723,11 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
     sortDir: route.inventorySortDir || 'asc',
   }), [route.inventoryCategory, route.inventoryBrand, route.inventoryDataQuality, route.inventorySortBy, route.inventorySortDir]);
   const [locationRows, setLocationRows] = useState([]);
+  const [locationRowsPagination, setLocationRowsPagination] = useState(() => emptyServerPagination(50));
   const [locationRowsLoading, setLocationRowsLoading] = useState(false);
   const [locationRowsError, setLocationRowsError] = useState('');
   const locationRowsRequestIdRef = useRef(0);
+  const locationRowsAbortControllerRef = useRef(null);
   const [message, setMessage] = useState('');
   const [stockSyncError, setStockSyncError] = useState('');
   const [stockSyncMode, setStockSyncMode] = useState('');
@@ -4365,6 +4737,7 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
   const [selectedItemIds, setSelectedItemIds] = useState([]);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [movementFilters, setMovementFilters] = useState({ movement_type: '', warehouse: '', inventory_location: '', date_from: '', date_to: '' });
+  const selectionDisabled = itemsLoading || locationRowsLoading;
 
   const options = useMemo(
     () => ({
@@ -4386,17 +4759,35 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
   useEffect(() => {
     const apiFilters = inventoryView === 'low-stock' ? { ...filters, underPar: 'true' } : filters;
     loadLocationRows(apiFilters, activeSearch, items);
-  }, [inventoryView, activeSearch, filters, items]);
+  }, [inventoryView, activeSearch, filters, items, route.inventoryPage, route.inventoryPageSize]);
+
+  useEffect(() => () => {
+    locationRowsAbortControllerRef.current?.abort();
+    locationRowsAbortControllerRef.current = null;
+    locationRowsRequestIdRef.current += 1;
+  }, []);
 
   useEffect(() => {
     if (inventoryView === 'movements') {
-      onLoadStockMovements(stockMovementFiltersToApi(activeSearch, movementFilters));
+      onLoadStockMovements({ ...stockMovementFiltersToApi(activeSearch, movementFilters), page: 1, page_size: stockMovementsPagination.page_size || 20 });
     }
-  }, [inventoryView, activeSearch, movementFilters]);
+  }, [inventoryView, activeSearch]);
 
   const enrichedLocationRows = useMemo(() => {
     const itemById = new Map(items.map((item) => [item.id, item]));
-    return locationRows.map((row) => ({ ...row, item: itemById.get(row.item_id) || normalizeItem({ id: row.item_id, SKU: row.sku, Barcode: row.barcode, Description: row.description }) }));
+    return locationRows.map((row) => ({
+      ...row,
+      item: itemById.get(row.item_id) || normalizeItem({
+        id: row.item_id,
+        SKU: row.sku,
+        Barcode: row.barcode,
+        Description: row.description,
+        Brand: row.brand,
+        Category: row.category,
+        'Unit Cost': row.unit_cost,
+        active: row.item_active ?? row.active,
+      }),
+    }));
   }, [items, locationRows]);
   const itemRows = useMemo(() => buildInventoryItemRows(items, enrichedLocationRows, activeSearch, filters, inventoryView), [items, enrichedLocationRows, activeSearch, filters, inventoryView]);
   const groupedRows = useMemo(() => groupLocationRows(enrichedLocationRows), [enrichedLocationRows]);
@@ -4408,7 +4799,19 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
   useEffect(() => {
     setSelectedItemIds([]);
     setBulkOpen(false);
-  }, [inventoryView, activeSearch, filters, pagination.page, pagination.page_size]);
+  }, [inventoryView, activeSearch, filters, route.inventoryPage, route.inventoryPageSize, pagination.page, pagination.page_size]);
+
+  useEffect(() => {
+    const loadedItemIds = new Set(items.map((item) => item.id));
+    setSelectedItemIds((current) => current.filter((itemId) => loadedItemIds.has(itemId)));
+    setBulkOpen(false);
+  }, [items]);
+
+  useEffect(() => {
+    const visibleIds = new Set(selectableItemIds);
+    setSelectedItemIds((current) => current.filter((itemId) => visibleIds.has(itemId)));
+    setBulkOpen(false);
+  }, [selectableItemIds]);
 
   function submitSearch(nextSearch = queryDraft) {
     window.location.hash = inventoryRouteHref(route, { search: nextSearch.trim(), page: 1 });
@@ -4427,10 +4830,14 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
   async function loadLocationRows(nextFilters = filters, search = activeSearch, currentItems = items) {
     const requestId = locationRowsRequestIdRef.current + 1;
     locationRowsRequestIdRef.current = requestId;
-    if (inventoryView === 'all' && currentItems.length === 0) {
+    locationRowsAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    locationRowsAbortControllerRef.current = controller;
+    if (inventoryView !== 'by-location' && currentItems.length === 0) {
       setLocationRows([]);
       setLocationRowsError('');
       setLocationRowsLoading(false);
+      locationRowsAbortControllerRef.current = null;
       return;
     }
     setLocationRowsLoading(true);
@@ -4441,19 +4848,26 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
         category: nextFilters.category || undefined,
         brand: nextFilters.brand || undefined,
         under_par: nextFilters.underPar || undefined,
-        item_ids: inventoryView === 'all' ? currentItems.map((item) => item.id).filter(Boolean).join(',') || undefined : undefined,
-        limit: 1000,
+        item_ids: inventoryView === 'by-location' ? undefined : currentItems.map((item) => item.id).filter(Boolean).join(',') || undefined,
+        page: inventoryView === 'by-location' ? Number(route.inventoryPage || 1) : 1,
+        page_size: inventoryView === 'by-location' ? Number(route.inventoryPageSize || 50) : 100,
       });
-      const response = await apiFetch(`${API_BASE_URL}/api/inventory/locations${query}`);
+      const response = await apiFetch(`${API_BASE_URL}/api/inventory/locations${query}`, { signal: controller.signal });
       if (!response.ok) {
         throw new Error(`Location inventory API returned ${response.status}`);
       }
       const body = await response.json();
-      if (requestId === locationRowsRequestIdRef.current) setLocationRows(body.rows || []);
+      if (requestId === locationRowsRequestIdRef.current) {
+        setLocationRows(body.rows || []);
+        setLocationRowsPagination(paginationFromResponse(body, inventoryView === 'by-location' ? Number(route.inventoryPageSize || 50) : 100));
+      }
     } catch (fetchError) {
-      if (requestId === locationRowsRequestIdRef.current) setLocationRowsError('Unable to load location stock rows from the backend.');
+      if (fetchError?.name !== 'AbortError' && requestId === locationRowsRequestIdRef.current) setLocationRowsError('Unable to load location stock rows from the backend.');
     } finally {
-      if (requestId === locationRowsRequestIdRef.current) setLocationRowsLoading(false);
+      if (requestId === locationRowsRequestIdRef.current) {
+        locationRowsAbortControllerRef.current = null;
+        setLocationRowsLoading(false);
+      }
     }
   }
 
@@ -4467,6 +4881,7 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
 
   async function saveProductInfo(item, payload) {
     await patchJson(`/api/items/${item.id}`, payload);
+    await onRefreshItemFacets();
     setMessage(`Saved product info for ${item.SKU || productTitle(item) || 'item'}.`);
     setEditingItem(null);
     await refreshInventory();
@@ -4533,17 +4948,32 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
   }
 
   function toggleInventoryItem(itemId) {
+    if (selectionDisabled) return;
     setSelectedItemIds((current) => (current.includes(itemId) ? current.filter((id) => id !== itemId) : [...current, itemId]));
   }
 
   function toggleAllInventoryItems(checked, itemIds = selectableItemIds) {
+    if (selectionDisabled) return;
     const targetIds = new Set(itemIds);
     setSelectedItemIds((current) => (checked ? [...new Set([...current, ...itemIds])] : current.filter((id) => !targetIds.has(id))));
+  }
+
+  function changeInventoryPage(page) {
+    setSelectedItemIds([]);
+    setBulkOpen(false);
+    window.location.hash = inventoryRouteHref(route, { page });
+  }
+
+  function changeInventoryPageSize(pageSize) {
+    setSelectedItemIds([]);
+    setBulkOpen(false);
+    window.location.hash = inventoryRouteHref(route, { pageSize, page: 1 });
   }
 
   async function finishBulkEdit(result) {
     setMessage(`Updated ${result.updated_count} inventory item(s).`);
     setSelectedItemIds([]);
+    await onRefreshItemFacets();
     await refreshInventory();
   }
 
@@ -4551,7 +4981,7 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
     <section className="content-panel inventory-page">
       <div className="inventory-sync-toolbar" aria-label="WooCommerce stock controls">
         <span className="bulk-selection-count" aria-live="polite">{selectedItemIds.length ? `${selectedItemIds.length} selected` : 'Select items to bulk edit'}</span>
-        <button className="action-button" disabled={!selectedItemIds.length} onClick={() => setBulkOpen(true)} type="button">
+        <button className="action-button" disabled={selectionDisabled || !selectedItemIds.length} onClick={() => setBulkOpen(true)} type="button">
           <Edit3 size={17} />
           Bulk Edit
         </button>
@@ -4583,12 +5013,12 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
       {message && <div className="api-success" role="status" aria-live="polite">{message}</div>}
       {(loading || locationRowsLoading || itemsLoading) && <div className="loading-strip">Loading inventory...</div>}
 
-      {inventoryView === 'all' && <AllInventoryTable rows={itemRows} pagination={pagination} selectedIds={selectedItemIds} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onPageChange={(page) => { window.location.hash = inventoryRouteHref(route, { page }); }} onPageSizeChange={(pageSize) => { window.location.hash = inventoryRouteHref(route, { pageSize, page: 1 }); }} onEdit={setEditingItem} onStock={setAdjustingItem} onLocation={viewLocationStock} onMovements={viewMovements} onOrders={viewOrders} />}
-      {inventoryView === 'by-location' && <InventoryByLocationView groups={groupedRows} rows={enrichedLocationRows} selectedIds={selectedItemIds} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
-      {inventoryView === 'low-stock' && <LowStockTable rows={itemRows} selectedIds={selectedItemIds} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
+      {inventoryView === 'all' && <AllInventoryTable rows={itemRows} pagination={pagination} selectedIds={selectedItemIds} selectionDisabled={selectionDisabled} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onPageChange={changeInventoryPage} onPageSizeChange={changeInventoryPageSize} onEdit={setEditingItem} onStock={setAdjustingItem} onLocation={viewLocationStock} onMovements={viewMovements} onOrders={viewOrders} />}
+      {inventoryView === 'by-location' && <><InventoryByLocationView groups={groupedRows} rows={enrichedLocationRows} selectedIds={selectedItemIds} selectionDisabled={selectionDisabled} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} /><TablePager pagination={serverTablePagination(locationRowsPagination, 'location rows', changeInventoryPage, changeInventoryPageSize)} /></>}
+      {inventoryView === 'low-stock' && <LowStockTable rows={itemRows} pagination={pagination} onPageChange={changeInventoryPage} onPageSizeChange={changeInventoryPageSize} selectedIds={selectedItemIds} selectionDisabled={selectionDisabled} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onEdit={setEditingItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
       {inventoryView === 'expiring' && <ExpiringStockView rows={itemRows.filter((row) => row.item.Perishable || row.item['Track Lot'])} />}
-      {inventoryView === 'par-level' && <ParLevelTable rows={itemRows} selectedIds={selectedItemIds} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onEdit={setEditingItem} onPar={setParItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
-      {inventoryView === 'movements' && <InventoryMovementsView movements={stockMovements} loading={stockMovementsLoading} filters={movementFilters} setFilters={setMovementFilters} activeSearch={activeSearch} onLoad={() => onLoadStockMovements(stockMovementFiltersToApi(activeSearch, movementFilters))} />}
+      {inventoryView === 'par-level' && <ParLevelTable rows={itemRows} pagination={pagination} onPageChange={changeInventoryPage} onPageSizeChange={changeInventoryPageSize} selectedIds={selectedItemIds} selectionDisabled={selectionDisabled} onToggleSelected={toggleInventoryItem} onToggleAll={toggleAllInventoryItems} onEdit={setEditingItem} onPar={setParItem} onStock={setAdjustingItem} onMovements={viewMovements} />}
+      {inventoryView === 'movements' && <InventoryMovementsView movements={stockMovements} pagination={stockMovementsPagination} loading={stockMovementsLoading} filters={movementFilters} setFilters={setMovementFilters} activeSearch={activeSearch} onLoad={(page = 1, pageSize = stockMovementsPagination.page_size || 20) => onLoadStockMovements({ ...stockMovementFiltersToApi(activeSearch, movementFilters), page, page_size: pageSize })} />}
 
       {editingItem && <ProductInfoModal item={editingItem} onClose={() => setEditingItem(null)} onSave={saveProductInfo} />}
       {adjustingItem && <StockAdjustmentModal item={adjustingItem} locationRows={enrichedLocationRows.filter((row) => row.item_id === adjustingItem.id)} onClose={() => setAdjustingItem(null)} onCommit={commitStockEdit} />}
@@ -4651,22 +5081,22 @@ function InventoryScannerSearch({ value, onChange, onSubmit, onClear, filters, o
   );
 }
 
-function AllInventoryTable({ rows, pagination, selectedIds, onToggleSelected, onToggleAll, onPageChange, onPageSizeChange, onEdit, onStock, onLocation, onMovements, onOrders }) {
+function AllInventoryTable({ rows, pagination, selectedIds, selectionDisabled = false, onToggleSelected, onToggleAll, onPageChange, onPageSizeChange, onEdit, onStock, onLocation, onMovements, onOrders }) {
   const rowIds = rows.map((row) => row.item.id);
   const allSelected = rowIds.length > 0 && rowIds.every((id) => selectedIds.includes(id));
   return (
-    <TableShell caption="Inventory records" columns={[{ key: 'select', label: <input aria-label="Select all visible inventory items" checked={allSelected} onChange={(event) => onToggleAll(event.target.checked, rowIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Brand', 'Category', 'Location', 'In Stock', 'Open Orders', 'Allocated', 'Sellable', 'Unit Cost', 'Value', 'Active']} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: pagination.returned_count, noun: 'inventory records', onPageChange, onPageSizeChange }}>
-      {rows.map((row) => <InventoryItemRow key={row.item.id} row={row} selected={selectedIds.includes(row.item.id)} onToggleSelected={onToggleSelected} onEdit={onEdit} onStock={onStock} onLocation={onLocation} onMovements={onMovements} onOrders={onOrders} />)}
+    <TableShell caption="Inventory records" columns={[{ key: 'select', label: <input aria-label="Select all visible inventory items" checked={allSelected} disabled={selectionDisabled} onChange={(event) => onToggleAll(event.target.checked, rowIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Brand', 'Category', 'Location', 'In Stock', 'Open Orders', 'Allocated', 'Sellable', 'Unit Cost', 'Value', 'Active']} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: pagination.returned_count, noun: 'inventory records', onPageChange, onPageSizeChange }}>
+      {rows.map((row) => <InventoryItemRow key={row.item.id} row={row} selected={selectedIds.includes(row.item.id)} selectionDisabled={selectionDisabled} onToggleSelected={onToggleSelected} onEdit={onEdit} onStock={onStock} onLocation={onLocation} onMovements={onMovements} onOrders={onOrders} />)}
       {!rows.length && <tr><td colSpan={14}><div className="empty-table-row">No inventory items match the current search.</div></td></tr>}
     </TableShell>
   );
 }
 
-function InventoryItemRow({ row, selected, onToggleSelected, onEdit, onStock, onLocation, onMovements, onOrders }) {
+function InventoryItemRow({ row, selected, selectionDisabled = false, onToggleSelected, onEdit, onStock, onLocation, onMovements, onOrders }) {
   const item = row.item;
   return (
     <tr>
-      <td><input aria-label={`Select ${item.SKU || productTitle(item) || 'inventory item'}`} checked={selected} onChange={() => onToggleSelected(item.id)} type="checkbox" /></td>
+      <td><input aria-label={`Select ${item.SKU || productTitle(item) || 'inventory item'}`} checked={selected} disabled={selectionDisabled} onChange={() => onToggleSelected(item.id)} type="checkbox" /></td>
       <td><InventoryRowActions item={item} onEdit={onEdit} onStock={onStock} onLocation={onLocation} onMovements={onMovements} onOrders={onOrders} /></td>
       <td><div className="sku-barcode-cell"><strong>{item.SKU || <DataQualityBadge kind="missing_sku" />}</strong><span>{item.Barcode || <DataQualityBadge kind="missing_barcode" />}</span></div></td>
       <td className="description-cell"><ClampedText value={productTitle(item)} /></td>
@@ -4739,7 +5169,7 @@ function InventoryActionsMenu({ actions }) {
   );
 }
 
-function InventoryByLocationView({ groups, rows, selectedIds, onToggleSelected, onToggleAll, onEdit, onStock, onMovements }) {
+function InventoryByLocationView({ groups, rows, selectedIds, selectionDisabled = false, onToggleSelected, onToggleAll, onEdit, onStock, onMovements }) {
   return (
     <div className="location-inventory-sections">
       <InventorySummaryTable groups={groups} />
@@ -4756,12 +5186,12 @@ function InventoryByLocationView({ groups, rows, selectedIds, onToggleSelected, 
               </div>
               <Metric label="Value" value={formatCurrency(group.total_inventory_value)} />
             </div>
-            <TableShell caption={`${groupRows.length} location row(s)`} columns={[{ key: 'select', label: <input aria-label={`Select all items in ${group.inventory_location || 'location'}`} checked={allSelected} onChange={(event) => onToggleAll(event.target.checked, groupItemIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Brand', 'Category', 'In Stock', 'Allocated', 'Sellable', 'Unit Cost', 'Value']}>
+            <TableShell caption={`${groupRows.length} location row(s)`} columns={[{ key: 'select', label: <input aria-label={`Select all items in ${group.inventory_location || 'location'}`} checked={allSelected} disabled={selectionDisabled} onChange={(event) => onToggleAll(event.target.checked, groupItemIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Brand', 'Category', 'In Stock', 'Allocated', 'Sellable', 'Unit Cost', 'Value']}>
               {groupRows.map((row) => {
                 const item = row.item || {};
                 return (
                   <tr key={row.id}>
-                    <td><input aria-label={`Select ${row.sku || item.SKU || 'inventory item'}`} checked={selectedIds.includes(row.item_id)} onChange={() => onToggleSelected(row.item_id)} type="checkbox" /></td>
+                    <td><input aria-label={`Select ${row.sku || item.SKU || 'inventory item'}`} checked={selectedIds.includes(row.item_id)} disabled={selectionDisabled} onChange={() => onToggleSelected(row.item_id)} type="checkbox" /></td>
                     <td><InventoryCompactActions item={item} onEdit={onEdit} onStock={onStock} onMovements={onMovements} /></td>
                     <td><div className="sku-barcode-cell"><strong>{row.sku || item.SKU}</strong><span>{row.barcode || item.Barcode}</span></div></td>
                     <td className="description-cell"><ClampedText value={productTitle(item) || row.description} /></td>
@@ -4785,15 +5215,15 @@ function InventoryByLocationView({ groups, rows, selectedIds, onToggleSelected, 
   );
 }
 
-function LowStockTable({ rows, selectedIds, onToggleSelected, onToggleAll, onEdit, onStock, onMovements }) {
+function LowStockTable({ rows, pagination, onPageChange, onPageSizeChange, selectedIds, selectionDisabled = false, onToggleSelected, onToggleAll, onEdit, onStock, onMovements }) {
   const lowRows = rows.filter((row) => row.underPar);
   const rowIds = lowRows.map((row) => row.item.id);
   const allSelected = rowIds.length > 0 && rowIds.every((id) => selectedIds.includes(id));
   return (
-    <TableShell caption={`${lowRows.length} low stock item(s)`} columns={[{ key: 'select', label: <input aria-label="Select all visible low-stock items" checked={allSelected} onChange={(event) => onToggleAll(event.target.checked, rowIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Par Level', 'Under Par', 'Suggested Reorder', 'Open Orders']}>
+    <TableShell caption={`${pagination?.total ?? lowRows.length} low stock item(s)`} columns={[{ key: 'select', label: <input aria-label="Select all visible low-stock items" checked={allSelected} disabled={selectionDisabled} onChange={(event) => onToggleAll(event.target.checked, rowIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Par Level', 'Under Par', 'Suggested Reorder', 'Open Orders']} pagination={serverTablePagination(pagination, 'low stock items', onPageChange, onPageSizeChange)}>
       {lowRows.map((row) => (
         <tr key={row.item.id}>
-          <td><input aria-label={`Select ${row.item.SKU || productTitle(row.item) || 'inventory item'}`} checked={selectedIds.includes(row.item.id)} onChange={() => onToggleSelected(row.item.id)} type="checkbox" /></td>
+          <td><input aria-label={`Select ${row.item.SKU || productTitle(row.item) || 'inventory item'}`} checked={selectedIds.includes(row.item.id)} disabled={selectionDisabled} onChange={() => onToggleSelected(row.item.id)} type="checkbox" /></td>
           <td><InventoryCompactActions item={row.item} onEdit={onEdit} onStock={onStock} onMovements={onMovements} /></td>
           <td><div className="sku-barcode-cell"><strong>{row.item.SKU}</strong><span>{row.item.Barcode}</span></div></td>
           <td className="description-cell"><ClampedText value={productTitle(row.item)} /></td>
@@ -4821,14 +5251,14 @@ function ExpiringStockView() {
   );
 }
 
-function ParLevelTable({ rows, selectedIds, onToggleSelected, onToggleAll, onEdit, onPar, onStock, onMovements }) {
+function ParLevelTable({ rows, pagination, onPageChange, onPageSizeChange, selectedIds, selectionDisabled = false, onToggleSelected, onToggleAll, onEdit, onPar, onStock, onMovements }) {
   const rowIds = rows.map((row) => row.item.id);
   const allSelected = rowIds.length > 0 && rowIds.every((id) => selectedIds.includes(id));
   return (
-    <TableShell caption={`${rows.length} par level item(s)`} columns={[{ key: 'select', label: <input aria-label="Select all visible par-level items" checked={allSelected} onChange={(event) => onToggleAll(event.target.checked, rowIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Par Level', 'Under Par', 'Reorder Enabled', 'Default Econ Order', 'Suggested Order Qty']}>
+    <TableShell caption={`${pagination?.total ?? rows.length} par level item(s)`} columns={[{ key: 'select', label: <input aria-label="Select all visible par-level items" checked={allSelected} disabled={selectionDisabled} onChange={(event) => onToggleAll(event.target.checked, rowIds)} type="checkbox" /> }, 'Actions', 'SKU / Barcode', 'Product Title', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Par Level', 'Under Par', 'Reorder Enabled', 'Default Econ Order', 'Suggested Order Qty']} pagination={serverTablePagination(pagination, 'par level items', onPageChange, onPageSizeChange)}>
       {rows.map((row) => (
         <tr key={row.item.id}>
-          <td><input aria-label={`Select ${row.item.SKU || productTitle(row.item) || 'inventory item'}`} checked={selectedIds.includes(row.item.id)} onChange={() => onToggleSelected(row.item.id)} type="checkbox" /></td>
+          <td><input aria-label={`Select ${row.item.SKU || productTitle(row.item) || 'inventory item'}`} checked={selectedIds.includes(row.item.id)} disabled={selectionDisabled} onChange={() => onToggleSelected(row.item.id)} type="checkbox" /></td>
           <td><InventoryParActions item={row.item} onEdit={onEdit} onPar={onPar} onStock={onStock} onMovements={onMovements} /></td>
           <td><div className="sku-barcode-cell"><strong>{row.item.SKU}</strong><span>{row.item.Barcode}</span></div></td>
           <td className="description-cell"><ClampedText value={productTitle(row.item)} /></td>
@@ -4848,7 +5278,7 @@ function ParLevelTable({ rows, selectedIds, onToggleSelected, onToggleAll, onEdi
   );
 }
 
-function InventoryMovementsView({ movements, loading, filters, setFilters, activeSearch, onLoad }) {
+function InventoryMovementsView({ movements, pagination, loading, filters, setFilters, activeSearch, onLoad }) {
   function update(field, value) {
     setFilters((current) => ({ ...current, [field]: value }));
   }
@@ -4862,10 +5292,10 @@ function InventoryMovementsView({ movements, loading, filters, setFilters, activ
           <label className="field"><span>Date From</span><input type="date" value={filters.date_from} onChange={(event) => update('date_from', event.target.value)} /></label>
           <label className="field"><span>Date To</span><input type="date" value={filters.date_to} onChange={(event) => update('date_to', event.target.value)} /></label>
         </div>
-        <div className="button-row"><button className="primary-button" onClick={onLoad} type="button"><Search size={16} />Filter</button><button className="action-button" onClick={() => exportStockMovementsCsv(stockMovementFiltersToApi(activeSearch, filters))} type="button"><Download size={16} />Export CSV</button></div>
+        <div className="button-row"><button className="primary-button" onClick={() => onLoad(1, pagination.page_size || 20)} type="button"><Search size={16} />Filter</button><button className="action-button" onClick={() => exportStockMovementsCsv(stockMovementFiltersToApi(activeSearch, filters))} type="button"><Download size={16} />Export CSV</button></div>
       </div>
       {loading && <div className="loading-strip">Loading stock movements...</div>}
-      <TableShell caption={`${movements.length} stock movement(s)`} columns={['Date', 'Movement Type', 'SKU', 'Barcode', 'Product Title', 'Warehouse', 'Location', 'Quantity Change', 'Old Stock', 'New Stock', 'Reference', 'Reason', 'Notes', 'Action']}>
+      <TableShell caption={`${pagination?.total ?? movements.length} stock movement(s)`} columns={['Date', 'Movement Type', 'SKU', 'Barcode', 'Product Title', 'Warehouse', 'Location', 'Quantity Change', 'Old Stock', 'New Stock', 'Reference', 'Reason', 'Notes', 'Action']} pagination={serverTablePagination(pagination, 'stock movements', (page) => onLoad(page, pagination.page_size || 20), (pageSize) => onLoad(1, pageSize))}>
         {movements.map((movement) => (
           <tr key={movement.id}>
             <td>{formatDateTime(movement.created_at)}</td>
@@ -5354,7 +5784,7 @@ function LocationDetail({ location, onSave, isNew = false }) {
   );
 }
 
-function ItemsList({ items, pagination = emptyItemsPagination, loading, error, onLoadItems }) {
+function ItemsList({ items, pagination = emptyItemsPagination, loading, error, onLoadItems, onRefreshItemFacets }) {
   const [mappingOpen, setMappingOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [visibleColumns, setVisibleColumns] = useState(ITEM_DEFAULT_VISIBLE_COLUMNS);
@@ -5399,19 +5829,29 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
   }, [filters.search]);
 
   useEffect(() => {
+    const visibleIds = new Set(items.map((item) => item.id));
+    setSelectedIds((current) => current.filter((itemId) => visibleIds.has(itemId)));
+    setBulkOpen(false);
+  }, [items]);
+
+  useEffect(() => {
     loadSavedViews();
     loadDataQuality();
   }, []);
 
-  const displayedItems = useMemo(() => filterItems(items, filters), [items, filters]);
+  const displayedItems = items;
 
   function updateFilter(name, value) {
+    setSelectedIds([]);
+    setBulkOpen(false);
     setPage(1);
     setFilters((current) => ({ ...current, [name]: value }));
   }
 
   function clearFilters() {
     setSearchDraft('');
+    setSelectedIds([]);
+    setBulkOpen(false);
     setPage(1);
     setFilters({
       search: '',
@@ -5462,6 +5902,8 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     }
     setSelectedViewId(String(view.id));
     const nextFilters = { ...filters, ...(view.filters || {}) };
+    setSelectedIds([]);
+    setBulkOpen(false);
     setPage(1);
     setSearchDraft(nextFilters.search || '');
     setFilters(nextFilters);
@@ -5492,11 +5934,26 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
   }
 
   function toggleSelected(itemId) {
+    if (loading) return;
     setSelectedIds((current) => (current.includes(itemId) ? current.filter((id) => id !== itemId) : [...current, itemId]));
   }
 
   function toggleAllDisplayed(checked) {
+    if (loading) return;
     setSelectedIds(checked ? displayedItems.map((item) => item.id) : []);
+  }
+
+  function changeItemsPage(nextPage) {
+    setSelectedIds([]);
+    setBulkOpen(false);
+    setPage(nextPage);
+  }
+
+  function changeItemsPageSize(nextPageSize) {
+    setSelectedIds([]);
+    setBulkOpen(false);
+    setPageSize(nextPageSize);
+    setPage(1);
   }
 
   function toggleColumn(column) {
@@ -5506,6 +5963,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
   async function finishBulkEdit(result) {
     setMessage(`Updated ${result.updated_count} item(s).`);
     setSelectedIds([]);
+    await onRefreshItemFacets();
     await onLoadItems({ ...filters, page, pageSize });
   }
 
@@ -5543,7 +6001,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
                 <button onClick={() => setRemapOpen(true)} type="button"><Link2 size={16} /><span><strong>Fix connection exceptions</strong><small>Resolve unmatched products</small></span></button>
               </div>
             </details>
-            {!!selectedIds.length && <button className="action-button" onClick={() => setBulkOpen(true)} type="button"><Edit3 size={17} /> Bulk edit {selectedIds.length}</button>}
+            {!!selectedIds.length && <button className="action-button" disabled={loading} onClick={() => setBulkOpen(true)} type="button"><Edit3 size={17} /> Bulk edit {selectedIds.length}</button>}
             {filtersChanged && <button className="muted-button" onClick={clearFilters} type="button">Clear filters</button>}
           </div>
         </div>
@@ -5619,9 +6077,9 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
       {error && <div className="api-error">{error}</div>}
       {message && <div className="api-success">{message}</div>}
       {loading && <div className="loading-strip">Loading backend items...</div>}
-      <ItemsTable items={displayedItems} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: displayedItems.length, noun: 'items', onPageChange: setPage, onPageSizeChange: (nextPageSize) => { setPageSize(nextPageSize); setPage(1); } }} visibleColumns={visibleColumns} selectedIds={selectedIds} onToggleSelected={toggleSelected} onToggleAll={toggleAllDisplayed} onOpenDetail={openDetail} />
-      {mappingOpen && <ImportMappingsModal onClose={() => setMappingOpen(false)} onImported={() => onLoadItems({ ...filters, page, pageSize })} />}
-      {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onRefresh={() => openDetail(detailId)} />}
+      <ItemsTable items={displayedItems} loading={loading} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: displayedItems.length, noun: 'items', onPageChange: changeItemsPage, onPageSizeChange: changeItemsPageSize }} visibleColumns={visibleColumns} selectedIds={selectedIds} onToggleSelected={toggleSelected} onToggleAll={toggleAllDisplayed} onOpenDetail={openDetail} />
+      {mappingOpen && <ImportMappingsModal onClose={() => setMappingOpen(false)} onImported={async () => { await onRefreshItemFacets(); await onLoadItems({ ...filters, page, pageSize }); }} />}
+      {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onRefresh={() => openDetail(detailId)} onRefreshItemFacets={onRefreshItemFacets} />}
       {bulkOpen && <BulkEditModal selectedIds={selectedIds} onCommitted={finishBulkEdit} onClose={() => setBulkOpen(false)} />}
       {remapOpen && <LocalRemapSearchModal onClose={() => setRemapOpen(false)} />}
     </section>
@@ -6059,12 +6517,12 @@ function Metric({ label, value, help = '' }) {
   );
 }
 
-function FilterSelect({ label, value, options, onChange }) {
+function FilterSelect({ label, value, options, onChange, disabled = false }) {
   return (
     <label className="field">
       <span>{label}</span>
       <div className="select-shell">
-        <select value={value} onChange={(event) => onChange(event.target.value)}>
+        <select disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)}>
           <option value="">All {label}</option>
           {options.map((option) => (
             <option key={option} value={option}>
@@ -6078,7 +6536,7 @@ function FilterSelect({ label, value, options, onChange }) {
   );
 }
 
-function ItemsTable({ items, pagination, visibleColumns, selectedIds, onToggleSelected, onToggleAll, onOpenDetail }) {
+function ItemsTable({ items, loading = false, pagination, visibleColumns, selectedIds, onToggleSelected, onToggleAll, onOpenDetail }) {
   const allSelected = items.length > 0 && items.every((item) => selectedIds.includes(item.id));
   return (
     <div className="table-wrap">
@@ -6094,7 +6552,7 @@ function ItemsTable({ items, pagination, visibleColumns, selectedIds, onToggleSe
         <table className="items-data-table">
           <thead>
             <tr>
-              <th className="sticky-col sticky-action-col"><input aria-label="Select all visible items" checked={allSelected} onChange={(event) => onToggleAll(event.target.checked)} type="checkbox" /></th>
+              <th className="sticky-col sticky-action-col"><input aria-label="Select all visible items" checked={allSelected} disabled={loading} onChange={(event) => onToggleAll(event.target.checked)} type="checkbox" /></th>
               <th className="sticky-col sticky-image-col">Image</th>
               {visibleColumns.map((column) => (
                 <th key={column}>{column}</th>
@@ -6106,7 +6564,7 @@ function ItemsTable({ items, pagination, visibleColumns, selectedIds, onToggleSe
             {items.map((item) => (
               <tr key={item.id}>
                 <td className="sticky-col sticky-action-col">
-                  <input aria-label={`Select ${item.SKU || productTitle(item) || 'item'}`} checked={selectedIds.includes(item.id)} onChange={() => onToggleSelected(item.id)} type="checkbox" />
+                  <input aria-label={`Select ${item.SKU || productTitle(item) || 'item'}`} checked={selectedIds.includes(item.id)} disabled={loading} onChange={() => onToggleSelected(item.id)} type="checkbox" />
                 </td>
                 <td className="sticky-col sticky-image-col">
                   <button className="image-cell image-button" onClick={() => onOpenDetail(item.id)} type="button">
@@ -6146,7 +6604,7 @@ function ItemsTable({ items, pagination, visibleColumns, selectedIds, onToggleSe
   );
 }
 
-function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh }) {
+function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh, onRefreshItemFacets }) {
   const item = detail?.item;
   const tabs = ['overview', 'stock', 'activity', 'history', 'edit'];
   return (
@@ -6169,7 +6627,7 @@ function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh }) {
             {tab === 'stock' && <ItemStockByLocation rows={detail.stock_by_location || []} item={item} />}
             {tab === 'activity' && <ItemActivityTimeline rows={detail.recent_activity || []} />}
             {tab === 'history' && <ItemHistoryPanel itemId={item.id} />}
-            {tab === 'edit' && <ItemMetadataPanel item={item} onSaved={onRefresh} />}
+            {tab === 'edit' && <ItemMetadataPanel item={item} onSaved={onRefresh} onRefreshItemFacets={onRefreshItemFacets} />}
           </>
         )}
       </aside>
@@ -6233,7 +6691,7 @@ function ItemHistoryPanel({ itemId }) {
   );
 }
 
-function ItemMetadataPanel({ item, onSaved }) {
+function ItemMetadataPanel({ item, onSaved, onRefreshItemFacets }) {
   const [form, setForm] = useState({ category: item.category || '', brand: item.brand || '', manufacturer: item.manufacturer || '', unit_cost: item.unit_cost || '', sales_price: item.sales_price || '', par_level: '', active: item.active });
   const [message, setMessage] = useState('');
   async function saveMetadata() {
@@ -6246,6 +6704,7 @@ function ItemMetadataPanel({ item, onSaved }) {
       active: Boolean(form.active),
     };
     await patchJson(`/api/items/${item.id}`, payload);
+    await onRefreshItemFacets();
     setMessage('Metadata saved. Stock quantities remain controlled by receiving, counts, and adjustment workflows.');
     onSaved();
   }
@@ -6738,7 +7197,7 @@ function DashboardCardSection({ title, cards }) {
   );
 }
 
-function CycleCountPage({ items, locations, cycleCounts, cycleCountsLoading, cycleCountsError, onLoadCycleCounts, onLoadItems, onLoadInventorySummary }) {
+function CycleCountPage({ items, locations, cycleCounts, cycleCountsPagination = emptyServerPagination(50), cycleCountsLoading, cycleCountsError, onLoadCycleCounts, onLoadInventorySummary }) {
   const [form, setForm] = useState({
     warehouse: 'Main Warehouse',
     inventory_location: '',
@@ -6765,7 +7224,21 @@ function CycleCountPage({ items, locations, cycleCounts, cycleCountsLoading, cyc
   function updateLine(index, field, value) {
     setForm((current) => ({
       ...current,
-      lines: current.lines.map((line, lineIndex) => (lineIndex === index ? { ...line, [field]: value } : line)),
+      lines: current.lines.map((line, lineIndex) => {
+        if (lineIndex !== index) return line;
+        const nextLine = { ...line, [field]: value };
+        if (field === 'query' && !operationalItemMatchesQuery(line.selected_item, value)) nextLine.selected_item = null;
+        return nextLine;
+      }),
+    }));
+    setPreview(null);
+    setSummary(null);
+  }
+
+  function selectLineItem(index, item) {
+    setForm((current) => ({
+      ...current,
+      lines: current.lines.map((line, lineIndex) => (lineIndex === index ? { ...line, selected_item: item } : line)),
     }));
     setPreview(null);
     setSummary(null);
@@ -6806,7 +7279,6 @@ function CycleCountPage({ items, locations, cycleCounts, cycleCountsLoading, cyc
       const result = await postJson('/api/cycle-counts/commit', cycleCountPayload(form, items));
       setSummary(result);
       await onLoadCycleCounts();
-      await onLoadItems(OPERATIONAL_ITEM_SELECTOR_FILTERS);
       await onLoadInventorySummary();
       setForm({ warehouse: 'Main Warehouse', inventory_location: '', count_type: 'selected_items', notes: '', lines: [emptyCycleCountLine()] });
       setPreview(null);
@@ -6890,19 +7362,27 @@ function CycleCountPage({ items, locations, cycleCounts, cycleCountsLoading, cyc
             </thead>
             <tbody>
               {form.lines.map((line, index) => {
-                const item = findReceivingItem(items, line.query);
+                const item = line.selected_item || findReceivingItem(items, line.query);
                 return (
                   <tr key={line.localId}>
                     <td>
-                      <input value={line.query} onChange={(event) => updateLine(index, 'query', event.target.value)} placeholder="Scan or type SKU/barcode" />
+                      <InventoryKeywordSearch
+                        className="operational-item-lookup"
+                        hideLabel
+                        label={`Cycle count line ${index + 1} SKU, barcode, or product`}
+                        onChange={(value) => updateLine(index, 'query', value)}
+                        onSelect={(selectedItem) => selectLineItem(index, selectedItem)}
+                        placeholder="Scan or search SKU/barcode/product"
+                        value={line.query}
+                      />
                     </td>
                     <td className="description-cell"><ClampedText value={productTitle(item)} /></td>
-                    <td>{item ? formatNumber(item['In Stock']) : ''}</td>
+                    <td>{item ? formatNumber(operationalItemStock(item)) : ''}</td>
                     <td>
-                      <input value={line.counted_quantity} onChange={(event) => updateLine(index, 'counted_quantity', event.target.value)} inputMode="decimal" />
+                      <input aria-label={`Cycle count line ${index + 1} counted quantity`} value={line.counted_quantity} onChange={(event) => updateLine(index, 'counted_quantity', event.target.value)} inputMode="decimal" />
                     </td>
                     <td>
-                      <input value={line.notes} onChange={(event) => updateLine(index, 'notes', event.target.value)} />
+                      <input aria-label={`Cycle count line ${index + 1} notes`} value={line.notes} onChange={(event) => updateLine(index, 'notes', event.target.value)} />
                     </td>
                     <td>
                       <button className="pager-button" onClick={() => removeLine(index)} disabled={form.lines.length === 1} type="button">
@@ -6949,7 +7429,7 @@ function CycleCountPage({ items, locations, cycleCounts, cycleCountsLoading, cyc
         </div>
         {cycleCountsError && <div className="api-error">{cycleCountsError}</div>}
         {cycleCountsLoading && <div className="loading-strip">Loading cycle count history...</div>}
-        <CycleCountHistoryTable counts={cycleCounts} onLoadDetail={loadDetail} />
+        <CycleCountHistoryTable counts={cycleCounts} pagination={cycleCountsPagination} onLoad={onLoadCycleCounts} onLoadDetail={loadDetail} />
       </div>
       {detailLoading && <div className="loading-strip">Loading cycle count detail...</div>}
       {detail && <CycleCountDetailPanel detail={detail} onClose={() => setDetail(null)} />}
@@ -6992,7 +7472,7 @@ function CycleCountPreview({ preview }) {
             </tr>
           </thead>
           <tbody>
-            {preview.preview_lines.map((line) => (
+            {(preview.preview_lines || []).map((line) => (
               <tr key={line.line_number}>
                 <td>{line.line_number}</td>
                 <td>{StatusText(line.status)}</td>
@@ -7012,9 +7492,18 @@ function CycleCountPreview({ preview }) {
   );
 }
 
-function CycleCountHistoryTable({ counts, onLoadDetail }) {
+function CycleCountHistoryTable({ counts, pagination, onLoad, onLoadDetail }) {
   return (
-    <TableShell caption={`${counts.length} cycle count(s)`} columns={['Count Number', 'Status', 'Warehouse', 'Inventory Location', 'Count Type', 'Total Lines', 'Adjustment Lines', 'Created At', 'Posted At', 'Created By', 'Export']}>
+    <TableShell
+      caption={`${pagination.total} cycle count(s)`}
+      columns={['Count Number', 'Status', 'Warehouse', 'Inventory Location', 'Count Type', 'Total Lines', 'Adjustment Lines', 'Created At', 'Posted At', 'Created By', 'Export']}
+      pagination={serverTablePagination(
+        pagination,
+        'cycle counts',
+        (page) => onLoad({ page, page_size: pagination.page_size }),
+        (pageSize) => onLoad({ page: 1, page_size: pageSize }),
+      )}
+    >
       {counts.map((count) => (
         <tr key={count.id}>
           <td>
@@ -7091,7 +7580,7 @@ function CycleCountDetailPanel({ detail, onClose }) {
   );
 }
 
-function DirectReceivingPage({ route, items, locations, receipts, receiptsLoading, receiptsError, onLoadReceipts, stockMovements, stockMovementsLoading, stockMovementsError, onLoadStockMovements, onLoadInventorySummary }) {
+function DirectReceivingPage({ route, items, locations, receipts, receiptsPagination = emptyServerPagination(), receiptsLoading, receiptsError, onLoadReceipts, stockMovements, stockMovementsPagination = emptyServerPagination(), stockMovementsLoading, stockMovementsError, onLoadStockMovements, onLoadInventorySummary }) {
   const mutationRef = useRef(null);
   const mode = route.receivingView || 'direct';
   const [form, setForm] = useState({
@@ -7121,7 +7610,21 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsLoadin
   function updateLine(index, field, value) {
     setForm((current) => ({
       ...current,
-      lines: current.lines.map((line, lineIndex) => (lineIndex === index ? { ...line, [field]: value } : line)),
+      lines: current.lines.map((line, lineIndex) => {
+        if (lineIndex !== index) return line;
+        const nextLine = { ...line, [field]: value };
+        if (field === 'query' && !operationalItemMatchesQuery(line.selected_item, value)) nextLine.selected_item = null;
+        return nextLine;
+      }),
+    }));
+    setPreview(null);
+    setSummary(null);
+  }
+
+  function selectLineItem(index, item) {
+    setForm((current) => ({
+      ...current,
+      lines: current.lines.map((line, lineIndex) => (lineIndex === index ? { ...line, selected_item: item } : line)),
     }));
     setPreview(null);
     setSummary(null);
@@ -7163,9 +7666,10 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsLoadin
       const payload = receivingPayload(form, items);
       const result = await postJson('/api/receipts/direct/commit', withMutationIdempotency(mutationRef, 'direct-receipt', payload));
       setSummary(result);
-      await onLoadReceipts();
-      await onLoadStockMovements({ movement_type: 'receive_direct' });
-      await onLoadInventorySummary();
+      await Promise.all([
+        onLoadStockMovements({ movement_type: 'receive_direct', page: 1, page_size: stockMovementsPagination.page_size || 20 }),
+        onLoadInventorySummary(),
+      ]);
       setForm({ warehouse: 'Main Warehouse', reference_number: '', notes: '', lines: [emptyReceivingLine()] });
       setPreview(null);
       resetMutationIdempotency(mutationRef);
@@ -7226,11 +7730,19 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsLoadin
             </thead>
             <tbody>
               {form.lines.map((line, index) => {
-                const item = findReceivingItem(items, line.query);
+                const item = line.selected_item || findReceivingItem(items, line.query);
                 return (
                   <tr key={line.localId}>
                     <td>
-                      <input aria-label={`Line ${index + 1} SKU or barcode`} value={line.query} onChange={(event) => updateLine(index, 'query', event.target.value)} placeholder="Scan or type SKU/barcode" />
+                      <InventoryKeywordSearch
+                        className="operational-item-lookup"
+                        hideLabel
+                        label={`Line ${index + 1} SKU or barcode`}
+                        onChange={(value) => updateLine(index, 'query', value)}
+                        onSelect={(selectedItem) => selectLineItem(index, selectedItem)}
+                        placeholder="Scan or search SKU/barcode/product"
+                        value={line.query}
+                      />
                     </td>
                     <td className="description-cell"><ClampedText value={productTitle(item)} /></td>
                     <td>
@@ -7285,21 +7797,21 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsLoadin
         )}
         {preview && <ReceivingPreview preview={preview} />}
       </div>}
-      {mode === 'bulk' && <BulkReceivingSession items={items} locations={locations} onCommitted={async () => { await onLoadReceipts(); await onLoadStockMovements({ movement_type: 'receive_direct' }); await onLoadInventorySummary(); }} />}
+      {mode === 'bulk' && <BulkReceivingSession items={items} locations={locations} onCommitted={() => onLoadInventorySummary()} />}
       {mode === 'history' && <div className="wide-panel">
         <div className="panel-title">
           <div>
             <h2>Receipt History</h2>
             <p>Posted direct receiving sessions.</p>
           </div>
-          <button className="muted-button" onClick={() => onLoadReceipts()} type="button">
+          <button className="muted-button" onClick={() => onLoadReceipts({ page: receiptsPagination.page || 1, page_size: receiptsPagination.page_size || 20 })} type="button">
             <RefreshCw size={17} />
             Refresh
           </button>
         </div>
         {receiptsError && <div className="api-error">{receiptsError}</div>}
         {receiptsLoading && <div className="loading-strip">Loading receipt history...</div>}
-        <ReceiptHistoryTable receipts={receipts} />
+        <ReceiptHistoryTable receipts={receipts} pagination={receiptsPagination} onLoad={onLoadReceipts} />
       </div>}
       {mode !== 'bulk' && <div className="wide-panel">
         <div className="panel-title">
@@ -7307,14 +7819,14 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsLoadin
             <h2>Recent Stock Movements</h2>
             <p>Audit trail for direct receiving.</p>
           </div>
-          <button className="muted-button" onClick={() => onLoadStockMovements({ movement_type: 'receive_direct' })} type="button">
+          <button className="muted-button" onClick={() => onLoadStockMovements({ movement_type: 'receive_direct', page: stockMovementsPagination.page || 1, page_size: stockMovementsPagination.page_size || 20 })} type="button">
             <RefreshCw size={17} />
             Refresh
           </button>
         </div>
         {stockMovementsError && <div className="api-error">{stockMovementsError}</div>}
         {stockMovementsLoading && <div className="loading-strip">Loading stock movements...</div>}
-        <StockMovementsTable movements={stockMovements} />
+        <StockMovementsTable movements={stockMovements} pagination={stockMovementsPagination} onLoad={(page, pageSize) => onLoadStockMovements({ movement_type: 'receive_direct', page, page_size: pageSize })} />
       </div>}
     </section>
   );
@@ -7324,6 +7836,7 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
   const mutationRef = useRef(null);
   const [header, setHeader] = useState({ warehouse: 'Main Warehouse', notes: '' });
   const [scanInput, setScanInput] = useState('');
+  const [selectedItem, setSelectedItem] = useState(null);
   const [quantity, setQuantity] = useState(1);
   const [inventoryLocation, setInventoryLocation] = useState('');
   const [unitCost, setUnitCost] = useState('');
@@ -7336,9 +7849,10 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
   const commitReason = !lines.length ? 'add at least one receiving line.' : !preview ? 'preview the session before committing.' : !preview.can_commit ? 'resolve the validation errors shown below.' : '';
 
   function addLine() {
-    const item = findReceivingItem(items, scanInput);
-    setLines((current) => [...current, { localId: crypto.randomUUID?.() || String(Date.now()), scan_input: scanInput, sku: item?.SKU || '', barcode: item?.Barcode || '', quantity: toNumber(quantity) || 1, warehouse: header.warehouse, inventory_location: inventoryLocation, unit_cost: unitCost, ...optional }]);
+    const item = selectedItem || findReceivingItem(items, scanInput);
+    setLines((current) => [...current, { localId: crypto.randomUUID?.() || String(Date.now()), item_id: operationalItemId(item), scan_input: scanInput, sku: operationalItemSku(item), barcode: operationalItemBarcode(item), quantity: toNumber(quantity) || 1, warehouse: header.warehouse, inventory_location: inventoryLocation, unit_cost: unitCost, ...optional }]);
     setScanInput('');
+    setSelectedItem(null);
     setQuantity(1);
     setPreview(null);
   }
@@ -7376,7 +7890,20 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
         <label className="field wide-field"><span>Notes</span><input value={header.notes} onChange={(event) => setHeader((current) => ({ ...current, notes: event.target.value }))} /></label>
       </div>
       <div className="scanner-input-row">
-        <input autoFocus value={scanInput} onChange={(event) => setScanInput(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && addLine()} placeholder="Scan or type SKU/barcode" />
+        <InventoryKeywordSearch
+          autoFocus
+          className="operational-item-lookup"
+          hideLabel
+          label="Bulk receiving SKU, barcode, or product"
+          onChange={(value) => {
+            setScanInput(value);
+            if (!operationalItemMatchesQuery(selectedItem, value)) setSelectedItem(null);
+          }}
+          onSelect={setSelectedItem}
+          onSubmit={addLine}
+          placeholder="Scan or type SKU/barcode"
+          value={scanInput}
+        />
         <input value={quantity} onChange={(event) => setQuantity(event.target.value)} inputMode="decimal" />
         <select value={inventoryLocation} onChange={(event) => setInventoryLocation(event.target.value)}><option value="">Location</option>{activeLocations.map((location) => <option key={location.id} value={location.code}>{location.warehouse} / {location.code}</option>)}</select>
         <input value={unitCost} onChange={(event) => setUnitCost(event.target.value)} placeholder="Unit cost" inputMode="decimal" />
@@ -7407,7 +7934,7 @@ function BulkReceivingPreview({ preview }) {
   );
 }
 
-function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }) {
+function ScannerWorkflowsPage({ locations, onLoadInventorySummary }) {
   const mutationRef = useRef(null);
   const [mode, setMode] = useState('inventory');
   const [form, setForm] = useState({ scan_input: '', quantity: 1, warehouse: 'Main Warehouse', inventory_location: '', counted_quantity: '', adjustment_type: 'correction', quantity_change: '', new_quantity: '', reason: '', notes: '', order_id: '' });
@@ -7453,7 +7980,6 @@ function ScannerWorkflowsPage({ locations, onLoadItems, onLoadInventorySummary }
       setResult(nextResult);
       setRecent((current) => [{ mode, scan: form.scan_input, status: nextResult.matched === false || nextResult.can_commit === false ? 'warning' : 'success', at: new Date().toISOString() }, ...current].slice(0, 12));
       if (commit) {
-        await onLoadItems(OPERATIONAL_ITEM_SELECTOR_FILTERS);
         await onLoadInventorySummary();
         if (['receiving', 'adjustment'].includes(mode)) resetMutationIdempotency(mutationRef);
       }
@@ -7588,9 +8114,9 @@ function ReceivingPreview({ preview }) {
   );
 }
 
-function ReceiptHistoryTable({ receipts }) {
+function ReceiptHistoryTable({ receipts, pagination, onLoad }) {
   return (
-    <TableShell caption={`${receipts.length} receipt(s)`} columns={['Receipt Number', 'Warehouse', 'Reference Number', 'Status', 'Total Lines', 'Total Quantity', 'Received At', 'Created By']}>
+    <TableShell caption={`${pagination?.total ?? receipts.length} receipt(s)`} columns={['Receipt Number', 'Warehouse', 'Reference Number', 'Status', 'Total Lines', 'Total Quantity', 'Received At', 'Created By']} pagination={serverTablePagination(pagination, 'receipts', (page) => onLoad({ page, page_size: pagination.page_size || 20 }), (pageSize) => onLoad({ page: 1, page_size: pageSize }))}>
       {receipts.map((receipt) => (
         <tr key={receipt.id}>
           <td className="mono">{receipt.receipt_number}</td>
@@ -7614,9 +8140,9 @@ function ReceiptHistoryTable({ receipts }) {
   );
 }
 
-function StockMovementsTable({ movements }) {
+function StockMovementsTable({ movements, pagination, onLoad }) {
   return (
-    <TableShell caption={`${movements.length} movement(s)`} columns={['Created At', 'SKU', 'Barcode', 'Movement Type', 'Quantity Delta', 'Previous In Stock', 'New In Stock', 'Warehouse', 'Inventory Location', 'Reference Number']}>
+    <TableShell caption={`${pagination?.total ?? movements.length} movement(s)`} columns={['Created At', 'SKU', 'Barcode', 'Movement Type', 'Quantity Delta', 'Previous In Stock', 'New In Stock', 'Warehouse', 'Inventory Location', 'Reference Number']} pagination={serverTablePagination(pagination, 'movements', (page) => onLoad(page, pagination.page_size || 20), (pageSize) => onLoad(1, pageSize))}>
       {movements.map((movement) => (
         <tr key={movement.id}>
           <td>{formatDateTime(movement.created_at)}</td>
@@ -8269,6 +8795,8 @@ function OrdersPage({
   allocationPreview,
   allocationCommitSummary,
   allocationHistory,
+  allocationHistoryPagination,
+  onLoadAllocations,
   allocationDetail,
   allocationLoading,
   allocationError,
@@ -8278,6 +8806,8 @@ function OrdersPage({
   pickPreview,
   pickCommitSummary,
   pickHistory,
+  pickHistoryPagination,
+  onLoadPicks,
   pickDetail,
   pickLoading,
   pickError,
@@ -8287,6 +8817,8 @@ function OrdersPage({
   fulfillmentPreview,
   fulfillmentCommitSummary,
   fulfillmentHistory,
+  fulfillmentHistoryPagination,
+  onLoadFulfillments,
   fulfillmentDetail,
   fulfillmentLoading,
   fulfillmentError,
@@ -8307,22 +8839,21 @@ function OrdersPage({
   const [bulkPrintOrders, setBulkPrintOrders] = useState([]);
   const unpickMutationRef = useRef(null);
   const orders = ordersData.orders || [];
-  const filteredOpenOrders = useMemo(() => orders.filter((order) => {
-    const orderNumber = String(order.woo_order_number || order.woo_order_id || '').toLowerCase();
-    const customer = String(order.customer_name || '').toLowerCase();
-    const itemText = [...(order.skus || []), ...(order.item_names || [])].join(' ').toLowerCase();
-    const shipFrom = String(order.ship_from || 'Main Warehouse').toLowerCase();
-    return (!appliedOrderFilters.orderNumber || orderNumber.includes(appliedOrderFilters.orderNumber.trim().toLowerCase()))
-      && (!appliedOrderFilters.customer || customer.includes(appliedOrderFilters.customer.trim().toLowerCase()))
-      && (!appliedOrderFilters.containingItem || itemText.includes(appliedOrderFilters.containingItem.trim().toLowerCase()))
-      && (!appliedOrderFilters.warehouse || shipFrom === appliedOrderFilters.warehouse.toLowerCase());
-  }), [orders, appliedOrderFilters]);
-  const ordersPageCount = Math.max(1, Math.ceil(filteredOpenOrders.length / ordersPageSize));
-  const pagedOpenOrders = filteredOpenOrders.slice((ordersPageNumber - 1) * ordersPageSize, ordersPageNumber * ordersPageSize);
+  const ordersPageCount = Math.max(1, Number(ordersData.total_pages || 1));
+  const pagedOpenOrders = orders;
   const selectedOpenOrderSet = useMemo(() => new Set(selectedOpenOrderIds), [selectedOpenOrderIds]);
   const selectedOrderId = detail?.id;
   const view = route.ordersView || 'open';
-  const isOpenOrdersView = view === 'open';
+
+  useEffect(() => {
+    setOrderDialogOpen(false);
+    setSelectedOpenOrderIds([]);
+    if (view !== 'open') return;
+    const cleared = { orderNumber: '', customer: '', containingItem: '', warehouse: '', search: '', wooStatus: '', availabilityStatus: '', matchedStatus: '' };
+    setFilters(cleared);
+    setAppliedOrderFilters(cleared);
+    setOrdersPageNumber(1);
+  }, [view]);
 
   useEffect(() => {
     const visibleIds = new Set(orders.map((order) => order.id));
@@ -8330,8 +8861,9 @@ function OrdersPage({
   }, [ordersData.orders]);
 
   useEffect(() => {
-    setOrdersPageNumber((current) => Math.min(current, ordersPageCount));
-  }, [ordersPageCount]);
+    setOrdersPageNumber(Number(ordersData.page || 1));
+    if (ordersData.page_size) setOrdersPageSize(Number(ordersData.page_size));
+  }, [ordersData.page, ordersData.page_size]);
 
   useEffect(() => {
     if (bulkPrintOrders.length) printVisibleRoot('bulk-order-printing');
@@ -8346,12 +8878,28 @@ function OrdersPage({
     setFilters(cleared);
     setAppliedOrderFilters(cleared);
     setOrdersPageNumber(1);
-    onLoadOpenOrders({});
+    setSelectedOpenOrderIds([]);
+    onLoadOpenOrders({ ...cleared, page: 1, pageSize: ordersPageSize }, { ordersView: 'open' });
   }
 
   function applyOpenOrderFilters() {
     setAppliedOrderFilters(filters);
     setOrdersPageNumber(1);
+    setSelectedOpenOrderIds([]);
+    onLoadOpenOrders({ ...filters, page: 1, pageSize: ordersPageSize }, { ordersView: 'open' });
+  }
+
+  function changeOpenOrdersPage(page) {
+    setOrdersPageNumber(page);
+    setSelectedOpenOrderIds([]);
+    onLoadOpenOrders({ ...appliedOrderFilters, page, pageSize: ordersPageSize }, { ordersView: 'open', preserveDetail: true });
+  }
+
+  function changeOpenOrdersPageSize(pageSize) {
+    setOrdersPageSize(pageSize);
+    setOrdersPageNumber(1);
+    setSelectedOpenOrderIds([]);
+    onLoadOpenOrders({ ...appliedOrderFilters, page: 1, pageSize }, { ordersView: 'open', preserveDetail: true });
   }
 
   async function viewOpenOrder(orderId) {
@@ -8383,7 +8931,7 @@ function OrdersPage({
       const result = await postJson('/api/orders/bulk/unpick', withMutationIdempotency(unpickMutationRef, 'unpick', payload));
       if (result.status === 'rejected') throw new Error((result.errors || []).join(' ') || 'The order could not be unpicked.');
       setBulkActionMessage(`Order ${order.woo_order_number || order.woo_order_id} was unpicked.`);
-      await onLoadOpenOrders({}, { ordersView: 'open' });
+      await onLoadOpenOrders({ ...appliedOrderFilters, page: ordersPageNumber, pageSize: ordersPageSize }, { ordersView: 'open' });
       resetMutationIdempotency(unpickMutationRef);
     } catch (unpickError) {
       setBulkActionError(unpickError.message || 'Unable to unpick this order.');
@@ -8408,15 +8956,17 @@ function OrdersPage({
   }
 
   function toggleOpenOrderSelection(orderId, checked) {
+    if (loading) return;
     setSelectedOpenOrderIds((current) => checked ? Array.from(new Set([...current, orderId])) : current.filter((id) => id !== orderId));
   }
 
   function toggleAllOpenOrders(checked) {
+    if (loading) return;
     setSelectedOpenOrderIds(checked ? pagedOpenOrders.map((order) => order.id) : []);
   }
 
   async function runOpenOrdersBulkAction(action) {
-    if (!selectedOpenOrderIds.length) return;
+    if (loading || !selectedOpenOrderIds.length) return;
     if (action === 'print') {
       setBulkActionLoading(true);
       setBulkActionError('');
@@ -8463,7 +9013,7 @@ function OrdersPage({
         }
       }
       setSelectedOpenOrderIds([]);
-      await onLoadOpenOrders(filters, { ordersView: 'open' });
+      await onLoadOpenOrders({ ...appliedOrderFilters, page: ordersPageNumber, pageSize: ordersPageSize }, { ordersView: 'open' });
       if (action === 'unpick') resetMutationIdempotency(unpickMutationRef);
     } catch (bulkError) {
       setBulkActionError(bulkError.message || 'Unable to complete the bulk action.');
@@ -8479,33 +9029,6 @@ function OrdersPage({
       <Metric label="Partial" value={ordersData.partial_count || 0} />
       <Metric label="Unavailable" value={ordersData.unavailable_count || 0} />
       <Metric label="Unknown" value={ordersData.unknown_count || 0} />
-    </div>
-  );
-
-  const filtersPanel = (
-    <div className="filter-panel">
-      <div className={`filter-grid orders-filter-grid${isOpenOrdersView ? ' open-orders-search-grid' : ''}`}>
-        <label className="field">
-          <span>Search</span>
-          <div className="input-with-icon">
-            <Search size={18} />
-            <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadOpenOrders(filters))} placeholder="Order, customer, SKU, barcode" type="search" />
-          </div>
-        </label>
-        {!isOpenOrdersView && <FilterSelect label="Woo Status" value={filters.wooStatus} options={['processing', 'on-hold']} onChange={(value) => updateFilter('wooStatus', value)} />}
-        {!isOpenOrdersView && <FilterSelect label="Availability" value={filters.availabilityStatus} options={['available', 'partial', 'unavailable', 'unknown']} onChange={(value) => updateFilter('availabilityStatus', value)} />}
-        {!isOpenOrdersView && <FilterSelect label="Matched" value={filters.matchedStatus} options={['matched', 'unmatched', 'conflict', 'unknown']} onChange={(value) => updateFilter('matchedStatus', value)} />}
-      </div>
-      <div className="button-row">
-        <button className="muted-button" onClick={clearFilters} type="button">
-          <SlidersHorizontal size={17} />
-          Clear
-        </button>
-        <button className="primary-button" onClick={() => onLoadOpenOrders(filters)} disabled={loading} type="button">
-          <Filter size={17} />
-          Apply
-        </button>
-      </div>
     </div>
   );
 
@@ -8545,9 +9068,9 @@ function OrdersPage({
         {allocationError && <div className="api-error">{allocationError}</div>}
         {pickError && <div className="api-error">{pickError}</div>}
         {fulfillmentError && <div className="api-error">{fulfillmentError}</div>}
-        <AllocationHistoryPanel allocations={allocationHistory} detail={allocationDetail} onSelect={onLoadAllocationDetail} />
-        <PickHistoryPanel picks={pickHistory} detail={pickDetail} onSelect={onLoadPickDetail} />
-        <FulfillmentHistoryPanel fulfillments={fulfillmentHistory} detail={fulfillmentDetail} onSelect={onLoadFulfillmentDetail} />
+        <AllocationHistoryPanel allocations={allocationHistory} pagination={allocationHistoryPagination} onLoad={onLoadAllocations} detail={allocationDetail} onSelect={onLoadAllocationDetail} />
+        <PickHistoryPanel picks={pickHistory} pagination={pickHistoryPagination} onLoad={onLoadPicks} detail={pickDetail} onSelect={onLoadPickDetail} />
+        <FulfillmentHistoryPanel fulfillments={fulfillmentHistory} pagination={fulfillmentHistoryPagination} onLoad={onLoadFulfillments} detail={fulfillmentDetail} onSelect={onLoadFulfillmentDetail} />
       </section>
     );
   }
@@ -8564,6 +9087,7 @@ function OrdersPage({
     return (
       <PickOrdersWorkspace
         orders={orders}
+        pagination={ordersData}
         loading={loading || pickLoading}
         error={error || pickError}
         order={detail}
@@ -8584,7 +9108,7 @@ function OrdersPage({
         <div className="zen-orders-heading-actions">
           <button disabled={bulkActionLoading} onClick={importOpenOrders} title="Import processing WooCommerce orders" type="button"><Upload size={20} />Import</button>
           <button onClick={() => exportOpenOrdersCsv({})} type="button"><Download size={20} />Export</button>
-          <button disabled={loading} onClick={() => onLoadOpenOrders({})} type="button"><RefreshCw size={20} />Refresh</button>
+          <button disabled={loading} onClick={() => onLoadOpenOrders({ ...appliedOrderFilters, page: ordersPageNumber, pageSize: ordersPageSize }, { ordersView: 'open', preserveDetail: true })} type="button"><RefreshCw size={20} />Refresh</button>
         </div>
       </header>
 
@@ -8606,14 +9130,14 @@ function OrdersPage({
       {bulkActionMessage && <div className="success-strip">{bulkActionMessage}</div>}
       {bulkActionError && <div className="api-error">{bulkActionError}</div>}
 
-      <OrdersPager count={filteredOpenOrders.length} page={ordersPageNumber} pageCount={ordersPageCount} pageSize={ordersPageSize} onPageChange={setOrdersPageNumber} onPageSizeChange={(size) => { setOrdersPageSize(size); setOrdersPageNumber(1); }} />
+      <OrdersPager count={ordersData.total || 0} page={ordersPageNumber} pageCount={ordersPageCount} pageSize={ordersPageSize} onPageChange={changeOpenOrdersPage} onPageSizeChange={changeOpenOrdersPageSize} />
       <BulkActionsBar
         actions={[
           { label: 'Mark as completed', icon: <CheckCircle2 size={17} />, onSelect: () => runOpenOrdersBulkAction('complete') },
           { label: 'Print', icon: <Printer size={17} />, onSelect: () => runOpenOrdersBulkAction('print') },
           { label: 'Unpick all', icon: <RotateCcw size={17} />, onSelect: () => runOpenOrdersBulkAction('unpick'), danger: true },
         ]}
-        busy={bulkActionLoading}
+        busy={bulkActionLoading || loading}
         label="Bulk actions"
         selectedCount={selectedOpenOrderIds.length}
       />
@@ -8621,6 +9145,7 @@ function OrdersPage({
         orders={pagedOpenOrders}
         selectable
         selectedIds={selectedOpenOrderSet}
+        selectionDisabled={loading}
         onSelect={viewOpenOrder}
         onToggleAll={toggleAllOpenOrders}
         onToggleSelection={toggleOpenOrderSelection}
@@ -8637,23 +9162,26 @@ function OrdersPage({
           />
         )}
       />
-      <OrdersPager count={filteredOpenOrders.length} page={ordersPageNumber} pageCount={ordersPageCount} pageSize={ordersPageSize} onPageChange={setOrdersPageNumber} onPageSizeChange={(size) => { setOrdersPageSize(size); setOrdersPageNumber(1); }} />
+      <OrdersPager count={ordersData.total || 0} page={ordersPageNumber} pageCount={ordersPageCount} pageSize={ordersPageSize} onPageChange={changeOpenOrdersPage} onPageSizeChange={changeOpenOrdersPageSize} />
       {orderDialogOpen && <OpenOrderDetailPanel order={detail} onClose={() => { setOrderDialogOpen(false); onLoadOpenOrderDetail(null); }} onPrint={() => printVisibleRoot('single-order-printing')} />}
       <BulkPrintSheet orders={bulkPrintOrders} />
     </section>
   );
 }
 
-function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSummary, onLoadOrders, onLoadOrder, onPreviewPick, onCommitPick }) {
+function PickOrdersWorkspace({ orders, pagination = emptyOpenOrders, loading, error, order, preview, commitSummary, onLoadOrders, onLoadOrder, onPreviewPick, onCommitPick }) {
   const bulkPickMutationRef = useRef(null);
   const bulkUnpickMutationRef = useRef(null);
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [pickedQuantities, setPickedQuantities] = useState({});
   const [selectedOrderIds, setSelectedOrderIds] = useState([]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMessage, setBulkMessage] = useState('');
   const [bulkError, setBulkError] = useState('');
   const selectedOrderSet = useMemo(() => new Set(selectedOrderIds), [selectedOrderIds]);
+  const pageCount = Math.max(1, Number(pagination.total_pages || 1));
   const previewOrder = (preview?.preview_orders || []).find((candidate) => candidate.order_id === order?.id);
   const lines = previewOrder?.lines || [];
   const isDetailOpen = Boolean(order && previewOrder);
@@ -8670,6 +9198,11 @@ function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSum
     const visibleIds = new Set(orders.map((candidate) => candidate.id));
     setSelectedOrderIds((current) => current.filter((orderId) => visibleIds.has(orderId)));
   }, [orders]);
+
+  useEffect(() => {
+    setPage(Number(pagination.page || 1));
+    if (pagination.page_size) setPageSize(Number(pagination.page_size));
+  }, [pagination.page, pagination.page_size]);
 
   async function openOrder(orderId) {
     setPickedQuantities({});
@@ -8695,19 +9228,40 @@ function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSum
     const result = await onCommitPick(order.id, quantityLines);
     if (result?.status === 'posted') {
       onLoadOrder(null);
-      await onLoadOrders({ search });
     }
   }
 
   function toggleOrderSelection(orderId, checked) {
+    if (loading) return;
     setSelectedOrderIds((current) => checked ? Array.from(new Set([...current, orderId])) : current.filter((id) => id !== orderId));
   }
 
   function toggleAllOrders(checked) {
+    if (loading) return;
     setSelectedOrderIds(checked ? orders.map((candidate) => candidate.id) : []);
   }
 
+  function searchOrders() {
+    setPage(1);
+    setSelectedOrderIds([]);
+    onLoadOrders({ search, page: 1, pageSize });
+  }
+
+  function changePage(nextPage) {
+    setPage(nextPage);
+    setSelectedOrderIds([]);
+    onLoadOrders({ search, page: nextPage, pageSize });
+  }
+
+  function changePageSize(nextPageSize) {
+    setPageSize(nextPageSize);
+    setPage(1);
+    setSelectedOrderIds([]);
+    onLoadOrders({ search, page: 1, pageSize: nextPageSize });
+  }
+
   async function runPickBulkAction(action) {
+    if (loading) return;
     const eligibleIds = orders
       .filter((candidate) => selectedOrderSet.has(candidate.id) && (action === 'pick' ? candidate.can_pick : Number(candidate.total_quantity_picked || 0) > 0))
       .map((candidate) => candidate.id);
@@ -8731,7 +9285,7 @@ function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSum
       if (result.errors?.length) setBulkError(result.errors.join(' '));
       setSelectedOrderIds([]);
       onLoadOrder(null);
-      await onLoadOrders({ search });
+      await onLoadOrders({ search, page, pageSize });
       if (action === 'pick') resetMutationIdempotency(bulkPickMutationRef);
       if (action === 'unpick') resetMutationIdempotency(bulkUnpickMutationRef);
     } catch (bulkActionError) {
@@ -8843,10 +9397,10 @@ function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSum
             <span>Order number or customer</span>
             <div className="input-with-icon">
               <Search size={18} />
-              <input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadOrders({ search }))} placeholder="Search pick orders" type="search" />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, searchOrders)} placeholder="Search pick orders" type="search" />
             </div>
           </label>
-          <button className="primary-button" disabled={loading} onClick={() => onLoadOrders({ search })} type="button">Search</button>
+          <button className="primary-button" disabled={loading} onClick={searchOrders} type="button">Search</button>
         </div>
         <BulkActionsBar
           actions={[
@@ -8864,7 +9418,7 @@ function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSum
               danger: true,
             },
           ]}
-          busy={bulkBusy}
+          busy={bulkBusy || loading}
           label="Pick Orders bulk actions"
           selectedCount={selectedOrderIds.length}
         />
@@ -8874,10 +9428,10 @@ function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSum
         {bulkError && <div className="api-error">{bulkError}</div>}
         <div className="pick-orders-table-wrap">
           <table className="data-table pick-orders-table">
-            <caption>{orders.length} order(s) ready to pick</caption>
+            <caption>{pagination.total || 0} order(s) ready to pick</caption>
             <thead>
               <tr>
-                <th><input aria-label="Select all pick orders" checked={orders.length > 0 && orders.every((candidate) => selectedOrderSet.has(candidate.id))} onChange={(event) => toggleAllOrders(event.target.checked)} type="checkbox" /></th>
+                <th><input aria-label="Select all pick orders" checked={orders.length > 0 && orders.every((candidate) => selectedOrderSet.has(candidate.id))} disabled={loading} onChange={(event) => toggleAllOrders(event.target.checked)} type="checkbox" /></th>
                 <th><span className="sr-only">Open</span></th>
                 <th>Order number</th>
                 <th>Placed on</th>
@@ -8892,7 +9446,7 @@ function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSum
             <tbody>
               {orders.map((pickOrder) => (
                 <tr key={pickOrder.id}>
-                  <td className="bulk-select-cell"><input aria-label={`Select order ${pickOrder.woo_order_number || pickOrder.woo_order_id}`} checked={selectedOrderSet.has(pickOrder.id)} onChange={(event) => toggleOrderSelection(pickOrder.id, event.target.checked)} type="checkbox" /></td>
+                  <td className="bulk-select-cell"><input aria-label={`Select order ${pickOrder.woo_order_number || pickOrder.woo_order_id}`} checked={selectedOrderSet.has(pickOrder.id)} disabled={loading} onChange={(event) => toggleOrderSelection(pickOrder.id, event.target.checked)} type="checkbox" /></td>
                   <td>
                     <button className="pick-open-button" aria-label={`Open order ${pickOrder.woo_order_number || pickOrder.woo_order_id} for picking`} disabled={loading} onClick={() => openOrder(pickOrder.id)} type="button">
                       <ChevronRight size={20} />
@@ -8912,44 +9466,109 @@ function PickOrdersWorkspace({ orders, loading, error, order, preview, commitSum
             </tbody>
           </table>
         </div>
+        <OrdersPager count={pagination.total || 0} page={page} pageCount={pageCount} pageSize={pageSize} onPageChange={changePage} onPageSizeChange={changePageSize} />
       </div>
     </section>
   );
 }
 
 function AllocationExceptionsPage({ onRefreshOperationalOrders }) {
-  const emptyData = { lines: [], total_orders: 0, total_lines: 0, total_quantity_unallocated: 0, lines_with_available_stock: 0, lines_out_of_stock: 0 };
+  const emptyData = {
+    lines: [],
+    item_groups: [],
+    total_orders: 0,
+    total_lines: 0,
+    total_quantity_unallocated: 0,
+    lines_with_available_stock: 0,
+    lines_out_of_stock: 0,
+    view: 'items',
+    total_item_groups: 0,
+    returned_item_groups: 0,
+    page: 1,
+    page_size: 20,
+    total_pages: 1,
+    returned_count: 0,
+    has_previous: false,
+    has_next: false,
+    warehouses: [],
+  };
   const emptyFilters = { search: '', warehouse: '', orderedFrom: '', orderedTo: '', includeFullyAllocated: false };
   const [data, setData] = useState(emptyData);
   const [filters, setFilters] = useState(emptyFilters);
+  const [appliedFilters, setAppliedFilters] = useState(emptyFilters);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [tab, setTab] = useState('items');
-  const [focusedItemKey, setFocusedItemKey] = useState('');
+  const [focusedItemGroup, setFocusedItemGroup] = useState(null);
   const [adjustingLine, setAdjustingLine] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const requestIdRef = useRef(0);
+  const abortControllerRef = useRef(null);
 
   useEffect(() => {
-    loadExceptions(emptyFilters);
+    loadExceptions(emptyFilters, 1, 20, 'items');
+    return () => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      requestIdRef.current += 1;
+    };
   }, []);
 
-  async function loadExceptions(nextFilters = filters) {
+  async function loadExceptions(nextFilters = appliedFilters, nextPage = page, nextPageSize = pageSize, nextView = data.view || tab, nextItemGroup = focusedItemGroup) {
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setLoading(true);
     setError('');
     try {
       const response = await apiFetch(`${API_BASE_URL}/api/allocations/exceptions${plainFiltersToQueryString({
-        search: nextFilters.search,
-        warehouse: nextFilters.warehouse,
-        ordered_from: nextFilters.orderedFrom,
-        ordered_to: nextFilters.orderedTo,
-        include_fully_allocated: nextFilters.includeFullyAllocated || undefined,
-      })}`);
+        ...allocationExceptionFiltersToApi(nextFilters),
+        view: nextView,
+        page: nextPage,
+        page_size: nextPageSize,
+        item_id: nextItemGroup?.item_id || undefined,
+        unmatched_line_id: nextItemGroup?.unmatched_line_id || undefined,
+      })}`, { signal: controller.signal });
       if (!response.ok) throw new Error(`Allocation exceptions API returned ${response.status}`);
-      setData({ ...emptyData, ...(await response.json()) });
+      const body = await response.json();
+      if (requestId !== requestIdRef.current) return;
+      const responseView = body.view === 'orders' ? 'orders' : 'items';
+      const responsePageSize = Math.max(1, Number(body.page_size) || nextPageSize || 20);
+      const totalResults = responseView === 'items' ? Number(body.total_item_groups || 0) : Number(body.total_lines || 0);
+      const totalPages = Math.max(1, Number(body.total_pages) || Math.ceil(totalResults / responsePageSize));
+      const responsePage = Math.min(totalPages, Math.max(1, Number(body.page) || nextPage || 1));
+      setData((current) => ({
+        ...emptyData,
+        ...body,
+        lines: body.lines || [],
+        item_groups: body.item_groups || [],
+        view: responseView,
+        total_item_groups: body.total_item_groups ?? 0,
+        returned_item_groups: body.returned_item_groups ?? (responseView === 'items' ? (body.item_groups || groupAllocationExceptionItems(body.lines || [])).length : 0),
+        page: responsePage,
+        page_size: responsePageSize,
+        total_pages: totalPages,
+        returned_count: body.returned_count ?? (body.lines || []).length,
+        has_previous: body.has_previous ?? responsePage > 1,
+        has_next: body.has_next ?? responsePage < totalPages,
+        warehouses: Array.isArray(body.warehouses) ? body.warehouses : current.warehouses,
+      }));
+      setPage(responsePage);
+      setPageSize(responsePageSize);
     } catch (loadError) {
-      setError(loadError.message || 'Unable to load allocation exceptions.');
+      if (loadError?.name !== 'AbortError' && requestId === requestIdRef.current) {
+        setError(loadError.message || 'Unable to load allocation exceptions.');
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) {
+        abortControllerRef.current = null;
+        setLoading(false);
+      }
     }
   }
 
@@ -8960,7 +9579,7 @@ function AllocationExceptionsPage({ onRefreshOperationalOrders }) {
     try {
       const result = await postJson('/api/allocations/auto/commit', {});
       setMessage(`${formatNumber(result.total_quantity_allocated)} unit(s) reserved in first-come-first-served order. ${result.allocated_orders} order(s) became fully allocated.`);
-      await loadExceptions(filters);
+      await loadExceptions(appliedFilters, page, pageSize, data.view || tab, focusedItemGroup);
       await onRefreshOperationalOrders?.();
     } catch (allocationRunError) {
       setError(allocationRunError.message || 'Unable to run FIFO allocation.');
@@ -8971,7 +9590,7 @@ function AllocationExceptionsPage({ onRefreshOperationalOrders }) {
   async function stockSaved(result) {
     setAdjustingLine(null);
     setMessage(`Stock updated${result?.adjustment_number ? ` with ${result.adjustment_number}` : ''}; FIFO allocation was retried automatically.`);
-    await loadExceptions(filters);
+    await loadExceptions(appliedFilters, page, pageSize, data.view || tab, focusedItemGroup);
     await onRefreshOperationalOrders?.();
   }
 
@@ -8981,20 +9600,60 @@ function AllocationExceptionsPage({ onRefreshOperationalOrders }) {
 
   function clearFilters() {
     setFilters(emptyFilters);
-    setFocusedItemKey('');
-    loadExceptions(emptyFilters);
+    setAppliedFilters(emptyFilters);
+    setFocusedItemGroup(null);
+    loadExceptions(emptyFilters, 1, pageSize, tab, null);
+  }
+
+  function applyFilters() {
+    setAppliedFilters(filters);
+    setFocusedItemGroup(null);
+    loadExceptions(filters, 1, pageSize, tab, null);
+  }
+
+  function changePage(nextPage) {
+    loadExceptions(appliedFilters, nextPage, pageSize, data.view || tab, focusedItemGroup);
+  }
+
+  function changePageSize(nextPageSize) {
+    loadExceptions(appliedFilters, 1, nextPageSize, data.view || tab, focusedItemGroup);
+  }
+
+  async function exportResults() {
+    setExporting(true);
+    setError('');
+    try {
+      await exportAllocationExceptionsCsv(appliedFilters);
+    } catch (exportError) {
+      setError(exportError.message || 'Unable to export allocation exceptions.');
+    } finally {
+      setExporting(false);
+    }
   }
 
   function showAffectedOrders(group) {
-    setFocusedItemKey(group.key);
+    setFocusedItemGroup(group);
     setTab('orders');
+    loadExceptions(appliedFilters, 1, pageSize, 'orders', group);
   }
 
-  const groupedItems = groupAllocationExceptionItems(data.lines || []);
-  const visibleOrderLines = focusedItemKey
-    ? (data.lines || []).filter((line) => allocationItemKey(line) === focusedItemKey)
-    : (data.lines || []);
-  const warehouses = [...new Set((data.lines || []).map((line) => line.warehouse).filter(Boolean))].sort();
+  function switchView(nextView) {
+    setFocusedItemGroup(null);
+    setTab(nextView);
+    loadExceptions(appliedFilters, 1, pageSize, nextView, null);
+  }
+
+  function showAllOrders() {
+    switchView('orders');
+  }
+
+  const groupedItems = data.item_groups?.length ? data.item_groups : groupAllocationExceptionItems(data.lines || []);
+  const visibleOrderLines = data.lines || [];
+  const warehouses = data.warehouses || [];
+  const pageCount = Math.max(1, data.total_pages || 1);
+  const pagerCount = data.view === 'items' ? data.total_item_groups || 0 : data.total_lines || 0;
+  const pagerNoun = data.view === 'items' ? 'item shortages' : 'allocation lines';
+  const busy = loading || exporting;
 
   return (
     <div className="allocation-exceptions-workspace">
@@ -9005,9 +9664,9 @@ function AllocationExceptionsPage({ onRefreshOperationalOrders }) {
             <p>Available stock is reserved automatically for WooCommerce processing orders, oldest order first.</p>
           </div>
           <div className="button-row compact">
-            <button className="muted-button" onClick={() => loadExceptions(filters)} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
-            <button className="action-button" onClick={() => downloadAllocationExceptionsCsv(data.lines || [])} disabled={!data.lines?.length} type="button"><Download size={17} />Export Results</button>
-            <button className="primary-button" onClick={runFifoAllocation} disabled={loading} type="button"><CheckCircle2 size={17} />Run FIFO Allocation</button>
+            <button className="muted-button" onClick={() => loadExceptions(appliedFilters, page, pageSize, data.view || tab, focusedItemGroup)} disabled={busy} type="button"><RefreshCw size={17} />Refresh</button>
+            <button className="action-button" onClick={exportResults} disabled={busy || !data.total_lines} type="button"><Download size={17} />{exporting ? 'Exporting...' : 'Export Results'}</button>
+            <button className="primary-button" onClick={runFifoAllocation} disabled={busy} type="button"><CheckCircle2 size={17} />Run FIFO Allocation</button>
           </div>
         </div>
 
@@ -9018,7 +9677,7 @@ function AllocationExceptionsPage({ onRefreshOperationalOrders }) {
               <strong>{data.total_orders} order(s) could not be fully auto-allocated</strong>
               <span>Only the unresolved item quantities are listed below. Fully allocated orders move directly to Pick Orders.</span>
             </div>
-            <button className="muted-button" onClick={() => { setFocusedItemKey(''); setTab('items'); }} type="button">Review shortages</button>
+            <button className="muted-button" disabled={busy} onClick={() => switchView('items')} type="button">Review shortages</button>
           </div>
         )}
 
@@ -9031,20 +9690,20 @@ function AllocationExceptionsPage({ onRefreshOperationalOrders }) {
         </div>
 
         <div className="allocation-view-tabs" role="tablist" aria-label="Allocation exception views">
-          <button className={tab === 'orders' ? 'active' : ''} onClick={() => { setFocusedItemKey(''); setTab('orders'); }} role="tab" aria-selected={tab === 'orders'} type="button">Orders <span>{data.total_orders || 0}</span></button>
-          <button className={tab === 'items' ? 'active' : ''} onClick={() => { setFocusedItemKey(''); setTab('items'); }} role="tab" aria-selected={tab === 'items'} type="button">Items <span>{groupedItems.length}</span></button>
+          <button className={tab === 'orders' ? 'active' : ''} disabled={busy} onClick={() => switchView('orders')} role="tab" aria-selected={tab === 'orders'} type="button">Orders <span>{data.total_orders || 0}</span></button>
+          <button className={tab === 'items' ? 'active' : ''} disabled={busy} onClick={() => switchView('items')} role="tab" aria-selected={tab === 'items'} type="button">Items <span>{data.total_item_groups || 0}</span></button>
         </div>
 
         <div className="filter-panel allocation-exception-filters">
           <div className="filter-grid">
-            <label className="field"><span>Item, order, SKU or barcode</span><div className="input-with-icon"><Search size={18} /><input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => loadExceptions(filters))} placeholder="Scan or search" /></div></label>
-            <label className="field"><span>Ordered From</span><input type="date" value={filters.orderedFrom} onChange={(event) => updateFilter('orderedFrom', event.target.value)} /></label>
-            <label className="field"><span>Ordered To</span><input type="date" value={filters.orderedTo} onChange={(event) => updateFilter('orderedTo', event.target.value)} /></label>
-            <FilterSelect label="Ship From" value={filters.warehouse} options={warehouses} onChange={(value) => updateFilter('warehouse', value)} />
+            <label className="field"><span>Item, order, SKU or barcode</span><div className="input-with-icon"><Search size={18} /><input disabled={busy} value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} placeholder="Scan or search" /></div></label>
+            <label className="field"><span>Ordered From</span><input disabled={busy} type="date" value={filters.orderedFrom} onChange={(event) => updateFilter('orderedFrom', event.target.value)} /></label>
+            <label className="field"><span>Ordered To</span><input disabled={busy} type="date" value={filters.orderedTo} onChange={(event) => updateFilter('orderedTo', event.target.value)} /></label>
+            <FilterSelect label="Ship From" value={filters.warehouse} options={warehouses} disabled={busy} onChange={(value) => updateFilter('warehouse', value)} />
           </div>
           <div className="allocation-filter-footer">
-            <label className="check-field"><input checked={filters.includeFullyAllocated} onChange={(event) => updateFilter('includeFullyAllocated', event.target.checked)} type="checkbox" />Include 100% allocated items in list</label>
-            <div className="button-row"><button className="muted-button" onClick={clearFilters} type="button">Clear</button><button className="primary-button" onClick={() => loadExceptions(filters)} disabled={loading} type="button"><Filter size={17} />Filter</button></div>
+            <label className="check-field"><input checked={filters.includeFullyAllocated} disabled={busy} onChange={(event) => updateFilter('includeFullyAllocated', event.target.checked)} type="checkbox" />Include 100% allocated items in list</label>
+            <div className="button-row"><button className="muted-button" disabled={busy} onClick={clearFilters} type="button">Clear</button><button className="primary-button" onClick={applyFilters} disabled={busy} type="button"><Filter size={17} />Filter</button></div>
           </div>
         </div>
         {loading && <div className="loading-strip">Reconciling allocation exceptions...</div>}
@@ -9053,10 +9712,11 @@ function AllocationExceptionsPage({ onRefreshOperationalOrders }) {
       </div>
 
       {tab === 'items' ? (
-        <AllocationExceptionItemsTable groups={groupedItems} loading={loading} onViewOrders={showAffectedOrders} onAdjustStock={setAdjustingLine} onAllocate={runFifoAllocation} />
+        <AllocationExceptionItemsTable groups={groupedItems} loading={busy} onViewOrders={showAffectedOrders} onAdjustStock={setAdjustingLine} onAllocate={runFifoAllocation} />
       ) : (
-        <AllocationExceptionOrdersTable lines={visibleOrderLines} focused={Boolean(focusedItemKey)} onClearFocus={() => setFocusedItemKey('')} onAdjustStock={setAdjustingLine} onAllocate={runFifoAllocation} />
+        <AllocationExceptionOrdersTable lines={visibleOrderLines} focused={Boolean(focusedItemGroup)} loading={busy} onClearFocus={showAllOrders} onAdjustStock={setAdjustingLine} onAllocate={runFifoAllocation} />
       )}
+      <OrdersPager count={pagerCount} disabled={busy} noun={pagerNoun} page={page} pageCount={pageCount} pageSize={pageSize} onPageChange={changePage} onPageSizeChange={changePageSize} />
       {adjustingLine && <AllocationStockModal line={adjustingLine} onClose={() => setAdjustingLine(null)} onSaved={stockSaved} />}
     </div>
   );
@@ -9067,7 +9727,7 @@ function AllocationExceptionItemsTable({ groups, loading, onViewOrders, onAdjust
     <TableShell caption={`${groups.length} item exception(s)`} columns={['Actions', 'SKU / Barcode', 'Product Title', 'Affected Orders', 'Ordered', 'Allocated', 'Unallocated', 'Picked', 'Available', 'Reason']} className="allocation-exception-table" showActionBand={false}>
       {groups.map((group) => (
         <tr key={group.key}>
-          <td><AllocationExceptionActions label={group.sku || group.barcode || group.description} canAdjust={Boolean(group.item_id)} canAllocate={group.quantity_available > 0} disabled={loading} onView={() => onViewOrders(group)} onAdjust={() => onAdjustStock(group.lines[0])} onAllocate={onAllocate} /></td>
+          <td><AllocationExceptionActions label={group.sku || group.barcode || group.description} canAdjust={Boolean(group.item_id)} canAllocate={group.quantity_available > 0} disabled={loading} onView={() => onViewOrders(group)} onAdjust={() => onAdjustStock(group)} onAllocate={onAllocate} /></td>
           <td><strong className="mono">{group.sku || 'Unmatched'}</strong><span className="table-subline mono">{group.barcode || ''}</span></td>
           <td className="description-cell"><ClampedText value={group.description} /></td>
           <td>{group.affected_order_count}</td>
@@ -9076,7 +9736,7 @@ function AllocationExceptionItemsTable({ groups, loading, onViewOrders, onAdjust
           <td><strong className="allocation-shortage-number">{formatNumber(group.quantity_unallocated)}</strong></td>
           <td>{formatNumber(group.quantity_picked)}</td>
           <td>{formatNumber(group.quantity_available)}</td>
-          <td>{StatusText(group.reason_codes[0])}</td>
+          <td>{StatusText(group.exception_reason || group.reason_codes?.[0])}</td>
         </tr>
       ))}
       {!groups.length && <tr><td colSpan={10}><div className="empty-table-row">All processing orders are fully allocated. Nothing needs attention.</div></td></tr>}
@@ -9084,14 +9744,14 @@ function AllocationExceptionItemsTable({ groups, loading, onViewOrders, onAdjust
   );
 }
 
-function AllocationExceptionOrdersTable({ lines, focused, onClearFocus, onAdjustStock, onAllocate }) {
+function AllocationExceptionOrdersTable({ lines, focused, loading, onClearFocus, onAdjustStock, onAllocate }) {
   return (
     <div className="allocation-order-lines-panel">
-      {focused && <div className="focused-allocation-filter"><span>Showing affected orders for one item.</span><button className="muted-button" onClick={onClearFocus} type="button">Show all orders</button></div>}
+      {focused && <div className="focused-allocation-filter"><span>Showing affected orders for one item.</span><button className="muted-button" disabled={loading} onClick={onClearFocus} type="button">Show all orders</button></div>}
       <TableShell caption={`${lines.length} unresolved order line(s)`} columns={['Actions', 'Order', 'Placed On', 'Customer', 'SKU / Barcode', 'Product Title', 'Ordered', 'Allocated', 'Unallocated', 'Picked', 'Available', 'Reason']} className="allocation-exception-table allocation-orders-table" showActionBand={false}>
         {lines.map((line) => (
           <tr key={line.order_line_id}>
-            <td><AllocationExceptionActions label={line.woo_order_number} canAdjust={Boolean(line.item_id)} canAllocate={line.quantity_available > 0} onView={() => { window.location.hash = '#/orders/open'; }} onAdjust={() => onAdjustStock(line)} onAllocate={onAllocate} /></td>
+            <td><AllocationExceptionActions label={line.woo_order_number} canAdjust={Boolean(line.item_id)} canAllocate={line.quantity_available > 0} disabled={loading} onView={() => { window.location.hash = '#/orders/open'; }} onAdjust={() => onAdjustStock(line)} onAllocate={onAllocate} /></td>
             <td className="mono">{line.woo_order_number || line.woo_order_id}</td>
             <td>{formatDateTime(line.ordered_at)}</td>
             <td>{line.customer_name}</td>
@@ -9130,7 +9790,7 @@ function AllocationExceptionActions({ label, canAdjust, canAllocate, disabled = 
   return (
     <div className="order-actions-menu" ref={menuRef}>
       <button className="order-actions-trigger" onClick={() => setOpen((value) => !value)} aria-label={`Open allocation actions for ${label || 'exception'}`} aria-haspopup="menu" aria-expanded={open} disabled={disabled} type="button"><EllipsisVertical size={20} /></button>
-      {open && <div className="order-actions-popover allocation-actions-popover" role="menu">{actions.map((action) => { const Icon = action.icon; return <button key={action.label} disabled={!action.enabled} onClick={() => { setOpen(false); action.run?.(); }} role="menuitem" type="button"><Icon size={16} />{action.label}</button>; })}</div>}
+      {open && <div className="order-actions-popover allocation-actions-popover" role="menu">{actions.map((action) => { const Icon = action.icon; return <button key={action.label} disabled={disabled || !action.enabled} onClick={() => { setOpen(false); action.run?.(); }} role="menuitem" type="button"><Icon size={16} />{action.label}</button>; })}</div>}
     </div>
   );
 }
@@ -9149,7 +9809,7 @@ function AllocationStockModal({ line, onClose, onSaved }) {
 
   useEffect(() => {
     let active = true;
-    apiFetch(`${API_BASE_URL}/api/inventory/locations?item_id=${line.item_id}&limit=100`)
+    apiFetch(`${API_BASE_URL}/api/inventory/locations?item_id=${line.item_id}&page=1&page_size=100`)
       .then((response) => { if (!response.ok) throw new Error('Unable to load item locations.'); return response.json(); })
       .then((body) => {
         if (!active) return;
@@ -9464,28 +10124,28 @@ function BulkPrintSheet({ orders }) {
   );
 }
 
-function OrdersPager({ count, page, pageCount, pageSize, onPageChange, onPageSizeChange }) {
+function OrdersPager({ count, page, pageCount, pageSize, onPageChange, onPageSizeChange, noun = 'orders', disabled = false }) {
   const first = count === 0 ? 0 : ((page - 1) * pageSize) + 1;
   const last = Math.min(page * pageSize, count);
   return (
     <div className="zen-orders-pager">
-      <span>Showing {formatNumber(first)}–{formatNumber(last)} of {formatNumber(count)} orders</span>
+      <span>Showing {formatNumber(first)}–{formatNumber(last)} of {formatNumber(count)} {noun}</span>
       <div>
         <label>
           <span className="sr-only">Rows per page</span>
-          <select aria-label="Rows per page" onChange={(event) => onPageSizeChange(Number(event.target.value))} value={pageSize}>
+          <select aria-label="Rows per page" disabled={disabled} onChange={(event) => onPageSizeChange(Number(event.target.value))} value={pageSize}>
             {[20, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}
           </select>
         </label>
-        <button aria-label="Previous orders page" disabled={page <= 1} onClick={() => onPageChange(page - 1)} type="button"><ChevronLeft size={20} /></button>
+        <button aria-label={`Previous ${noun} page`} disabled={disabled || page <= 1} onClick={() => onPageChange(page - 1)} type="button"><ChevronLeft size={20} /></button>
         <span>Page {formatNumber(page)} of {formatNumber(pageCount)}</span>
-        <button aria-label="Next orders page" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)} type="button"><ChevronRight size={20} /></button>
+        <button aria-label={`Next ${noun} page`} disabled={disabled || page >= pageCount} onClick={() => onPageChange(page + 1)} type="button"><ChevronRight size={20} /></button>
       </div>
     </div>
   );
 }
 
-function OpenOrdersTable({ orders, onSelect, renderActions, selectable = false, selectedIds = new Set(), onToggleSelection, onToggleAll }) {
+function OpenOrdersTable({ orders, onSelect, renderActions, selectable = false, selectedIds = new Set(), selectionDisabled = false, onToggleSelection, onToggleAll }) {
   const allSelected = orders.length > 0 && orders.every((order) => selectedIds.has(order.id));
   return (
     <table className="zen-orders-table">
@@ -9501,12 +10161,12 @@ function OpenOrdersTable({ orders, onSelect, renderActions, selectable = false, 
             <th>SKU</th>
             <th>Ordered</th>
             <th>Picked</th>
-            {selectable && <th><input aria-label="Select all open orders" checked={allSelected} onChange={(event) => onToggleAll?.(event.target.checked)} type="checkbox" /></th>}
+            {selectable && <th><input aria-label="Select all open orders" checked={allSelected} disabled={selectionDisabled} onChange={(event) => onToggleAll?.(event.target.checked)} type="checkbox" /></th>}
           </tr>
         </thead>
         <tbody>
           {orders.map((order) => (
-            <tr key={order.id} onDoubleClick={() => onSelect(order.id)}>
+            <tr key={order.id} onDoubleClick={() => { if (!selectionDisabled) onSelect(order.id); }}>
               <td className="order-actions-cell">{renderActions?.(order)}</td>
               <td className="mono open-order-number" data-label="Order Number">{order.woo_order_number || order.woo_order_id}</td>
               <td data-label="Placed On">{formatDateTime(order.date_created)}</td>
@@ -9519,7 +10179,7 @@ function OpenOrdersTable({ orders, onSelect, renderActions, selectable = false, 
               <td data-label="Picked">{formatNumber(order.total_quantity_picked)}</td>
               {selectable && (
                 <td className="bulk-select-cell">
-                  <input aria-label={`Select order ${order.woo_order_number || order.woo_order_id}`} checked={selectedIds.has(order.id)} onChange={(event) => onToggleSelection?.(order.id, event.target.checked)} type="checkbox" />
+                  <input aria-label={`Select order ${order.woo_order_number || order.woo_order_id}`} checked={selectedIds.has(order.id)} disabled={selectionDisabled} onChange={(event) => onToggleSelection?.(order.id, event.target.checked)} type="checkbox" />
                 </td>
               )}
             </tr>
@@ -9811,7 +10471,7 @@ function AllocationPreviewPanel({ preview }) {
   );
 }
 
-function AllocationHistoryPanel({ allocations, detail, onSelect }) {
+function AllocationHistoryPanel({ allocations, pagination = emptyServerPagination(), onLoad, detail, onSelect }) {
   return (
     <div className="orders-grid allocation-history-grid">
       <div className="wide-panel">
@@ -9821,7 +10481,7 @@ function AllocationHistoryPanel({ allocations, detail, onSelect }) {
             <p>Posted local allocation records. Picking is not built yet.</p>
           </div>
         </div>
-        <TableShell caption={`${allocations.length} allocation(s)`} columns={['Allocation', 'Status', 'Woo Order', 'Lines', 'Qty Allocated', 'Created By', 'Created At', 'Posted At']}>
+        <TableShell caption={`${pagination?.total ?? allocations.length} allocation record(s)`} columns={['Allocation', 'Status', 'Woo Order', 'Lines', 'Qty Allocated', 'Created By', 'Created At', 'Posted At']} pagination={serverTablePagination(pagination, 'allocations', (page) => onLoad?.({ page, page_size: pagination.page_size || 20 }), (pageSize) => onLoad?.({ page: 1, page_size: pageSize }))}>
           {allocations.map((allocation) => (
             <tr key={allocation.id} className={detail?.id === allocation.id ? 'selected-row' : ''} onClick={() => onSelect(allocation.id)}>
               <td className="mono">{allocation.allocation_number}</td>
@@ -9887,7 +10547,7 @@ function AllocationDetailPanel({ allocation }) {
   );
 }
 
-function PickHistoryPanel({ picks, detail, onSelect }) {
+function PickHistoryPanel({ picks, pagination = emptyServerPagination(), onLoad, detail, onSelect }) {
   return (
     <div className="orders-grid allocation-history-grid">
       <div className="wide-panel">
@@ -9897,7 +10557,7 @@ function PickHistoryPanel({ picks, detail, onSelect }) {
             <p>Posted local pick records. Picking reduces local In Stock and Allocated at the picked location.</p>
           </div>
         </div>
-        <TableShell caption={`${picks.length} pick(s)`} columns={['Pick', 'Status', 'Woo Order', 'Lines', 'Qty Picked', 'Created By', 'Created At', 'Posted At']}>
+        <TableShell caption={`${pagination?.total ?? picks.length} pick record(s)`} columns={['Pick', 'Status', 'Woo Order', 'Lines', 'Qty Picked', 'Created By', 'Created At', 'Posted At']} pagination={serverTablePagination(pagination, 'picks', (page) => onLoad?.({ page, page_size: pagination.page_size || 20 }), (pageSize) => onLoad?.({ page: 1, page_size: pageSize }))}>
           {picks.map((pick) => (
             <tr key={pick.id} className={detail?.id === pick.id ? 'selected-row' : ''} onClick={() => onSelect(pick.id)}>
               <td className="mono">{pick.pick_number}</td>
@@ -9964,7 +10624,7 @@ function PickDetailPanel({ pick }) {
   );
 }
 
-function FulfillmentHistoryPanel({ fulfillments, detail, onSelect }) {
+function FulfillmentHistoryPanel({ fulfillments, pagination = emptyServerPagination(), onLoad, detail, onSelect }) {
   return (
     <div className="orders-grid allocation-history-grid">
       <div className="wide-panel">
@@ -9974,7 +10634,7 @@ function FulfillmentHistoryPanel({ fulfillments, detail, onSelect }) {
             <p>Legacy local completion records. Stock reduction now happens during picking.</p>
           </div>
         </div>
-        <TableShell caption={`${fulfillments.length} fulfillment(s)`} columns={['Fulfillment', 'Status', 'Woo Order', 'Lines', 'Qty Fulfilled', 'Created By', 'Created At', 'Posted At']}>
+        <TableShell caption={`${pagination?.total ?? fulfillments.length} fulfillment record(s)`} columns={['Fulfillment', 'Status', 'Woo Order', 'Lines', 'Qty Fulfilled', 'Created By', 'Created At', 'Posted At']} pagination={serverTablePagination(pagination, 'fulfillments', (page) => onLoad?.({ page, page_size: pagination.page_size || 20 }), (pageSize) => onLoad?.({ page: 1, page_size: pageSize }))}>
           {fulfillments.map((fulfillment) => (
             <tr key={fulfillment.id} className={detail?.id === fulfillment.id ? 'selected-row' : ''} onClick={() => onSelect(fulfillment.id)}>
               <td className="mono">{fulfillment.fulfillment_number}</td>
@@ -10062,14 +10722,14 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
 
   function applyFilters() {
     setActiveFilters(filters);
-    onLoadCompletedOrders(filters);
+    onLoadCompletedOrders({ ...filters, page: 1, pageSize: ordersData.page_size || 20 });
   }
 
   function clearFilters() {
     const cleared = emptyCompletedOrderFilters();
     setFilters(cleared);
     setActiveFilters(cleared);
-    onLoadCompletedOrders(cleared);
+    onLoadCompletedOrders({ ...cleared, page: 1, pageSize: ordersData.page_size || 20 });
   }
 
   return (
@@ -10080,15 +10740,15 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
           <p>Read-only view of fulfilled and partially fulfilled local orders.</p>
         </div>
         <div className="button-row compact">
-          <button className="muted-button" onClick={() => onLoadCompletedOrders(activeFilters)} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
+          <button className="muted-button" onClick={() => onLoadCompletedOrders({ ...activeFilters, page: ordersData.page || 1, pageSize: ordersData.page_size || 20 })} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
           <button className="action-button" onClick={() => exportCompletedOrdersCsv(activeFilters)} type="button"><Download size={17} />Export CSV</button>
         </div>
       </div>
       <div className="summary-strip report-summary-strip">
         <Metric label="Orders" value={ordersData.total || 0} />
-        <Metric label="Qty Fulfilled" value={formatNumber(totals.quantityFulfilled)} />
-        <Metric label="Remaining" value={formatNumber(totals.remaining)} />
-        <Metric label="Fulfilled Value" value={formatCurrency(totals.value)} />
+        <Metric label="Page Qty Fulfilled" value={formatNumber(totals.quantityFulfilled)} />
+        <Metric label="Page Remaining" value={formatNumber(totals.remaining)} />
+        <Metric label="Page Fulfilled Value" value={formatCurrency(totals.value)} />
       </div>
       <div className="filter-panel">
         <div className="filter-grid orders-filter-grid">
@@ -10109,7 +10769,7 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
       <div className="csv-note">Completed Orders is read-only and does not modify inventory, WooCommerce, routes, shipping labels, or notifications.</div>
       {error && <div className="api-error">{error}</div>}
       {loading && <div className="loading-strip">Loading completed orders...</div>}
-      <TableShell caption={`${orders.length} completed order(s)`} columns={['Woo Order', 'Woo Status', 'Local Status', 'Completion', 'Customer', 'Email', 'Order Total', 'Picked', 'Completed Without Picking', 'Stock Reduced', 'Qty Ordered', 'Qty Allocated', 'Qty Picked', 'Qty Fulfilled', 'Closed']}>
+      <TableShell caption={`${ordersData.total || 0} completed order(s)`} columns={['Woo Order', 'Woo Status', 'Local Status', 'Completion', 'Customer', 'Email', 'Order Total', 'Picked', 'Completed Without Picking', 'Stock Reduced', 'Qty Ordered', 'Qty Allocated', 'Qty Picked', 'Qty Fulfilled', 'Closed']} pagination={serverTablePagination(ordersData, 'completed orders', (page) => onLoadCompletedOrders({ ...activeFilters, page, pageSize: ordersData.page_size || 20 }), (pageSize) => onLoadCompletedOrders({ ...activeFilters, page: 1, pageSize }))}>
         {orders.map((order) => (
           <tr key={order.id}>
             <td className="mono">{order.woo_order_number || order.woo_order_id}</td>
@@ -10137,11 +10797,13 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
 
 function RoutesPage({
   candidatesData,
+  candidatesPagination = emptyServerPagination(50),
   candidatesLoading,
   candidatesError,
   preview,
   commitSummary,
   routesData,
+  routesPagination = emptyServerPagination(50),
   detail,
   mapPayload,
   providerMessage,
@@ -10271,6 +10933,13 @@ function RoutesPage({
                 <Search size={18} />
               </div>
             </label>
+            <label className="field">
+              <span>Order Date</span>
+              <div className="input-with-icon">
+                <input value={candidateFilters.routeDate} onChange={(event) => updateCandidateFilter('routeDate', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, () => onLoadCandidates(candidateFilters))} type="date" />
+                <CalendarDays size={18} />
+              </div>
+            </label>
           </div>
           <div className="button-row items-actions">
             <button className="primary-button" onClick={() => onLoadCandidates(candidateFilters)} type="button">
@@ -10315,7 +10984,14 @@ function RoutesPage({
             Route action finished with status {commitSummary.status}. {commitSummary.route_number ? `Route ${commitSummary.route_number}.` : ''} {(commitSummary.errors || []).join(' ')}
           </div>
         )}
-        <RouteCandidatesTable candidates={candidates} selectedOrderIds={selectedOrderIds} onToggle={toggleOrder} />
+        <RouteCandidatesTable
+          candidates={candidates}
+          pagination={candidatesPagination}
+          filters={candidateFilters}
+          onLoad={onLoadCandidates}
+          selectedOrderIds={selectedOrderIds}
+          onToggle={toggleOrder}
+        />
       </div>
       {preview && <RoutePreviewPanel preview={preview} />}
       <div className="wide-panel">
@@ -10343,17 +11019,35 @@ function RoutesPage({
             <button className="primary-button" onClick={() => onLoadRoutes(routeFilters)} disabled={loading} type="button"><Filter size={17} />Apply</button>
           </div>
         </div>
-        {routesErrorOrLoading(routesLoading, routesError)}
-        <RouteHistoryTable routes={routes} detail={detail} onSelect={onLoadDetail} onFinalize={onFinalize} onCancel={onCancel} />
+        {routesErrorOrLoading(loading, error)}
+        <RouteHistoryTable
+          routes={routes}
+          pagination={routesPagination}
+          filters={routeFilters}
+          onLoad={onLoadRoutes}
+          detail={detail}
+          onSelect={onLoadDetail}
+          onFinalize={onFinalize}
+          onCancel={onCancel}
+        />
       </div>
       <RouteDetailPanel route={detail} mapPayload={mapPayload} providerMessage={providerMessage} loading={loading} onSaveMetadata={onSaveMetadata} onReorderStops={onReorderStops} onSaveStop={onSaveStop} onProviderAction={onProviderAction} />
     </section>
   );
 }
 
-function RouteCandidatesTable({ candidates, selectedOrderIds, onToggle }) {
+function RouteCandidatesTable({ candidates, pagination, filters, onLoad, selectedOrderIds, onToggle }) {
   return (
-    <TableShell caption={`${candidates.length} candidate order(s)`} columns={['Select', 'Woo Order', 'Local Status', 'Customer', 'Email', 'Phone', 'Shipping', 'Order Total', 'Fulfilled Lines', 'Qty Fulfilled', 'Date Created', 'Warning']}>
+    <TableShell
+      caption={`${pagination.total} candidate order(s)`}
+      columns={['Select', 'Woo Order', 'Local Status', 'Customer', 'Email', 'Phone', 'Shipping', 'Order Total', 'Fulfilled Lines', 'Qty Fulfilled', 'Date Created', 'Warning']}
+      pagination={serverTablePagination(
+        pagination,
+        'route candidates',
+        (page) => onLoad({ ...filters, page, page_size: pagination.page_size }),
+        (pageSize) => onLoad({ ...filters, page: 1, page_size: pageSize }),
+      )}
+    >
       {candidates.map((candidate) => (
         <tr key={candidate.order_id} className={selectedOrderIds.includes(candidate.order_id) ? 'selected-row' : ''}>
           <td><input checked={selectedOrderIds.includes(candidate.order_id)} onChange={() => onToggle(candidate.order_id)} type="checkbox" /></td>
@@ -10417,9 +11111,18 @@ function RoutePreviewPanel({ preview }) {
   );
 }
 
-function RouteHistoryTable({ routes, detail, onSelect, onFinalize, onCancel }) {
+function RouteHistoryTable({ routes, pagination, filters, onLoad, detail, onSelect, onFinalize, onCancel }) {
   return (
-    <TableShell caption={`${routes.length} route(s)`} columns={['Route', 'Status', 'Date', 'Name', 'Driver', 'Vehicle', 'Stops', 'Created By', 'Created At', 'Actions']}>
+    <TableShell
+      caption={`${pagination.total} route(s)`}
+      columns={['Route', 'Status', 'Date', 'Name', 'Driver', 'Vehicle', 'Stops', 'Created By', 'Created At', 'Actions']}
+      pagination={serverTablePagination(
+        pagination,
+        'routes',
+        (page) => onLoad({ ...filters, page, page_size: pagination.page_size }),
+        (pageSize) => onLoad({ ...filters, page: 1, page_size: pageSize }),
+      )}
+    >
       {routes.map((route) => (
         <tr key={route.id} className={detail?.id === route.id ? 'selected-row' : ''} onClick={() => onSelect(route.id)}>
           <td className="mono">{route.route_number}</td>
@@ -10729,7 +11432,7 @@ function GoogleSheetsSettingsPage({ oauthResult = '' }) {
   );
 }
 
-function WooCommerceSettingsPage({ view = 'connection', status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, remapCandidates, remapMappings, remapPreview, remapMessage, writebackQueue, stockSyncJobs, writebackPreview, writebackMessage, loading, error, onCheckConnection, onSaveConfiguration, onChangeAccessMode, onPreview, onCommit, onPreviewOrders, onCommitOrders, onStartOrderHistoryImport, onPreviewRemap, onCommitRemap, onLoadRemap, onPreviewStockWriteback, onPreviewOrderStatusWriteback, onQueueWriteback, onApproveWriteback, onSendWriteback, onCancelWriteback, onRevalidateWriteback, onSyncStock, onResumeStockJob, onCancelStockJob }) {
+function WooCommerceSettingsPage({ view = 'connection', status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, syncRunsPagination = emptyServerPagination(50), onLoadSyncRuns, remapCandidates, remapCandidatesPagination = emptyServerPagination(100), onLoadRemapCandidates, remapMappings, remapMappingsPagination = emptyServerPagination(100), onLoadRemapMappings, remapPreview, remapMessage, writebackQueue, writebackQueuePagination = emptyServerPagination(50), onLoadWritebackQueue, stockSyncJobs, stockSyncJobsPagination = emptyServerPagination(25), onLoadStockSyncJobs, writebackPreview, writebackMessage, loading, error, onCheckConnection, onSaveConfiguration, onChangeAccessMode, onPreview, onCommit, onPreviewOrders, onCommitOrders, onStartOrderHistoryImport, onPreviewRemap, onCommitRemap, onLoadRemap, onPreviewStockWriteback, onPreviewOrderStatusWriteback, onQueueWriteback, onApproveWriteback, onSendWriteback, onCancelWriteback, onRevalidateWriteback, onSyncStock, onResumeStockJob, onCancelStockJob }) {
   const latestRun = syncRuns.find((run) => run.sync_type === 'products') || syncRuns[0];
   const latestOrderRun = syncRuns.find((run) => run.sync_type === 'orders');
   const reconciliation = status.order_reconciliation || {};
@@ -11111,10 +11814,10 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
           status={status.dry_run ? 'Dry-run active' : (status.writeback_enabled ? 'Live guard active' : 'Writes disabled')}
           tone={status.dry_run ? 'info' : (status.writeback_enabled ? 'warning' : 'neutral')}
         />
-        <WooWritebackPanel status={status} queue={writebackQueue?.queue || []} stockSyncJobs={stockSyncJobs || []} preview={writebackPreview} message={writebackMessage} loading={loading} onPreviewStock={onPreviewStockWriteback} onPreviewOrderStatus={onPreviewOrderStatusWriteback} onQueue={onQueueWriteback} onApprove={onApproveWriteback} onSend={onSendWriteback} onCancel={onCancelWriteback} onRevalidate={onRevalidateWriteback} onSyncStock={onSyncStock} onResumeStockJob={onResumeStockJob} onCancelStockJob={onCancelStockJob} />
+        <WooWritebackPanel status={status} queue={writebackQueue?.queue || []} queuePagination={writebackQueuePagination} onLoadQueue={onLoadWritebackQueue} stockSyncJobs={stockSyncJobs || []} stockSyncJobsPagination={stockSyncJobsPagination} onLoadStockSyncJobs={onLoadStockSyncJobs} preview={writebackPreview} message={writebackMessage} loading={loading} onPreviewStock={onPreviewStockWriteback} onPreviewOrderStatus={onPreviewOrderStatusWriteback} onQueue={onQueueWriteback} onApprove={onApproveWriteback} onSend={onSendWriteback} onCancel={onCancelWriteback} onRevalidate={onRevalidateWriteback} onSyncStock={onSyncStock} onResumeStockJob={onResumeStockJob} onCancelStockJob={onCancelStockJob} />
       </>}
       {view === 'sync' && <>
-      <WooRemapPanel candidates={remapCandidates?.candidates || []} mappings={remapMappings?.mappings || []} preview={remapPreview} message={remapMessage} loading={loading} onPreview={onPreviewRemap} onCommit={onCommitRemap} onRefresh={onLoadRemap} />
+      <WooRemapPanel candidates={remapCandidates?.candidates || []} candidatePagination={remapCandidatesPagination} onLoadCandidates={onLoadRemapCandidates} mappings={remapMappings?.mappings || []} mappingPagination={remapMappingsPagination} onLoadMappings={onLoadRemapMappings} preview={remapPreview} message={remapMessage} loading={loading} onPreview={onPreviewRemap} onCommit={onCommitRemap} onRefresh={onLoadRemap} />
       <div className="wide-panel settings-operation-panel">
         <div className="panel-title">
           <div>
@@ -11122,7 +11825,7 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
             <p>Local WooCommerce sync attempts and outcomes.</p>
           </div>
         </div>
-        <WooSyncRunsTable runs={syncRuns} />
+        <WooSyncRunsTable runs={syncRuns} pagination={syncRunsPagination} onLoad={onLoadSyncRuns} />
       </div>
       </>}
     </section>
@@ -11264,39 +11967,38 @@ function WooOrderPreviewTable({ orders }) {
   );
 }
 
-function WooWritebackPanel({ status, queue, stockSyncJobs, preview, message, loading, onPreviewStock, onPreviewOrderStatus, onQueue, onApprove, onSend, onCancel, onRevalidate, onSyncStock, onResumeStockJob, onCancelStockJob }) {
+function WooWritebackPanel({ status, queue, queuePagination = emptyServerPagination(50), onLoadQueue, stockSyncJobs, stockSyncJobsPagination = emptyServerPagination(25), onLoadStockSyncJobs, preview, message, loading, onPreviewStock, onPreviewOrderStatus, onQueue, onApprove, onSend, onCancel, onRevalidate, onSyncStock, onResumeStockJob, onCancelStockJob }) {
   const [stockForm, setStockForm] = useState({ sku: '', item_id: '', proposed_stock_quantity: '' });
   const [orderForm, setOrderForm] = useState({ woo_order_id: '', order_id: '', proposed_status: 'completed' });
   const [queueFilter, setQueueFilter] = useState('all');
   const [queueSearch, setQueueSearch] = useState('');
-  const [queuePage, setQueuePage] = useState(1);
-  const [queuePageSize, setQueuePageSize] = useState(20);
+  const queueFilterInitializedRef = useRef(false);
   const liveLabel = status.dry_run ? 'Dry Run On' : 'Live Staging Writes On';
-  const filteredQueue = useMemo(() => {
-    const query = queueSearch.trim().toLowerCase();
-    return queue.filter((row) => {
-      const matchesStatus = queueFilter === 'all' || row.status === queueFilter;
-      const matchesSearch = !query || [
-        row.operation_type,
-        row.entity_type,
-        row.entity_id,
-        row.woo_entity_id,
-        row.status,
-        writebackPreviewLabel(row),
-      ].some((value) => String(value ?? '').toLowerCase().includes(query));
-      return matchesStatus && matchesSearch;
-    });
-  }, [queue, queueFilter, queueSearch]);
-  const queueTotalPages = Math.max(1, Math.ceil(filteredQueue.length / queuePageSize));
-  const queueRows = filteredQueue.slice((queuePage - 1) * queuePageSize, queuePage * queuePageSize);
 
   useEffect(() => {
-    setQueuePage(1);
-  }, [queueFilter, queueSearch, queuePageSize]);
+    if (!queueFilterInitializedRef.current) {
+      queueFilterInitializedRef.current = true;
+      return undefined;
+    }
+    const timeoutId = window.setTimeout(() => {
+      onLoadQueue({
+        status: queueFilter === 'all' ? undefined : queueFilter,
+        search: queueSearch.trim() || undefined,
+        page: 1,
+        page_size: queuePagination.page_size,
+      });
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [queueFilter, queueSearch]);
 
-  useEffect(() => {
-    setQueuePage((current) => Math.min(current, queueTotalPages));
-  }, [queueTotalPages]);
+  function activeQueueQuery() {
+    return {
+      status: queueFilter === 'all' ? undefined : queueFilter,
+      search: queueSearch.trim() || undefined,
+      page: queuePagination.page,
+      page_size: queuePagination.page_size,
+    };
+  }
 
   function stockPayload() {
     return {
@@ -11354,7 +12056,16 @@ function WooWritebackPanel({ status, queue, stockSyncJobs, preview, message, loa
             <p>Progress and failures persist after refresh. Paused jobs can resume from their saved chunk.</p>
           </div>
         </div>
-        <TableShell caption={`${stockSyncJobs.length} stock sync job(s)`} columns={['Created', 'Status', 'Progress', 'Sent', 'Failed', 'Last error', 'Actions']}>
+        <TableShell
+          caption={`${stockSyncJobsPagination.total} stock sync job(s)`}
+          columns={['Created', 'Status', 'Progress', 'Sent', 'Failed', 'Last error', 'Actions']}
+          pagination={serverTablePagination(
+            stockSyncJobsPagination,
+            'stock sync jobs',
+            (page) => onLoadStockSyncJobs({ page, page_size: stockSyncJobsPagination.page_size }),
+            (pageSize) => onLoadStockSyncJobs({ page: 1, page_size: pageSize }),
+          )}
+        >
           {stockSyncJobs.map((job) => (
             <tr key={job.id}>
               <td>{formatDateTime(job.created_at)}</td>
@@ -11415,7 +12126,7 @@ function WooWritebackPanel({ status, queue, stockSyncJobs, preview, message, loa
       {preview && (
         <div className="writeback-preview-ready">
           <div><strong>Preview ready</strong><span>{titleize(preview.operation_type)} is ready to enter the guarded queue.</span></div>
-          <button className="primary-button" disabled={loading} onClick={() => onQueue(preview)} type="button"><Plus size={16} />Add to queue</button>
+          <button className="primary-button" disabled={loading} onClick={() => onQueue(preview, activeQueueQuery())} type="button"><Plus size={16} />Add to queue</button>
         </div>
       )}
 
@@ -11424,7 +12135,7 @@ function WooWritebackPanel({ status, queue, stockSyncJobs, preview, message, loa
           <div>
             <span className="settings-view-eyebrow">Review queue</span>
             <h2 id="writeback-queue-title">Writeback activity</h2>
-            <p>{formatNumber(queue.length)} total queue item(s). Only {queuePageSize} render at a time.</p>
+            <p>{formatNumber(queuePagination.total)} matching queue item(s). Only the current server page is loaded.</p>
           </div>
           <label className="writeback-queue-search">
             <span className="sr-only">Search writeback queue</span>
@@ -11438,22 +12149,20 @@ function WooWritebackPanel({ status, queue, stockSyncJobs, preview, message, loa
           ))}
         </div>
         <WooWritebackQueueTable
-          rows={queueRows}
+          rows={queue}
           dryRun={status.dry_run}
           loading={loading}
-          onApprove={onApprove}
-          onSend={onSend}
-          onCancel={onCancel}
-          onRevalidate={onRevalidate}
+          onApprove={(queueId) => onApprove(queueId, activeQueueQuery())}
+          onSend={(queueId) => onSend(queueId, activeQueueQuery())}
+          onCancel={(queueId) => onCancel(queueId, activeQueueQuery())}
+          onRevalidate={(queueId) => onRevalidate(queueId, activeQueueQuery())}
           pagination={{
-            total: filteredQueue.length,
-            page: queuePage,
-            pageSize: queuePageSize,
-            totalPages: queueTotalPages,
-            returnedCount: queueRows.length,
-            noun: 'queue items',
-            onPageChange: setQueuePage,
-            onPageSizeChange: setQueuePageSize,
+            ...serverTablePagination(
+              queuePagination,
+              'queue items',
+              (page) => onLoadQueue({ status: queueFilter === 'all' ? undefined : queueFilter, search: queueSearch.trim() || undefined, page, page_size: queuePagination.page_size }),
+              (pageSize) => onLoadQueue({ status: queueFilter === 'all' ? undefined : queueFilter, search: queueSearch.trim() || undefined, page: 1, page_size: pageSize }),
+            ),
           }}
         />
       </section>
@@ -11500,11 +12209,9 @@ function writebackPreviewLabel(row) {
   return row.operation_type;
 }
 
-function WooRemapPanel({ candidates, mappings, preview, message, loading, onPreview, onCommit, onRefresh }) {
+function WooRemapPanel({ candidates, candidatePagination = emptyServerPagination(100), onLoadCandidates, mappings, mappingPagination = emptyServerPagination(100), onLoadMappings, preview, message, loading, onPreview, onCommit, onRefresh }) {
   const [selected, setSelected] = useState({ woo_product_id: '', woo_variation_id: '', item_id: '', note: '' });
   const [selectedCandidate, setSelectedCandidate] = useState(null);
-  const candidatePaging = useClientPagination(candidates, 'candidates');
-  const mappingPaging = useClientPagination(mappings, 'mappings');
 
   function selectCandidate(candidate) {
     const firstSuggestion = candidate.suggested_items?.[0];
@@ -11553,8 +12260,8 @@ function WooRemapPanel({ candidates, mappings, preview, message, loading, onPrev
           Preview maps Woo {preview.remote.woo_product_id}{preview.remote.woo_variation_id ? `/${preview.remote.woo_variation_id}` : ''} to {preview.item.sku || preview.item.description}. {(preview.warnings || []).join(' ')} {(preview.errors || []).join(' ')}
         </div>
       )}
-      <TableShell caption={`${candidates.length} remap candidate(s)`} columns={['Woo Product', 'Variation', 'SKU', 'Reason', 'Current Item', 'Suggestions', 'Action']} pagination={candidatePaging.pagination}>
-        {candidatePaging.pageRows.map((candidate) => (
+      <TableShell caption={`${candidatePagination.total} remap candidate(s)`} columns={['Woo Product', 'Variation', 'SKU', 'Reason', 'Current Item', 'Suggestions', 'Action']} pagination={serverTablePagination(candidatePagination, 'remap candidates', (page) => onLoadCandidates({ page, page_size: candidatePagination.page_size }), (pageSize) => onLoadCandidates({ page: 1, page_size: pageSize }))}>
+        {candidates.map((candidate) => (
           <tr key={`${candidate.remote.woo_product_id}-${candidate.remote.woo_variation_id || 'simple'}`}>
             <td className="mono">{candidate.remote.woo_product_id}</td>
             <td className="mono">{candidate.remote.woo_variation_id}</td>
@@ -11567,8 +12274,8 @@ function WooRemapPanel({ candidates, mappings, preview, message, loading, onPrev
         ))}
         {candidates.length === 0 && <tr><td colSpan={7}><div className="empty-table-row">No remap candidates found.</div></td></tr>}
       </TableShell>
-      <TableShell caption={`${mappings.length} active mapping(s)`} columns={['Item ID', 'Woo Product', 'Variation', 'SKU', 'Source', 'Active', 'Updated']} pagination={mappingPaging.pagination}>
-        {mappingPaging.pageRows.map((mapping) => (
+      <TableShell caption={`${mappingPagination.total} active mapping(s)`} columns={['Item ID', 'Woo Product', 'Variation', 'SKU', 'Source', 'Active', 'Updated']} pagination={serverTablePagination(mappingPagination, 'active mappings', (page) => onLoadMappings({ page, page_size: mappingPagination.page_size }), (pageSize) => onLoadMappings({ page: 1, page_size: pageSize }))}>
+        {mappings.map((mapping) => (
           <tr key={mapping.id}><td>{mapping.item_id}</td><td className="mono">{mapping.woo_product_id}</td><td className="mono">{mapping.woo_variation_id}</td><td className="mono">{mapping.woo_sku}</td><td>{mapping.mapping_source}</td><td>{mapping.active ? 'Yes' : 'No'}</td><td>{formatDateTime(mapping.updated_at)}</td></tr>
         ))}
         {mappings.length === 0 && <tr><td colSpan={7}><div className="empty-table-row">No active local remap records yet.</div></td></tr>}
@@ -11577,11 +12284,10 @@ function WooRemapPanel({ candidates, mappings, preview, message, loading, onPrev
   );
 }
 
-function WooSyncRunsTable({ runs }) {
-  const paged = useClientPagination(runs, 'sync runs');
+function WooSyncRunsTable({ runs, pagination = emptyServerPagination(50), onLoad }) {
   return (
-    <TableShell caption={`${runs.length} sync run(s)`} columns={['Started At', 'Completed At', 'Sync Type', 'Status', 'Total Records', 'Created', 'Updated', 'Matched', 'Skipped', 'Conflicts', 'Errors', 'Created By']} pagination={paged.pagination}>
-      {paged.pageRows.map((run) => (
+    <TableShell caption={`${pagination?.total ?? runs.length} sync run(s)`} columns={['Started At', 'Completed At', 'Sync Type', 'Status', 'Total Records', 'Created', 'Updated', 'Matched', 'Skipped', 'Conflicts', 'Errors', 'Created By']} pagination={serverTablePagination(pagination, 'sync runs', (page) => onLoad?.({ page, page_size: pagination.page_size || 50 }), (pageSize) => onLoad?.({ page: 1, page_size: pageSize }))}>
+      {runs.map((run) => (
         <tr key={run.id}>
           <td>{formatDateTime(run.started_at)}</td>
           <td>{formatDateTime(run.completed_at)}</td>
@@ -11674,6 +12380,51 @@ function TableShell({ caption, columns, children, className = '', showActionBand
       </div>
     </div>
   );
+}
+
+function paginationFromResponse(body = {}, fallbackPageSize = 20) {
+  const pageSize = Math.max(1, Number(body.page_size || fallbackPageSize || 20));
+  const total = Math.max(0, Number(body.total ?? body.total_candidates ?? 0));
+  const totalPages = Math.max(1, Number(body.total_pages || Math.ceil(total / pageSize) || 1));
+  const page = Math.min(totalPages, Math.max(1, Number(body.page || 1)));
+  const returnedRows = body.orders
+    || body.receipts
+    || body.movements
+    || body.allocations
+    || body.picks
+    || body.fulfillments
+    || body.sync_runs
+    || body.cycle_counts
+    || body.routes
+    || body.queue
+    || body.jobs
+    || body.transfers
+    || body.adjustments
+    || body.candidates
+    || body.rows
+    || [];
+  return {
+    page,
+    page_size: pageSize,
+    total,
+    total_pages: totalPages,
+    returned_count: Math.max(0, Number(body.returned_count ?? returnedRows.length ?? 0)),
+    has_previous: body.has_previous ?? page > 1,
+    has_next: body.has_next ?? page < totalPages,
+  };
+}
+
+function serverTablePagination(meta, noun, onPageChange, onPageSizeChange) {
+  return {
+    page: meta?.page || 1,
+    pageSize: meta?.page_size || 20,
+    total: meta?.total || 0,
+    totalPages: meta?.total_pages || 1,
+    returnedCount: meta?.returned_count || 0,
+    noun,
+    onPageChange,
+    onPageSizeChange,
+  };
 }
 
 function TablePager({ pagination }) {
@@ -11777,24 +12528,6 @@ function isTabActive(tab, index, route) {
 
 function uniqueOptions(items, field) {
   return [...new Set(items.map((item) => item[field]).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
-}
-
-function filterItems(items, filters) {
-  const query = filters.search.trim().toLowerCase();
-  return items.filter((item) => {
-    const matchesSearch = !query || SEARCH_FIELDS.some((field) => String(item[field] ?? '').toLowerCase().includes(query));
-    const matchesCategory = !filters.category || item.Category === filters.category;
-    const matchesBrand = !filters.brand || item.Brand === filters.brand;
-    const matchesStatus = filters.status === 'inactive' ? !item.active : item.active;
-    const matchesInventoryType = filters.includeNonInventory || !item.nonInventory;
-    const matchesStockStatus =
-      !filters.stockStatus ||
-      (filters.stockStatus === 'in_stock' && toNumber(item['In Stock']) > 0) ||
-      (filters.stockStatus === 'out_of_stock' && toNumber(item['In Stock']) <= 0) ||
-      (filters.stockStatus === 'under_par' && Boolean(item['Under Par'])) ||
-      (filters.stockStatus === 'negative_sellable' && toNumber(item.Sellable) < 0);
-    return matchesSearch && matchesCategory && matchesBrand && matchesStatus && matchesInventoryType && matchesStockStatus;
-  });
 }
 
 function buildInventoryItemRows(items, locationRows, activeSearch, filters, inventoryView) {
@@ -12034,6 +12767,7 @@ function emptyRouteCandidateFilters() {
     localStatus: '',
     customerEmail: '',
     wooOrderNumber: '',
+    routeDate: '',
     search: '',
   };
 }
@@ -12483,33 +13217,17 @@ async function exportAllocationCsv(allocationId, allocationNumber) {
   URL.revokeObjectURL(url);
 }
 
-function downloadAllocationExceptionsCsv(lines) {
-  const columns = [
-    ['Order Number', 'woo_order_number'],
-    ['Placed On', 'ordered_at'],
-    ['Customer', 'customer_name'],
-    ['SKU', 'sku'],
-    ['Barcode', 'barcode'],
-    ['Description', 'description'],
-    ['Warehouse', 'warehouse'],
-    ['Inventory Location', 'inventory_location'],
-    ['Ordered', 'quantity_ordered'],
-    ['Allocated', 'quantity_allocated'],
-    ['Unallocated', 'quantity_unallocated'],
-    ['Picked', 'quantity_picked'],
-    ['Available', 'quantity_available'],
-    ['Reason', 'exception_reason'],
-  ];
-  const rows = [
-    columns.map(([label]) => escapeCsvValue(label)).join(','),
-    ...lines.map((line) => columns.map(([, key]) => escapeCsvValue(line[key])).join(',')),
-  ];
-  const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+async function exportAllocationExceptionsCsv(filters) {
+  const response = await apiFetch(`${API_BASE_URL}/api/allocations/exceptions/export${plainFiltersToQueryString(allocationExceptionFiltersToApi(filters))}`);
+  if (!response.ok) throw new Error(`Allocation exceptions export returned ${response.status}`);
+  const blob = await response.blob();
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
   link.download = 'pongo-allocation-exceptions.csv';
+  document.body.appendChild(link);
   link.click();
+  document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
 
@@ -12791,7 +13509,7 @@ function downloadSampleLocationsCsv() {
   URL.revokeObjectURL(url);
 }
 
-function filtersToQueryString(filters = {}) {
+function filtersToQueryString(filters = {}, options = {}) {
   const params = new URLSearchParams();
   if (filters.search) params.set('search', filters.search);
   if (filters.category) params.set('category', filters.category);
@@ -12806,6 +13524,7 @@ function filtersToQueryString(filters = {}) {
   if (filters.sortDir) params.set('sort_direction', filters.sortDir);
   if (filters.dataQuality) params.set('data_quality', filters.dataQuality);
   if (filters.editable) params.set('editable', 'true');
+  if (options.includeFacets !== undefined) params.set('include_facets', String(Boolean(options.includeFacets)));
   const query = params.toString();
   return query ? `?${query}` : '';
 }
@@ -12868,6 +13587,16 @@ function plainFiltersToQueryString(filters = {}) {
   });
   const query = params.toString();
   return query ? `?${query}` : '';
+}
+
+function allocationExceptionFiltersToApi(filters = {}) {
+  return {
+    search: filters.search,
+    warehouse: filters.warehouse,
+    ordered_from: filters.orderedFrom,
+    ordered_to: filters.orderedTo,
+    include_fully_allocated: filters.includeFullyAllocated || undefined,
+  };
 }
 
 function inventoryFiltersToQueryString(filters = {}) {
@@ -12935,9 +13664,15 @@ function skuOrdersFiltersToApi(filters = {}) {
 function openOrderFiltersToApi(filters = {}) {
   return {
     search: filters.search,
+    order_number: filters.orderNumber,
+    customer: filters.customer,
+    containing_item: filters.containingItem,
+    warehouse: filters.warehouse,
     woo_status: filters.wooStatus,
     availability_status: filters.availabilityStatus,
     matched_status: filters.matchedStatus,
+    page: filters.page,
+    page_size: filters.pageSize,
   };
 }
 
@@ -12951,15 +13686,20 @@ function completedOrderFiltersToApi(filters = {}) {
     sku: filters.sku,
     barcode: filters.barcode,
     search: filters.search,
+    page: filters.page,
+    page_size: filters.pageSize || filters.page_size,
   };
 }
 
 function routeCandidateFiltersToApi(filters = {}) {
   return {
+    route_date: filters.routeDate,
     local_status: filters.localStatus,
     customer_email: filters.customerEmail,
     woo_order_number: filters.wooOrderNumber,
     search: filters.search,
+    page: filters.page,
+    page_size: filters.pageSize || filters.page_size,
   };
 }
 
@@ -13025,12 +13765,34 @@ function locationToApiPayload(location) {
   };
 }
 
+function operationalItemId(item) {
+  return item?.id || null;
+}
+
+function operationalItemSku(item) {
+  return String(item?.sku ?? item?.SKU ?? '').trim();
+}
+
+function operationalItemBarcode(item) {
+  return String(item?.barcode ?? item?.Barcode ?? '').trim();
+}
+
+function operationalItemStock(item) {
+  return item?.in_stock ?? item?.['In Stock'] ?? null;
+}
+
+function operationalItemMatchesQuery(item, query) {
+  const normalizedQuery = String(query || '').trim().toLowerCase();
+  if (!item || !normalizedQuery) return false;
+  return [operationalItemSku(item), operationalItemBarcode(item)].some((value) => value.toLowerCase() === normalizedQuery);
+}
+
 function findReceivingItem(items, query) {
   const normalizedQuery = String(query || '').trim().toLowerCase();
   if (!normalizedQuery) {
     return null;
   }
-  return items.find((item) => String(item.SKU || '').toLowerCase() === normalizedQuery || String(item.Barcode || '').toLowerCase() === normalizedQuery) || null;
+  return items.find((item) => operationalItemMatchesQuery(item, normalizedQuery)) || null;
 }
 
 function receivingPayload(form, items) {
@@ -13040,12 +13802,14 @@ function receivingPayload(form, items) {
     notes: form.notes,
     created_by: 'system',
     lines: form.lines.map((line) => {
-      const item = findReceivingItem(items, line.query);
+      const item = line.selected_item || findReceivingItem(items, line.query);
       const query = String(line.query || '').trim();
+      const sku = operationalItemSku(item);
+      const barcode = operationalItemBarcode(item);
       return {
-        item_id: item?.id || null,
-        sku: item?.SKU || query || null,
-        barcode: item?.Barcode || null,
+        item_id: operationalItemId(item),
+        sku: sku || query || null,
+        barcode: barcode || (!item && query ? query : null),
         inventory_location: line.inventory_location,
         default_location: line.inventory_location,
         quantity_received: toNumber(line.quantity_received),
@@ -13075,12 +13839,14 @@ function cycleCountPayload(form, items) {
     notes: form.notes,
     created_by: 'system',
     lines: form.lines.map((line) => {
-      const item = findReceivingItem(items, line.query);
+      const item = line.selected_item || findReceivingItem(items, line.query);
       const query = String(line.query || '').trim();
+      const sku = operationalItemSku(item);
+      const barcode = operationalItemBarcode(item);
       return {
-        item_id: item?.id || null,
-        sku: item?.SKU || query || null,
-        barcode: item?.Barcode || null,
+        item_id: operationalItemId(item),
+        sku: sku || query || null,
+        barcode: barcode || (!item && query ? query : null),
         counted_quantity: toNumber(line.counted_quantity),
         notes: line.notes,
       };

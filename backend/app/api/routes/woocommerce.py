@@ -1,8 +1,8 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal, get_db
@@ -239,16 +239,42 @@ def import_woocommerce_order_history(db: Session = Depends(get_db), actor: str =
 
 
 @router.get("/orders/fetch-jobs", response_model=WooCommerceSyncRunListResponse)
-def list_woocommerce_order_fetch_jobs(limit: int = 20, db: Session = Depends(get_db)) -> WooCommerceSyncRunListResponse:
+def list_woocommerce_order_fetch_jobs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    limit: int | None = Query(default=None, ge=1, le=100, deprecated=True),
+    db: Session = Depends(get_db),
+) -> WooCommerceSyncRunListResponse:
+    effective_page_size = limit or page_size
+    total = int(
+        db.scalar(
+            select(func.count(WooCommerceSyncRun.id)).where(
+                WooCommerceSyncRun.sync_type == ORDER_JOB_SYNC_TYPE
+            )
+        )
+        or 0
+    )
+    total_pages = (total + effective_page_size - 1) // effective_page_size if total else 0
+    effective_page = min(page, max(total_pages, 1))
     runs = list(
         db.scalars(
             select(WooCommerceSyncRun)
             .where(WooCommerceSyncRun.sync_type == ORDER_JOB_SYNC_TYPE)
             .order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())
-            .limit(max(1, min(limit, 100)))
+            .offset((effective_page - 1) * effective_page_size)
+            .limit(effective_page_size)
         ).all()
     )
-    return WooCommerceSyncRunListResponse(sync_runs=[sync_run_to_read(run) for run in runs], total=len(runs))
+    return WooCommerceSyncRunListResponse(
+        sync_runs=[sync_run_to_read(run) for run in runs],
+        total=total,
+        page=effective_page,
+        page_size=effective_page_size,
+        total_pages=total_pages,
+        returned_count=len(runs),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.post("/webhooks/orders", response_model=WooCommerceWebhookDeliveryResponse)
@@ -309,28 +335,74 @@ def list_sync_runs(
     status: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> WooCommerceSyncRunListResponse:
-    statement = select(WooCommerceSyncRun).order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())
+    predicates = []
     if sync_type:
-        statement = statement.where(WooCommerceSyncRun.sync_type == sync_type)
+        predicates.append(WooCommerceSyncRun.sync_type == sync_type)
     else:
-        statement = statement.where(WooCommerceSyncRun.sync_type != ORDER_JOB_SYNC_TYPE)
+        predicates.append(WooCommerceSyncRun.sync_type != ORDER_JOB_SYNC_TYPE)
     if status:
-        statement = statement.where(WooCommerceSyncRun.status == status)
+        predicates.append(WooCommerceSyncRun.status == status)
     if date_from:
-        statement = statement.where(WooCommerceSyncRun.started_at >= date_from)
+        predicates.append(WooCommerceSyncRun.started_at >= date_from)
     if date_to:
-        statement = statement.where(WooCommerceSyncRun.started_at <= date_to)
-    runs = list(db.scalars(statement).all())
-    return WooCommerceSyncRunListResponse(sync_runs=[sync_run_to_read(run) for run in runs], total=len(runs))
+        predicates.append(WooCommerceSyncRun.started_at <= date_to)
+    total = int(db.scalar(select(func.count(WooCommerceSyncRun.id)).where(*predicates)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    effective_page = min(page, max(total_pages, 1))
+    runs = list(
+        db.scalars(
+            select(WooCommerceSyncRun)
+            .where(*predicates)
+            .order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return WooCommerceSyncRunListResponse(
+        sync_runs=[sync_run_to_read(run) for run in runs],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(runs),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.get("/sync-runs/{sync_run_id}", response_model=WooCommerceSyncRunDetail)
-def get_sync_run(sync_run_id: int, db: Session = Depends(get_db)) -> WooCommerceSyncRunDetail:
-    run = db.scalars(select(WooCommerceSyncRun).where(WooCommerceSyncRun.id == sync_run_id).options(selectinload(WooCommerceSyncRun.errors))).one_or_none()
+def get_sync_run(
+    sync_run_id: int,
+    error_page: int = Query(default=1, ge=1),
+    error_page_size: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> WooCommerceSyncRunDetail:
+    run = db.get(WooCommerceSyncRun, sync_run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="WooCommerce sync run not found")
+    errors_total = int(
+        db.scalar(
+            select(func.count(WooCommerceSyncError.id)).where(
+                WooCommerceSyncError.sync_run_id == sync_run_id
+            )
+        )
+        or 0
+    )
+    errors_total_pages = (errors_total + error_page_size - 1) // error_page_size if errors_total else 0
+    effective_error_page = min(error_page, max(errors_total_pages, 1))
+    errors = list(
+        db.scalars(
+            select(WooCommerceSyncError)
+            .where(WooCommerceSyncError.sync_run_id == sync_run_id)
+            .order_by(WooCommerceSyncError.created_at.desc(), WooCommerceSyncError.id.desc())
+            .offset((effective_error_page - 1) * error_page_size)
+            .limit(error_page_size)
+        ).all()
+    )
     base = sync_run_to_read(run).model_dump()
     base["errors"] = [
         WooCommerceSyncErrorRead(
@@ -345,14 +417,27 @@ def get_sync_run(sync_run_id: int, db: Session = Depends(get_db)) -> WooCommerce
             raw_payload=error.raw_payload,
             created_at=error.created_at,
         )
-        for error in run.errors
+        for error in errors
     ]
+    base["errors_total"] = errors_total
+    base["errors_page"] = effective_error_page
+    base["errors_page_size"] = error_page_size
+    base["errors_total_pages"] = errors_total_pages
+    base["errors_returned_count"] = len(errors)
+    base["errors_has_previous"] = effective_error_page > 1
+    base["errors_has_next"] = effective_error_page < errors_total_pages
     return WooCommerceSyncRunDetail.model_validate(base)
 
 
 @router.get("/remap/candidates", response_model=WooRemapCandidateListResponse)
-def remap_candidates(search: str | None = None, limit: int = 100, db: Session = Depends(get_db)) -> WooRemapCandidateListResponse:
-    return list_remap_candidates(db, search=search, limit=limit)
+def remap_candidates(
+    search: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=100),
+    limit: int | None = Query(default=None, ge=1, le=250, deprecated=True),
+    db: Session = Depends(get_db),
+) -> WooRemapCandidateListResponse:
+    return list_remap_candidates(db, search=search, page=page, page_size=min(limit or page_size, 100))
 
 
 @router.post("/remap/preview", response_model=WooRemapPreviewResponse)
@@ -381,9 +466,20 @@ def remap_mappings(
     woo_product_id: int | None = None,
     mapping_source: str | None = None,
     active: bool | None = True,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> WooRemapMappingListResponse:
-    return list_mappings(db, sku=sku, item_id=item_id, woo_product_id=woo_product_id, mapping_source=mapping_source, active=active)
+    return list_mappings(
+        db,
+        sku=sku,
+        item_id=item_id,
+        woo_product_id=woo_product_id,
+        mapping_source=mapping_source,
+        active=active,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.post("/remap/deactivate", response_model=WooRemapMappingRead)
@@ -415,8 +511,13 @@ def writeback_stock_sync(payload: WooStockSyncRequest, db: Session = Depends(get
 
 
 @router.get("/writeback/stock/jobs", response_model=WooStockSyncJobListResponse)
-def writeback_stock_jobs(limit: int = 25, db: Session = Depends(get_db)) -> WooStockSyncJobListResponse:
-    return list_stock_sync_jobs(db, max(1, min(limit, 100)))
+def writeback_stock_jobs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    limit: int | None = Query(default=None, ge=1, le=100, deprecated=True),
+    db: Session = Depends(get_db),
+) -> WooStockSyncJobListResponse:
+    return list_stock_sync_jobs(db, page=page, page_size=limit or page_size)
 
 
 @router.get("/writeback/stock/jobs/{job_id}", response_model=WooStockSyncJobRead)
@@ -470,8 +571,14 @@ def writeback_queue_create(payload: WooWritebackQueueCreateRequest, db: Session 
 
 
 @router.get("/writeback/queue", response_model=WooWritebackQueueListResponse)
-def writeback_queue_list(status: str | None = None, db: Session = Depends(get_db)) -> WooWritebackQueueListResponse:
-    return list_queue(db, status=status)
+def writeback_queue_list(
+    status: str | None = None,
+    search: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> WooWritebackQueueListResponse:
+    return list_queue(db, status=status, search=search, page=page, page_size=page_size)
 
 
 @router.get("/writeback/status", response_model=WooCommerceStatusResponse)
@@ -480,12 +587,20 @@ def writeback_status(db: Session = Depends(get_db)) -> WooCommerceStatusResponse
 
 
 @router.get("/writeback/logs", response_model=WooWritebackQueueListResponse)
-def writeback_logs(db: Session = Depends(get_db)) -> WooWritebackQueueListResponse:
-    rows = []
-    for status in ["sent", "failed", "cancelled"]:
-        rows.extend(list_queue(db, status=status).queue)
-    rows.sort(key=lambda row: row.updated_at or row.created_at, reverse=True)
-    return WooWritebackQueueListResponse(queue=rows, total=len(rows))
+def writeback_logs(
+    search: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> WooWritebackQueueListResponse:
+    return list_queue(
+        db,
+        statuses=("sent", "failed", "cancelled"),
+        search=search,
+        page=page,
+        page_size=page_size,
+        order_by_activity=True,
+    )
 
 
 @router.get("/writeback/queue/{queue_id}", response_model=WooWritebackQueueRead)

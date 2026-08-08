@@ -111,3 +111,9 @@ class CycleCountDetail(CycleCountRead):
 class CycleCountListResponse(BaseModel):
     cycle_counts: list[CycleCountRead]
     total: int
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False

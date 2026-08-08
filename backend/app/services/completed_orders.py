@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.orders import Order, OrderItem
@@ -48,16 +48,58 @@ class CompletedOrderFilters:
     search: str | None = None
 
 
-def list_completed_orders(db: Session, filters: CompletedOrderFilters) -> CompletedOrderListResponse:
-    statement = select(Order).where(Order.is_historical_snapshot.is_(False), (Order.local_status.in_(COMPLETED_ORDER_STATUSES)) | (Order.completion_status.in_(["completed", "completed_without_picking"]))).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.closed_at.desc().nullslast(), Order.completed_at.desc().nullslast(), Order.date_modified.desc().nullslast(), Order.date_created.desc().nullslast(), Order.id.desc())
-    orders = list(db.scalars(statement).all())
-    rows = [completed_order_to_read(order) for order in orders if order_matches_filters(order, filters)]
-    return CompletedOrderListResponse(orders=rows, total=len(rows))
+def list_completed_orders(
+    db: Session,
+    filters: CompletedOrderFilters,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+) -> CompletedOrderListResponse:
+    statement = build_completed_orders_statement(filters)
+    total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    total_pages = (total + page_size - 1) // page_size
+    effective_page = min(page, max(total_pages, 1))
+    orders = list(
+        db.scalars(
+            statement
+            .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
+            .order_by(
+                Order.closed_at.desc().nullslast(),
+                Order.completed_at.desc().nullslast(),
+                Order.date_modified.desc().nullslast(),
+                Order.date_created.desc().nullslast(),
+                Order.id.desc(),
+            )
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    rows = [completed_order_to_read(order) for order in orders]
+    return CompletedOrderListResponse(
+        orders=rows,
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(rows),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 def export_completed_orders_csv(db: Session, filters: CompletedOrderFilters) -> str:
-    statement = select(Order).where(Order.is_historical_snapshot.is_(False), (Order.local_status.in_(COMPLETED_ORDER_STATUSES)) | (Order.completion_status.in_(["completed", "completed_without_picking"]))).options(selectinload(Order.items).selectinload(OrderItem.inventory_item)).order_by(Order.closed_at.desc().nullslast(), Order.completed_at.desc().nullslast(), Order.date_modified.desc().nullslast(), Order.date_created.desc().nullslast(), Order.id.desc())
-    orders = [order for order in db.scalars(statement).all() if order_matches_filters(order, filters)]
+    statement = (
+        build_completed_orders_statement(filters)
+        .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
+        .order_by(
+            Order.closed_at.desc().nullslast(),
+            Order.completed_at.desc().nullslast(),
+            Order.date_modified.desc().nullslast(),
+            Order.date_created.desc().nullslast(),
+            Order.id.desc(),
+        )
+    )
+    orders = list(db.scalars(statement).all())
     output = StringIO()
     writer = csv.writer(output)
     writer.writerow(COMPLETED_ORDERS_CSV_COLUMNS)
@@ -66,6 +108,63 @@ def export_completed_orders_csv(db: Session, filters: CompletedOrderFilters) -> 
             if line.quantity_fulfilled and line.quantity_fulfilled > 0:
                 writer.writerow(completed_order_line_to_csv(order, line))
     return output.getvalue()
+
+
+def build_completed_orders_statement(filters: CompletedOrderFilters):
+    predicates = [
+        Order.is_historical_snapshot.is_(False),
+        or_(
+            Order.local_status.in_(COMPLETED_ORDER_STATUSES),
+            Order.completion_status.in_(["completed", "completed_without_picking"]),
+        ),
+    ]
+    if filters.local_status:
+        predicates.append(Order.local_status == filters.local_status)
+    order_date = func.coalesce(Order.date_modified, Order.date_created)
+    if filters.date_from:
+        date_from = datetime.combine(filters.date_from, time.min, tzinfo=timezone.utc)
+        predicates.append(or_(order_date.is_(None), order_date >= date_from))
+    if filters.date_to:
+        date_to = datetime.combine(filters.date_to + timedelta(days=1), time.min, tzinfo=timezone.utc)
+        predicates.append(or_(order_date.is_(None), order_date < date_to))
+    if filters.customer_email:
+        predicates.append(Order.customer_email.ilike(escaped_ilike_pattern(filters.customer_email), escape="\\"))
+    if filters.woo_order_number:
+        predicates.append(Order.woo_order_number.ilike(escaped_ilike_pattern(filters.woo_order_number), escape="\\"))
+    if filters.sku:
+        predicates.append(Order.items.any(OrderItem.sku.ilike(escaped_ilike_pattern(filters.sku), escape="\\")))
+    if filters.barcode:
+        predicates.append(Order.items.any(OrderItem.barcode.ilike(escaped_ilike_pattern(filters.barcode), escape="\\")))
+    if filters.search:
+        pattern = escaped_ilike_pattern(filters.search)
+        order_haystack = (
+            func.coalesce(Order.woo_order_number, "")
+            + " "
+            + func.coalesce(Order.customer_name, "")
+            + " "
+            + func.coalesce(Order.customer_email, "")
+        )
+        line_haystack = (
+            func.coalesce(OrderItem.sku, "")
+            + " "
+            + func.coalesce(OrderItem.barcode, "")
+            + " "
+            + func.coalesce(OrderItem.name, "")
+            + " "
+            + func.coalesce(OrderItem.description, "")
+        )
+        predicates.append(
+            or_(
+                order_haystack.ilike(pattern, escape="\\"),
+                Order.items.any(line_haystack.ilike(pattern, escape="\\")),
+            )
+        )
+    return select(Order).where(*predicates)
+
+
+def escaped_ilike_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def completed_order_to_read(order: Order) -> CompletedOrderRead:

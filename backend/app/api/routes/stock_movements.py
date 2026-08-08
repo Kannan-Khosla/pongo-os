@@ -2,10 +2,10 @@ from datetime import datetime
 import csv
 from io import StringIO
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
-from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.models.inventory import InventoryItem, StockMovement
@@ -27,11 +27,32 @@ def list_stock_movements(
     reference_id: int | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> StockMovementListResponse:
     statement = build_stock_movements_statement(search, item_id, sku, barcode, warehouse, inventory_location, movement_type, reference_type, reference_id, date_from, date_to)
-    movements = list(db.scalars(statement).all())
-    return StockMovementListResponse(movements=[movement_to_read(movement) for movement in movements], total=len(movements))
+    total = int(db.scalar(select(func.count()).select_from(statement.order_by(None).subquery())) or 0)
+    total_pages = (total + page_size - 1) // page_size
+    effective_page = min(page, max(total_pages, 1))
+    movements = list(
+        db.scalars(
+            statement
+            .options(selectinload(StockMovement.inventory_item))
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return StockMovementListResponse(
+        movements=[movement_to_read(movement) for movement in movements],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(movements),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.get("/export")

@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, JSON, String, event, func, inspect, insert, update
+from sqlalchemy import BigInteger, DateTime, Index, Integer, JSON, String, event, func, inspect
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.db.base import Base
@@ -61,14 +63,32 @@ class MetricCache(Base):
     __table_args__ = (Index("ix_metric_cache_namespace_version", "namespace", "source_version"),)
 
 
-def bump_metric_version(session: Session) -> None:
-    result = session.execute(
-        update(MetricVersion)
-        .where(MetricVersion.id == 1)
-        .values(version=MetricVersion.version + 1, updated_at=func.now())
+def metric_version_insert(session: Session):
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        return postgresql_insert(MetricVersion)
+    if dialect == "sqlite":
+        return sqlite_insert(MetricVersion)
+    raise RuntimeError(f"Metric versioning does not support the {dialect!r} database dialect.")
+
+
+def ensure_metric_version(session: Session) -> None:
+    session.execute(
+        metric_version_insert(session)
+        .values(id=1, version=0)
+        .on_conflict_do_nothing(index_elements=[MetricVersion.id])
     )
-    if result.rowcount == 0:
-        session.execute(insert(MetricVersion).values(id=1, version=1))
+
+
+def bump_metric_version(session: Session) -> None:
+    session.execute(
+        metric_version_insert(session)
+        .values(id=1, version=1)
+        .on_conflict_do_update(
+            index_elements=[MetricVersion.id],
+            set_={"version": MetricVersion.version + 1, "updated_at": func.now()},
+        )
+    )
 
 
 @event.listens_for(Session, "before_flush")

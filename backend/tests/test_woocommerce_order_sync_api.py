@@ -1,13 +1,15 @@
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.models import Base
+from app.models.orders import Order
 from app.models.woocommerce import WooCommerceSyncRun
 from app.services import woocommerce_orders as order_service
 from app.services.woocommerce_orders import (
     POSTGRES_ORDER_IMPORT_LOCK_KEY,
     acquire_order_import_transaction_lock,
     commit_remote_order_records,
+    count_pick_ready_operational_orders,
 )
 from tests.test_items_api import client, seed_item  # noqa: F401
 
@@ -126,6 +128,36 @@ def test_postgres_order_import_lock_uses_transaction_advisory_lock():
     assert db.calls == [
         ("SELECT pg_advisory_xact_lock(:lock_key)", {"lock_key": POSTGRES_ORDER_IMPORT_LOCK_KEY})
     ]
+
+
+def test_pick_ready_operational_count_uses_one_database_aggregate():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    statements = []
+    event.listen(
+        engine,
+        "before_cursor_execute",
+        lambda _connection, _cursor, statement, _parameters, _context, _executemany: statements.append(statement),
+    )
+
+    with Session(engine) as db:
+        db.add_all([
+            Order(woo_order_id=1, woo_status="processing", pick_status="ready_to_pick", is_historical_snapshot=False),
+            Order(woo_order_id=2, woo_status="processing", pick_status="partially_picked", is_historical_snapshot=False),
+            Order(woo_order_id=3, woo_status="processing", pick_status="picked", is_historical_snapshot=False),
+            Order(woo_order_id=4, woo_status="processing", pick_status="not_ready", is_historical_snapshot=False),
+            Order(woo_order_id=5, woo_status="processing", pick_status="ready_to_pick", is_historical_snapshot=True),
+            Order(woo_order_id=6, woo_status="cancelled", pick_status="ready_to_pick", is_historical_snapshot=False),
+            Order(woo_order_id=7, woo_status="completed", payment_method="FooSales POS", pick_status="ready_to_pick", is_historical_snapshot=False),
+        ])
+        db.commit()
+        statements.clear()
+
+        assert count_pick_ready_operational_orders(db) == 4
+
+    assert len(statements) == 1
+    assert "count(" in statements[0].lower()
+    assert "order_items" not in statements[0].lower()
 
 
 def test_order_preview_matches_lines_and_does_not_write_or_allocate(client, monkeypatch):
@@ -468,12 +500,154 @@ def test_open_order_search_uses_order_customer_and_matched_inventory_identifiers
     assert client.get("/api/orders/open", params={"search": "1001"}).json()["total"] == 1
     assert client.get("/api/orders/open", params={"search": "Avery Stone"}).json()["total"] == 1
     assert client.get("/api/orders/open", params={"search": "LOCAL-ORDER-SKU"}).json()["total"] == 1
+    assert client.get("/api/orders/open", params={"customer": "Avery"}).json()["total"] == 1
+    assert client.get("/api/orders/open", params={"containing_item": "LOCAL-ORDER-SKU"}).json()["total"] == 1
+    assert client.get("/api/orders/open", params={"warehouse": "Main Warehouse"}).json()["total"] == 1
     barcode_search = client.get("/api/orders/open", params={"search": "7896432"}).json()
 
     assert barcode_search["total"] == 1
     detail = client.get(f"/api/orders/{barcode_search['orders'][0]['id']}").json()
     assert detail["lines"][0]["sku"] == "LOCAL-ORDER-SKU"
     assert detail["lines"][0]["barcode"] == "7896432"
+
+
+def test_open_and_pick_order_pagination_preserves_the_complete_stable_queue(client, monkeypatch):
+    seed_item(client, sku="PAGE-SKU", Barcode="PAGE-BAR", wooProductId=101, **{"In Stock": 30, "Allocated": 0})
+    base_line = {
+        **woo_order()["line_items"][0],
+        "sku": "PAGE-SKU",
+        "quantity": 1,
+        "meta_data": [{"key": "barcode", "value": "PAGE-BAR"}],
+    }
+    orders = [
+        woo_order(id=700 + index, number=f"PAGE-{index}", line_items=[{**base_line, "id": 9700 + index}])
+        for index in range(1, 22)
+    ]
+    patch_woo_order_client(monkeypatch, orders)
+    assert client.post("/api/integrations/woocommerce/orders/commit", json={}).status_code == 200
+
+    default_open = client.get("/api/orders/open").json()
+    first = client.get("/api/orders/open", params={"page": 1, "page_size": 10}).json()
+    second = client.get("/api/orders/open", params={"page": 2, "page_size": 10}).json()
+    third = client.get("/api/orders/open", params={"page": 3, "page_size": 10}).json()
+
+    assert default_open["page_size"] == 20
+    assert default_open["returned_count"] == 20
+    assert first["total"] == 21
+    assert first["total_pages"] == 3
+    assert first["returned_count"] == 10
+    assert first["has_previous"] is False
+    assert first["has_next"] is True
+    assert third["returned_count"] == 1
+    assert third["has_next"] is False
+    paged_open_ids = [row["id"] for page in (first, second, third) for row in page["orders"]]
+    assert len(paged_open_ids) == len(set(paged_open_ids)) == 21
+
+    filtered = client.get(
+        "/api/orders/open",
+        params={"order_number": "PAGE-3", "page": 1, "page_size": 2},
+    ).json()
+    assert filtered["total"] == 1
+    assert [row["woo_order_number"] for row in filtered["orders"]] == ["PAGE-3"]
+
+    default_pick = client.get("/api/orders/pick").json()
+    pick_pages = [
+        client.get("/api/orders/pick", params={"page": page, "page_size": 10}).json()
+        for page in range(1, 4)
+    ]
+    paged_pick_ids = [row["id"] for page in pick_pages for row in page["orders"]]
+    assert default_pick["returned_count"] == 20
+    assert len(paged_pick_ids) == len(set(paged_pick_ids)) == 21
+    export = client.get("/api/orders/open/export").text
+    assert "PAGE-1" in export
+    assert "PAGE-21" in export
+
+
+def test_paginated_order_queues_extract_shipping_without_loading_raw_payload_blobs(client, monkeypatch):
+    seed_item(client, sku="LIGHT-SKU", Barcode="LIGHT-BAR", wooProductId=101, **{"In Stock": 2, "Allocated": 0})
+    payload = woo_order(
+        id=798,
+        number="LIGHT-PAGE",
+        shipping_lines=[{"method_title": "Local delivery"}],
+        large_unused_payload="x" * 250_000,
+        line_items=[{
+            **woo_order()["line_items"][0],
+            "sku": "LIGHT-SKU",
+            "quantity": 1,
+            "meta_data": [{"key": "barcode", "value": "LIGHT-BAR"}],
+        }],
+    )
+    patch_woo_order_client(monkeypatch, [payload])
+    assert client.post("/api/integrations/woocommerce/orders/commit", json={}).status_code == 200
+
+    statements = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(
+        client.test_engine,
+        "before_cursor_execute",
+        capture_statement,
+    )
+    try:
+        open_orders = client.get("/api/orders/open", params={"page": 1, "page_size": 20}).json()
+        pick_orders = client.get("/api/orders/pick", params={"page": 1, "page_size": 20}).json()
+        allocation_lines = client.get("/api/allocations/exceptions", params={"page": 1, "page_size": 20}).json()
+    finally:
+        event.remove(client.test_engine, "before_cursor_execute", capture_statement)
+
+    assert open_orders["orders"][0]["shipping_via"] == "Local delivery"
+    assert pick_orders["orders"][0]["shipping_via"] == "Local delivery"
+    assert allocation_lines["returned_count"] <= 20
+    assert not any("orders.raw_woo_payload AS orders_raw_woo_payload" in statement for statement in statements)
+
+
+def test_order_queue_membership_uses_line_truth_when_cached_workflow_status_is_stale(client, monkeypatch):
+    seed_item(client, sku="STALE-SKU", Barcode="STALE-BAR", wooProductId=101, **{"In Stock": 5, "Allocated": 0})
+    line = {
+        **woo_order()["line_items"][0],
+        "sku": "STALE-SKU",
+        "quantity": 1,
+        "meta_data": [{"key": "barcode", "value": "STALE-BAR"}],
+    }
+    patch_woo_order_client(monkeypatch, [woo_order(id=799, number="STALE-STATUS", line_items=[line])])
+    assert client.post("/api/integrations/woocommerce/orders/commit", json={}).status_code == 200
+
+    with Session(client.test_engine) as db:
+        order = db.scalar(select(Order).where(Order.woo_order_id == 799))
+        order.local_status = "completed"
+        order.completion_status = "open"
+        order.allocation_status = "unallocated"
+        order.pick_status = "not_ready"
+        db.commit()
+
+    pick = client.get("/api/orders/pick", params={"page": 1, "page_size": 20}).json()
+    assert [row["woo_order_number"] for row in pick["orders"]] == ["STALE-STATUS"]
+    assert pick["orders"][0]["can_pick"] is True
+    assert pick["orders"][0]["local_status"] == "allocated"
+
+
+def test_order_search_treats_like_metacharacters_as_literal_text(client, monkeypatch):
+    seed_item(client, sku="LIKE-SKU", Barcode="LIKE-BAR", wooProductId=101, **{"In Stock": 5, "Allocated": 0})
+    base_line = {
+        **woo_order()["line_items"][0],
+        "sku": "LIKE-SKU",
+        "quantity": 1,
+        "meta_data": [{"key": "barcode", "value": "LIKE-BAR"}],
+    }
+    patch_woo_order_client(monkeypatch, [
+        woo_order(id=810, number="ABC_1", line_items=[{**base_line, "id": 9810}]),
+        woo_order(id=811, number="ABCX1", line_items=[{**base_line, "id": 9811}]),
+        woo_order(id=812, number="PCT%1", line_items=[{**base_line, "id": 9812}]),
+    ])
+    assert client.post("/api/integrations/woocommerce/orders/commit", json={}).status_code == 200
+
+    underscore = client.get("/api/orders/open", params={"order_number": "_"}).json()
+    percent = client.get("/api/orders/open", params={"order_number": "%"}).json()
+
+    assert [row["woo_order_number"] for row in underscore["orders"]] == ["ABC_1"]
+    assert [row["woo_order_number"] for row in percent["orders"]] == ["PCT%1"]
 
 
 def test_order_commit_stores_completed_snapshot_without_open_order(client, monkeypatch):

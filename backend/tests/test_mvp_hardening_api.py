@@ -1,6 +1,7 @@
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_picks_api import allocated_order
 from tests.test_routes_api import fulfilled_route_order, route_payload
+from sqlalchemy import event
 
 
 def test_dashboard_empty_db(client):
@@ -28,6 +29,29 @@ def test_dashboard_seeded_summary_warnings_and_activity(client, monkeypatch):
     assert len(response.json()) >= 1
     assert summary["inventory_health"]["missing_unit_cost_count"] >= 1
     assert any(group["code"] == "items_missing_unit_cost" for group in warnings)
+
+
+def test_dashboard_entity_preview_queries_are_bounded(client):
+    statements = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(" ".join(statement.lower().split()))
+
+    event.listen(client.test_engine, "before_cursor_execute", capture_statement)
+    try:
+        response = client.get("/api/dashboard", params={"limit": 5})
+    finally:
+        event.remove(client.test_engine, "before_cursor_execute", capture_statement)
+
+    assert response.status_code == 200
+    entity_prefixes = (
+        "select inventory_items.id",
+        "select orders.id",
+        "select routes.id",
+    )
+    entity_queries = [statement for statement in statements if statement.startswith(entity_prefixes)]
+    assert entity_queries
+    assert all(" limit " in statement for statement in entity_queries)
 
 
 def test_woo_remap_candidates_preview_commit(client):

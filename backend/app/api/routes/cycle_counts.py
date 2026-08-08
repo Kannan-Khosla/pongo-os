@@ -2,9 +2,9 @@ import csv
 from datetime import datetime
 from io import StringIO
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
@@ -61,25 +61,48 @@ def list_cycle_counts(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     created_by: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> CycleCountListResponse:
-    statement = select(CycleCount).options(selectinload(CycleCount.lines)).order_by(CycleCount.created_at.desc(), CycleCount.id.desc())
+    predicates = []
     if status:
-        statement = statement.where(CycleCount.status == status)
+        predicates.append(CycleCount.status == status)
     if warehouse:
-        statement = statement.where(CycleCount.warehouse == warehouse)
+        predicates.append(CycleCount.warehouse == warehouse)
     if inventory_location:
-        statement = statement.where(CycleCount.inventory_location == inventory_location)
+        predicates.append(CycleCount.inventory_location == inventory_location)
     if count_type:
-        statement = statement.where(CycleCount.count_type == count_type)
+        predicates.append(CycleCount.count_type == count_type)
     if date_from:
-        statement = statement.where(CycleCount.created_at >= date_from)
+        predicates.append(CycleCount.created_at >= date_from)
     if date_to:
-        statement = statement.where(CycleCount.created_at <= date_to)
+        predicates.append(CycleCount.created_at <= date_to)
     if created_by:
-        statement = statement.where(CycleCount.created_by == created_by)
-    counts = list(db.scalars(statement).all())
-    return CycleCountListResponse(cycle_counts=[cycle_count_to_read(count) for count in counts], total=len(counts))
+        predicates.append(CycleCount.created_by == created_by)
+    total = int(db.scalar(select(func.count(CycleCount.id)).where(*predicates)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    effective_page = min(page, max(total_pages, 1))
+    counts = list(
+        db.scalars(
+            select(CycleCount)
+            .where(*predicates)
+            .options(selectinload(CycleCount.lines))
+            .order_by(CycleCount.created_at.desc(), CycleCount.id.desc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return CycleCountListResponse(
+        cycle_counts=[cycle_count_to_read(count) for count in counts],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(counts),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.get("/{cycle_count_id}", response_model=CycleCountDetail)

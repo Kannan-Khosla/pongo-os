@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from io import StringIO
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from app.db.session import get_db
 from app.main import app
@@ -39,6 +39,40 @@ def test_item_detail_activity_history_and_notes(client):
     history = client.get(f"/api/items/{item['id']}/stock-movements")
     assert history.status_code == 200
     assert history.json()["rows"][0]["title"] == "Opening Balance Import"
+
+
+def test_item_activity_uses_bounded_source_queries_and_exact_total(client):
+    item = setup_stock_item(client, sku="ACTIVITY-PAGE", barcode="ACTIVITY-PAGE-BAR")
+    for index in range(7):
+        response = client.post(f"/api/items/{item['id']}/notes", json={"note": f"Note {index}", "note_type": "general"})
+        assert response.status_code == 201
+
+    statements = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if "FROM item_notes" in statement:
+            statements.append(statement)
+
+    event.listen(client.test_engine, "before_cursor_execute", capture_statement)
+    try:
+        response = client.get(f"/api/items/{item['id']}/activity", params={"type": "note", "limit": 2, "offset": 1})
+    finally:
+        event.remove(client.test_engine, "before_cursor_execute", capture_statement)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 7
+    assert body["limit"] == 2
+    assert body["offset"] == 1
+    assert len(body["activity"]) == 2
+    row_queries = [statement for statement in statements if "SELECT item_notes.id" in statement]
+    assert len(row_queries) == 1
+    assert " LIMIT " in row_queries[0].upper()
+
+    stock_activity = client.get(f"/api/items/{item['id']}/activity", params={"type": "stock_movement", "limit": 5}).json()
+    assert stock_activity["total"] == 1
+    assert [row["type"] for row in stock_activity["activity"]] == ["stock_movement"]
+    assert client.get(f"/api/items/{item['id']}/activity", params={"type": "transfer"}).json()["total"] == 0
 
 
 def test_item_bulk_edit_blocks_stock_and_updates_metadata(client):

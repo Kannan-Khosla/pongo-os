@@ -176,6 +176,10 @@ let mockWooHealth;
 let mockWooLastError;
 let mockWooEnvironment;
 let mockItemsFeed;
+let mockItemFacets;
+let mockOpenOrdersFeed;
+let mockPickOrdersFeed;
+let mockAllocationExceptionsFeed;
 let mockInsightOverview;
 
 function pagedItemsFeed(rows) {
@@ -188,6 +192,114 @@ function pagedItemsFeed(rows) {
     const start = (page - 1) * pageSize;
     const items = filtered.slice(start, start + pageSize);
     return { items, page, page_size: pageSize, total: filtered.length, total_pages: Math.max(1, Math.ceil(filtered.length / pageSize)), returned_count: items.length };
+  };
+}
+
+function pagedOrdersFeed(rows) {
+  return (target) => {
+    const url = new URL(target);
+    const includes = (value, query) => !query || String(value || '').toLowerCase().includes(query.toLowerCase());
+    const filtered = rows.filter((order) => {
+      const itemText = [...(order.skus || []), ...(order.item_names || [])].join(' ');
+      const searchText = [order.woo_order_number, order.woo_order_id, order.customer_name, itemText].join(' ');
+      return includes(searchText, url.searchParams.get('search'))
+        && includes(order.woo_order_number || order.woo_order_id, url.searchParams.get('order_number'))
+        && includes(order.customer_name, url.searchParams.get('customer'))
+        && includes(itemText, url.searchParams.get('containing_item'))
+        && includes(order.ship_from || 'Main Warehouse', url.searchParams.get('warehouse'));
+    });
+    const page = Math.max(1, Number(url.searchParams.get('page') || 1));
+    const pageSize = Math.max(1, Number(url.searchParams.get('page_size') || 20));
+    const start = (page - 1) * pageSize;
+    const orders = filtered.slice(start, start + pageSize);
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    return {
+      orders,
+      total: filtered.length,
+      available_count: filtered.filter((order) => order.availability_status === 'available').length,
+      partial_count: filtered.filter((order) => order.availability_status === 'partial').length,
+      unavailable_count: filtered.filter((order) => order.availability_status === 'unavailable').length,
+      unknown_count: filtered.filter((order) => order.availability_status === 'unknown').length,
+      page,
+      page_size: pageSize,
+      total_pages: totalPages,
+      returned_count: orders.length,
+      has_previous: page > 1,
+      has_next: page < totalPages,
+    };
+  };
+}
+
+function pagedAllocationExceptionsFeed(rows) {
+  return (target) => {
+    const url = new URL(target);
+    const view = url.searchParams.get('view') === 'orders' ? 'orders' : 'items';
+    const search = (url.searchParams.get('search') || '').toLowerCase();
+    const warehouse = url.searchParams.get('warehouse') || '';
+    const filteredBySearch = rows.filter((line) => {
+      const searchable = [line.woo_order_number, line.woo_order_id, line.customer_name, line.sku, line.barcode, line.description].join(' ').toLowerCase();
+      return (!search || searchable.includes(search)) && (!warehouse || line.warehouse === warehouse);
+    });
+    const selectedItemId = Number(url.searchParams.get('item_id') || 0);
+    const selectedUnmatchedLineId = Number(url.searchParams.get('unmatched_line_id') || 0);
+    const filtered = filteredBySearch.filter((line) => (
+      (!selectedItemId || Number(line.item_id) === selectedItemId)
+      && (!selectedUnmatchedLineId || (!line.item_id && Number(line.order_line_id) === selectedUnmatchedLineId))
+    ));
+    const pageSize = Math.max(1, Number(url.searchParams.get('page_size') || 20));
+    const itemKey = (line) => line.item_id ? `item:${line.item_id}` : `unmatched:${line.sku || ''}:${line.barcode || ''}:${line.description || ''}`;
+    const grouped = new Map();
+    filtered.forEach((line) => {
+      const key = itemKey(line);
+      grouped.set(key, [...(grouped.get(key) || []), line]);
+    });
+    const itemGroups = [...grouped.values()];
+    const groupSummary = (lines) => {
+      const representative = lines[0];
+      return {
+        key: itemKey(representative),
+        item_id: representative.item_id,
+        unmatched_line_id: representative.item_id ? null : representative.order_line_id,
+        representative_order_line_id: representative.order_line_id,
+        sku: representative.sku,
+        barcode: representative.barcode,
+        description: representative.description,
+        warehouse: representative.warehouse,
+        inventory_location: representative.inventory_location,
+        affected_order_count: new Set(lines.map((line) => line.order_id)).size,
+        quantity_ordered: lines.reduce((sum, line) => sum + Number(line.quantity_ordered || 0), 0),
+        quantity_allocated: lines.reduce((sum, line) => sum + Number(line.quantity_allocated || 0), 0),
+        quantity_unallocated: lines.reduce((sum, line) => sum + Number(line.quantity_unallocated || 0), 0),
+        quantity_picked: lines.reduce((sum, line) => sum + Number(line.quantity_picked || 0), 0),
+        quantity_available: Math.max(...lines.map((line) => Number(line.quantity_available || 0))),
+        exception_reason: representative.exception_reason,
+      };
+    };
+    const totalResults = view === 'items' ? itemGroups.length : filtered.length;
+    const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
+    const page = Math.min(totalPages, Math.max(1, Number(url.searchParams.get('page') || 1)));
+    const start = (page - 1) * pageSize;
+    const pageGroups = view === 'items' ? itemGroups.slice(start, start + pageSize) : [];
+    const pageLines = view === 'items' ? [] : filtered.slice(start, start + pageSize);
+    return {
+      lines: pageLines,
+      item_groups: pageGroups.map(groupSummary),
+      total_orders: new Set(filtered.map((line) => line.order_id)).size,
+      total_lines: filtered.length,
+      total_quantity_unallocated: filtered.reduce((sum, line) => sum + Number(line.quantity_unallocated || 0), 0),
+      lines_with_available_stock: filtered.filter((line) => Number(line.quantity_available || 0) > 0).length,
+      lines_out_of_stock: filtered.filter((line) => Number(line.quantity_available || 0) <= 0).length,
+      view,
+      total_item_groups: itemGroups.length,
+      returned_item_groups: pageGroups.length,
+      page,
+      page_size: pageSize,
+      total_pages: totalPages,
+      returned_count: view === 'items' ? pageGroups.length : pageLines.length,
+      has_previous: page > 1,
+      has_next: page < totalPages,
+      warehouses: [...new Set(filteredBySearch.map((line) => line.warehouse).filter(Boolean))].sort(),
+    };
   };
 }
 
@@ -253,6 +365,7 @@ function mockFetch(url, options = {}) {
   if (target.includes('/api/insights/')) return json({ dashboard: 'generic', summary: { total: 0 }, rows: [], data_quality: [] });
   if (target.includes('/api/dashboard')) return json({ inventory_health: {}, order_operations: {}, routes: {}, warnings: [], activity: [] });
   if (target.includes('/api/items/import/schema')) return json(mockImportSchema);
+  if (target.includes('/api/items/facets')) return json(typeof mockItemFacets === 'function' ? mockItemFacets(target) : mockItemFacets);
   if (target.includes('/api/items/data-quality')) return json(mockDataQuality);
   if (target.includes('/api/items/export')) return csvResponse('SKU,Unit cost\nSMOKE-001,\n');
   if (target.includes('/api/import-jobs')) return json([]);
@@ -276,17 +389,11 @@ function mockFetch(url, options = {}) {
   if (target.includes('/api/orders/bulk/unpick')) return json({ status: 'completed', requested_count: 1, succeeded_count: 1, failed_count: 0, total_quantity_restored: 1, results: [], errors: [] });
   if (target.match(/\/api\/orders\/701$/)) return json(mockOrderDetail);
   if (target.includes('/api/orders/allocate')) return json({ orders: [], total: 0 });
-  if (target.includes('/api/orders/pick')) return json({ orders: [mockOrder], total: 1, available_count: 1, partial_count: 0, unavailable_count: 0, unknown_count: 0 });
-  if (target.includes('/api/orders/open')) return json({ orders: [mockOrder], total: 1, available_count: 1, partial_count: 0, unavailable_count: 0, unknown_count: 0 });
+  if (target.includes('/api/orders/pick')) return json(typeof mockPickOrdersFeed === 'function' ? mockPickOrdersFeed(target) : mockPickOrdersFeed);
+  if (target.includes('/api/orders/open')) return json(typeof mockOpenOrdersFeed === 'function' ? mockOpenOrdersFeed(target) : mockOpenOrdersFeed);
   if (target.includes('/api/orders/completed')) return json({ orders: [], total: 0 });
-  if (target.includes('/api/allocations/exceptions')) return json({
-    lines: [mockAllocationException],
-    total_orders: 1,
-    total_lines: 1,
-    total_quantity_unallocated: 3,
-    lines_with_available_stock: 0,
-    lines_out_of_stock: 1,
-  });
+  if (target.includes('/api/allocations/exceptions/export')) return csvResponse('Order Number,SKU\n0803,SMOKE-001\n');
+  if (target.includes('/api/allocations/exceptions')) return json(typeof mockAllocationExceptionsFeed === 'function' ? mockAllocationExceptionsFeed(target) : mockAllocationExceptionsFeed);
   if (target.includes('/api/allocations/auto/commit')) return json({
     status: 'completed',
     attempted_orders: 1,
@@ -501,6 +608,10 @@ describe('App shell and workflows', () => {
     mockWooLastError = null;
     mockWooEnvironment = 'staging';
     mockItemsFeed = { items: [item], page: 1, page_size: 20, total: 1, total_pages: 1, returned_count: 1 };
+    mockItemFacets = { categories: ['Test Category'], brands: ['Smoke Brand'] };
+    mockOpenOrdersFeed = pagedOrdersFeed([mockOrder]);
+    mockPickOrdersFeed = pagedOrdersFeed([mockOrder]);
+    mockAllocationExceptionsFeed = pagedAllocationExceptionsFeed([mockAllocationException]);
     mockInsightOverview = {
       dashboard: 'overview',
       summary: { gross_sales: 100, discount_amount: 10, refund_amount: null, net_sales: 90, total_orders: 2, units_sold: 4, average_order_value: 45 },
@@ -612,6 +723,67 @@ describe('App shell and workflows', () => {
     });
   });
 
+  it('aborts an obsolete item-list request when moving to Scanner', async () => {
+    let itemRequestSignal;
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/items') {
+        itemRequestSignal = options.signal;
+        return new Promise((resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+        });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#items';
+    render(<App />);
+
+    await waitFor(() => expect(itemRequestSignal).toBeTruthy());
+    act(() => { window.location.hash = '#scanner'; });
+    await screen.findByRole('heading', { name: 'Scanner Console', level: 2 });
+    expect(itemRequestSignal.aborted).toBe(true);
+  });
+
+  it('aborts superseded inventory summary and location-stock requests', async () => {
+    const summarySignals = [];
+    const locationSignals = [];
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/inventory/summary/by-location') {
+        summarySignals.push(options.signal);
+        if (summarySignals.length === 1) {
+          return new Promise((resolve, reject) => {
+            options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+          });
+        }
+      }
+      if (request.pathname === '/api/inventory/locations') {
+        locationSignals.push(options.signal);
+        if (locationSignals.length === 1) {
+          return new Promise((resolve, reject) => {
+            options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+          });
+        }
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    await waitFor(() => {
+      expect(summarySignals).toHaveLength(1);
+      expect(locationSignals).toHaveLength(1);
+    });
+    act(() => { window.location.hash = '#/inventory/all?page=1&page_size=20&category=Test%20Category'; });
+
+    await waitFor(() => {
+      expect(summarySignals.length).toBeGreaterThan(1);
+      expect(locationSignals.length).toBeGreaterThan(1);
+    });
+    expect(summarySignals[0].aborted).toBe(true);
+    expect(locationSignals[0].aborted).toBe(true);
+  });
+
   it('shows live inventory suggestions and applies keyword searches while typing', async () => {
     const user = userEvent.setup();
     fetch.mockImplementation((url) => {
@@ -694,6 +866,25 @@ describe('App shell and workflows', () => {
     expect(itemRequests.length).toBeGreaterThan(0);
     expect(itemRequests.every((url) => url.searchParams.get('page') === '1' && url.searchParams.get('page_size') === '50')).toBe(true);
     expect(itemRequests.some((url) => !url.searchParams.has('page'))).toBe(false);
+  });
+
+  it('removes hidden item selections after a successful same-page Items refresh', async () => {
+    const user = userEvent.setup();
+    let rows = [item];
+    mockItemsFeed = (target) => pagedItemsFeed(rows)(target);
+    window.location.hash = '#items';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    await user.click(screen.getByRole('checkbox', { name: 'Select SMOKE-001' }));
+    expect(screen.getByRole('button', { name: 'Bulk edit 1' })).toBeInTheDocument();
+
+    rows = [{ ...item, id: 2, SKU: 'REPLACED-002', Description: 'Replacement Item' }];
+    await user.click(screen.getByText('More'));
+    await user.click(screen.getByRole('button', { name: /Refresh items/i }));
+
+    expect(await screen.findByText('Replacement Item')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Bulk edit 1' })).not.toBeInTheDocument());
   });
 
   it('opens the dedicated item import workspace and persists a server preview', async () => {
@@ -822,6 +1013,69 @@ describe('App shell and workflows', () => {
       const request = new URL(String(url));
       return request.pathname === '/api/items' && request.searchParams.get('page') === '1' && request.searchParams.get('page_size') === '50';
     })).toBe(true);
+    expect(fetch.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/api/locations')).toHaveLength(1);
+  });
+
+  it('clears and disables Inventory selection while the next page is loading', async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 21 }, (_, index) => ({
+      ...item,
+      id: index + 1,
+      SKU: `SAFE-${String(index + 1).padStart(3, '0')}`,
+      Description: `Safe paged item ${index + 1}`,
+    }));
+    mockItemsFeed = pagedItemsFeed(rows);
+    let resolvePageTwo;
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/items' && request.searchParams.get('page') === '2') {
+        return new Promise((resolve) => {
+          resolvePageTwo = () => resolve(mockFetch(url, options));
+        });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    const firstCheckbox = await screen.findByRole('checkbox', { name: 'Select SAFE-001' });
+    await waitFor(() => expect(firstCheckbox).toBeEnabled());
+    await user.click(firstCheckbox);
+    expect(screen.getByRole('button', { name: 'Bulk Edit' })).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(resolvePageTwo).toBeTypeOf('function'));
+    expect(screen.getByRole('checkbox', { name: 'Select SAFE-001' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Select SAFE-001' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Bulk Edit' })).toBeDisabled();
+
+    await act(async () => { resolvePageTwo(); });
+    expect(await screen.findByText('SAFE-021')).toBeInTheDocument();
+  });
+
+  it('removes hidden inventory selections after a successful same-page refresh', async () => {
+    const user = userEvent.setup();
+    let rows = [item];
+    mockItemsFeed = (target) => pagedItemsFeed(rows)(target);
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).includes('/api/integrations/woocommerce/writeback/stock/sync')) {
+        return json({ status: 'no_changes', skipped_unmapped_count: 0 });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    await user.click(screen.getByRole('checkbox', { name: 'Select SMOKE-001' }));
+    expect(screen.getByRole('button', { name: 'Bulk Edit' })).toBeEnabled();
+
+    rows = [{ ...item, id: 2, SKU: 'CURRENT-002', Description: 'Current Item' }];
+    await user.click(screen.getByRole('button', { name: 'Update Stock' }));
+
+    expect(await screen.findByText('Current Item')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Bulk Edit' })).toBeDisabled());
+    expect(screen.getByText('Select items to bulk edit')).toBeInTheDocument();
   });
 
   it('offers the shared safe bulk editor from the inventory table', async () => {
@@ -846,6 +1100,7 @@ describe('App shell and workflows', () => {
       { ...item, id: 1, SKU: 'FACET-1', Category: 'Dogs', Brand: 'Alpha' },
       { ...item, id: 2, SKU: 'FACET-2', Category: 'Dog &amp; Cat', Brand: 'Zeta &amp; Co' },
     ];
+    mockItemFacets = { categories: ['Dog &amp; Cat', 'Dogs'], brands: ['Alpha', 'Zeta &amp; Co'] };
     mockItemsFeed = (target) => {
       const url = new URL(target);
       const category = url.searchParams.get('category');
@@ -857,7 +1112,6 @@ describe('App shell and workflows', () => {
         total: filtered.length,
         total_pages: filtered.length,
         returned_count: Math.min(filtered.length, 1),
-        facets: { categories: ['Dog &amp; Cat', 'Dogs'], brands: ['Alpha', 'Zeta &amp; Co'] },
       };
     };
     window.location.hash = '#/inventory/all?page=1&page_size=20';
@@ -873,6 +1127,41 @@ describe('App shell and workflows', () => {
       const request = new URL(String(url));
       return request.pathname === '/api/items' && request.searchParams.get('category') === 'Dog &amp; Cat';
     })).toBe(true);
+    const itemListCalls = fetch.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/api/items');
+    expect(itemListCalls.length).toBeGreaterThan(1);
+    expect(itemListCalls.every(([url]) => new URL(String(url)).searchParams.get('include_facets') === 'false')).toBe(true);
+    expect(fetch.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/api/items/facets')).toHaveLength(1);
+  });
+
+  it('force-refreshes cached item facets after a metadata bulk edit', async () => {
+    const user = userEvent.setup();
+    let facetRequests = 0;
+    mockItemFacets = () => {
+      facetRequests += 1;
+      return facetRequests === 1
+        ? { categories: ['Test Category'], brands: ['Before Brand'] }
+        : { categories: ['Test Category'], brands: ['After Brand'] };
+    };
+    fetch.mockImplementation((url, options) => {
+      const target = String(url);
+      if (target.includes('/api/items/bulk/preview')) return json({ can_commit: true, affected_count: 1, fields_to_update: ['brand'], warnings: [] });
+      if (target.includes('/api/items/bulk/commit')) return json({ status: 'committed', updated_count: 1 });
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#items';
+    render(<App />);
+
+    await screen.findByRole('option', { name: 'Before Brand' });
+    await user.click(screen.getByRole('checkbox', { name: 'Select SMOKE-001' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk edit 1' }));
+    const dialog = screen.getByRole('dialog', { name: 'Bulk edit inventory items' });
+    await user.type(within(dialog).getByRole('textbox', { name: 'Brand' }), 'After Brand');
+    await user.click(within(dialog).getByRole('button', { name: 'Preview changes' }));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Apply to 1 item(s)' })).toBeEnabled());
+    await user.click(within(dialog).getByRole('button', { name: 'Apply to 1 item(s)' }));
+
+    expect(await screen.findByRole('option', { name: 'After Brand' })).toBeInTheDocument();
+    expect(facetRequests).toBe(2);
   });
 
   it('keeps inventory KPI summary filters aligned with search and data quality', async () => {
@@ -1046,11 +1335,10 @@ describe('App shell and workflows', () => {
     render(<App />);
 
     const modes = await screen.findByRole('navigation', { name: 'Receiving modes' });
-    const itemRequest = fetch.mock.calls
+    const itemRequests = fetch.mock.calls
       .map(([url]) => new URL(String(url)))
-      .find((url) => url.pathname === '/api/items');
-    expect(itemRequest.searchParams.has('page')).toBe(false);
-    expect(itemRequest.searchParams.has('page_size')).toBe(false);
+      .filter((url) => url.pathname === '/api/items');
+    expect(itemRequests).toHaveLength(0);
     expect(within(modes).getByRole('link', { name: 'Direct Receiving' })).toHaveAttribute('aria-current', 'page');
     expect(within(modes).getByRole('link', { name: 'Bulk Receiving Session' })).not.toHaveAttribute('aria-current');
     expect(within(modes).getByRole('link', { name: 'Receipt History' })).not.toHaveAttribute('aria-current');
@@ -1073,7 +1361,7 @@ describe('App shell and workflows', () => {
     await user.click(removeSecondLine);
     expect(screen.queryByRole('button', { name: 'Remove receiving line 2' })).not.toBeInTheDocument();
 
-    await user.type(screen.getByRole('textbox', { name: 'Line 1 SKU or barcode' }), 'SMOKE-001');
+    await user.type(screen.getByRole('combobox', { name: 'Line 1 SKU or barcode' }), 'SMOKE-001');
     expect(steps[1]).toHaveAttribute('aria-current', 'step');
     expect(screen.getByText(/choose a destination location for every selected item/)).toHaveAttribute('role', 'status');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Line 1 inventory location' }), 'Smoke Rack');
@@ -1096,6 +1384,66 @@ describe('App shell and workflows', () => {
     expect(window.location.hash).toBe('#/receiving/history');
     expect(screen.getByRole('link', { name: 'Receipt History' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('heading', { name: 'Direct Receiving', level: 2 })).not.toBeInTheDocument();
+  });
+
+  it('finds a later catalog item for direct receiving without preloading the catalog', async () => {
+    const user = userEvent.setup();
+    const laterItem = { id: 160, sku: 'LATE-160', barcode: '9916000', product_name: 'Later Catalog Product', description: 'Later Catalog Product', brand: 'Archive Brand', category: 'Test Category', in_stock: 37 };
+    mockItemsFeed = pagedItemsFeed(Array.from({ length: 160 }, (_, index) => ({ ...item, id: index + 1, SKU: `PAGE-${String(index + 1).padStart(3, '0')}` })));
+    fetch.mockImplementation((url, options) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/items/search') return json({ items: [laterItem], total: 1 });
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/receiving/direct';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Direct Receiving', level: 2 });
+    expect(fetch.mock.calls.map(([url]) => new URL(String(url))).filter((url) => url.pathname === '/api/items')).toHaveLength(0);
+
+    const lookup = screen.getByRole('combobox', { name: 'Line 1 SKU or barcode' });
+    await user.type(lookup, 'later');
+    await user.click(await screen.findByRole('option', { name: /Later Catalog Product.*LATE-160/i }));
+    expect(lookup).toHaveValue('LATE-160');
+    expect(screen.getByText('Later Catalog Product')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Line 1 inventory location' }), 'Smoke Rack');
+    await user.click(screen.getByRole('button', { name: 'Preview Receiving' }));
+    await waitFor(() => {
+      const previewCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/receipts/direct/preview'));
+      expect(JSON.parse(previewCall[1].body).lines[0]).toMatchObject({ item_id: 160, sku: 'LATE-160', barcode: '9916000' });
+    });
+    expect(fetch.mock.calls.map(([url]) => new URL(String(url))).filter((url) => url.pathname === '/api/items')).toHaveLength(0);
+  });
+
+  it('finds a later catalog item for cycle counting without preloading the catalog', async () => {
+    const user = userEvent.setup();
+    const laterItem = { id: 161, sku: 'LATE-161', barcode: '9916100', product_name: 'Cycle Count Catalog Product', description: 'Cycle Count Catalog Product', brand: 'Archive Brand', category: 'Test Category', in_stock: 42 };
+    fetch.mockImplementation((url, options) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/items/search') return json({ items: [laterItem], total: 1 });
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#cycle-count';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'New Cycle Count' });
+    expect(fetch.mock.calls.map(([url]) => new URL(String(url))).filter((url) => url.pathname === '/api/items')).toHaveLength(0);
+
+    const lookup = screen.getByRole('combobox', { name: 'Cycle count line 1 SKU, barcode, or product' });
+    await user.type(lookup, '99161');
+    await user.click(await screen.findByRole('option', { name: /Cycle Count Catalog Product.*LATE-161/i }));
+    expect(lookup).toHaveValue('LATE-161');
+    expect(screen.getByText('Cycle Count Catalog Product')).toBeInTheDocument();
+    expect(screen.getByText('42')).toBeInTheDocument();
+
+    await user.type(screen.getByRole('textbox', { name: 'Cycle count line 1 counted quantity' }), '40');
+    await user.click(screen.getByRole('button', { name: 'Preview Count' }));
+    await waitFor(() => {
+      const previewCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/cycle-counts/preview'));
+      expect(JSON.parse(previewCall[1].body).lines[0]).toMatchObject({ item_id: 161, sku: 'LATE-161', barcode: '9916100', counted_quantity: 40 });
+    });
+    expect(fetch.mock.calls.map(([url]) => new URL(String(url))).filter((url) => url.pathname === '/api/items')).toHaveLength(0);
   });
 
   it('adds an idempotency key to bulk receiving commits', async () => {
@@ -1687,7 +2035,7 @@ describe('App shell and workflows', () => {
 
   it('paginates long Settings history tables instead of rendering every row', async () => {
     const user = userEvent.setup();
-    const runs = Array.from({ length: 25 }, (_, index) => ({
+    const runs = Array.from({ length: 55 }, (_, index) => ({
       id: index + 1,
       started_at: '2026-07-28T12:00:00Z',
       completed_at: '2026-07-28T12:01:00Z',
@@ -1702,23 +2050,141 @@ describe('App shell and workflows', () => {
       error_count: 0,
       created_by: `Worker ${index + 1}`,
     }));
-    fetch.mockImplementation((url, options) => (
-      String(url).includes('/api/integrations/woocommerce/sync-runs')
-        ? json({ sync_runs: runs })
-        : mockFetch(url, options)
-    ));
+    fetch.mockImplementation((url, options) => {
+      if (!String(url).includes('/api/integrations/woocommerce/sync-runs')) return mockFetch(url, options);
+      const requestUrl = new URL(String(url));
+      const page = Number(requestUrl.searchParams.get('page') || 1);
+      const pageSize = Number(requestUrl.searchParams.get('page_size') || 50);
+      const syncRuns = runs.slice((page - 1) * pageSize, page * pageSize);
+      return json({ sync_runs: syncRuns, total: runs.length, page, page_size: pageSize, total_pages: Math.ceil(runs.length / pageSize), returned_count: syncRuns.length, has_previous: page > 1, has_next: page * pageSize < runs.length });
+    });
     window.location.hash = '#/settings/sync';
     render(<App />);
 
-    const history = (await screen.findByText('25 sync run(s)')).closest('.table-wrap');
-    expect(within(history).getAllByRole('row')).toHaveLength(21);
-    expect(within(history).getByText(/Showing 1–20 of 25 sync runs/)).toBeInTheDocument();
+    const history = (await screen.findByText('55 sync run(s)')).closest('.table-wrap');
+    expect(within(history).getAllByRole('row')).toHaveLength(51);
+    expect(within(history).getByText(/Showing 1–50 of 55 sync runs/)).toBeInTheDocument();
 
     await user.click(within(history).getByRole('button', { name: 'Next page' }));
 
     expect(within(history).getAllByRole('row')).toHaveLength(6);
-    expect(within(history).getByText(/Showing 21–25 of 25 sync runs/)).toBeInTheDocument();
-    expect(within(history).getByText('Worker 25')).toBeInTheDocument();
+    expect(within(history).getByText(/Showing 51–55 of 55 sync runs/)).toBeInTheDocument();
+    expect(within(history).getByText('Worker 55')).toBeInTheDocument();
+  });
+
+  it('ignores an older sync-history response after a newer page-size request completes', async () => {
+    const user = userEvent.setup();
+    const runs = Array.from({ length: 55 }, (_, index) => ({
+      id: index + 1,
+      started_at: '2026-07-28T12:00:00Z',
+      completed_at: '2026-07-28T12:01:00Z',
+      sync_type: 'products',
+      status: 'completed',
+      total_remote_records: 1,
+      created_count: 0,
+      updated_count: 1,
+      matched_count: 1,
+      skipped_count: 0,
+      conflict_count: 0,
+      error_count: 0,
+      created_by: `Worker ${index + 1}`,
+    }));
+    let resolveSlowPage;
+    fetch.mockImplementation((url, options) => {
+      if (!String(url).includes('/api/integrations/woocommerce/sync-runs')) return mockFetch(url, options);
+      const requestUrl = new URL(String(url));
+      const page = Number(requestUrl.searchParams.get('page') || 1);
+      const pageSize = Number(requestUrl.searchParams.get('page_size') || 50);
+      const syncRuns = runs.slice((page - 1) * pageSize, page * pageSize);
+      const body = { sync_runs: syncRuns, total: runs.length, page, page_size: pageSize, total_pages: Math.ceil(runs.length / pageSize), returned_count: syncRuns.length, has_previous: page > 1, has_next: page * pageSize < runs.length };
+      if (page === 2 && pageSize === 50) {
+        return new Promise((resolve) => {
+          resolveSlowPage = () => resolve({ ok: true, json: () => Promise.resolve(body), text: () => Promise.resolve(JSON.stringify(body)) });
+        });
+      }
+      return json(body);
+    });
+    window.location.hash = '#/settings/sync';
+    render(<App />);
+
+    const history = (await screen.findByText('55 sync run(s)')).closest('.table-wrap');
+    await user.click(within(history).getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(resolveSlowPage).toBeTypeOf('function'));
+    await user.selectOptions(within(history).getByRole('combobox', { name: 'Rows per page' }), '20');
+    await waitFor(() => expect(within(history).getByText(/Showing 1–20 of 55 sync runs/)).toBeInTheDocument());
+    expect(within(history).getByText('Worker 20')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveSlowPage();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(within(history).getByText(/Showing 1–20 of 55 sync runs/)).toBeInTheDocument();
+    expect(within(history).getByText('Worker 20')).toBeInTheDocument();
+    expect(within(history).queryByText('Worker 55')).not.toBeInTheDocument();
+  });
+
+  it('keeps the selected sync-history page during historical-import polling', async () => {
+    const user = userEvent.setup();
+    const intervalCallbacks = [];
+    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {
+      intervalCallbacks.push({ callback, delay });
+      return intervalCallbacks.length;
+    });
+    const runs = Array.from({ length: 55 }, (_, index) => ({
+      id: index + 1,
+      started_at: '2026-07-28T12:00:00Z',
+      completed_at: null,
+      sync_type: 'orders_history',
+      status: index === 54 ? 'running' : 'completed',
+      total_remote_records: 1,
+      created_count: 0,
+      updated_count: 1,
+      matched_count: 1,
+      skipped_count: 0,
+      conflict_count: 0,
+      error_count: 0,
+      created_by: `History Worker ${index + 1}`,
+    }));
+    fetch.mockImplementation((url, options) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/integrations/woocommerce/status') {
+        return json({
+          configured: true,
+          environment: 'staging',
+          order_history_import: { id: 55, status: 'running', total_remote_records: 10, progress: { current_status: 'any', next_page: 2 } },
+          order_history_coverage: { verified_complete: false, local_order_count: 10, source_absent_snapshot_count: 0, distinct_order_dates: 2 },
+        });
+      }
+      if (request.pathname !== '/api/integrations/woocommerce/sync-runs') return mockFetch(url, options);
+      const page = Number(request.searchParams.get('page') || 1);
+      const pageSize = Number(request.searchParams.get('page_size') || 50);
+      const syncRuns = runs.slice((page - 1) * pageSize, page * pageSize);
+      return json({ sync_runs: syncRuns, total: runs.length, page, page_size: pageSize, total_pages: Math.ceil(runs.length / pageSize), returned_count: syncRuns.length, has_previous: page > 1, has_next: page * pageSize < runs.length });
+    });
+    window.location.hash = '#/settings/sync';
+    render(<App />);
+
+    const history = (await screen.findByText('55 sync run(s)')).closest('.table-wrap');
+    await user.click(within(history).getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(within(history).getByText(/Showing 51–55 of 55 sync runs/)).toBeInTheDocument());
+    await waitFor(() => expect(intervalCallbacks.some(({ delay }) => delay === 3000)).toBe(true));
+    const callsBeforePoll = fetch.mock.calls.length;
+
+    await act(async () => {
+      intervalCallbacks.find(({ delay }) => delay === 3000).callback();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(fetch.mock.calls.slice(callsBeforePoll).some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/integrations/woocommerce/sync-runs'
+        && request.searchParams.get('page') === '2'
+        && request.searchParams.get('page_size') === '50';
+    })).toBe(true));
+    expect(within(history).getByText(/Showing 51–55 of 55 sync runs/)).toBeInTheDocument();
   });
 
   it('sends changed WooCommerce credentials only to the backend configuration endpoint', async () => {
@@ -1829,6 +2295,147 @@ describe('App shell and workflows', () => {
     expect(screen.queryByRole('heading', { name: 'WooCommerce Catalog Mapping & Import' })).not.toBeInTheDocument();
   });
 
+  it('paginates and searches the WooCommerce writeback queue on the server', async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 55 }, (_, index) => ({
+      id: index + 1,
+      operation_type: 'update_product_stock',
+      entity_type: 'inventory_item',
+      entity_id: index + 1,
+      woo_entity_id: 1000 + index,
+      status: 'pending',
+      environment: 'staging',
+      dry_run: false,
+      preview_json: { sku: `QUEUE-${String(index + 1).padStart(3, '0')}`, woo_stock_snapshot: 1, proposed_woo_stock: 2 },
+      created_at: '2026-07-09T12:00:00Z',
+    }));
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname !== '/api/integrations/woocommerce/writeback/queue' || options.method) return mockFetch(url, options);
+      const search = (request.searchParams.get('search') || '').toLowerCase();
+      const matching = search
+        ? rows.filter((row) => [row.operation_type, row.entity_type, row.entity_id, row.woo_entity_id, row.status].some((value) => String(value).toLowerCase().includes(search)))
+        : rows;
+      const page = Number(request.searchParams.get('page') || 1);
+      const pageSize = Number(request.searchParams.get('page_size') || 50);
+      const queue = matching.slice((page - 1) * pageSize, page * pageSize);
+      return json({ queue, total: matching.length, page, page_size: pageSize, total_pages: Math.ceil(matching.length / pageSize), returned_count: queue.length, has_previous: page > 1, has_next: page * pageSize < matching.length });
+    });
+    window.location.hash = '#/settings/writeback';
+    render(<App />);
+
+    const caption = await screen.findByText('55 matching queue item(s)', { selector: '.table-meta > span' });
+    const table = caption.closest('.table-wrap');
+    expect(within(table).getByText(/Showing 1–50 of 55 queue items/)).toBeInTheDocument();
+    await user.click(within(table).getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(within(table).getByText(/Showing 51–55 of 55 queue items/)).toBeInTheDocument());
+    expect(within(table).getByText(/QUEUE-055/)).toBeInTheDocument();
+
+    await user.type(screen.getByRole('textbox', { name: 'Search writeback queue' }), '1054');
+    await waitFor(() => expect(within(table).getByText(/Showing 1–1 of 1 queue items/)).toBeInTheDocument());
+    expect(fetch.mock.calls.some(([url]) => new URL(String(url)).searchParams.get('search') === '1054')).toBe(true);
+  });
+
+  it('keeps the active writeback queue filter, search, and page after a queue mutation', async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 55 }, (_, index) => ({
+      id: index + 1,
+      operation_type: 'update_product_stock',
+      entity_type: 'keep_item',
+      entity_id: index + 1,
+      woo_entity_id: 2000 + index,
+      status: 'pending',
+      environment: 'staging',
+      dry_run: false,
+      preview_json: { sku: `KEEP-${String(index + 1).padStart(3, '0')}`, woo_stock_snapshot: 1, proposed_woo_stock: 2 },
+      created_at: '2026-07-09T12:00:00Z',
+    }));
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname.match(/\/api\/integrations\/woocommerce\/writeback\/queue\/\d+\/approve$/) && options.method === 'POST') {
+        return json({ status: 'approved' });
+      }
+      if (request.pathname !== '/api/integrations/woocommerce/writeback/queue' || options.method) return mockFetch(url, options);
+      const status = request.searchParams.get('status');
+      const search = (request.searchParams.get('search') || '').toLowerCase();
+      const matching = rows.filter((row) => (
+        (!status || row.status === status)
+        && (!search || [row.operation_type, row.entity_type, row.entity_id, row.woo_entity_id, row.status].some((value) => String(value).toLowerCase().includes(search)))
+      ));
+      const page = Number(request.searchParams.get('page') || 1);
+      const pageSize = Number(request.searchParams.get('page_size') || 50);
+      const queue = matching.slice((page - 1) * pageSize, page * pageSize);
+      return json({ queue, total: matching.length, page, page_size: pageSize, total_pages: Math.ceil(matching.length / pageSize), returned_count: queue.length, has_previous: page > 1, has_next: page * pageSize < matching.length });
+    });
+    window.location.hash = '#/settings/writeback';
+    render(<App />);
+
+    const caption = await screen.findByText('55 matching queue item(s)', { selector: '.table-meta > span' });
+    const table = caption.closest('.table-wrap');
+    await user.click(within(screen.getByLabelText('Filter writeback queue')).getByRole('button', { name: 'Pending' }));
+    await user.type(screen.getByRole('textbox', { name: 'Search writeback queue' }), 'keep');
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/integrations/woocommerce/writeback/queue'
+        && request.searchParams.get('status') === 'pending'
+        && request.searchParams.get('search') === 'keep';
+    })).toBe(true));
+    await user.click(within(table).getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(within(table).getByText(/Showing 51–55 of 55 queue items/)).toBeInTheDocument());
+
+    const callsBeforeMutation = fetch.mock.calls.length;
+    await user.click(within(table).getAllByRole('button', { name: 'Approve' })[0]);
+    await waitFor(() => expect(fetch.mock.calls.slice(callsBeforeMutation).some(([url, options = {}]) => {
+      const request = new URL(String(url));
+      return !options.method
+        && request.pathname === '/api/integrations/woocommerce/writeback/queue'
+        && request.searchParams.get('status') === 'pending'
+        && request.searchParams.get('search') === 'keep'
+        && request.searchParams.get('page') === '2'
+        && request.searchParams.get('page_size') === '50';
+    })).toBe(true));
+  });
+
+  it('keeps every route candidate reachable through server pagination', async () => {
+    const user = userEvent.setup();
+    const candidates = Array.from({ length: 55 }, (_, index) => ({
+      order_id: index + 1,
+      woo_order_id: 9000 + index,
+      woo_order_number: `ROUTE-${String(index + 1).padStart(3, '0')}`,
+      local_status: 'fulfilled',
+      customer_name: `Customer ${index + 1}`,
+      customer_email: `customer-${index + 1}@example.invalid`,
+      customer_phone: '',
+      shipping_summary: { city: 'Edmonton' },
+      order_total: 10,
+      fulfilled_line_count: 1,
+      total_quantity_fulfilled: 1,
+      date_created: '2026-08-01T12:00:00Z',
+    }));
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname !== '/api/routes/candidates' || options.method) return mockFetch(url, options);
+      const page = Number(request.searchParams.get('page') || 1);
+      const pageSize = Number(request.searchParams.get('page_size') || 50);
+      const rows = candidates.slice((page - 1) * pageSize, page * pageSize);
+      return json({ total_candidates: candidates.length, candidates: rows, page, page_size: pageSize, total_pages: Math.ceil(candidates.length / pageSize), returned_count: rows.length, has_previous: page > 1, has_next: page * pageSize < candidates.length });
+    });
+    window.location.hash = '#routes';
+    render(<App />);
+
+    const caption = await screen.findByText('55 candidate order(s)', { selector: '.table-meta > span' });
+    const table = caption.closest('.table-wrap');
+    expect(within(table).getByText(/Showing 1–50 of 55 route candidates/)).toBeInTheDocument();
+    await user.click(within(table).getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(within(table).getByText(/Showing 51–55 of 55 route candidates/)).toBeInTheDocument());
+    expect(within(table).getByText('ROUTE-055')).toBeInTheDocument();
+
+    const candidateToolbar = screen.getByLabelText('Order Date').closest('.toolbar');
+    await user.type(within(candidateToolbar).getByLabelText('Order Date'), '2026-08-01');
+    await user.click(within(candidateToolbar).getByRole('button', { name: /^Apply$/i }));
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => new URL(String(url)).searchParams.get('route_date') === '2026-08-01')).toBe(true));
+  });
+
   it('shows all Update All errors and wires resume and cancel actions after refresh', async () => {
     const user = userEvent.setup();
     const jobs = [
@@ -1837,7 +2444,7 @@ describe('App shell and workflows', () => {
     ];
     fetch.mockImplementation((url) => {
       const target = String(url);
-      if (target.endsWith('/api/integrations/woocommerce/writeback/stock/jobs')) return json({ jobs, total: jobs.length });
+      if (target.includes('/api/integrations/woocommerce/writeback/stock/jobs?')) return json({ jobs, total: jobs.length, page: 1, page_size: 25, total_pages: 1, returned_count: jobs.length, has_previous: false, has_next: false });
       if (target.includes('/api/integrations/woocommerce/writeback/stock/jobs/81/resume')) return json({ ...jobs[0], status: 'queued' });
       if (target.includes('/api/integrations/woocommerce/writeback/stock/jobs/82/cancel')) return json({ ...jobs[1], status: 'cancelling' });
       return mockFetch(url);
@@ -1853,6 +2460,55 @@ describe('App shell and workflows', () => {
     await user.click(screen.getAllByRole('button', { name: 'Cancel' }).find((button) => !button.disabled));
     expect(fetch.mock.calls.some(([url]) => String(url).includes('/stock/jobs/81/resume'))).toBe(true);
     expect(fetch.mock.calls.some(([url]) => String(url).includes('/stock/jobs/82/cancel'))).toBe(true);
+  });
+
+  it('keeps the current Update All history page after a stock-job action', async () => {
+    const user = userEvent.setup();
+    const jobs = Array.from({ length: 30 }, (_, index) => ({
+      id: index + 1,
+      status: 'completed_with_errors',
+      force: true,
+      chunk_size: 20,
+      total_items: 2,
+      processed_items: 2,
+      sent_count: 1,
+      dry_run_count: 0,
+      failed_count: 1,
+      skipped_unmapped_count: 0,
+      unchanged_count: 0,
+      progress_percent: 100,
+      errors: [],
+      last_error: `Job ${index + 1} failed`,
+      created_at: '2026-07-31T12:00:00Z',
+    }));
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname.match(/\/api\/integrations\/woocommerce\/writeback\/stock\/jobs\/\d+\/resume$/) && options.method === 'POST') {
+        return json({ status: 'queued' });
+      }
+      if (request.pathname !== '/api/integrations/woocommerce/writeback/stock/jobs' || options.method) return mockFetch(url, options);
+      const page = Number(request.searchParams.get('page') || 1);
+      const pageSize = Number(request.searchParams.get('page_size') || 25);
+      const pageJobs = jobs.slice((page - 1) * pageSize, page * pageSize);
+      return json({ jobs: pageJobs, total: jobs.length, page, page_size: pageSize, total_pages: Math.ceil(jobs.length / pageSize), returned_count: pageJobs.length, has_previous: page > 1, has_next: page * pageSize < jobs.length });
+    });
+    window.location.hash = '#/settings/writeback';
+    render(<App />);
+
+    const caption = await screen.findByText('30 stock sync job(s)', { selector: '.table-meta > span' });
+    const table = caption.closest('.table-wrap');
+    await user.click(within(table).getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(within(table).getByText(/Showing 26–30 of 30 stock sync jobs/)).toBeInTheDocument());
+
+    const callsBeforeMutation = fetch.mock.calls.length;
+    await user.click(within(table).getAllByRole('button', { name: 'Resume' })[0]);
+    await waitFor(() => expect(fetch.mock.calls.slice(callsBeforeMutation).some(([url, options = {}]) => {
+      const request = new URL(String(url));
+      return !options.method
+        && request.pathname === '/api/integrations/woocommerce/writeback/stock/jobs'
+        && request.searchParams.get('page') === '2'
+        && request.searchParams.get('page_size') === '25';
+    })).toBe(true));
   });
 
   it('shows Open Orders only and removes the old Orders header tabs', async () => {
@@ -1882,10 +2538,125 @@ describe('App shell and workflows', () => {
     expect(searchInput).toHaveValue('9999');
 
     await user.keyboard('{Enter}');
-    expect(screen.getByText('No open customer orders match the current filters.')).toBeInTheDocument();
+    expect(await screen.findByText('No open customer orders match the current filters.')).toBeInTheDocument();
+    expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/orders/open' && request.searchParams.get('order_number') === '9999' && request.searchParams.get('page') === '1';
+    })).toBe(true);
 
     await user.click(screen.getByRole('button', { name: 'Clear' }));
     expect(await screen.findByText('0802')).toBeInTheDocument();
+  });
+
+  it('resets Open filters when returning from another order workspace', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Open Orders', level: 1 });
+    const customerInput = screen.getByRole('textbox', { name: 'Customer' });
+    await user.type(customerInput, 'Avery');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => new URL(String(url)).searchParams.get('customer') === 'Avery')).toBe(true));
+
+    act(() => { window.location.hash = '#/orders/pick'; });
+    await screen.findByRole('heading', { name: 'Pick Orders', level: 1 });
+    act(() => { window.location.hash = '#/orders/open'; });
+
+    expect(await screen.findByRole('textbox', { name: 'Customer' })).toHaveValue('');
+    await waitFor(() => {
+      const openCalls = fetch.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/api/orders/open');
+      expect(new URL(String(openCalls.at(-1)[0])).searchParams.has('customer')).toBe(false);
+    });
+  });
+
+  it('preserves the active Open filter when a single order is completed', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Open Orders', level: 1 });
+    await user.type(screen.getByRole('textbox', { name: 'Customer' }), 'Avery');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => new URL(String(url)).searchParams.get('customer') === 'Avery')).toBe(true));
+    fetch.mockClear();
+
+    await user.click(screen.getByRole('button', { name: 'Open actions for order 0802' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Complete order' }));
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/orders/701/complete/commit'))).toBe(true));
+    await waitFor(() => {
+      const refreshes = fetch.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/api/orders/open');
+      expect(refreshes.length).toBeGreaterThan(0);
+      expect(refreshes.every(([url]) => new URL(String(url)).searchParams.get('customer') === 'Avery')).toBe(true);
+    });
+    expect(screen.getByRole('textbox', { name: 'Customer' })).toHaveValue('Avery');
+    confirmSpy.mockRestore();
+  });
+
+  it('requests Open and Pick order pages from the backend', async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 21 }, (_, index) => ({
+      ...mockOrder,
+      id: 800 + index,
+      woo_order_id: 1800 + index,
+      woo_order_number: `P-${String(index + 1).padStart(2, '0')}`,
+    }));
+    mockOpenOrdersFeed = pagedOrdersFeed(rows);
+    mockPickOrdersFeed = pagedOrdersFeed(rows);
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    expect((await screen.findAllByText('Showing 1–20 of 21 orders'))[0]).toBeInTheDocument();
+    await user.click(screen.getAllByRole('button', { name: 'Next orders page' })[0]);
+    expect(await screen.findByText('P-21')).toBeInTheDocument();
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/orders/open' && request.searchParams.get('page') === '2' && request.searchParams.get('page_size') === '20';
+    })).toBe(true));
+
+    act(() => { window.location.hash = '#/orders/pick'; });
+    expect(await screen.findByText('21 order(s) ready to pick')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Next orders page' }));
+    expect(await screen.findByText('P-21')).toBeInTheDocument();
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/orders/pick' && request.searchParams.get('page') === '2' && request.searchParams.get('page_size') === '20';
+    })).toBe(true));
+  });
+
+  it('disables stale Open rows and aborts their request when leaving Orders', async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 21 }, (_, index) => ({
+      ...mockOrder,
+      id: 900 + index,
+      woo_order_id: 1900 + index,
+      woo_order_number: `WAIT-${String(index + 1).padStart(2, '0')}`,
+    }));
+    mockOpenOrdersFeed = pagedOrdersFeed(rows);
+    let pageTwoSignal;
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/orders/open' && request.searchParams.get('page') === '2') {
+        pageTwoSignal = options.signal;
+        return new Promise((resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+        });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    expect(await screen.findByText('WAIT-01')).toBeInTheDocument();
+    await user.click(screen.getAllByRole('button', { name: 'Next orders page' })[0]);
+    await waitFor(() => expect(pageTwoSignal).toBeTruthy());
+    expect(screen.getByRole('checkbox', { name: 'Select order WAIT-01' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Actions' })).toBeDisabled();
+
+    act(() => { window.location.hash = '#/orders/completed'; });
+    await screen.findByRole('heading', { name: 'Completed Orders', level: 1 });
+    expect(pageTwoSignal.aborted).toBe(true);
   });
 
   it('shows the Zenventory-style Open Orders columns, row actions, and detail dialog', async () => {
@@ -2015,6 +2786,143 @@ describe('App shell and workflows', () => {
     });
   });
 
+  it('paginates allocation exceptions on the server and exports the full applied filter', async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 21 }, (_, index) => ({
+      ...mockAllocationException,
+      order_id: 900 + index,
+      order_line_id: 1900 + index,
+      woo_order_id: 2900 + index,
+      woo_order_number: `A-${String(index + 1).padStart(2, '0')}`,
+      sku: `ALLOC-${String(index + 1).padStart(2, '0')}`,
+      item_id: 3900 + index,
+      description: `Allocation item ${index + 1}`,
+      warehouse: index === 20 ? 'Secondary Warehouse' : 'Main Warehouse',
+    }));
+    mockAllocationExceptionsFeed = pagedAllocationExceptionsFeed(rows);
+    window.location.hash = '#/orders/allocate';
+    render(<App />);
+
+    expect(await screen.findByText('Showing 1–20 of 21 item shortages')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Secondary Warehouse' })).toBeInTheDocument();
+    expect(screen.queryByText('ALLOC-21')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Next item shortages page' }));
+    expect(await screen.findByText('ALLOC-21')).toBeInTheDocument();
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/allocations/exceptions' && request.searchParams.get('view') === 'items' && request.searchParams.get('page') === '2' && request.searchParams.get('page_size') === '20';
+    })).toBe(true));
+
+    fetch.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Run FIFO Allocation' }));
+    await waitFor(() => {
+      const refreshes = fetch.mock.calls.filter(([url]) => new URL(String(url), window.location.href).pathname === '/api/allocations/exceptions');
+      expect(refreshes.length).toBeGreaterThan(0);
+      expect(refreshes.every(([url]) => new URL(String(url)).searchParams.get('view') === 'items' && new URL(String(url)).searchParams.get('page') === '2')).toBe(true);
+    });
+
+    fetch.mockClear();
+    await user.click(screen.getByRole('tab', { name: /Orders/ }));
+    expect(await screen.findByText('Showing 1–20 of 21 allocation lines')).toBeInTheDocument();
+    expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/allocations/exceptions' && request.searchParams.get('view') === 'orders' && request.searchParams.get('page') === '1';
+    })).toBe(true);
+    await user.click(screen.getByRole('tab', { name: /Items/ }));
+    expect(await screen.findByText('Showing 1–20 of 21 item shortages')).toBeInTheDocument();
+
+    fetch.mockClear();
+    const searchInput = screen.getByRole('textbox', { name: 'Item, order, SKU or barcode' });
+    await user.clear(searchInput);
+    await user.type(searchInput, 'ALLOC-01');
+    await user.click(screen.getByRole('button', { name: 'Filter' }));
+    expect(await screen.findByText('Showing 1–1 of 1 item shortages')).toBeInTheDocument();
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/allocations/exceptions' && request.searchParams.get('search') === 'ALLOC-01' && request.searchParams.get('page') === '1';
+    })).toBe(true));
+
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    fetch.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Export Results' }));
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/allocations/exceptions/export'
+        && request.searchParams.get('search') === 'ALLOC-01'
+        && !request.searchParams.has('page')
+        && !request.searchParams.has('page_size');
+    })).toBe(true));
+  });
+
+  it('loads every affected order through the bounded item-group drill-down', async () => {
+    const user = userEvent.setup();
+    mockAllocationExceptionsFeed = pagedAllocationExceptionsFeed(Array.from({ length: 21 }, (_, index) => ({
+        ...mockAllocationException,
+        order_id: 702 + index,
+        order_line_id: 9002 + index,
+        woo_order_id: 803 + index,
+        woo_order_number: String(803 + index).padStart(4, '0'),
+        customer_name: `Customer ${index + 1}`,
+      })));
+    window.location.hash = '#/orders/allocate';
+    render(<App />);
+
+    expect(await screen.findByText('Showing 1–1 of 1 item shortages')).toBeInTheDocument();
+    const itemTable = screen.getByText('SMOKE-001').closest('table');
+    expect(within(screen.getByText('SMOKE-001').closest('tr')).getAllByRole('cell')[3]).toHaveTextContent('21');
+    fetch.mockClear();
+    await user.click(within(itemTable).getByRole('button', { name: 'Open allocation actions for SMOKE-001' }));
+    await user.click(screen.getByRole('menuitem', { name: 'View affected orders' }));
+
+    expect(await screen.findByText('Showing affected orders for one item.')).toBeInTheDocument();
+    expect(screen.getByText('0803')).toBeInTheDocument();
+    expect(screen.queryByText('0823')).not.toBeInTheDocument();
+    expect(screen.queryByText('Showing 1–1 of 1 item shortages')).not.toBeInTheDocument();
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/allocations/exceptions'
+        && request.searchParams.get('view') === 'orders'
+        && request.searchParams.get('item_id') === '1'
+        && request.searchParams.get('page_size') === '20';
+    })).toBe(true));
+
+    await user.click(screen.getByRole('button', { name: 'Next allocation lines page' }));
+    expect(await screen.findByText('0823')).toBeInTheDocument();
+    expect(screen.getByText('Showing 21–21 of 21 allocation lines')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Show all orders' }));
+    expect(await screen.findByText('Showing 1–20 of 21 allocation lines')).toBeInTheDocument();
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/allocations/exceptions' && request.searchParams.get('view') === 'orders' && request.searchParams.get('page') === '1';
+    })).toBe(true));
+  });
+
+  it('disables allocation actions and aborts the page request when leaving Allocate', async () => {
+    let requestSignal;
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/allocations/exceptions') {
+        requestSignal = options.signal;
+        return new Promise((resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+        });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/orders/allocate';
+    render(<App />);
+
+    await waitFor(() => expect(requestSignal).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Run FIFO Allocation' })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: 'Item, order, SKU or barcode' })).toBeDisabled();
+
+    act(() => { window.location.hash = '#/orders/pick'; });
+    await screen.findByRole('heading', { name: 'Pick Orders', level: 1 });
+    expect(requestSignal.aborted).toBe(true);
+  });
+
   it('adds an idempotency key to the inventory stock adjustment modal', async () => {
     const user = userEvent.setup();
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -2101,6 +3009,11 @@ describe('App shell and workflows', () => {
         allow_partial: true,
         idempotency_key: expect.any(String),
       });
+    });
+    await waitFor(() => {
+      const commitIndex = fetch.mock.calls.findIndex(([url]) => String(url).includes('/api/picks/commit'));
+      const pickRefreshes = fetch.mock.calls.slice(commitIndex + 1).filter(([url]) => new URL(String(url)).pathname === '/api/orders/pick');
+      expect(pickRefreshes).toHaveLength(1);
     });
     confirmSpy.mockRestore();
   });

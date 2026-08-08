@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -394,12 +394,59 @@ def create_queue_item(db: Session, settings: Settings, payload: WooWritebackQueu
     return row
 
 
-def list_queue(db: Session, status: str | None = None) -> WooWritebackQueueListResponse:
-    statement = select(WooWritebackQueue).order_by(WooWritebackQueue.created_at.desc(), WooWritebackQueue.id.desc())
+def list_queue(
+    db: Session,
+    status: str | None = None,
+    *,
+    statuses: tuple[str, ...] | None = None,
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    order_by_activity: bool = False,
+) -> WooWritebackQueueListResponse:
+    predicates = []
     if status:
-        statement = statement.where(WooWritebackQueue.status == status)
-    rows = list(db.scalars(statement).all())
-    return WooWritebackQueueListResponse(queue=[queue_to_read(row) for row in rows], total=len(rows))
+        predicates.append(WooWritebackQueue.status == status)
+    elif statuses:
+        predicates.append(WooWritebackQueue.status.in_(statuses))
+    if search:
+        needle = search.casefold()
+        predicates.append(
+            or_(
+                func.lower(WooWritebackQueue.operation_type).contains(needle, autoescape=True),
+                func.lower(WooWritebackQueue.entity_type).contains(needle, autoescape=True),
+                cast(WooWritebackQueue.entity_id, String).contains(search, autoescape=True),
+                cast(WooWritebackQueue.woo_entity_id, String).contains(search, autoescape=True),
+                func.lower(WooWritebackQueue.status).contains(needle, autoescape=True),
+            )
+        )
+    total = int(db.scalar(select(func.count(WooWritebackQueue.id)).where(*predicates)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    effective_page = min(page, max(total_pages, 1))
+    ordering = (
+        (func.coalesce(WooWritebackQueue.updated_at, WooWritebackQueue.created_at).desc(), WooWritebackQueue.id.desc())
+        if order_by_activity
+        else (WooWritebackQueue.created_at.desc(), WooWritebackQueue.id.desc())
+    )
+    rows = list(
+        db.scalars(
+            select(WooWritebackQueue)
+            .where(*predicates)
+            .order_by(*ordering)
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return WooWritebackQueueListResponse(
+        queue=[queue_to_read(row) for row in rows],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(rows),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 def get_queue_item(db: Session, queue_id: int) -> WooWritebackQueue | None:

@@ -448,7 +448,7 @@ and unsupported topics remain observable and safe. A durable delivery ledger
 plus immutable event audit works across restarts, retries, and multiple backend
 processes; an in-memory queue would not.
 
-The frontend polls the cursor feed every 2 seconds while visible, maintains a
+The frontend polls the cursor feed every 15 seconds while visible, maintains a
 session-only Bell history/unread state, and uses nonzero quick-sync creation
 counts as a sync-run-deduplicated fallback notice. Persistent or per-user
 acknowledgement remains deferred until staff auth/RBAC exists.

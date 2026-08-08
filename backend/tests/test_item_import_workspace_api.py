@@ -79,7 +79,28 @@ def test_update_metadata_never_changes_quantities_or_stock_history(client):
     assert updated["Sellable"] == 13
     assert client.get("/api/stock-movements", params={"item_id": original["id"]}).json()["total"] == movements_before
     job_id = result.json()["import_job_id"]
-    assert len(client.get(f"/api/import-jobs/{job_id}/changes").json()) == 2
+    changes = client.get(f"/api/import-jobs/{job_id}/changes", params={"page": 1, "page_size": 1}).json()
+    assert changes["total"] == 2
+    assert changes["page"] == 1
+    assert changes["page_size"] == 1
+    assert changes["total_pages"] == 2
+    assert changes["returned_count"] == 1
+    assert changes["has_previous"] is False
+    assert changes["has_next"] is True
+    assert set(changes["changes"][0]) == {"id", "item_id", "sku", "field", "before", "after", "source_filename", "created_by", "created_at"}
+    second_change = client.get(f"/api/import-jobs/{job_id}/changes", params={"page": 2, "page_size": 1}).json()
+    assert second_change["page"] == 2
+    assert second_change["has_previous"] is True
+    assert second_change["has_next"] is False
+    assert {changes["changes"][0]["field"], second_change["changes"][0]["field"]} == {"description", "unit_cost"}
+    assert client.get(f"/api/import-jobs/{job_id}/changes", params={"page_size": 101}).status_code == 422
+
+    legacy_jobs = client.get("/api/import-jobs", params={"item_imports_only": True, "limit": 200}).json()
+    paged_jobs = client.get("/api/import-jobs", params={"item_imports_only": True, "page": 1, "page_size": 1}).json()
+    assert isinstance(legacy_jobs, list)
+    assert paged_jobs["total"] == 1
+    assert paged_jobs["jobs"][0]["id"] == job_id
+    assert paged_jobs["returned_count"] == 1
     rollback = client.post(f"/api/import-jobs/{job_id}/rollback")
     assert rollback.status_code == 200, rollback.text
     restored = client.get(f"/api/items/{original['id']}").json()

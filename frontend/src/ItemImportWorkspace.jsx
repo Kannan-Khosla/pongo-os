@@ -322,21 +322,24 @@ function ReviewStep({ schema, preview, setPreview, onContinue, onBack, busy, set
   );
 }
 
-function ConfirmStep({ preview, rows, onBack, onCommit, busy }) {
+function ConfirmStep({ preview, rowsData, onLoadPage, onBack, onCommit, busy }) {
   const [confirmed, setConfirmed] = useState(false);
   const [typed, setTyped] = useState('');
   const needsTyped = preview.outcome === 'starting_inventory';
   const enabled = confirmed && (!needsTyped || typed === 'START');
   const readyCount = preview.summary?.ready_count || 0;
+  const rows = rowsData.rows || [];
+  const proposedChanges = rows.flatMap((row) => Object.values(row.proposed_changes || {}).map((change) => ({ ...change, row_id: row.id, sku: row.sku })));
   return (
     <section className="import-stage wide" aria-labelledby="confirm-title">
-      <div className="import-stage-heading"><span>Step 5</span><h3 id="confirm-title">Confirm the exact changes</h3><p>The preview is saved. If an item changed since validation, commit will stop and ask you to refresh.</p></div>
+      <div className="import-stage-heading"><span>Step 5</span><h3 id="confirm-title">Review changes before import</h3><p>The preview is saved. Every source row is available page by page; if an item changed since validation, commit will stop and ask you to refresh.</p></div>
       <SummaryCards summary={preview.summary} outcome={preview.outcome} />
       <div className="confirm-protection"><ShieldCheck size={22} /><div><strong>{preview.outcome_content?.changes}</strong><p>{preview.outcome_content?.does_not_change}</p></div></div>
-      <div className="change-table-wrap"><table className="change-table"><thead><tr><th>SKU</th><th>Field</th><th>Current value</th><th>New value</th></tr></thead><tbody>{rows.flatMap((row) => Object.values(row.proposed_changes || {}).map((change) => <tr key={`${row.id}-${change.field}`}><td>{row.sku}</td><td>{change.label}</td><td>{String(change.before ?? 'Blank')}</td><td>{String(change.after ?? 'Blank')}</td></tr>)).slice(0, 50)}</tbody></table>{!rows.some((row) => Object.keys(row.proposed_changes || {}).length) && <div className="review-empty">No field-level changes on this page.</div>}</div>
+      <div className="change-table-wrap"><table className="change-table"><thead><tr><th>SKU</th><th>Field</th><th>Current value</th><th>New value</th></tr></thead><tbody>{proposedChanges.map((change) => <tr key={`${change.row_id}-${change.field}`}><td>{change.sku}</td><td>{change.label}</td><td>{String(change.before ?? 'Blank')}</td><td>{String(change.after ?? 'Blank')}</td></tr>)}</tbody></table>{!proposedChanges.length && <div className="review-empty">No field-level changes on this page.</div>}</div>
+      <div className="review-pagination"><span>{formatNumber(rowsData.total || 0)} source row(s) available for review</span><div><button disabled={rowsData.page <= 1 || busy} onClick={() => onLoadPage(rowsData.page - 1)} type="button">Previous</button><span>Page {rowsData.page} of {Math.max(rowsData.total_pages, 1)}</span><button disabled={rowsData.page >= rowsData.total_pages || busy} onClick={() => onLoadPage(rowsData.page + 1)} type="button">Next</button></div></div>
       {hasBlockingIssues(preview.summary) && <div className="import-notice warning"><AlertTriangle size={18} /><span><strong>Only valid rows will import</strong><small>Rows needing attention stay unchanged and will be available as a correction file in the results.</small></span></div>}
       {needsTyped && <label className="typed-confirm"><span>Type <strong>START</strong> to confirm audited starting inventory</span><input autoComplete="off" value={typed} onChange={(event) => setTyped(event.target.value.toUpperCase())} /></label>}
-      <label className="import-checkbox-card confirmation"><input checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" /><span><strong>I reviewed the outcome, valid row count, and proposed changes</strong><small>I understand this action creates an audit record and cannot silently overwrite newer data.</small></span></label>
+      <label className="import-checkbox-card confirmation"><input checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" /><span><strong>I reviewed the outcome, valid row count, and applicable change pages</strong><small>I understand this action creates an audit record and cannot silently overwrite newer data.</small></span></label>
       <div className="import-stage-actions"><button className="import-quiet-button" onClick={onBack} type="button"><ArrowLeft size={17} /> Back</button><button className="import-primary-button" disabled={!enabled || busy} onClick={onCommit} type="button">{busy ? 'Importing safely…' : preview.outcome === 'starting_inventory' ? 'Record starting inventory' : `Import ${formatNumber(readyCount)} ready item${readyCount === 1 ? '' : 's'}`} <Check size={17} /></button></div>
     </section>
   );
@@ -356,7 +359,7 @@ function ResultsStep({ preview, onNewImport }) {
   );
 }
 
-export function ItemImportWorkspace({ initialPreviewId = '', initialOutcome = '' }) {
+export function ItemImportWorkspace({ initialPreviewId = '', initialOutcome = '', onCommitted = null }) {
   const [schema, setSchema] = useState(null);
   const [outcome, setOutcome] = useState(initialOutcome);
   const [file, setFile] = useState(null);
@@ -365,7 +368,7 @@ export function ItemImportWorkspace({ initialPreviewId = '', initialOutcome = ''
   const [maxStep, setMaxStep] = useState(2);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [confirmRows, setConfirmRows] = useState([]);
+  const [confirmRows, setConfirmRows] = useState({ rows: [], total: 0, page: 1, page_size: 25, total_pages: 0 });
 
   useEffect(() => {
     requestJson('/api/items/import/schema').then(setSchema).catch((requestError) => setError(requestError.message));
@@ -408,17 +411,25 @@ export function ItemImportWorkspace({ initialPreviewId = '', initialOutcome = ''
     }
   }
 
-  async function prepareConfirm() {
+  async function loadConfirmRows(page = 1) {
     setBusy(true);
+    setError('');
     try {
-      const rows = await requestJson(`/api/items/import/previews/${preview.preview_id}/rows?page=1&page_size=100`);
-      setConfirmRows(rows.rows.filter((row) => ['will_create', 'will_update'].includes(row.state)));
-      setStep(5);
-      setMaxStep(5);
+      const rows = await requestJson(`/api/items/import/previews/${preview.preview_id}/rows?page=${page}&page_size=25`);
+      setConfirmRows(rows);
+      return true;
     } catch (requestError) {
       setError(requestError.message);
+      return false;
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function prepareConfirm() {
+    if (await loadConfirmRows(1)) {
+      setStep(5);
+      setMaxStep(5);
     }
   }
 
@@ -429,6 +440,7 @@ export function ItemImportWorkspace({ initialPreviewId = '', initialOutcome = ''
       await requestJson(`/api/items/import/previews/${preview.preview_id}/commit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idempotency_key: newIdempotencyKey() }) }, 'The import could not be committed.');
       const saved = await requestJson(`/api/items/import/previews/${preview.preview_id}`);
       remember(saved);
+      await onCommitted?.();
       setStep(6);
       setMaxStep(6);
     } catch (requestError) {
@@ -463,41 +475,66 @@ export function ItemImportWorkspace({ initialPreviewId = '', initialOutcome = ''
       {schema && step === 2 && <UploadStep schema={schema} outcome={outcome} file={file} setFile={setFile} onUpload={upload} busy={busy} onBack={() => setStep(1)} />}
       {schema && preview && step === 3 && <MappingStep schema={schema} preview={preview} setPreview={(saved) => { remember(saved); setMaxStep(saved.status === 'ready' ? 4 : 3); }} onContinue={() => { setStep(4); setMaxStep(4); }} onBack={() => setStep(2)} busy={busy} setBusy={setBusy} setError={setError} />}
       {schema && preview && step === 4 && <ReviewStep schema={schema} preview={preview} setPreview={remember} onContinue={prepareConfirm} onBack={() => setStep(3)} busy={busy} setBusy={setBusy} setError={setError} />}
-      {preview && step === 5 && <ConfirmStep preview={preview} rows={confirmRows} onBack={() => setStep(4)} onCommit={commit} busy={busy} />}
+      {preview && step === 5 && <ConfirmStep preview={preview} rowsData={confirmRows} onLoadPage={loadConfirmRows} onBack={() => setStep(4)} onCommit={commit} busy={busy} />}
       {preview && step === 6 && <ResultsStep preview={preview} onNewImport={reset} />}
     </section>
   );
 }
 
-export function ItemImportHistory() {
+export function ItemImportHistory({ onRolledBack = null }) {
   const [jobs, setJobs] = useState([]);
+  const [jobsPagination, setJobsPagination] = useState({ page: 1, page_size: 50, total: 0, total_pages: 0, has_previous: false, has_next: false });
   const [outcome, setOutcome] = useState('');
   const [status, setStatus] = useState('');
   const [expanded, setExpanded] = useState(null);
   const [changes, setChanges] = useState([]);
+  const [changesPagination, setChangesPagination] = useState({ page: 1, page_size: 50, total: 0, total_pages: 0, has_previous: false, has_next: false });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  async function load() {
+  async function load(page = 1, pageSize = jobsPagination.page_size || 50) {
     setBusy(true);
     try {
-      const params = new URLSearchParams({ item_imports_only: 'true', limit: '200' });
+      const params = new URLSearchParams({ item_imports_only: 'true', page: String(page), page_size: String(pageSize) });
       if (outcome) params.set('outcome', outcome);
       if (status) params.set('status', status);
-      setJobs(await requestJson(`/api/import-jobs?${params}`));
+      const body = await requestJson(`/api/import-jobs?${params}`);
+      setJobs(body.jobs || []);
+      setJobsPagination({
+        page: body.page || 1,
+        page_size: body.page_size || pageSize,
+        total: body.total || 0,
+        total_pages: body.total_pages || 0,
+        has_previous: Boolean(body.has_previous),
+        has_next: Boolean(body.has_next),
+      });
     } catch (requestError) {
       setError(requestError.message);
     } finally {
       setBusy(false);
     }
   }
-  useEffect(() => { load(); }, [outcome, status]);
+  useEffect(() => { load(1); }, [outcome, status]);
+
+  async function loadChanges(jobId, page = 1, pageSize = changesPagination.page_size || 50) {
+    const body = await requestJson(`/api/import-jobs/${jobId}/changes?page=${page}&page_size=${pageSize}`);
+    setChanges(body.changes || []);
+    setChangesPagination({
+      page: body.page || 1,
+      page_size: body.page_size || pageSize,
+      total: body.total || 0,
+      total_pages: body.total_pages || 0,
+      has_previous: Boolean(body.has_previous),
+      has_next: Boolean(body.has_next),
+    });
+  }
 
   async function toggle(job) {
     if (expanded === job.id) { setExpanded(null); return; }
     setExpanded(job.id);
     setChanges([]);
-    if (job.outcome !== 'starting_inventory') setChanges(await requestJson(`/api/import-jobs/${job.id}/changes`).catch(() => []));
+    setChangesPagination({ page: 1, page_size: 50, total: 0, total_pages: 0, has_previous: false, has_next: false });
+    if (job.outcome !== 'starting_inventory') await loadChanges(job.id, 1, 50).catch(() => setChanges([]));
   }
 
   async function rollback(job) {
@@ -505,7 +542,8 @@ export function ItemImportHistory() {
     setBusy(true);
     try {
       await requestJson(`/api/import-jobs/${job.id}/rollback`, { method: 'POST' });
-      await load();
+      await load(jobsPagination.page, jobsPagination.page_size);
+      await onRolledBack?.();
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -517,7 +555,7 @@ export function ItemImportHistory() {
     <section className="item-import-workspace history-page">
       <PageIntro title="Item import history" description="Every item import, who ran it, what changed, and which rows need attention." />
       {error && <div className="import-error" role="alert"><AlertTriangle size={18} /><span>{error}</span></div>}
-      <div className="history-toolbar"><a className="import-primary-button" href="#/items/import" onClick={() => sessionStorage.removeItem(PREVIEW_KEY)}><PackagePlus size={17} /> New import</a><label><span>Outcome</span><select value={outcome} onChange={(event) => setOutcome(event.target.value)}><option value="">All outcomes</option><option value="add_items">Add new items</option><option value="update_items">Update item details</option><option value="starting_inventory">Set starting inventory</option></select></label><label><span>Status</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="completed">Completed</option><option value="completed_with_errors">Completed with errors</option><option value="failed">Failed</option></select></label><button className="import-secondary-button" disabled={busy} onClick={load} type="button"><RefreshCw size={16} /> Refresh</button></div>
+      <div className="history-toolbar"><a className="import-primary-button" href="#/items/import" onClick={() => sessionStorage.removeItem(PREVIEW_KEY)}><PackagePlus size={17} /> New import</a><label><span>Outcome</span><select value={outcome} onChange={(event) => setOutcome(event.target.value)}><option value="">All outcomes</option><option value="add_items">Add new items</option><option value="update_items">Update item details</option><option value="starting_inventory">Set starting inventory</option></select></label><label><span>Status</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="completed">Completed</option><option value="completed_with_errors">Completed with errors</option><option value="failed">Failed</option></select></label><button className="import-secondary-button" disabled={busy} onClick={() => load(jobsPagination.page, jobsPagination.page_size)} type="button"><RefreshCw size={16} /> Refresh</button></div>
       <div className="history-table-wrap">
         <table className="history-table">
           <thead><tr><th>Import</th><th>Outcome</th><th>File</th><th>Result</th><th>Rows</th><th>Run by</th><th>Completed</th><th></th></tr></thead>
@@ -537,7 +575,7 @@ export function ItemImportHistory() {
                 <tr className="history-detail-row"><td colSpan="8"><div className="history-detail">
                   <div><strong>Job summary</strong><p>{formatNumber(job.created_rows)} created · {formatNumber(job.updated_rows)} updated · {formatNumber(job.unchanged_rows)} unchanged · {formatNumber(job.excluded_rows)} excluded</p><p>{job.outcome?.replaceAll('_', ' ')} · run by {job.created_by || 'System'} · completed {formatDate(job.completed_at || job.created_at)}</p>{job.starting_units > 0 && <p>{formatNumber(job.starting_units)} starting units recorded</p>}</div>
                   <div className="history-detail-actions"><a className="import-secondary-button" href={`${API_BASE_URL}/api/import-jobs/${job.id}/source-file`}><FileSpreadsheet size={16} /> Original CSV</a>{job.failed_rows > 0 && <a className="import-secondary-button" href={`${API_BASE_URL}/api/import-jobs/${job.id}/failed-rows`}><Download size={16} /> Rows to fix</a>}{job.outcome === 'update_items' && !(job.result_json?.rollback?.status === 'completed') && <button className="import-secondary-button" disabled={busy} onClick={() => rollback(job)} type="button"><RotateCcw size={16} /> Safe metadata rollback</button>}</div>
-                  {changes.length > 0 && <div className="history-change-list"><strong>Field changes</strong>{changes.slice(0, 100).map((change) => <p key={change.id}><span>{change.sku} · {change.field.replaceAll('_', ' ')}</span><small>{String(change.before ?? 'Blank')} → {String(change.after ?? 'Blank')}</small></p>)}</div>}
+                  {changesPagination.total > 0 && <div className="history-change-list"><strong>Field changes · {changesPagination.total} total</strong>{changes.map((change) => <p key={change.id}><span>{change.sku} · {change.field.replaceAll('_', ' ')}</span><small>{String(change.before ?? 'Blank')} → {String(change.after ?? 'Blank')}</small></p>)}<div className="history-pagination" aria-label="Import field changes pages"><button className="import-secondary-button" disabled={!changesPagination.has_previous || busy} onClick={() => loadChanges(job.id, changesPagination.page - 1, changesPagination.page_size)} type="button">Previous changes</button><span>Page {changesPagination.page} of {Math.max(1, changesPagination.total_pages)}</span><button className="import-secondary-button" disabled={!changesPagination.has_next || busy} onClick={() => loadChanges(job.id, changesPagination.page + 1, changesPagination.page_size)} type="button">Next changes</button></div></div>}
                 </div></td></tr>
               )}
             </tbody>
@@ -545,6 +583,7 @@ export function ItemImportHistory() {
         </table>
         {!jobs.length && !busy && <div className="review-empty">No item imports match these filters.</div>}
       </div>
+      <div className="history-pagination" aria-label="Item import history pages"><button className="import-secondary-button" disabled={!jobsPagination.has_previous || busy} onClick={() => load(jobsPagination.page - 1, jobsPagination.page_size)} type="button">Previous imports</button><span>{jobsPagination.total} imports · Page {jobsPagination.page} of {Math.max(1, jobsPagination.total_pages)}</span><button className="import-secondary-button" disabled={!jobsPagination.has_next || busy} onClick={() => load(jobsPagination.page + 1, jobsPagination.page_size)} type="button">Next imports</button></div>
     </section>
   );
 }

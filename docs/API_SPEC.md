@@ -114,6 +114,12 @@ Returns Command Center data from local records only:
 - recent activity
 - data quality warnings
 
+Inventory, order, route, and warning totals are calculated as SQL aggregates.
+Warning samples are independently capped at five records per warning group,
+and each recent-activity source query is capped by the requested activity
+limit. The response therefore keeps exact card and warning counts without
+hydrating the complete item, order-line, route-stop, or route tables.
+
 Aliases:
 - `GET /api/dashboard/summary`
 - `GET /api/dashboard/activity?limit=25`
@@ -134,6 +140,20 @@ metadata and local item Woo ID metadata.
 
 Remap preserves manual Pongo OS item fields and does not change stock,
 allocated, sellable, picked, fulfilled, or order status quantities.
+
+Both remap list endpoints accept `page` (default `1`) and `page_size` (default
+`100`, maximum `100`) and return exact `total`, `total_pages`,
+`returned_count`, `has_previous`, and `has_next` metadata. Mapping filters are
+applied in PostgreSQL before counting and paging. Candidate results preserve
+the established ordering: unique local catalog records first, followed by
+every unique error-only Woo record still present in retained sync history.
+Error-only records use the newest error for each Woo product/variation identity
+and are counted and paged in SQL, so records older than the first 200 errors do
+not disappear. Active mappings and local-item suggestions are bulk-loaded for
+only the requested page using a fixed number of queries; a larger page does not
+add one database query per candidate.
+The deprecated candidate `limit` parameter remains accepted but is capped at
+100; clients should use `page_size`.
 
 ## WooCommerce Status And Staging Writeback
 
@@ -184,6 +204,10 @@ from durable `woocommerce_sync_runs` records; secrets are never included.
 
 - `POST /api/integrations/woocommerce/writeback/stock/preview`
 - `POST /api/integrations/woocommerce/writeback/stock/sync`
+- `GET /api/integrations/woocommerce/writeback/stock/jobs`
+- `GET /api/integrations/woocommerce/writeback/stock/jobs/{id}`
+- `POST /api/integrations/woocommerce/writeback/stock/jobs/{id}/resume`
+- `POST /api/integrations/woocommerce/writeback/stock/jobs/{id}/cancel`
 - `POST /api/integrations/woocommerce/writeback/order-status/preview`
 - `POST /api/integrations/woocommerce/writeback/queue`
 - `GET /api/integrations/woocommerce/writeback/queue`
@@ -208,6 +232,15 @@ mapping from matched imported order lines. Positive quantities explicitly send
 `stock_status=instock`; zero sends `stock_status=outofstock`.
 The default quantity is local Sellable (`In Stock - Allocated`); an explicit
 preview quantity remains available for controlled one-off tests.
+
+Writeback queue, writeback log, and stock-sync job history are server-paged.
+Queue and log history accept `page` (default `1`) and `page_size` (default
+`50`, maximum `100`). Stock-sync jobs use a default `page_size` of `25` and
+also accept the deprecated `limit` alias for older clients. Queue and log
+history accept `search`, matched case-insensitively against operation type,
+entity type, local entity ID, Woo entity ID, and status. Every response keeps
+its existing collection and exact filtered `total`, and adds `page`,
+`page_size`, `total_pages`, `returned_count`, `has_previous`, and `has_next`.
 
 Live staging send is guarded by all of these conditions:
 
@@ -280,6 +313,8 @@ Implemented query params:
 - `brand`
 - `active`
 - `include_non_inventory`
+- `include_facets` (default `true`; optimized clients use `false` and load
+  `GET /api/items/facets` once)
 - `woo_sync_status`
 - `woo_product_id`
 - `woo_variation_id`
@@ -302,6 +337,13 @@ compatibility, omitting both pagination parameters still returns the complete
 filtered list. A requested page beyond the filtered result is clamped to the
 last valid page (or page 1 for an empty result).
 
+### GET /api/items/facets
+
+Return the distinct, sorted full-catalog category and brand filter values.
+The frontend keeps this metadata separately from paginated item rows so page
+changes do not repeat the facet queries. Operational stock quantities are not
+included or cached by this endpoint.
+
 ### GET /api/items/{id}
 
 Return one item, including location stock summary.
@@ -310,6 +352,17 @@ Return one item, including location stock summary.
 
 List stock-location rows for one item. These rows are the operational source for
 `In Stock`, `Allocated`, `Sellable`, and `On Order`.
+
+### GET /api/items/{id}/activity
+
+Returns one chronological item timeline across stock movements, notes, item
+imports, receipts, counts, transfers, adjustments, allocations, picks,
+fulfillments, and order lines. Supports `type`, `start_date`, `end_date`,
+`limit` (capped at `200`), and `offset`. Type and date predicates are applied
+inside PostgreSQL. The service calculates the exact cross-source `total`, loads
+only the top `offset + limit` rows from each applicable source, merges those
+bounded results chronologically, and returns the existing `activity`, `total`,
+`limit`, and `offset` fields.
 
 ### POST /api/items/{id}/locations
 
@@ -339,10 +392,23 @@ write WooCommerce.
 
 Transfer and adjustment commit bodies may include `idempotency_key`.
 
-`GET /api/inventory/locations` optionally accepts `item_ids` as a
+`GET /api/inventory/transfers` and `GET /api/inventory/adjustments` accept
+`page` (default `1`) and `page_size` (default `50`, maximum `100`). Their
+existing filters are applied before PostgreSQL calculates the exact `total`.
+Responses add `page`, `page_size`, `total_pages`, `returned_count`,
+`has_previous`, and `has_next` without changing the existing collection keys.
+
+`GET /api/inventory/locations` accepts `page` (default `1`) and `page_size`
+(default `20`, maximum `100`). It optionally accepts `item_ids` as a
 comma-separated list of positive inventory item IDs. This allows a paginated
-catalog view to request location rows only for the current page; omitting it
-preserves the existing query behavior.
+catalog view to request location rows only for the current page. Filtering and
+the exact `total` are calculated in PostgreSQL before rows are paged. The
+response also includes `total_pages`, `returned_count`, `has_previous`, and
+`has_next`; pages beyond the result are clamped to the final page. The separate
+`/locations/export` endpoint remains an unbounded filtered CSV export.
+Each location row is self-contained for paginated displays: alongside its
+location-level `active` flag, it includes the product-owned `brand`, `category`,
+`unit_cost`, and `item_active` fields.
 
 ### POST /api/items
 
@@ -530,7 +596,23 @@ Accepted identifiers:
 List CSV import jobs, newest first.
 
 Implemented for item and location CSV imports. Supports `outcome`, `status`,
-`item_imports_only`, and bounded `limit` filters.
+`item_imports_only`, and bounded `limit` filters. Existing callers that omit
+`page` and `page_size` continue to receive the legacy array (bounded by
+`limit`, maximum `500`). Supplying either `page` or `page_size` opts into the
+server-paged response:
+
+- `jobs`
+- `total`
+- `page`
+- `page_size` (default `50`, maximum `100`)
+- `total_pages`
+- `returned_count`
+- `has_previous`
+- `has_next`
+
+Filters and the exact total are evaluated in PostgreSQL. Results are ordered by
+`created_at DESC, id DESC`, and requests beyond the final page resolve to the
+last available page.
 
 ### GET /api/import-jobs/{id}
 
@@ -552,7 +634,11 @@ Downloads the exact UTF-8 source CSV captured by the guided preview.
 ### GET /api/import-jobs/{id}/changes
 
 Returns field-level before/after metadata changes with item, filename, actor,
-and timestamp.
+and timestamp. This detail is server-paged with `page` (default `1`) and
+`page_size` (default `50`, maximum `100`). The response contains `changes`,
+`total`, `page`, `page_size`, `total_pages`, `returned_count`, `has_previous`,
+and `has_next`. Each change retains `id`, `item_id`, `sku`, `field`, `before`,
+`after`, `source_filename`, `created_by`, and `created_at`.
 
 ### POST /api/import-jobs/{id}/rollback
 
@@ -581,6 +667,7 @@ blank while the receiver is disabled:
 - `WOOCOMMERCE_ORDER_RECONCILIATION_STALE_AFTER_SECONDS`
 - `WOOCOMMERCE_ORDER_RECONCILIATION_LOOKBACK_HOURS`
 - `WOOCOMMERCE_ORDER_RECONCILIATION_STATUSES`
+- `WOOCOMMERCE_SYNC_ERROR_RETENTION_DAYS` (default `90`)
 - `WOOCOMMERCE_WEBHOOK_ENABLED`
 - `WOOCOMMERCE_WEBHOOK_SECRET`
 - `WOOCOMMERCE_WEBHOOK_MAX_BODY_BYTES`
@@ -727,10 +814,34 @@ Filters:
 - `status`
 - `date_from`
 - `date_to`
+- `page` (defaults to `1`)
+- `page_size` (defaults to `50`, maximum `100`)
+
+Runs are ordered by newest `started_at` and then newest ID. The response keeps
+the existing `sync_runs` and `total` fields and adds `page`, `page_size`,
+`total_pages`, `returned_count`, `has_previous`, and `has_next`. `total` is the
+complete filtered count, not the number returned on the current page. A page
+beyond the result is clamped to the last valid page (or page 1 when empty).
 
 ### GET /api/integrations/woocommerce/sync-runs/{id}
 
-Return sync run detail and row-level sync errors.
+Return sync run detail and one bounded page of row-level sync errors. Use
+`error_page` (default `1`) and `error_page_size` (default `50`, maximum `100`).
+The existing `errors` field contains only that page, ordered newest-first, and
+the response also reports `errors_total`, `errors_page`, `errors_page_size`,
+`errors_total_pages`, `errors_returned_count`, `errors_has_previous`, and
+`errors_has_next`. The run-level `error_count` remains the historical summary
+recorded when the run finished; `errors_total` is the exact count of retained
+detail rows currently present in the database.
+
+### GET /api/integrations/woocommerce/orders/fetch-jobs
+
+List manual/background order-fetch jobs with exact database-backed paging.
+Use `page` (default `1`) and `page_size` (default `20`, maximum `100`). The
+response retains `sync_runs` and `total` and adds `total_pages`,
+`returned_count`, `has_previous`, and `has_next`. Results include only order
+fetch jobs and are ordered newest-first. The deprecated `limit` parameter is
+still accepted as a page-size alias for older clients.
 
 ### POST /api/integrations/woocommerce/orders/preview
 
@@ -788,7 +899,10 @@ Commit behavior:
   status, releases its remaining unpicked allocation before rerunning FIFO.
 - Reuses `woocommerce_sync_runs` with `sync_type = orders`.
 - Stores order/line context in `woocommerce_sync_errors` for unmatched and
-  conflict rows.
+  conflict rows. Identical errors are stored once per sync run using a database
+  uniqueness constraint, while each run keeps its own audit detail. Every
+  committed catalog or order sync removes details older than the configured
+  retention period, including successful runs that add no new errors.
 - Summary responses include `auto_allocated_count`,
   `allocation_exception_count`, `unmatched_line_count`,
   `conflict_line_count`, and `pick_ready_count`.
@@ -973,7 +1087,7 @@ Response cursor fields:
   with `after_id = next_after_id` until it becomes false.
 
 The frontend begins a session with `initialize=true`, then polls globally every
-2 seconds while the document is visible and also on focus/visibility changes.
+15 seconds while the document is visible and also on focus/visibility changes.
 The feed does not acknowledge events globally, mutate orders, call
 WooCommerce, or send outbound/customer notifications.
 
@@ -986,8 +1100,14 @@ cancelled, refunded, and completed snapshots are excluded from this endpoint.
 
 Filters:
 - `search`
+- `order_number`
+- `customer`
+- `containing_item`
+- `warehouse`
 - `availability_status`
 - `matched_status`
+- `page`
+- `page_size` (maximum `100`)
 
 `search` matches order number, customer name/email/phone, order-line SKU,
 barcode or name, and the matched local inventory item's SKU, barcode or
@@ -996,11 +1116,23 @@ completed-without-picking, and stock-reduction fields. Queue rows also expose
 `shipping_zip`, `company`, `ship_from`, `item_names`, and
 `total_quantity_fulfilled` for the Open Customer Orders grid.
 
+When pagination is requested, filtering and workflow membership are evaluated
+in PostgreSQL before the page is selected. The response includes `page`,
+`page_size`, `total_pages`, `returned_count`, `has_previous`, and `has_next`;
+summary counts describe the complete filtered queue. Public list requests
+default to page `1` with `20` rows. CSV export uses the same filtered service
+through an explicit complete-list internal call, so exports are never clipped.
+Queue pages defer the full stored WooCommerce payload. The list query extracts
+only its small `shipping_lines` value for `shipping_via`; full raw payloads are
+loaded only by workflows that explicitly require them.
+
 ### GET /api/orders/allocate
 
 List processing orders that need allocation attention: shortages, unmatched
 lines, conflicts, unavailable location stock, partial allocation, or failed
 auto-allocation. Fully allocated orders are excluded.
+
+Supports `page` and `page_size` with the same response metadata as Open Orders.
 
 ### GET /api/orders/pick
 
@@ -1012,6 +1144,8 @@ Queue rows also include `order_source`, `shipping_city`,
 `shipping_state`, `shipping_via`, `skus`, `total_quantity_ordered`,
 `total_quantity_allocated`, and `total_quantity_picked` for the manual picking
 interface.
+
+Supports `page` and `page_size` with the same response metadata as Open Orders.
 
 ### GET /api/orders/{id}
 
@@ -1101,14 +1235,21 @@ Filters:
 - `sku`
 - `barcode`
 - `search`
+- `page` (defaults to `1`)
+- `page_size` (defaults to `20`, maximum `100`)
 
 Rows include Woo order identifiers/status, local status, customer name/email,
 order total, order dates, line count, fulfilled line count, total ordered,
 allocated, picked, fulfilled, remaining to fulfill, and fulfilled value.
+All filters and the exact `total` are evaluated in PostgreSQL before rows are
+paged. The response also includes `total_pages`, `returned_count`,
+`has_previous`, and `has_next`; pages beyond the result are clamped to the
+final page.
 
 ### GET /api/orders/completed/export
 
-Export completed/partially completed order lines as CSV using the same filters.
+Export every matching completed/partially completed order line as CSV using the
+same filters. CSV export is not limited by list pagination.
 
 CSV header order:
 - Woo Order Number
@@ -1185,13 +1326,34 @@ Filters:
 - `ordered_from`
 - `ordered_to`
 - `include_fully_allocated`
+- `view`: `orders` (line pagination) or `items` (item-group pagination)
+- `item_id`: optional matched-item selector for a paged affected-order drill-down
+- `unmatched_line_id`: optional unmatched-group selector for a paged drill-down
+- `page` (defaults to `1`)
+- `page_size` (defaults to `20`, maximum `100`)
 
 Each line includes order and item identifiers, ordered date, customer, SKU,
 barcode, description, warehouse/location, ordered, allocated, unallocated,
 picked and currently available quantities, allocation status, and exception
 reason. Summary fields are `total_orders`, `total_lines`,
 `total_quantity_unallocated`, `lines_with_available_stock`, and
-`lines_out_of_stock`.
+`lines_out_of_stock`; those totals cover the complete filtered result rather
+than only the returned page. Item view responses return exact aggregate records
+in `item_groups` and leave `lines` empty, so one popular SKU cannot make a page
+unbounded. Each group includes an exact affected-order count and summed
+quantities plus a representative item identity. Selecting a group switches to
+the `orders` view with its `item_id` or `unmatched_line_id`; those affected
+lines use normal bounded pagination, so every record remains reachable. Only
+one group selector may be sent at a time. The response also includes
+`warehouses`, `view`,
+`total_item_groups`, `returned_item_groups`, `page`, `page_size`, `total_pages`,
+`returned_count`, `has_previous`, and `has_next`.
+
+### GET /api/allocations/exceptions/export
+
+Export the complete allocation-exception result as CSV using the same filters
+as `GET /api/allocations/exceptions`. Pagination parameters are intentionally
+not accepted, so a page-sized UI response never clips the export.
 
 ### POST /api/allocations/preview
 
@@ -1262,6 +1424,12 @@ Filters:
 - `date_from`
 - `date_to`
 - `created_by`
+- `page` (defaults to `1`)
+- `page_size` (defaults to `20`, maximum `100`)
+
+The response reports the exact complete filtered `total` plus `page`,
+`page_size`, `total_pages`, `returned_count`, `has_previous`, and `has_next`.
+Only the selected page and its lines are loaded.
 
 ### GET /api/allocations/{id}
 
@@ -1358,6 +1526,12 @@ Filters:
 - `date_from`
 - `date_to`
 - `created_by`
+- `page` (defaults to `1`)
+- `page_size` (defaults to `20`, maximum `100`)
+
+The response reports the exact complete filtered `total` plus `page`,
+`page_size`, `total_pages`, `returned_count`, `has_previous`, and `has_next`.
+Only the selected page and its lines are loaded.
 
 ### GET /api/picks/{id}
 
@@ -1463,6 +1637,12 @@ Filters:
 - `date_from`
 - `date_to`
 - `created_by`
+- `page` (defaults to `1`)
+- `page_size` (defaults to `20`, maximum `100`)
+
+The response reports the exact complete filtered `total` plus `page`,
+`page_size`, `total_pages`, `returned_count`, `has_previous`, and `has_next`.
+Only the selected page and its lines are loaded.
 
 ### GET /api/fulfillments/{id}
 
@@ -1615,7 +1795,9 @@ Return inventory totals grouped by warehouse and inventory location.
 
 Implemented. Supports the by-location filters plus `search` and the same
 comma-separated `data_quality` values as `GET /api/items`, allowing inventory
-cards and catalog rows to describe the same filtered record set.
+cards and catalog rows to describe the same filtered record set. Filtering,
+grouping, and numeric totals are calculated in one database aggregation query;
+operational stock quantities are not cached.
 
 Each group includes:
 - `warehouse`
@@ -1680,7 +1862,10 @@ Create a direct receiving session with one or more receipt item rows. Increases 
 
 ### GET /api/receipts
 
-List receipts.
+List receipts using `page` (default `1`) and `page_size` (default `20`, maximum
+`100`). The response includes the exact complete filtered `total`,
+`total_pages`, `returned_count`, `has_previous`, and `has_next`. Receipt detail
+and per-receipt CSV export endpoints are unchanged.
 
 ### GET /api/receipts/{id}
 
@@ -1688,7 +1873,11 @@ Return receipt details and item rows.
 
 ### GET /api/stock-movements
 
-List stock movement audit rows.
+List stock movement audit rows using `page` (default `1`) and `page_size`
+(default `20`, maximum `100`). The response includes the exact complete
+filtered `total`, `total_pages`, `returned_count`, `has_previous`, and
+`has_next`. The separate `/api/stock-movements/export` endpoint remains an
+unbounded filtered CSV export.
 
 Implemented filters:
 - `item_id`
@@ -1799,6 +1988,11 @@ Implemented filters:
 - `date_to`
 - `created_by`
 
+History is server-paged with `page` (default `1`) and `page_size` (default
+`50`, maximum `100`). The response keeps `cycle_counts` and the exact filtered
+`total`, and adds `page`, `page_size`, `total_pages`, `returned_count`,
+`has_previous`, and `has_next`.
+
 ### GET /api/cycle-counts/{id}
 
 Return cycle count detail with lines.
@@ -1860,6 +2054,17 @@ lists fully allocated processing orders ready to pick, and Completed Orders
 lists locally closed orders. Picking reduces local stock and completion does not
 reduce stock again.
 
+`GET /api/orders/history` is a bounded compatibility view over the allocation,
+pick, and fulfillment ledgers. It accepts `page` (default `1`) and `page_size`
+(default `20`, maximum `100`). The same requested page is applied independently
+to each ledger; a ledger with no rows on that page returns an empty array rather
+than repeating its final page. Existing `allocations`, `picks`, `fulfillments`,
+and exact combined `total` fields are preserved. Top-level pagination metadata
+describes the combined response, and the `pagination` object reports exact
+`total`, `total_pages`, `returned_count`, `has_previous`, and `has_next` values
+for each ledger. The active frontend reads the three dedicated paginated ledger
+endpoints instead of this compatibility route.
+
 ## Reports
 
 ### Verified report runs
@@ -1867,12 +2072,16 @@ reduce stock again.
 - `GET /api/reports` lists the 17-report catalog.
 - `GET /api/reports/sharing/status` returns non-secret delivery readiness.
 - `POST /api/reports/runs/{report_key}` generates and freezes a report snapshot.
+  Its interactive `rows` preview accepts `row_page` and `row_page_size`
+  (maximum 100) and includes exact `row_pagination` metadata.
 - `POST /api/reports/jobs/{report_key}` queues an asynchronous report run and
   deduplicates an identical active request.
 - `GET /api/reports/jobs/{job_id}` returns report generation status and progress.
 - `POST /api/reports/jobs/latest/{report_key}` returns the latest immutable run
-  whose normalized filters exactly match the request.
-- `GET /api/reports/runs/{run_id}` returns the frozen snapshot.
+  whose normalized filters exactly match the request. It accepts the same
+  bounded row-preview parameters.
+- `GET /api/reports/runs/{run_id}` returns the frozen snapshot with a bounded
+  `rows` preview and accepts `row_page` and `row_page_size` (maximum 100).
 - `GET /api/reports/runs/{run_id}/csv` exports that snapshot as UTF-8 CSV.
 - `GET /api/reports/runs/{run_id}/pdf` exports that snapshot as a paginated PDF.
   Both endpoints stream worker-rendered, SHA-256-verified artifacts stored with
@@ -1884,6 +2093,9 @@ reduce stock again.
 
 All output formats for one run use the same stored payload, run ID, definition
 version, generation time, and SHA-256 evidence hash. See `docs/REPORTING.md`.
+Preview pagination never changes the stored payload or its evidence hash. CSV,
+PDF, Google Sheets, and email deliveries always use every row in that immutable
+payload, regardless of which preview page is open in the browser.
 
 ### GET /api/reports/received-inventory
 
@@ -2091,19 +2303,35 @@ geocoding, routing, shipping label, outbound/customer notification, inventory
 stock, or stock
 movement services.
 
-Eligible route candidates are local orders with `local_status = fulfilled` or
-`local_status = partially_fulfilled` that are not already assigned to a
-non-cancelled route.
+Eligible route candidates are non-historical local orders with
+`local_status = completed`, `fulfilled`, or `partially_fulfilled` that are not
+already assigned to a non-cancelled route.
 
 ### GET /api/routes/candidates
 
 List completed local orders that can be placed onto a route.
 
 Query filters:
+- `route_date` (the UTC calendar date of `orders.date_created`)
 - `local_status`
 - `customer_email`
 - `woo_order_number`
 - `search`
+
+Candidate results are server-paged with `page` (default `1`) and `page_size`
+(default `50`, maximum `100`). Eligibility, active-route exclusion, filters,
+and the exact `total_candidates` are evaluated in PostgreSQL before the ordered
+page is loaded. The response retains `total_candidates` and `candidates` and
+adds `page`, `page_size`, `total_pages`, `returned_count`, `has_previous`, and
+`has_next`. Ordering is stable by order creation time, Woo order number, then
+local order ID. Requests beyond the final page resolve to the final available
+page.
+
+Route history is server-paged with `page` (default `1`) and `page_size`
+(default `50`, maximum `100`). Filters and the exact `total` are evaluated in
+PostgreSQL before the ordered page is loaded. The response keeps `routes` and
+adds `page`, `page_size`, `total_pages`, `returned_count`, `has_previous`, and
+`has_next`. Requests beyond the final page resolve to the final available page.
 
 Response includes order/customer/shipping snapshots, fulfilled line count,
 fulfilled quantity, and a warning when an order is only partially fulfilled.
@@ -2355,6 +2583,14 @@ state, revenue comparison, order map/geography, and data quality warnings.
 The business dashboard reads local order snapshots and order lines only. It does
 not call WooCommerce, mutate orders, mutate stock, or geocode addresses through
 an external provider.
+
+Counts, totals, customer first-order classification, units, and daily revenue
+comparison are calculated in SQL with the same status precedence and configured
+admin-timezone day boundaries as the API fields. Order-map detail is limited to
+the requested day. The open-order card returns at most 200 newest rows while
+`summary.open_orders_count` remains the exact full filtered count. Subscription
+detail reads only payloads containing subscription data; other raw WooCommerce
+payloads are not loaded for dashboard requests.
 
 ## Woo Mapping And Item Enrichment
 

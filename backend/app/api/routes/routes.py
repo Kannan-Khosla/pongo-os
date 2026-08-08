@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -15,7 +15,7 @@ from app.services.routes import (
     get_route_detail,
     get_route_map_payload,
     list_route_candidates,
-    list_routes,
+    list_routes_page,
     preview_route,
     preview_route_geocode,
     preview_route_optimization,
@@ -36,9 +36,20 @@ def route_candidates(
     customer_email: str | None = None,
     woo_order_number: str | None = None,
     search: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> RouteCandidateListResponse:
-    return list_route_candidates(db, route_date=route_date, local_status=local_status, customer_email=customer_email, woo_order_number=woo_order_number, search=search)
+    return list_route_candidates(
+        db,
+        route_date=route_date,
+        local_status=local_status,
+        customer_email=customer_email,
+        woo_order_number=woo_order_number,
+        search=search,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.post("/preview", response_model=RoutePreviewResponse)
@@ -60,10 +71,32 @@ def list_route_records(
     driver_name: str | None = None,
     vehicle_name: str | None = None,
     search: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> RouteListResponse:
-    routes = list_routes(db, status=status, route_date=route_date, date_from=date_from, date_to=date_to, driver_name=driver_name, vehicle_name=vehicle_name, search=search)
-    return RouteListResponse(routes=[route_to_read(route) for route in routes], total=len(routes))
+    routes, total, effective_page, total_pages = list_routes_page(
+        db,
+        status=status,
+        route_date=route_date,
+        date_from=date_from,
+        date_to=date_to,
+        driver_name=driver_name,
+        vehicle_name=vehicle_name,
+        search=search,
+        page=page,
+        page_size=page_size,
+    )
+    return RouteListResponse(
+        routes=[route_to_read(route) for route in routes],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(routes),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.get("/{route_id}", response_model=RouteDetail)

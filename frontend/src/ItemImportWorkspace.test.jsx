@@ -98,7 +98,7 @@ it('fixes a duplicate row inline and carries the corrected diff into confirmatio
 
   await waitFor(() => expect(screen.getAllByText('Will create').length).toBeGreaterThan(0));
   await user.click(screen.getByRole('button', { name: /Review import/i }));
-  expect(await screen.findByRole('heading', { name: 'Confirm the exact changes' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'Review changes before import' })).toBeInTheDocument();
   expect(screen.getAllByRole('cell', { name: 'UNIQUE' }).length).toBeGreaterThan(0);
 });
 
@@ -116,12 +116,54 @@ it('reconciles excluded rows in the completed import totals', async () => {
   expect(screen.getByText('Excluded').nextElementSibling).toHaveTextContent('1');
 });
 
+it('makes every confirmation row reachable instead of showing a capped sample', async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 26 }, (_, index) => ({
+    id: index + 1,
+    row_number: index + 2,
+    sku: `SKU-${String(index + 1).padStart(2, '0')}`,
+    barcode: null,
+    product_name: `Product ${index + 1}`,
+    proposed_changes: { brand: { field: 'brand', label: 'Brand', before: 'Old', after: 'New' } },
+    issues: [],
+    state: 'will_update',
+    excluded: false,
+  }));
+  const savedPreview = preview({ total_rows: 26, ready_count: 26, create_count: 0, update_count: 26, no_changes_count: 0, needs_attention_count: 0, duplicate_count: 0, unmatched_count: 0, blocked_count: 0, excluded_count: 0 });
+  vi.stubGlobal('fetch', vi.fn((url) => {
+    const target = String(url);
+    if (target.endsWith('/schema')) return response(schema);
+    if (target.includes('/rows?')) {
+      const request = new URL(target);
+      const page = Number(request.searchParams.get('page') || 1);
+      const pageSize = Number(request.searchParams.get('page_size') || 50);
+      const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
+      return response({ rows: pageRows, total: rows.length, page, page_size: pageSize, total_pages: Math.ceil(rows.length / pageSize) });
+    }
+    if (target.endsWith('/preview-qa')) return response(savedPreview);
+    return response({});
+  }));
+
+  render(<ItemImportWorkspace initialPreviewId="preview-qa" />);
+
+  await user.click(await screen.findByRole('button', { name: /Review import/i }));
+  expect(await screen.findByRole('heading', { name: 'Review changes before import' })).toBeInTheDocument();
+  expect(screen.getByText('SKU-25')).toBeInTheDocument();
+  expect(screen.queryByText('SKU-26')).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  expect(await screen.findByText('SKU-26')).toBeInTheDocument();
+  expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+});
+
 it('labels completed import jobs as completed in history', async () => {
   const user = userEvent.setup();
   sessionStorage.setItem('pongo.item-import.preview', 'completed-preview');
-  vi.stubGlobal('fetch', vi.fn(() => response([{
-    id: 9, outcome: 'add_items', status: 'completed', file_name: 'items.csv', successful_rows: 2, failed_rows: 0, created_by: 'qa@example.com', created_at: '2026-08-06T12:00:00Z',
-  }])));
+  vi.stubGlobal('fetch', vi.fn(() => response({
+    jobs: [{
+      id: 9, outcome: 'add_items', status: 'completed', file_name: 'items.csv', successful_rows: 2, failed_rows: 0, created_by: 'qa@example.com', created_at: '2026-08-06T12:00:00Z',
+    }],
+    total: 1, page: 1, page_size: 50, total_pages: 1, has_previous: false, has_next: false,
+  })));
 
   render(<ItemImportHistory />);
 
@@ -129,4 +171,65 @@ it('labels completed import jobs as completed in history', async () => {
   expect(screen.queryByText('Will update')).not.toBeInTheDocument();
   await user.click(screen.getByRole('link', { name: 'New import' }));
   expect(sessionStorage.getItem('pongo.item-import.preview')).toBeNull();
+});
+
+it('notifies the item collection after a metadata import rollback', async () => {
+  const user = userEvent.setup();
+  const onRolledBack = vi.fn();
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const job = {
+    id: 12,
+    outcome: 'update_items',
+    status: 'completed',
+    file_name: 'metadata.csv',
+    successful_rows: 1,
+    failed_rows: 0,
+    created_by: 'qa@example.com',
+    created_at: '2026-08-06T12:00:00Z',
+  };
+  vi.stubGlobal('fetch', vi.fn((url, init = {}) => {
+    const target = String(url);
+    if (target.endsWith('/rollback') && init.method === 'POST') return response({ status: 'completed' });
+    if (target.includes('/changes?')) return response({ changes: [], total: 0, page: 1, page_size: 50, total_pages: 0, has_previous: false, has_next: false });
+    return response({ jobs: [job], total: 1, page: 1, page_size: 50, total_pages: 1, has_previous: false, has_next: false });
+  }));
+
+  render(<ItemImportHistory onRolledBack={onRolledBack} />);
+
+  await screen.findByRole('cell', { name: 'metadata.csv' });
+  await user.click(document.querySelector('.history-expand'));
+  await user.click(await screen.findByRole('button', { name: /Safe metadata rollback/i }));
+
+  await waitFor(() => expect(onRolledBack).toHaveBeenCalledTimes(1));
+  confirmSpy.mockRestore();
+});
+
+it('pages import jobs and field changes without hiding older records', async () => {
+  const user = userEvent.setup();
+  const fetchMock = vi.fn((url) => {
+    const target = String(url);
+    if (target.includes('/api/import-jobs/22/changes?page=2')) {
+      return response({ changes: [{ id: 202, item_id: 2, sku: 'SECOND', field: 'brand', before: 'Old', after: 'New', created_by: 'qa', created_at: '2026-08-06T12:00:00Z' }], total: 51, page: 2, page_size: 50, total_pages: 2, has_previous: true, has_next: false });
+    }
+    if (target.includes('/api/import-jobs/22/changes?')) {
+      return response({ changes: [{ id: 201, item_id: 1, sku: 'FIRST', field: 'brand', before: 'A', after: 'B', created_by: 'qa', created_at: '2026-08-06T12:00:00Z' }], total: 51, page: 1, page_size: 50, total_pages: 2, has_previous: false, has_next: true });
+    }
+    if (target.includes('page=2')) {
+      return response({ jobs: [{ id: 21, outcome: 'add_items', status: 'completed', file_name: 'older.csv', successful_rows: 1, failed_rows: 0, created_by: 'qa', created_at: '2026-08-05T12:00:00Z' }], total: 51, page: 2, page_size: 50, total_pages: 2, has_previous: true, has_next: false });
+    }
+    return response({ jobs: [{ id: 22, outcome: 'update_items', status: 'completed', file_name: 'latest.csv', successful_rows: 1, failed_rows: 0, created_by: 'qa', created_at: '2026-08-06T12:00:00Z' }], total: 51, page: 1, page_size: 50, total_pages: 2, has_previous: false, has_next: true });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<ItemImportHistory />);
+
+  await screen.findByRole('cell', { name: 'latest.csv' });
+  expect(fetchMock.mock.calls[0][0]).toContain('page=1');
+  expect(fetchMock.mock.calls[0][0]).toContain('page_size=50');
+  await user.click(document.querySelector('.history-expand'));
+  expect(await screen.findByText('FIRST · brand')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Next changes' }));
+  expect(await screen.findByText('SECOND · brand')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Next imports' }));
+  expect(await screen.findByRole('cell', { name: 'older.csv' })).toBeInTheDocument();
 });

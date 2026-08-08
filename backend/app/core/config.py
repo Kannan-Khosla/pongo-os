@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     woocommerce_order_reconciliation_stale_after_seconds: int = Field(default=300, ge=60, le=86400, validation_alias=AliasChoices("WOOCOMMERCE_ORDER_RECONCILIATION_STALE_AFTER_SECONDS", "woocommerce_order_reconciliation_stale_after_seconds"))
     woocommerce_order_reconciliation_lookback_hours: int = Field(default=168, ge=1, le=2160, validation_alias=AliasChoices("WOOCOMMERCE_ORDER_RECONCILIATION_LOOKBACK_HOURS", "woocommerce_order_reconciliation_lookback_hours"))
     woocommerce_order_reconciliation_statuses: str = Field(default="processing,on-hold,pending,completed,failed,cancelled,refunded", validation_alias=AliasChoices("WOOCOMMERCE_ORDER_RECONCILIATION_STATUSES", "woocommerce_order_reconciliation_statuses"))
+    woocommerce_sync_error_retention_days: int = Field(default=90, ge=7, le=3650, validation_alias=AliasChoices("WOOCOMMERCE_SYNC_ERROR_RETENTION_DAYS", "woocommerce_sync_error_retention_days"))
     woocommerce_stock_sync_jobs_enabled: bool = Field(default=True, validation_alias=AliasChoices("WOOCOMMERCE_STOCK_SYNC_JOBS_ENABLED", "woocommerce_stock_sync_jobs_enabled"))
     woocommerce_stock_sync_job_interval_seconds: int = Field(default=3, ge=1, le=300, validation_alias=AliasChoices("WOOCOMMERCE_STOCK_SYNC_JOB_INTERVAL_SECONDS", "woocommerce_stock_sync_job_interval_seconds"))
     woocommerce_stock_sync_job_stale_seconds: int = Field(default=900, ge=30, le=86400, validation_alias=AliasChoices("WOOCOMMERCE_STOCK_SYNC_JOB_STALE_SECONDS", "woocommerce_stock_sync_job_stale_seconds"))

@@ -3,7 +3,7 @@ from datetime import date
 from io import BytesIO, StringIO
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import and_, func, select
@@ -194,9 +194,23 @@ def google_sheets_oauth_callback(
 
 
 @router.post("/runs/{report_key}")
-def run_report(report_key: str, payload: ReportRunCreate, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict[str, object]:
+def run_report(
+    report_key: str,
+    payload: ReportRunCreate,
+    row_page: int = Query(default=1, ge=1),
+    row_page_size: int = Query(default=100, ge=1, le=100),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> dict[str, object]:
     try:
-        return create_report_run(db, report_key, payload.filters, actor)
+        return create_report_run(
+            db,
+            report_key,
+            payload.filters,
+            actor,
+            row_page=row_page,
+            row_page_size=row_page_size,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Report not found.") from exc
     except ValueError as exc:
@@ -223,6 +237,8 @@ def enqueue_report(
 def latest_report(
     report_key: str,
     payload: ReportRunCreate,
+    row_page: int = Query(default=1, ge=1),
+    row_page_size: int = Query(default=100, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     try:
@@ -235,7 +251,7 @@ def latest_report(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if run is None:
         raise HTTPException(status_code=404, detail="No completed report run matches these filters.")
-    return report_run_to_dict(run)
+    return report_run_to_dict(run, row_page=row_page, row_page_size=row_page_size)
 
 
 @router.get("/jobs/{job_id}")
@@ -247,9 +263,14 @@ def read_report_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, obj
 
 
 @router.get("/runs/{run_id}")
-def read_report_run(run_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+def read_report_run(
+    run_id: str,
+    row_page: int = Query(default=1, ge=1),
+    row_page_size: int = Query(default=100, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
     run = require_report_run(db, run_id)
-    return report_run_to_dict(run)
+    return report_run_to_dict(run, row_page=row_page, row_page_size=row_page_size)
 
 
 @router.get("/runs/{run_id}/csv")

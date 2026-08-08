@@ -9,7 +9,8 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.models.inventory import InventoryItem
-from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun, WooItemMapping
+from app.models.woocommerce import WooCommerceSyncRun, WooItemMapping
+from app.services.woocommerce_sync_errors import prune_sync_errors, store_sync_error_once
 from app.schemas.woocommerce import WooCommerceProductPreviewResponse, WooCommerceProductPreviewRow, WooCommerceSyncRequest
 from app.services.items import apply_calculated_fields
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
@@ -99,6 +100,7 @@ def commit_product_sync(db: Session, client: WooCommerceClient, payload: WooComm
     rows = build_preview_rows(db, remote_records, payload.blocked_skus)
     row_records = list(zip(rows, normalized_records))
     preview = build_preview_response(True, rows, payload.page, has_more)
+    prune_sync_errors(db)
     sync_run = WooCommerceSyncRun(sync_type="products", status="completed", started_at=started_at, created_by=payload.created_by or "system", total_remote_records=preview.total_remote_records)
     db.add(sync_run)
     db.flush()
@@ -499,16 +501,15 @@ def normalize_key(value: str | None) -> str:
 
 
 def store_sync_error(db: Session, sync_run_id: int, row: WooCommerceProductPreviewRow, messages: list[str]) -> None:
-    db.add(
-        WooCommerceSyncError(
-            sync_run_id=sync_run_id,
-            remote_product_id=row.woo_product_id,
-            remote_variation_id=row.woo_variation_id,
-            sku=row.sku,
-            barcode=row.barcode,
-            error_message=" ".join(messages) if messages else "WooCommerce sync row was not committed.",
-            raw_payload=row.model_dump(),
-        )
+    store_sync_error_once(
+        db,
+        sync_run_id=sync_run_id,
+        remote_product_id=row.woo_product_id,
+        remote_variation_id=row.woo_variation_id,
+        sku=row.sku,
+        barcode=row.barcode,
+        error_message=" ".join(messages) if messages else "WooCommerce sync row was not committed.",
+        raw_payload=row.model_dump(),
     )
 
 

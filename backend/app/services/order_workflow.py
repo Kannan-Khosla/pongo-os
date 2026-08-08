@@ -649,12 +649,19 @@ def sync_order_workflow_statuses(order: Order) -> None:
     any_picked = any(to_decimal(line.quantity_picked) > 0 for line in matched_lines)
     all_picked = bool(matched_lines) and all(line_is_fully_picked_and_reduced(line) for line in matched_lines)
 
-    if order.woo_status and not is_operational_order(order) and order.completion_status not in {"completed", "completed_without_picking"}:
+    locally_completed = order.completion_status in {"completed", "completed_without_picking"}
+    woo_operational = order.woo_status == "processing" or (order.woo_status == "completed" and is_pos_order(order))
+    if order.woo_status and not woo_operational and not locally_completed:
         order.local_status = order.woo_status
         order.completion_status = order.woo_status
         order.allocation_status = "unallocated"
         order.pick_status = "not_ready"
         return
+    if woo_operational and not locally_completed and not is_active_order(order):
+        # Reconcile stale cached terminal state from an earlier Woo snapshot,
+        # then derive the current queue state from line quantities below.
+        order.local_status = "open"
+        order.completion_status = "open"
 
     for line in lines:
         ordered = to_decimal(line.quantity_ordered)
@@ -671,7 +678,7 @@ def sync_order_workflow_statuses(order: Order) -> None:
             line.allocation_status = "allocated" if ordered > 0 and allocated >= ordered else ("partially_allocated" if allocated > 0 else "unallocated")
             line.pick_status = "picked" if allocated > 0 and picked >= allocated and stock_reduced >= picked else ("partially_picked" if picked > 0 else ("ready_to_pick" if ordered > 0 and allocated >= ordered else "not_ready"))
 
-    if order.completion_status in {"completed", "completed_without_picking"} or order.local_status in {"completed", "closed"}:
+    if locally_completed or order.local_status in {"completed", "closed"}:
         order.completion_status = order.completion_status or "completed"
         return
 
@@ -808,7 +815,11 @@ def is_active_order(order: Order) -> bool:
 def allocation_needs_attention(order: Order) -> bool:
     if order.allocation_status in {"exception", "partially_allocated", "unallocated"}:
         return True
-    return any(line.allocation_status == "exception" or to_decimal(line.quantity_allocated) < to_decimal(line.quantity_ordered) for line in order.items if line.matched_status == "matched")
+    return any(
+        line.allocation_status == "exception" or to_decimal(line.quantity_allocated) < to_decimal(line.quantity_ordered)
+        for line in order.items
+        if line.matched_status == "matched" and not (line.inventory_item and line.inventory_item.non_inventory)
+    )
 
 
 def is_pickable(order: Order) -> bool:

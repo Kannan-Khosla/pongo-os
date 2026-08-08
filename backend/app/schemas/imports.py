@@ -86,3 +86,37 @@ class ImportJobRead(BaseModel):
 
 class ImportJobDetail(ImportJobRead):
     errors: list[ImportErrorRead] = []
+
+
+class ImportJobListResponse(BaseModel):
+    jobs: list[ImportJobRead]
+    total: int
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
+
+
+class ImportChangeRead(BaseModel):
+    id: int
+    item_id: int
+    sku: str | None = None
+    field: str
+    before: object | None = None
+    after: object | None = None
+    source_filename: str | None = None
+    created_by: str
+    created_at: datetime
+
+
+class ImportChangeListResponse(BaseModel):
+    changes: list[ImportChangeRead]
+    total: int
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False

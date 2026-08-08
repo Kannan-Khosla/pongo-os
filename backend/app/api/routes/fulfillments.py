@@ -1,11 +1,11 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.fulfillments import FulfillmentCommitResponse, FulfillmentDetail, FulfillmentListResponse, FulfillmentPreviewResponse, FulfillmentRequest
-from app.services.fulfillments import commit_fulfillment, export_fulfillment_csv, fulfillment_to_read, get_fulfillment_detail, list_fulfillments, preview_fulfillment
+from app.services.fulfillments import commit_fulfillment, export_fulfillment_csv, fulfillment_to_read, get_fulfillment_detail, list_fulfillments_page, preview_fulfillment
 from app.services.auth import authenticated_actor
 
 router = APIRouter(prefix="/fulfillments", tags=["fulfillments"])
@@ -31,10 +31,33 @@ def list_fulfillment_records(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     created_by: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> FulfillmentListResponse:
-    fulfillments = list_fulfillments(db, status=status, fulfillment_type=fulfillment_type, order_id=order_id, woo_order_id=woo_order_id, woo_order_number=woo_order_number, date_from=date_from, date_to=date_to, created_by=created_by)
-    return FulfillmentListResponse(fulfillments=[fulfillment_to_read(fulfillment) for fulfillment in fulfillments], total=len(fulfillments))
+    fulfillments, total, effective_page, total_pages = list_fulfillments_page(
+        db,
+        page=page,
+        page_size=page_size,
+        status=status,
+        fulfillment_type=fulfillment_type,
+        order_id=order_id,
+        woo_order_id=woo_order_id,
+        woo_order_number=woo_order_number,
+        date_from=date_from,
+        date_to=date_to,
+        created_by=created_by,
+    )
+    return FulfillmentListResponse(
+        fulfillments=[fulfillment_to_read(fulfillment) for fulfillment in fulfillments],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(fulfillments),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.get("/{fulfillment_id}", response_model=FulfillmentDetail)

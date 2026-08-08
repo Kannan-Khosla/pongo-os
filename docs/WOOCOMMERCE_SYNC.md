@@ -43,6 +43,7 @@ remain at their disabled safe defaults until those paths are intentionally used:
 - `WOOCOMMERCE_ORDER_RECONCILIATION_STALE_AFTER_SECONDS`
 - `WOOCOMMERCE_ORDER_RECONCILIATION_LOOKBACK_HOURS`
 - `WOOCOMMERCE_ORDER_RECONCILIATION_STATUSES`
+- `WOOCOMMERCE_SYNC_ERROR_RETENTION_DAYS` (default `90`)
 - `WOOCOMMERCE_WEBHOOK_ENABLED`
 - `WOOCOMMERCE_WEBHOOK_SECRET`
 - `WOOCOMMERCE_WEBHOOK_MAX_BODY_BYTES`
@@ -151,6 +152,23 @@ Implemented endpoints:
 - `POST /api/integrations/woocommerce/products/commit`
 - `GET /api/integrations/woocommerce/sync-runs`
 - `GET /api/integrations/woocommerce/sync-runs/{id}`
+
+Sync-run history is returned newest-first with bounded server pagination. The
+list endpoint defaults to 50 rows, accepts `page` and `page_size` (maximum 100),
+and reports the complete filtered total separately from the returned row count.
+Sync-run detail returns retained errors newest-first in bounded pages using
+`error_page` and `error_page_size` (default 50, maximum 100), with an exact
+retained-error total and standard page metadata.
+
+Order-fetch job history is also database-paged (`page`, `page_size`; default 20,
+maximum 100) and reports the exact number of order-fetch jobs without loading
+unrelated sync runs. Woo remap mappings and candidates use database-backed
+pages (default and maximum 100). Candidate ordering remains catalog records
+first, then every unique error-only remote record in retained sync history.
+For repeated errors on the same Woo product/variation, the newest error supplies
+the candidate metadata. Counts, filters, and page boundaries are calculated in
+SQL, while mappings and suggestion rows are bulk-loaded for only the requested
+page.
 
 The settings UI calls preview/commit in pages of Woo parent products. Each
 backend batch fetches:
@@ -483,7 +501,7 @@ delivery later succeeds, its outbox ID is assigned only at the successful
 commit, so an earlier cursor cannot skip it.
 
 The frontend establishes its baseline with `initialize=true`, polls the feed
-every 2 seconds while visible and on focus/visibility changes, and deduplicates
+every 15 seconds while visible and on focus/visibility changes, and deduplicates
 events by immutable outbox ID. Later `order_created` events create a persistent
 dismissible toast and session-only Bell history/unread badge. Update and
 cancellation events refresh local order data but are never announced as new

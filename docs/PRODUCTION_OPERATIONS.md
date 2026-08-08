@@ -21,10 +21,17 @@ cookie is never sent over plaintext transport.
 1. Put workers into maintenance mode and stop background jobs.
 2. Create a custom PostgreSQL backup: `make backup-postgres BACKUP=/secure/path/pongo-before-release.dump`.
 3. Verify the backup against a disposable database whose name ends in `_restore_verify`: `RESTORE_VERIFY_DATABASE_URL=... make verify-postgres-backup BACKUP=/secure/path/pongo-before-release.dump`.
-4. Run `alembic upgrade head` (expected revision `20260807_0036`), then `/ready` and the release smoke tests.
+4. Run `alembic upgrade head`, then `/ready` and the release smoke tests. The backup verifier derives the expected revision from the single Alembic head in the release checkout, requires the restored database to contain exactly that one revision, and verifies every table declared by the current ORM model graph. It therefore stays current as migrations are added and fails closed on ambiguous revisions or an incomplete application schema.
 5. If a migration fails, stop the release and restore the verified pre-release backup. Do not improvise a production downgrade; migration downgrades are validated for development recovery, while the database backup is the production rollback boundary.
 
 Keep encrypted backups outside the application host, apply a retention policy, and run a restore verification at least monthly and before every schema release.
+
+The GitHub release gate runs on a pinned Ubuntu 24.04 image with PostgreSQL 16
+server and client tools. Browser-contract retries are disabled so a flaky first
+attempt cannot be hidden by a retry. A failed browser run retains the
+Playwright report plus the isolated API, frontend, and fake-Woo service logs;
+the workflow has read-only repository permission and checkout credentials are
+not persisted.
 
 ## Hosting portability
 
@@ -68,9 +75,14 @@ app's exact HTTPS origin for `BACKEND_CORS_ORIGINS`.
   are immutable so browsers and Cloudflare may cache them safely.
 - Insights and the business dashboard read local, versioned metric snapshots;
   they never wait on WooCommerce during navigation.
-- Item and inventory lists use server pagination and SQL-side filtering. The
+- Item, inventory, Open Orders, Allocate, and Pick Orders use server pagination and
+  SQL-side filtering. Item facets load separately and are reused across page
+  changes; operational stock is never cached with them. Inventory cards use a
+  single SQL aggregation query. The
   frontend cancels obsolete requests, deduplicates identical GETs, and
   lazy-loads images and report/chart modules.
+- Routine order-screen refresh runs every two minutes only while an affected
+  view is visible; webhook notifications can still refresh that view sooner.
 - Operational mutations invalidate affected metric snapshots immediately.
   WooCommerce sales metrics are refreshed after the two-minute reconciliation.
 - A stale dashboard/filter snapshot is served immediately and marked for worker

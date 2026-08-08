@@ -97,7 +97,9 @@ row totals, actor, completion time, and duration. Operators can download:
 - the exact original CSV from `/api/import-jobs/{job_id}/source-file`;
 - correction rows with structured error columns from
   `/api/import-jobs/{job_id}/failed-rows`;
-- field changes from `/api/import-jobs/{job_id}/changes`.
+- field changes from `/api/import-jobs/{job_id}/changes`. Change history is
+  server-paged (`page`, `page_size` up to `100`) and returns the exact total plus
+  page metadata; the field-level before/after record shape is unchanged.
 
 Completed item-detail updates support guarded rollback at
 `POST /api/import-jobs/{job_id}/rollback`. Rollback is all-or-nothing and only

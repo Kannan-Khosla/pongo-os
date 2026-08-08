@@ -124,3 +124,11 @@ fallback. App-saved database configuration takes precedence.
 
 For fiscal or legal use, save the report run ID and evidence hash with the
 period-close workpapers and reconcile disclosed exceptions before filing.
+
+## Interactive preview pagination
+
+The browser requests report detail in pages of at most 100 rows and displays
+the exact full row count. This bounds response size and table rendering for
+large reports. Pagination is presentation-only: the immutable database payload,
+SHA-256 evidence hash, persisted CSV/PDF artifacts, Google Sheet, and emailed
+attachments continue to contain the complete report.

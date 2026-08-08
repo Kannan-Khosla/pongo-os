@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
+import { createActiveLocation, registerOperator } from './support/isolated-workspace.js';
 
 const apiBase = process.env.PONGO_E2E_API_URL || 'http://127.0.0.1:8000';
 const wooBase = process.env.PONGO_E2E_WOO_URL || 'http://127.0.0.1:9000';
@@ -18,16 +19,11 @@ test('import → opening balance → automatic allocation → bulk pick → comp
   const barcode = `E2E-BAR-${runId}`;
   const productId = Number.parseInt(runId.slice(0, 6), 16) + 10_000;
   const orderId = productId + 20_000_000;
-  await page.goto('/');
-  await page.getByRole('tab', { name: 'Register' }).click();
-  await page.getByLabel('Display name').fill('E2E Operator');
-  await page.getByLabel('Email address').fill(`e2e+${runId.toLowerCase()}@example.com`);
-  await page.getByLabel('Password').fill('correct-horse-battery-staple');
-  await page.getByRole('button', { name: 'Create account' }).click();
-  await expect(page.getByLabel('Signed in user').getByText('E2E Operator')).toBeVisible();
+  await registerOperator(page, { displayName: 'Production E2E Operator', runId });
+  const location = await createActiveLocation(page, apiBase, runId);
 
   const columns = ['Client', 'SKU', 'Product name', 'Category', 'Unit of measurement', 'Warehouse', 'Inventory location', 'Default location', 'Barcode', 'Manufacturer', 'Recommended retail price', 'Sales price', 'Unit cost', 'Weight', 'Default economic order', 'Default lead time days', 'Par level', 'Track lot', 'Reorder', 'Storage length', 'Storage width', 'Storage height', 'Brand'];
-  const row = ['Pongo', sku, 'E2E Duck Food', 'Dog Food', 'Each', 'Main Warehouse', 'E2E Rack', 'E2E Rack', barcode, 'E2E Brand', '15.00', '12.00', '5.00', '1', '6', '5', '3', 'true', 'true', '1', '1', '1', 'E2E Brand'];
+  const row = ['Pongo', sku, 'E2E Duck Food', 'Dog Food', 'Each', location.warehouse, location.code, location.code, barcode, 'E2E Brand', '15.00', '12.00', '5.00', '1', '6', '5', '3', 'true', 'true', '1', '1', '1', 'E2E Brand'];
   const csv = `${columns.join(',')}\n${row.join(',')}\n`;
   await page.goto('/#/items/import');
   await page.getByRole('button', { name: /Add new items/ }).click();
@@ -45,7 +41,7 @@ test('import → opening balance → automatic allocation → bulk pick → comp
   const item = items.items[0];
   expect(item['In Stock']).toBe(0);
   await json(await page.request.post(`${apiBase}/api/items/${item.id}/opening-balance`, {
-    data: { 'In Stock': 10, Allocated: 0, Warehouse: 'Main Warehouse', 'Inventory Location': 'E2E Rack', idempotencyKey: randomUUID(), createdBy: 'playwright' },
+    data: { 'In Stock': 10, Allocated: 0, Warehouse: location.warehouse, 'Inventory Location': location.code, idempotencyKey: randomUUID(), createdBy: 'playwright' },
   }));
   await json(await page.request.post(`${apiBase}/api/integrations/woocommerce/remap/commit`, {
     data: { woo_product_id: productId, woo_variation_id: null, item_id: item.id, note: 'E2E contract mapping' },
@@ -100,9 +96,13 @@ test('import → opening balance → automatic allocation → bulk pick → comp
   expect(report.ok()).toBeTruthy();
   expect(report.headers()['content-type']).toContain('text/csv');
   expect(await report.text()).toContain(sku);
-  await page.goto('/#/reports/inventory/inventory-valuation');
-  await expect(page.getByRole('heading', { name: 'Inventory Valuation', level: 2 })).toBeVisible();
+  const verifiedRun = await json(await page.request.post(`${apiBase}/api/reports/runs/inventory-export`, {
+    data: { filters: { warehouse: location.warehouse, sku }, generated_by: 'playwright' },
+  }));
+  expect(verifiedRun.rows).toEqual(expect.arrayContaining([expect.objectContaining({ sku })]));
+  await page.goto('/#/reports/inventory/inventory-export');
+  await expect(page.getByRole('heading', { name: 'Inventory Export', level: 1 }).last()).toBeVisible();
   await page.getByLabel('SKU').fill(sku);
-  await page.getByRole('button', { name: 'Refresh' }).click();
-  await expect(page.getByRole('cell', { name: sku })).toBeVisible();
+  await page.getByRole('button', { name: 'Generate verified report' }).click();
+  await expect(page.getByRole('cell', { name: sku })).toBeVisible({ timeout: 10_000 });
 });

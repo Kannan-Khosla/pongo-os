@@ -308,9 +308,28 @@ def stock_sync_job_read(job: WooStockSyncJob) -> WooStockSyncJobRead:
     )
 
 
-def list_stock_sync_jobs(db: Session, limit: int = 25) -> WooStockSyncJobListResponse:
-    jobs = list(db.scalars(select(WooStockSyncJob).order_by(WooStockSyncJob.created_at.desc(), WooStockSyncJob.id.desc()).limit(limit)).all())
-    return WooStockSyncJobListResponse(jobs=[stock_sync_job_read(job) for job in jobs], total=len(jobs))
+def list_stock_sync_jobs(db: Session, *, page: int = 1, page_size: int = 25) -> WooStockSyncJobListResponse:
+    total = int(db.scalar(select(func.count(WooStockSyncJob.id))) or 0)
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    effective_page = min(page, max(total_pages, 1))
+    jobs = list(
+        db.scalars(
+            select(WooStockSyncJob)
+            .order_by(WooStockSyncJob.created_at.desc(), WooStockSyncJob.id.desc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return WooStockSyncJobListResponse(
+        jobs=[stock_sync_job_read(job) for job in jobs],
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(jobs),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 def unresolved_stock_sync_job_count(db: Session) -> int:

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import csv
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from io import StringIO
 from typing import Iterable
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.models.allocations import Allocation, AllocationLine
@@ -15,6 +15,7 @@ from app.models.orders import Order, OrderItem
 from app.schemas.allocations import (
     AllocationCommitResponse,
     AllocationDetail,
+    AllocationExceptionItemGroupRead,
     AllocationExceptionLineRead,
     AllocationExceptionListResponse,
     AllocationLineRead,
@@ -25,7 +26,7 @@ from app.schemas.allocations import (
     AllocationRequest,
 )
 from app.services.location_inventory import allocate_from_location, choose_allocation_location
-from app.services.order_workflow import acquire_fifo_allocation_lock, is_active_order, operational_order_clause, sync_order_workflow_statuses
+from app.services.order_workflow import COMPLETED_LOCAL_STATUSES, acquire_fifo_allocation_lock, operational_order_clause, sync_order_workflow_statuses
 
 ALLOCATABLE_ORDER_STATUSES = {"open", "partially_allocated"}
 
@@ -37,75 +38,254 @@ def list_allocation_exception_lines(
     ordered_from: date | None = None,
     ordered_to: date | None = None,
     include_fully_allocated: bool = False,
+    view: str = "orders",
+    page: int | None = None,
+    page_size: int | None = None,
+    item_id: int | None = None,
+    unmatched_line_id: int | None = None,
 ) -> AllocationExceptionListResponse:
-    statement = (
-        select(OrderItem)
-        .join(Order)
-        .where(operational_order_clause())
-        .options(selectinload(OrderItem.order), selectinload(OrderItem.inventory_item))
-        .order_by(Order.date_created.asc().nulls_last(), Order.id.asc(), OrderItem.line_number.asc().nulls_last(), OrderItem.id.asc())
+    if item_id is not None and unmatched_line_id is not None:
+        raise ValueError("Only one allocation item-group selector may be provided")
+    ordered_quantity = func.coalesce(OrderItem.quantity_ordered, 0)
+    allocated_quantity = func.coalesce(OrderItem.quantity_allocated, 0)
+    picked_quantity = func.coalesce(OrderItem.quantity_picked, 0)
+    unallocated_delta = ordered_quantity - allocated_quantity
+    unallocated_quantity = case((unallocated_delta > 0, unallocated_delta), else_=0)
+    available_delta = func.coalesce(InventoryItem.in_stock, 0) - func.coalesce(InventoryItem.allocated, 0)
+    available_quantity = case((and_(InventoryItem.id.is_not(None), available_delta > 0), available_delta), else_=0)
+    active_order = and_(
+        ~func.coalesce(Order.completion_status, "").in_(("completed", "completed_without_picking")),
+        ~func.coalesce(Order.local_status, "").in_(tuple(COMPLETED_LOCAL_STATUSES | {"cancelled", "canceled", "failed", "refunded"})),
     )
-    rows: list[AllocationExceptionLineRead] = []
-    needle = (search or "").strip().casefold()
-    for line in db.scalars(statement).all():
-        order = line.order
-        item = line.inventory_item
-        if not is_active_order(order) or (item is not None and item.non_inventory):
-            continue
-        if ordered_from and (order.date_created is None or order.date_created.date() < ordered_from):
-            continue
-        if ordered_to and (order.date_created is None or order.date_created.date() > ordered_to):
-            continue
-        line_warehouse = item.warehouse if item else None
-        if warehouse and (line_warehouse or "").casefold() != warehouse.casefold():
-            continue
-        ordered = to_decimal(line.quantity_ordered)
-        allocated = to_decimal(line.quantity_allocated)
-        unallocated = max(ordered - allocated, Decimal("0"))
-        if not include_fully_allocated and unallocated <= 0 and line.matched_status == "matched":
-            continue
-        sku = line.sku or (item.sku if item else None)
-        barcode = line.barcode or (item.barcode if item else None)
-        description = line.name or line.description or (item.description if item else None)
-        searchable = " ".join(
-            str(value or "")
-            for value in [order.woo_order_number, order.customer_name, order.customer_email, sku, barcode, description]
-        ).casefold()
-        if needle and needle not in searchable:
-            continue
-        available = max(current_sellable(item), Decimal("0")) if item else Decimal("0")
-        reason = allocation_line_exception_reason(line, item, unallocated, available)
-        rows.append(
-            AllocationExceptionLineRead(
-                order_id=order.id,
-                order_line_id=line.id,
-                woo_order_id=order.woo_order_id,
-                woo_order_number=order.woo_order_number,
-                ordered_at=order.date_created,
-                customer_name=order.customer_name,
-                item_id=item.id if item else None,
-                sku=sku,
-                barcode=barcode,
-                description=description,
-                warehouse=line_warehouse,
-                inventory_location=item.inventory_location if item else None,
-                quantity_ordered=decimal_to_float(ordered),
-                quantity_allocated=decimal_to_float(allocated),
-                quantity_unallocated=decimal_to_float(unallocated),
-                quantity_picked=decimal_to_float(line.quantity_picked),
-                quantity_available=decimal_to_float(available),
-                allocation_status=line.allocation_status or "unallocated",
-                exception_reason=reason,
-            )
+    predicates = [
+        operational_order_clause(),
+        active_order,
+        or_(InventoryItem.id.is_(None), InventoryItem.non_inventory.is_(False)),
+    ]
+    if ordered_from:
+        predicates.append(Order.date_created >= datetime.combine(ordered_from, time.min, tzinfo=timezone.utc))
+    if ordered_to:
+        predicates.append(Order.date_created < datetime.combine(ordered_to + timedelta(days=1), time.min, tzinfo=timezone.utc))
+    if warehouse:
+        predicates.append(func.lower(func.coalesce(InventoryItem.warehouse, "")) == warehouse.casefold())
+    if item_id is not None:
+        predicates.append(OrderItem.inventory_item_id == item_id)
+    if unmatched_line_id is not None:
+        predicates.extend((OrderItem.id == unmatched_line_id, OrderItem.inventory_item_id.is_(None)))
+    if not include_fully_allocated:
+        predicates.append(or_(unallocated_quantity > 0, func.coalesce(OrderItem.matched_status, "") != "matched"))
+    if search and search.strip():
+        escaped_search = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped_search}%"
+        line_sku = func.coalesce(func.nullif(OrderItem.sku, ""), InventoryItem.sku, "")
+        line_barcode = func.coalesce(func.nullif(OrderItem.barcode, ""), InventoryItem.barcode, "")
+        line_description = func.coalesce(func.nullif(OrderItem.name, ""), func.nullif(OrderItem.description, ""), InventoryItem.description, "")
+        predicates.append(or_(
+            Order.woo_order_number.ilike(pattern, escape="\\"),
+            Order.customer_name.ilike(pattern, escape="\\"),
+            Order.customer_email.ilike(pattern, escape="\\"),
+            line_sku.ilike(pattern, escape="\\"),
+            line_barcode.ilike(pattern, escape="\\"),
+            line_description.ilike(pattern, escape="\\"),
+        ))
+
+    filtered_lines = (
+        select(
+            OrderItem.id.label("line_id"),
+            OrderItem.order_id.label("order_id"),
+            InventoryItem.id.label("item_id"),
+            OrderItem.line_number.label("line_number"),
+            Order.date_created.label("date_created"),
+            InventoryItem.warehouse.label("warehouse"),
+            ordered_quantity.label("ordered_quantity"),
+            allocated_quantity.label("allocated_quantity"),
+            picked_quantity.label("picked_quantity"),
+            unallocated_quantity.label("unallocated_quantity"),
+            available_quantity.label("available_quantity"),
         )
+        .join(Order, Order.id == OrderItem.order_id)
+        .outerjoin(InventoryItem, InventoryItem.id == OrderItem.inventory_item_id)
+        .where(*predicates)
+        .subquery()
+    )
+    total_orders, total_lines, total_unallocated, available_lines, out_of_stock_lines = db.execute(
+        select(
+            func.count(func.distinct(filtered_lines.c.order_id)),
+            func.count(filtered_lines.c.line_id),
+            func.coalesce(func.sum(filtered_lines.c.unallocated_quantity), 0),
+            func.coalesce(func.sum(case((filtered_lines.c.available_quantity > 0, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((filtered_lines.c.available_quantity <= 0, 1), else_=0)), 0),
+        )
+    ).one()
+    total_lines = int(total_lines or 0)
+    unmatched_group_id = case((filtered_lines.c.item_id.is_(None), filtered_lines.c.line_id), else_=None)
+    item_groups = select(
+        filtered_lines.c.item_id,
+        unmatched_group_id.label("unmatched_line_id"),
+        func.min(filtered_lines.c.date_created).label("first_ordered_at"),
+        func.min(filtered_lines.c.order_id).label("first_order_id"),
+        func.min(filtered_lines.c.line_id).label("first_line_id"),
+        func.count(func.distinct(filtered_lines.c.order_id)).label("affected_order_count"),
+        func.coalesce(func.sum(filtered_lines.c.ordered_quantity), 0).label("quantity_ordered"),
+        func.coalesce(func.sum(filtered_lines.c.allocated_quantity), 0).label("quantity_allocated"),
+        func.coalesce(func.sum(filtered_lines.c.unallocated_quantity), 0).label("quantity_unallocated"),
+        func.coalesce(func.sum(filtered_lines.c.picked_quantity), 0).label("quantity_picked"),
+        func.coalesce(func.max(filtered_lines.c.available_quantity), 0).label("quantity_available"),
+    ).group_by(filtered_lines.c.item_id, unmatched_group_id).subquery()
+    total_item_groups = int(db.scalar(select(func.count()).select_from(item_groups)) or 0)
+    pagination_requested = page is not None or page_size is not None
+    effective_page_size = page_size or 20
+    pagination_total = total_item_groups if view == "items" else total_lines
+    total_pages = (pagination_total + effective_page_size - 1) // effective_page_size if effective_page_size else 0
+    effective_page = min(page or 1, max(total_pages, 1)) if pagination_requested else 1
+    selected_item_group_count = 0
+    group_rows = []
+    if view == "items":
+        group_statement = select(item_groups).order_by(
+            item_groups.c.first_ordered_at.asc().nulls_last(),
+            item_groups.c.first_order_id.asc(),
+            item_groups.c.first_line_id.asc(),
+        )
+        if pagination_requested:
+            group_statement = group_statement.offset((effective_page - 1) * effective_page_size).limit(effective_page_size)
+        group_rows = db.execute(group_statement).all()
+        selected_item_group_count = len(group_rows)
+        line_ids = [row.first_line_id for row in group_rows]
+    else:
+        line_ids_statement = select(filtered_lines.c.line_id)
+        if pagination_requested:
+            line_ids_statement = line_ids_statement.offset((effective_page - 1) * effective_page_size).limit(effective_page_size)
+        line_ids_statement = line_ids_statement.order_by(
+            filtered_lines.c.date_created.asc().nulls_last(),
+            filtered_lines.c.order_id.asc(),
+            filtered_lines.c.line_number.asc().nulls_last(),
+            filtered_lines.c.line_id.asc(),
+        )
+        line_ids = list(db.scalars(line_ids_statement).all())
+    loaded_lines = list(db.scalars(
+        select(OrderItem)
+        .where(OrderItem.id.in_(line_ids))
+        .options(
+            selectinload(OrderItem.order).defer(Order.raw_woo_payload, raiseload=True),
+            selectinload(OrderItem.inventory_item),
+        )
+    ).all()) if line_ids else []
+    lines_by_id = {line.id: line for line in loaded_lines}
+    representative_rows = {
+        line_id: allocation_exception_line_to_read(lines_by_id[line_id])
+        for line_id in line_ids
+    }
+    rows = [] if view == "items" else [representative_rows[line_id] for line_id in line_ids]
+    grouped_rows = []
+    if view == "items":
+        for group_row in group_rows:
+            representative = representative_rows[group_row.first_line_id]
+            grouped_rows.append(AllocationExceptionItemGroupRead(
+                key=f"item:{group_row.item_id}" if group_row.item_id is not None else f"unmatched:{group_row.unmatched_line_id}",
+                item_id=group_row.item_id,
+                unmatched_line_id=group_row.unmatched_line_id,
+                representative_order_line_id=group_row.first_line_id,
+                sku=representative.sku,
+                barcode=representative.barcode,
+                description=representative.description,
+                warehouse=representative.warehouse,
+                inventory_location=representative.inventory_location,
+                affected_order_count=int(group_row.affected_order_count or 0),
+                quantity_ordered=decimal_to_float(group_row.quantity_ordered),
+                quantity_allocated=decimal_to_float(group_row.quantity_allocated),
+                quantity_unallocated=decimal_to_float(group_row.quantity_unallocated),
+                quantity_picked=decimal_to_float(group_row.quantity_picked),
+                quantity_available=decimal_to_float(group_row.quantity_available),
+                exception_reason=representative.exception_reason,
+            ))
+    if not pagination_requested:
+        effective_page_size = pagination_total
+        total_pages = 1 if pagination_total else 0
+        selected_item_group_count = total_item_groups
+    warehouses = list(db.scalars(
+        select(filtered_lines.c.warehouse)
+        .where(filtered_lines.c.warehouse.is_not(None), func.trim(filtered_lines.c.warehouse) != "")
+        .distinct()
+        .order_by(filtered_lines.c.warehouse.asc())
+    ).all())
     return AllocationExceptionListResponse(
         lines=rows,
-        total_orders=len({row.order_id for row in rows}),
-        total_lines=len(rows),
-        total_quantity_unallocated=decimal_to_float(sum((to_decimal(row.quantity_unallocated) for row in rows), Decimal("0"))),
-        lines_with_available_stock=sum(1 for row in rows if row.quantity_available > 0),
-        lines_out_of_stock=sum(1 for row in rows if row.quantity_available <= 0),
+        item_groups=grouped_rows,
+        total_orders=int(total_orders or 0),
+        total_lines=total_lines,
+        total_item_groups=total_item_groups,
+        total_quantity_unallocated=decimal_to_float(total_unallocated),
+        lines_with_available_stock=int(available_lines or 0),
+        lines_out_of_stock=int(out_of_stock_lines or 0),
+        warehouses=warehouses,
+        view=view,
+        page=effective_page,
+        page_size=effective_page_size,
+        total_pages=total_pages,
+        returned_count=len(grouped_rows) if view == "items" else len(rows),
+        returned_item_groups=selected_item_group_count,
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
     )
+
+
+def allocation_exception_line_to_read(line: OrderItem) -> AllocationExceptionLineRead:
+    order = line.order
+    item = line.inventory_item
+    ordered = to_decimal(line.quantity_ordered)
+    allocated = to_decimal(line.quantity_allocated)
+    unallocated = max(ordered - allocated, Decimal("0"))
+    available = max(current_sellable(item), Decimal("0")) if item else Decimal("0")
+    return AllocationExceptionLineRead(
+        order_id=order.id,
+        order_line_id=line.id,
+        woo_order_id=order.woo_order_id,
+        woo_order_number=order.woo_order_number,
+        ordered_at=order.date_created,
+        customer_name=order.customer_name,
+        item_id=item.id if item else None,
+        sku=line.sku or (item.sku if item else None),
+        barcode=line.barcode or (item.barcode if item else None),
+        description=line.name or line.description or (item.description if item else None),
+        warehouse=item.warehouse if item else None,
+        inventory_location=item.inventory_location if item else None,
+        quantity_ordered=decimal_to_float(ordered),
+        quantity_allocated=decimal_to_float(allocated),
+        quantity_unallocated=decimal_to_float(unallocated),
+        quantity_picked=decimal_to_float(line.quantity_picked),
+        quantity_available=decimal_to_float(available),
+        allocation_status=line.allocation_status or "unallocated",
+        exception_reason=allocation_line_exception_reason(line, item, unallocated, available),
+    )
+
+
+def export_allocation_exceptions_csv(db: Session, **filters) -> str:
+    rows = list_allocation_exception_lines(db, **filters).lines
+    output = StringIO()
+    writer = csv.writer(output)
+    columns = (
+        ("Order Number", "woo_order_number"),
+        ("Placed On", "ordered_at"),
+        ("Customer", "customer_name"),
+        ("SKU", "sku"),
+        ("Barcode", "barcode"),
+        ("Description", "description"),
+        ("Warehouse", "warehouse"),
+        ("Inventory Location", "inventory_location"),
+        ("Ordered", "quantity_ordered"),
+        ("Allocated", "quantity_allocated"),
+        ("Unallocated", "quantity_unallocated"),
+        ("Picked", "quantity_picked"),
+        ("Available", "quantity_available"),
+        ("Reason", "exception_reason"),
+    )
+    writer.writerow([label for label, _ in columns])
+    for row in rows:
+        writer.writerow([
+            value.isoformat() if isinstance(value := getattr(row, field), datetime) else value
+            for _, field in columns
+        ])
+    return output.getvalue()
 
 
 def allocation_line_exception_reason(line: OrderItem, item: InventoryItem | None, unallocated: Decimal, available: Decimal) -> str:
@@ -488,7 +668,71 @@ def list_allocations(
     date_to: datetime | None = None,
     created_by: str | None = None,
 ):
-    statement = select(Allocation).options(selectinload(Allocation.lines)).order_by(Allocation.created_at.desc(), Allocation.id.desc())
+    statement = build_allocations_statement(
+        status=status,
+        allocation_type=allocation_type,
+        order_id=order_id,
+        woo_order_id=woo_order_id,
+        woo_order_number=woo_order_number,
+        date_from=date_from,
+        date_to=date_to,
+        created_by=created_by,
+    )
+    return list(db.scalars(statement.options(selectinload(Allocation.lines)).order_by(Allocation.created_at.desc(), Allocation.id.desc())).all())
+
+
+def list_allocations_page(
+    db: Session,
+    *,
+    page: int,
+    page_size: int,
+    clamp_page: bool = True,
+    status: str | None = None,
+    allocation_type: str | None = None,
+    order_id: int | None = None,
+    woo_order_id: int | None = None,
+    woo_order_number: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    created_by: str | None = None,
+) -> tuple[list[Allocation], int, int, int]:
+    statement = build_allocations_statement(
+        status=status,
+        allocation_type=allocation_type,
+        order_id=order_id,
+        woo_order_id=woo_order_id,
+        woo_order_number=woo_order_number,
+        date_from=date_from,
+        date_to=date_to,
+        created_by=created_by,
+    )
+    total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    total_pages = (total + page_size - 1) // page_size
+    effective_page = min(page, max(total_pages, 1)) if clamp_page else page
+    rows = list(
+        db.scalars(
+            statement
+            .options(selectinload(Allocation.lines))
+            .order_by(Allocation.created_at.desc(), Allocation.id.desc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return rows, total, effective_page, total_pages
+
+
+def build_allocations_statement(
+    *,
+    status: str | None = None,
+    allocation_type: str | None = None,
+    order_id: int | None = None,
+    woo_order_id: int | None = None,
+    woo_order_number: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    created_by: str | None = None,
+):
+    statement = select(Allocation)
     if status:
         statement = statement.where(Allocation.status == status)
     if allocation_type:
@@ -505,7 +749,7 @@ def list_allocations(
         statement = statement.where(Allocation.created_at <= date_to)
     if created_by:
         statement = statement.where(Allocation.created_by == created_by)
-    return list(db.scalars(statement).all())
+    return statement
 
 
 def get_allocation_detail(db: Session, allocation_id: int) -> AllocationDetail | None:

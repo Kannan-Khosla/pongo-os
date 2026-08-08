@@ -5,6 +5,7 @@ import {
   BarChart3,
   CalendarRange,
   Check,
+  ChevronLeft,
   ChevronRight,
   Download,
   ExternalLink,
@@ -67,6 +68,8 @@ const ALL_OPTION_LABELS = {
   status: 'All order statuses',
 };
 const EMPTY_SCOPE_OPTIONS = { warehouses: [], locations: [], brands: [], categories: [] };
+const REPORT_PREVIEW_PAGE_SIZE = 50;
+const REPORT_PREVIEW_PAGE_SIZES = [20, 50, 100];
 const ORDER_STATUS_OPTIONS = [
   ['open', 'Open'],
   ['processing', 'Processing'],
@@ -116,6 +119,22 @@ function buildScopeOptions(itemBody, locationBody) {
     brands: uniqueSorted(itemBody?.facets?.brands || []),
     categories: uniqueSorted(itemBody?.facets?.categories || []),
   };
+}
+
+function reportPreviewPagination(run) {
+  const rows = Array.isArray(run?.rows) ? run.rows : [];
+  const total = Math.max(0, Number(run?.row_pagination?.total ?? run?.row_count ?? rows.length) || 0);
+  const pageSize = Math.max(1, Number(run?.row_pagination?.page_size ?? REPORT_PREVIEW_PAGE_SIZE) || REPORT_PREVIEW_PAGE_SIZE);
+  const totalPages = total ? Math.max(1, Number(run?.row_pagination?.total_pages) || Math.ceil(total / pageSize)) : 0;
+  const page = totalPages ? Math.min(totalPages, Math.max(1, Number(run?.row_pagination?.page) || 1)) : 1;
+  const returnedCount = Math.max(0, Number(run?.row_pagination?.returned_count ?? rows.length) || 0);
+  const rangeStart = total && returnedCount ? ((page - 1) * pageSize) + 1 : 0;
+  const rangeEnd = total && returnedCount ? Math.min(total, rangeStart + returnedCount - 1) : 0;
+  return { page, pageSize, total, totalPages, returnedCount, rangeStart, rangeEnd };
+}
+
+function reportRunPreviewUrl(apiBaseUrl, runId, page, pageSize) {
+  return `${apiBaseUrl}/api/reports/runs/${runId}?row_page=${page}&row_page_size=${pageSize}`;
 }
 
 async function optionalJson(url) {
@@ -442,10 +461,14 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [job, setJob] = useState(null);
+  const [previewPageSize, setPreviewPageSize] = useState(REPORT_PREVIEW_PAGE_SIZE);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const requestRef = useRef(0);
+  const previewRequestRef = useRef(0);
   const pollTimerRef = useRef(null);
   const pollFailuresRef = useRef(0);
   const report = catalog.reports.find((candidate) => candidate.key === reportKey);
+  const previewPagination = reportPreviewPagination(run);
 
   useEffect(() => {
     let active = true;
@@ -481,6 +504,7 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
     setRun(null);
     setJob(null);
     setNotice('');
+    previewRequestRef.current += 1;
     const requestId = requestRef.current + 1;
     requestRef.current = requestId;
     loadLatest(report.key, nextFilters, requestId);
@@ -494,7 +518,7 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
     setLoading(true);
     setError('');
     try {
-      const response = await apiFetch(`${apiBaseUrl}/api/reports/jobs/latest/${key}`, {
+      const response = await apiFetch(`${apiBaseUrl}/api/reports/jobs/latest/${key}?row_page=1&row_page_size=${previewPageSize}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filters: selectedFilters, generated_by: 'reporting-ui' }),
@@ -512,8 +536,8 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
     }
   }
 
-  async function loadRun(runId, requestId) {
-    const response = await apiFetch(`${apiBaseUrl}/api/reports/runs/${runId}`);
+  async function loadRun(runId, requestId, page = 1, pageSize = previewPageSize) {
+    const response = await apiFetch(reportRunPreviewUrl(apiBaseUrl, runId, page, pageSize));
     const body = await readResponse(response, 'Completed report snapshot could not be loaded.');
     if (requestId === requestRef.current) setRun(body);
     return body;
@@ -555,7 +579,7 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
   }
 
   async function generateSynchronously(key, selectedFilters, requestId) {
-    const response = await apiFetch(`${apiBaseUrl}/api/reports/runs/${key}`, {
+    const response = await apiFetch(`${apiBaseUrl}/api/reports/runs/${key}?row_page=1&row_page_size=${previewPageSize}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filters: selectedFilters, generated_by: 'reporting-ui' }),
@@ -572,6 +596,7 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
     const requestId = requestRef.current + 1;
     requestRef.current = requestId;
     pollFailuresRef.current = 0;
+    previewRequestRef.current += 1;
     setLoading(true);
     setError('');
     setJob(null);
@@ -612,6 +637,28 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
     } finally {
       if (requestId === requestRef.current && !keepPolling) setLoading(false);
     }
+  }
+
+  async function loadPreviewPage(page, pageSize = previewPageSize) {
+    if (!run?.run_id) return;
+    const requestId = previewRequestRef.current + 1;
+    previewRequestRef.current = requestId;
+    setPreviewLoading(true);
+    setError('');
+    try {
+      const response = await apiFetch(reportRunPreviewUrl(apiBaseUrl, run.run_id, page, pageSize));
+      const body = await readResponse(response, 'Report detail page could not be loaded.');
+      if (requestId === previewRequestRef.current && body?.run_id === run.run_id) setRun(body);
+    } catch (requestError) {
+      if (requestId === previewRequestRef.current) setError(requestError.message);
+    } finally {
+      if (requestId === previewRequestRef.current) setPreviewLoading(false);
+    }
+  }
+
+  function changePreviewPageSize(pageSize) {
+    setPreviewPageSize(pageSize);
+    loadPreviewPage(1, pageSize);
   }
 
   function applyPreset(days) {
@@ -722,7 +769,7 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
                   <div>
                     <span className="ri-live-dot" />
                     <strong>Run ready</strong>
-                    <small>{run.row_count.toLocaleString()} rows • generated {new Date(run.generated_at).toLocaleString('en-CA')}</small>
+                    <small>{previewPagination.total.toLocaleString()} rows • generated {new Date(run.generated_at).toLocaleString('en-CA')}</small>
                   </div>
                   <div>
                     {report.formats.includes('csv') && (
@@ -789,16 +836,16 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
                 <section className="ri-table-card">
                   <div className="ri-table-heading">
                     <div><p>SUPPORTING LEDGER</p><h2>Report detail</h2></div>
-                    <span>{run.row_count.toLocaleString()} records</span>
+                    <span>{previewPagination.total.toLocaleString()} records</span>
                   </div>
-                  <div className="ri-table-scroll">
+                  <div className="ri-table-scroll" aria-busy={previewLoading}>
                     <table>
                       <thead>
                         <tr>{run.columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr>
                       </thead>
                       <tbody>
                         {run.rows.length ? run.rows.map((row, rowIndex) => (
-                          <tr key={`${run.run_id}-${rowIndex}`}>
+                          <tr key={`${run.run_id}-${previewPagination.page}-${rowIndex}`}>
                             {run.columns.map((column) => (
                               <td className={['currency', 'quantity', 'number', 'integer', 'percent'].includes(column.type) ? 'numeric' : ''} key={column.key}>
                                 {formatCell(row[column.key], column.type)}
@@ -810,6 +857,39 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
                         )}
                       </tbody>
                     </table>
+                  </div>
+                  <div className="ri-table-pager" aria-label="Report detail pagination">
+                    <span>
+                      Showing {previewPagination.rangeStart.toLocaleString()}–{previewPagination.rangeEnd.toLocaleString()} of {previewPagination.total.toLocaleString()} records
+                    </span>
+                    <label>
+                      <span>Rows per page</span>
+                      <select
+                        aria-label="Report rows per page"
+                        value={previewPagination.pageSize}
+                        onChange={(event) => changePreviewPageSize(Number(event.target.value))}
+                        disabled={previewLoading}
+                      >
+                        {REPORT_PREVIEW_PAGE_SIZES.map((size) => <option value={size} key={size}>{size}</option>)}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      aria-label="Previous report page"
+                      onClick={() => loadPreviewPage(previewPagination.page - 1)}
+                      disabled={previewLoading || previewPagination.page <= 1}
+                    >
+                      <ChevronLeft size={17} />
+                    </button>
+                    <strong>Page {previewPagination.totalPages ? previewPagination.page : 0} of {previewPagination.totalPages}</strong>
+                    <button
+                      type="button"
+                      aria-label="Next report page"
+                      onClick={() => loadPreviewPage(previewPagination.page + 1)}
+                      disabled={previewLoading || previewPagination.page >= previewPagination.totalPages || previewPagination.total === 0}
+                    >
+                      <ChevronRight size={17} />
+                    </button>
                   </div>
                 </section>
 

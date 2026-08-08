@@ -141,3 +141,9 @@ class ReceiptDetail(ReceiptRead):
 class ReceiptListResponse(BaseModel):
     receipts: list[ReceiptRead]
     total: int
+    page: int = 1
+    page_size: int = 0
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False

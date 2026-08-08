@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -8,12 +8,12 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.orders import OrderItem
 from app.schemas.orders import BulkOrderActionRequest, BulkOrderActionResponse, BulkUnpickRequest, CompletedOrderListResponse, OpenOrderDetail, OpenOrderListResponse, OrderCompletionRequest, OrderCompletionResponse, OrderWorkflowPreviewResponse
-from app.services.allocations import allocation_to_read, list_allocations
+from app.services.allocations import allocation_to_read, list_allocations_page
 from app.services.auth import authenticated_actor
 from app.services.completed_orders import CompletedOrderFilters, export_completed_orders_csv, list_completed_orders
-from app.services.fulfillments import fulfillment_to_read, list_fulfillments
+from app.services.fulfillments import fulfillment_to_read, list_fulfillments_page
 from app.services.order_workflow import auto_allocate_order_if_possible, complete_order_without_stock_reduction, complete_picked_order, determine_order_workflow_flags, evaluate_order_allocation
-from app.services.picks import list_picks, pick_to_read, unpick_orders
+from app.services.picks import list_picks_page, pick_to_read, unpick_orders
 from app.services.stock_mutation_guard import IdempotencyConflict
 from app.services.woocommerce_orders import export_open_orders_csv, get_open_order_detail, list_open_orders
 from app.services.woocommerce_client import WooCommerceClient
@@ -26,11 +26,28 @@ router = APIRouter(prefix="/orders", tags=["orders"])
 @router.get("/open", response_model=OpenOrderListResponse)
 def list_open_order_queue(
     search: str | None = None,
+    order_number: str | None = None,
+    customer: str | None = None,
+    containing_item: str | None = None,
+    warehouse: str | None = None,
     availability_status: str | None = None,
     matched_status: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> OpenOrderListResponse:
-    return list_open_orders(db, search=search, availability_status=availability_status, matched_status=matched_status)
+    return list_open_orders(
+        db,
+        search=search,
+        order_number=order_number,
+        customer=customer,
+        containing_item=containing_item,
+        warehouse=warehouse,
+        availability_status=availability_status,
+        matched_status=matched_status,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/allocate", response_model=OpenOrderListResponse)
@@ -40,10 +57,12 @@ def list_allocation_exceptions(
     availability_status: str | None = None,
     matched_status: str | None = None,
     include_allocated: bool = False,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> OpenOrderListResponse:
     view = "open" if include_allocated else "allocate"
-    return list_open_orders(db, search=search, woo_status=woo_status, availability_status=availability_status, matched_status=matched_status, workflow_view=view)
+    return list_open_orders(db, search=search, woo_status=woo_status, availability_status=availability_status, matched_status=matched_status, workflow_view=view, page=page, page_size=page_size)
 
 
 @router.get("/pick", response_model=OpenOrderListResponse)
@@ -52,9 +71,11 @@ def list_pickable_orders(
     woo_status: str | None = None,
     availability_status: str | None = None,
     matched_status: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> OpenOrderListResponse:
-    return list_open_orders(db, search=search, woo_status=woo_status, availability_status=availability_status, matched_status=matched_status, workflow_view="pick")
+    return list_open_orders(db, search=search, woo_status=woo_status, availability_status=availability_status, matched_status=matched_status, workflow_view="pick", page=page, page_size=page_size)
 
 
 @router.get("/open/export")
@@ -82,9 +103,16 @@ def list_completed_order_queue(
     sku: str | None = None,
     barcode: str | None = None,
     search: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> CompletedOrderListResponse:
-    return list_completed_orders(db, CompletedOrderFilters(local_status=local_status, date_from=date_from, date_to=date_to, customer_email=customer_email, woo_order_number=woo_order_number, sku=sku, barcode=barcode, search=search))
+    return list_completed_orders(
+        db,
+        CompletedOrderFilters(local_status=local_status, date_from=date_from, date_to=date_to, customer_email=customer_email, woo_order_number=woo_order_number, sku=sku, barcode=barcode, search=search),
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/completed/export")
@@ -108,15 +136,59 @@ def export_completed_order_queue(
 
 
 @router.get("/history")
-def list_order_history(db: Session = Depends(get_db)) -> dict:
-    allocations = list_allocations(db)
-    picks = list_picks(db)
-    fulfillments = list_fulfillments(db)
+def list_order_history(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> dict:
+    allocations, allocation_total, allocation_page, allocation_total_pages = list_allocations_page(
+        db,
+        page=page,
+        page_size=page_size,
+        clamp_page=False,
+    )
+    picks, pick_total, pick_page, pick_total_pages = list_picks_page(
+        db,
+        page=page,
+        page_size=page_size,
+        clamp_page=False,
+    )
+    fulfillments, fulfillment_total, fulfillment_page, fulfillment_total_pages = list_fulfillments_page(
+        db,
+        page=page,
+        page_size=page_size,
+        clamp_page=False,
+    )
+    section_pagination = {
+        "allocations": pagination_metadata(allocation_total, allocation_page, page_size, allocation_total_pages, len(allocations)),
+        "picks": pagination_metadata(pick_total, pick_page, page_size, pick_total_pages, len(picks)),
+        "fulfillments": pagination_metadata(fulfillment_total, fulfillment_page, page_size, fulfillment_total_pages, len(fulfillments)),
+    }
+    total_pages = max(allocation_total_pages, pick_total_pages, fulfillment_total_pages)
     return {
         "allocations": [allocation_to_read(row) for row in allocations],
         "picks": [pick_to_read(row) for row in picks],
         "fulfillments": [fulfillment_to_read(row) for row in fulfillments],
-        "total": len(allocations) + len(picks) + len(fulfillments),
+        "total": allocation_total + pick_total + fulfillment_total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "returned_count": len(allocations) + len(picks) + len(fulfillments),
+        "has_previous": page > 1 and (allocation_total + pick_total + fulfillment_total) > 0,
+        "has_next": page < total_pages,
+        "pagination": section_pagination,
+    }
+
+
+def pagination_metadata(total: int, page: int, page_size: int, total_pages: int, returned_count: int) -> dict:
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "returned_count": returned_count,
+        "has_previous": page > 1 and total > 0,
+        "has_next": page < total_pages,
     }
 
 

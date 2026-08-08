@@ -109,6 +109,9 @@ def test_inventory_summary_groups_items_by_warehouse_and_inventory_location(clie
 
     assert response.status_code == 200
     groups = response.json()["groups"]
+    assert [(group["warehouse"], group["inventory_location"]) for group in groups] == sorted(
+        (group["warehouse"], group["inventory_location"]) for group in groups
+    )
     rack_a = next(group for group in groups if group["inventory_location"] == "Rack A")
     assert rack_a["warehouse"] == "Main Warehouse"
     assert rack_a["item_count"] == 2
@@ -128,6 +131,20 @@ def test_inventory_summary_calculates_totals(client):
     assert group["total_on_order"] == 7
     assert group["total_inventory_value"] == 52
     assert group["under_par_count"] == 1
+
+
+def test_inventory_summary_preserves_fractional_value_and_literal_search_characters(client):
+    seed_item(client, sku="VALUE_1", **{"In Stock": 1.234, "Allocated": 0, "Unit Cost": 1.23})
+    seed_item(client, sku="VALUEX1", **{"In Stock": 9, "Allocated": 0, "Unit Cost": 9})
+    seed_item(client, sku="PCT%SKU", **{"In Stock": 2, "Allocated": 0, "Unit Cost": 2})
+
+    underscore = client.get("/api/inventory/summary/by-location", params={"search": "_"}).json()
+    percent = client.get("/api/inventory/summary/by-location", params={"search": "%"}).json()
+
+    assert underscore["total_items"] == 1
+    assert Decimal(str(underscore["total_inventory_value"])) == Decimal("1.51782")
+    assert percent["total_items"] == 1
+    assert Decimal(str(percent["total_inventory_value"])) == Decimal("4")
 
 
 def test_inventory_summary_uses_the_same_search_and_quality_filters_as_catalog_rows(client):

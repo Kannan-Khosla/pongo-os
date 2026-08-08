@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import csv
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
@@ -60,30 +60,68 @@ def list_route_candidates(
     customer_email: str | None = None,
     woo_order_number: str | None = None,
     search: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
 ) -> RouteCandidateListResponse:
-    statement = select(Order).where(
+    active_route_exists = (
+        select(RouteStop.id)
+        .join(Route, Route.id == RouteStop.route_id)
+        .where(
+            RouteStop.order_id == Order.id,
+            or_(Route.status.is_(None), Route.status != "cancelled"),
+        )
+        .exists()
+    )
+    predicates = [
         Order.local_status.in_(ROUTE_ELIGIBLE_STATUSES),
         Order.is_historical_snapshot.is_(False),
-    ).options(selectinload(Order.items), selectinload(Order.route_stops).selectinload(RouteStop.route)).order_by(Order.date_created.asc().nullslast(), Order.woo_order_number.asc().nullslast(), Order.id.asc())
-    orders = list(db.scalars(statement).all())
-    candidates = []
-    for order in orders:
-        candidate = order_to_candidate(order)
-        if candidate.already_routed:
-            continue
-        if local_status and order.local_status != local_status:
-            continue
-        if customer_email and customer_email.casefold() not in (order.customer_email or "").casefold():
-            continue
-        if woo_order_number and woo_order_number.casefold() not in (order.woo_order_number or "").casefold():
-            continue
-        if search:
-            needle = search.casefold()
-            haystack = " ".join(str(value or "") for value in [order.woo_order_number, order.customer_name, order.customer_email, order.customer_phone]).casefold()
-            if needle not in haystack:
-                continue
-        candidates.append(candidate)
-    return RouteCandidateListResponse(total_candidates=len(candidates), candidates=candidates)
+        ~active_route_exists,
+    ]
+    if route_date:
+        day_start = datetime(route_date.year, route_date.month, route_date.day, tzinfo=timezone.utc)
+        predicates.extend((Order.date_created >= day_start, Order.date_created < day_start + timedelta(days=1)))
+    if local_status:
+        predicates.append(Order.local_status == local_status)
+    if customer_email:
+        predicates.append(func.lower(func.coalesce(Order.customer_email, "")).contains(customer_email.casefold(), autoescape=True))
+    if woo_order_number:
+        predicates.append(func.lower(func.coalesce(Order.woo_order_number, "")).contains(woo_order_number.casefold(), autoescape=True))
+    if search:
+        search_text = (
+            func.coalesce(Order.woo_order_number, "")
+            + " "
+            + func.coalesce(Order.customer_name, "")
+            + " "
+            + func.coalesce(Order.customer_email, "")
+            + " "
+            + func.coalesce(Order.customer_phone, "")
+        )
+        predicates.append(func.lower(search_text).contains(search.casefold(), autoescape=True))
+
+    total = int(db.scalar(select(func.count(Order.id)).where(*predicates)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    effective_page = min(page, max(total_pages, 1))
+    orders = list(
+        db.scalars(
+            select(Order)
+            .where(*predicates)
+            .options(selectinload(Order.items))
+            .order_by(Order.date_created.asc().nullslast(), Order.woo_order_number.asc().nullslast(), Order.id.asc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    candidates = [order_to_candidate(order, already_routed=False) for order in orders]
+    return RouteCandidateListResponse(
+        total_candidates=total,
+        candidates=candidates,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(candidates),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 def preview_route(db: Session, payload: RouteRequest) -> RoutePreviewResponse:
@@ -218,7 +256,7 @@ def build_preview_response(payload: RouteRequest, stops: list[RoutePreviewStop])
     )
 
 
-def list_routes(
+def list_routes_page(
     db: Session,
     status: str | None = None,
     route_date: date | None = None,
@@ -227,29 +265,48 @@ def list_routes(
     driver_name: str | None = None,
     vehicle_name: str | None = None,
     search: str | None = None,
-) -> list[Route]:
-    statement = select(Route).options(selectinload(Route.stops)).order_by(Route.route_date.desc().nullslast(), Route.created_at.desc(), Route.id.desc())
-    routes = list(db.scalars(statement).all())
-    rows = []
-    for route in routes:
-        if status and route.status != status:
-            continue
-        if route_date and route.route_date != route_date:
-            continue
-        if date_from and route.route_date and route.route_date < date_from:
-            continue
-        if date_to and route.route_date and route.route_date > date_to:
-            continue
-        if driver_name and driver_name.casefold() not in (route.driver_name or "").casefold():
-            continue
-        if vehicle_name and vehicle_name.casefold() not in (route.vehicle_name or "").casefold():
-            continue
-        if search:
-            haystack = " ".join(str(value or "") for value in [route.route_number, route.route_name, route.driver_name, route.vehicle_name]).casefold()
-            if search.casefold() not in haystack:
-                continue
-        rows.append(route)
-    return rows
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[Route], int, int, int]:
+    predicates = []
+    if status:
+        predicates.append(Route.status == status)
+    if route_date:
+        predicates.append(Route.route_date == route_date)
+    if date_from:
+        predicates.append(or_(Route.route_date.is_(None), Route.route_date >= date_from))
+    if date_to:
+        predicates.append(or_(Route.route_date.is_(None), Route.route_date <= date_to))
+    if driver_name:
+        predicates.append(func.lower(func.coalesce(Route.driver_name, "")).contains(driver_name.casefold(), autoescape=True))
+    if vehicle_name:
+        predicates.append(func.lower(func.coalesce(Route.vehicle_name, "")).contains(vehicle_name.casefold(), autoescape=True))
+    if search:
+        search_text = (
+            func.coalesce(Route.route_number, "")
+            + " "
+            + func.coalesce(Route.route_name, "")
+            + " "
+            + func.coalesce(Route.driver_name, "")
+            + " "
+            + func.coalesce(Route.vehicle_name, "")
+        )
+        predicates.append(func.lower(search_text).contains(search.casefold(), autoescape=True))
+
+    total = int(db.scalar(select(func.count(Route.id)).where(*predicates)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    effective_page = min(page, max(total_pages, 1))
+    routes = list(
+        db.scalars(
+            select(Route)
+            .where(*predicates)
+            .options(selectinload(Route.stops))
+            .order_by(Route.route_date.desc().nullslast(), Route.created_at.desc(), Route.id.desc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    return routes, total, effective_page, total_pages
 
 
 def get_route_detail(db: Session, route_id: int) -> RouteDetail | None:
@@ -489,7 +546,7 @@ def map_stop_from_read(stop: RouteStopRead) -> RouteMapStop:
     )
 
 
-def order_to_candidate(order: Order) -> RouteCandidateRead:
+def order_to_candidate(order: Order, *, already_routed: bool | None = None) -> RouteCandidateRead:
     line_quantities = [max(line.quantity_fulfilled or Decimal("0"), line.quantity_picked or Decimal("0")) for line in order.items]
     fulfilled_lines = [quantity for quantity in line_quantities if quantity > 0]
     warning = "Order is partially fulfilled." if order.local_status == "partially_fulfilled" else None
@@ -507,7 +564,7 @@ def order_to_candidate(order: Order) -> RouteCandidateRead:
         date_modified=order.date_modified,
         fulfilled_line_count=len(fulfilled_lines),
         total_quantity_fulfilled=decimal_to_float(sum(fulfilled_lines, Decimal("0"))),
-        already_routed=order_has_active_route(order),
+        already_routed=order_has_active_route(order) if already_routed is None else already_routed,
         route_warning=warning,
     )
 

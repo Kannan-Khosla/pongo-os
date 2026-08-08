@@ -17,7 +17,8 @@
 .review-pagination,
 .result-actions,
 .history-toolbar,
-.history-detail-actions {
+.history-detail-actions,
+.history-pagination {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -251,9 +252,10 @@
 .history-detail-row td { padding: 0; background: #f8faff; }
 .history-detail { display: grid; grid-template-columns: 1fr auto; gap: 18px; padding: 20px 24px; }
 .history-detail p { margin: 6px 0 0; color: var(--import-muted); }
-.history-change-list { grid-column: 1 / -1; max-height: 320px; overflow: auto; border-top: 1px solid var(--import-line); padding-top: 14px; }
+.history-change-list { grid-column: 1 / -1; border-top: 1px solid var(--import-line); padding-top: 14px; }
 .history-change-list p { display: flex; justify-content: space-between; gap: 20px; padding: 8px 0; border-bottom: 1px solid #e7ecf2; }
 .history-change-list span { color: var(--import-ink); font-weight: 750; }
+.history-pagination { margin-top: 14px; color: var(--import-muted); font-size: 12px; }
 
 @media (max-width: 980px) {
   .outcome-grid { grid-template-columns: 1fr; }

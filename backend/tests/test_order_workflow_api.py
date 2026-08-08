@@ -1,7 +1,7 @@
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.main import app
-from app.models.orders import Order
+from app.models.orders import Order, OrderItem
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
 
@@ -51,6 +51,124 @@ def test_order_views_show_auto_allocated_order_in_open_and_pick_not_allocate(cli
     assert workflow["workflow"]["shows_in_open_orders"] is True
     assert workflow["workflow"]["shows_in_pick_orders"] is True
     assert workflow["workflow"]["shows_in_allocate"] is False
+
+
+def test_non_inventory_lines_do_not_enter_allocate_or_pick(client, monkeypatch):
+    seed_item(client, sku="SERVICE-SKU", Barcode="SERVICE-BAR", wooProductId=849, nonInventory=True)
+    patch_woo_order_client(
+        monkeypatch,
+        [
+            woo_order(
+                id=849,
+                number="SERVICE-ORDER",
+                line_items=[{
+                    **woo_order()["line_items"][0],
+                    "id": 1849,
+                    "product_id": 849,
+                    "sku": "SERVICE-SKU",
+                    "quantity": 1,
+                    "meta_data": [{"key": "barcode", "value": "SERVICE-BAR"}],
+                }],
+            )
+        ],
+    )
+    assert client.post("/api/integrations/woocommerce/orders/quick-sync", json={}).status_code == 200
+
+    order = next(row for row in client.get("/api/orders/open").json()["orders"] if row["woo_order_number"] == "SERVICE-ORDER")
+    workflow = client.get(f"/api/orders/{order['id']}/workflow").json()["workflow"]
+
+    assert workflow["shows_in_allocate"] is False
+    assert workflow["shows_in_pick_orders"] is False
+    assert order["id"] not in {row["id"] for row in client.get("/api/orders/allocate").json()["orders"]}
+    assert order["id"] not in {row["id"] for row in client.get("/api/orders/pick").json()["orders"]}
+
+
+def test_allocation_exceptions_are_stably_paginated_and_exported_in_full(client):
+    item = seed_item(client, sku="ALLOC-PAGE-SKU", Barcode="ALLOC-PAGE-BAR", wooProductId=848, **{"In Stock": 0, "Allocated": 0})
+    db_override = app.dependency_overrides[get_db]()
+    db = next(db_override)
+    try:
+        for index in range(1, 22):
+            order = Order(
+                woo_order_id=8400 + index,
+                woo_order_number="ALLOC%1" if index == 1 else f"ALLOC-PAGE-{index}",
+                woo_status="processing",
+                local_status="open",
+                completion_status="open",
+                customer_name=f"Customer {index}",
+            )
+            db.add(order)
+            db.flush()
+            db.add(OrderItem(
+                order_id=order.id,
+                inventory_item_id=item["id"],
+                line_number=index,
+                sku="ALLOC-PAGE-SKU",
+                barcode="ALLOC-PAGE-BAR",
+                name=f"Allocation item {index}",
+                quantity_ordered=1,
+                quantity_allocated=0,
+                quantity_picked=0,
+                quantity_fulfilled=0,
+                quantity_stock_reduced=0,
+                matched_status="matched",
+                allocation_status="unallocated",
+            ))
+        db.commit()
+    finally:
+        db_override.close()
+
+    default_page = client.get("/api/allocations/exceptions").json()
+    pages = [
+        client.get("/api/allocations/exceptions", params={"page": page, "page_size": 10}).json()
+        for page in range(1, 4)
+    ]
+
+    assert default_page["returned_count"] == 20
+    assert pages[0]["total_lines"] == 21
+    assert pages[0]["total_orders"] == 21
+    assert pages[0]["total_item_groups"] == 1
+    assert pages[0]["total_pages"] == 3
+    assert pages[2]["returned_count"] == 1
+    line_ids = [line["order_line_id"] for page in pages for line in page["lines"]]
+    assert len(line_ids) == len(set(line_ids)) == 21
+
+    grouped_items = client.get(
+        "/api/allocations/exceptions",
+        params={"view": "items", "page": 1, "page_size": 10},
+    ).json()
+    assert grouped_items["view"] == "items"
+    assert grouped_items["total_item_groups"] == 1
+    assert grouped_items["returned_item_groups"] == 1
+    assert grouped_items["returned_count"] == 1
+    assert grouped_items["lines"] == []
+    assert len(grouped_items["item_groups"]) == 1
+    assert grouped_items["item_groups"][0]["affected_order_count"] == 21
+    assert grouped_items["item_groups"][0]["quantity_unallocated"] == 21
+
+    affected_pages = [
+        client.get(
+            "/api/allocations/exceptions",
+            params={"view": "orders", "item_id": item["id"], "page": page, "page_size": 10},
+        ).json()
+        for page in range(1, 4)
+    ]
+    affected_line_ids = [line["order_line_id"] for page in affected_pages for line in page["lines"]]
+    assert affected_pages[0]["total_lines"] == 21
+    assert [page["returned_count"] for page in affected_pages] == [10, 10, 1]
+    assert len(affected_line_ids) == len(set(affected_line_ids)) == 21
+
+    invalid_group = client.get(
+        "/api/allocations/exceptions",
+        params={"item_id": item["id"], "unmatched_line_id": affected_line_ids[0]},
+    )
+    assert invalid_group.status_code == 422
+
+    literal_percent = client.get("/api/allocations/exceptions", params={"search": "%"}).json()
+    assert [line["woo_order_number"] for line in literal_percent["lines"]] == ["ALLOC%1"]
+    export = client.get("/api/allocations/exceptions/export").text
+    assert "ALLOC%1" in export
+    assert "ALLOC-PAGE-21" in export
 
 
 def test_complete_picked_order_does_not_reduce_stock_again(client, monkeypatch):

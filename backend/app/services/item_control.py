@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, union_all
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.allocations import AllocationLine
@@ -13,7 +13,7 @@ from app.models.cycle_counts import CycleCountLine
 from app.models.fulfillments import FulfillmentLine
 from app.models.item_notes import ItemNote
 from app.models.imports import ItemImportChange
-from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation, InventoryLocation, InventoryTransferLine, StockAdjustmentLine, StockMovement
+from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation, InventoryLocation, InventoryTransferLine, MovementType, StockAdjustmentLine, StockMovement
 from app.models.orders import OrderItem
 from app.models.picks import PickLine
 from app.models.receipts import ReceiptItem
@@ -263,76 +263,107 @@ def build_item_activity(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    rows: list[dict[str, Any]] = []
     item = db.get(InventoryItem, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Item not found")
-
-    def in_range(created_at: datetime | None) -> bool:
-        if created_at is None:
-            return True
-        if start_date and created_at.date() < start_date:
-            return False
-        if end_date and created_at.date() > end_date:
-            return False
-        return True
-
-    for movement in db.scalars(select(StockMovement).where(StockMovement.inventory_item_id == item_id)).all():
-        movement_type = movement.movement_type.value if hasattr(movement.movement_type, "value") else str(movement.movement_type)
-        normalized_type = "transfer" if movement_type.startswith("transfer_") else ("adjustment" if movement_type in {"adjustment_increase", "adjustment_decrease", "damage", "loss", "correction"} else "stock_movement")
-        rows.append(
-            activity_row(
-                id=f"movement-{movement.id}",
-                type=normalized_type,
-                title=movement_type.replace("_", " ").title(),
-                description=movement.reason or movement.notes,
-                quantity_change=movement.quantity_change,
-                warehouse=movement.warehouse,
-                inventory_location=movement.inventory_location_name,
-                reference_type=movement.reference_type,
-                reference_id=movement.reference_id,
-                reference_number=movement.reference_number,
-                created_at=movement.created_at,
-                severity="success" if (movement.quantity_change or 0) >= 0 else "warning",
-            )
-        )
-    for note in db.scalars(select(ItemNote).where(ItemNote.inventory_item_id == item_id)).all():
-        rows.append(activity_row(id=f"note-{note.id}", type="note", title=f"{note.note_type or 'General'} note", description=note.note, created_at=note.created_at, reference_type="item_note", reference_id=note.id))
-    for change in db.scalars(select(ItemImportChange).where(ItemImportChange.item_id == item_id)).all():
-        rows.append(
-            activity_row(
-                id=f"item-import-change-{change.id}",
-                type="metadata_import",
-                title=f"{change.field_name.replace('_', ' ').title()} imported",
-                description=f"{change.previous_value!s} → {change.new_value!s} from {change.source_filename or 'CSV'}",
-                created_at=change.created_at,
-                reference_type="import_job",
-                reference_id=change.import_job_id,
-            )
-        )
-    for receipt in db.scalars(select(ReceiptItem).where(ReceiptItem.inventory_item_id == item_id)).all():
-        rows.append(activity_row(id=f"receipt-{receipt.id}", type="receipt", title="Receipt line", description=receipt.notes, quantity_change=receipt.quantity_received or receipt.quantity, warehouse=receipt.warehouse, inventory_location=receipt.inventory_location_name, reference_type="receipt", reference_id=receipt.receipt_id, reference_number=receipt.po_or_receipt_number, created_at=receipt.created_at, severity="success"))
-    for count in db.scalars(select(CycleCountLine).where(CycleCountLine.item_id == item_id)).all():
-        rows.append(activity_row(id=f"cycle-{count.id}", type="cycle_count", title="Cycle count", description=count.notes, quantity_change=count.variance_quantity, warehouse=count.warehouse, inventory_location=count.inventory_location, reference_type="cycle_count", reference_id=count.cycle_count_id, created_at=count.created_at, severity="warning" if count.variance_quantity else "info"))
-    for transfer in db.scalars(select(InventoryTransferLine).where(InventoryTransferLine.inventory_item_id == item_id)).all():
-        rows.append(activity_row(id=f"transfer-{transfer.id}", type="transfer", title="Transfer", description=transfer.notes, quantity_change=transfer.quantity, warehouse=transfer.from_warehouse, inventory_location=transfer.from_inventory_location, reference_type="transfer", reference_id=transfer.transfer_id, created_at=transfer.created_at))
-    for adjustment in db.scalars(select(StockAdjustmentLine).where(StockAdjustmentLine.inventory_item_id == item_id)).all():
-        rows.append(activity_row(id=f"adjustment-{adjustment.id}", type="adjustment", title="Adjustment", description=adjustment.notes, quantity_change=adjustment.quantity_change, warehouse=adjustment.warehouse, inventory_location=adjustment.inventory_location, reference_type="stock_adjustment", reference_id=adjustment.adjustment_id, created_at=adjustment.created_at, severity="warning"))
-    for allocation in db.scalars(select(AllocationLine).where(AllocationLine.item_id == item_id)).all():
-        rows.append(activity_row(id=f"allocation-{allocation.id}", type="allocation", title="Allocation", description=allocation.notes, quantity_change=allocation.quantity_to_allocate, warehouse=allocation.warehouse, inventory_location=allocation.inventory_location, reference_type="allocation", reference_id=allocation.allocation_id, created_at=allocation.created_at))
-    for pick in db.scalars(select(PickLine).where(PickLine.item_id == item_id)).all():
-        rows.append(activity_row(id=f"pick-{pick.id}", type="pick", title="Pick", description=pick.notes, quantity_change=pick.quantity_to_pick, warehouse=pick.warehouse, inventory_location=pick.inventory_location, reference_type="pick", reference_id=pick.pick_id, created_at=pick.created_at))
-    for fulfillment in db.scalars(select(FulfillmentLine).where(FulfillmentLine.item_id == item_id)).all():
-        rows.append(activity_row(id=f"fulfillment-{fulfillment.id}", type="fulfillment", title="Fulfillment", description=fulfillment.notes, quantity_change=fulfillment.quantity_to_fulfill, warehouse=fulfillment.warehouse, inventory_location=fulfillment.inventory_location, reference_type="fulfillment", reference_id=fulfillment.fulfillment_id, created_at=fulfillment.created_at, severity="success"))
-    for order in db.scalars(select(OrderItem).where(OrderItem.inventory_item_id == item_id)).all():
-        rows.append(activity_row(id=f"order-{order.id}", type="order", title="Order line", description=order.description or order.name, quantity_change=order.quantity_ordered, reference_type="order", reference_id=order.order_id, created_at=order.created_at))
-
-    rows = [row for row in rows if in_range(row["created_at"])]
-    if type_filter and type_filter != "all":
-        rows = [row for row in rows if row["type"] == type_filter]
-    rows.sort(key=lambda row: row["created_at"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     safe_limit = max(1, min(limit, 200))
-    return {"activity": rows[offset : offset + safe_limit], "total": len(rows), "limit": safe_limit, "offset": offset}
+    safe_offset = max(0, offset)
+    per_source_limit = safe_offset + safe_limit
+    requested_type = type_filter or "all"
+    rows: list[dict[str, Any]] = []
+    sources: list[tuple[Any, list[Any], Any]] = []
+
+    def predicates_for(created_at_column: Any, *predicates: Any) -> list[Any]:
+        result = list(predicates)
+        if start_date:
+            result.append(created_at_column >= datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc))
+        if end_date:
+            next_day = end_date + timedelta(days=1)
+            result.append(created_at_column < datetime(next_day.year, next_day.month, next_day.day, tzinfo=timezone.utc))
+        return result
+
+    def include(activity_type: str) -> bool:
+        return requested_type in {"all", activity_type}
+
+    transfer_movement_types = (MovementType.transfer_in, MovementType.transfer_out)
+    adjustment_movement_types = (
+        MovementType.adjustment_increase,
+        MovementType.adjustment_decrease,
+        MovementType.damage,
+        MovementType.loss,
+        MovementType.correction,
+    )
+    adjustment_movement_values = {member.value for member in adjustment_movement_types}
+
+    def movement_activity_row(movement: StockMovement) -> dict[str, Any]:
+        movement_type = movement.movement_type.value if hasattr(movement.movement_type, "value") else str(movement.movement_type)
+        normalized_type = "transfer" if movement_type.startswith("transfer_") else ("adjustment" if movement_type in adjustment_movement_values else "stock_movement")
+        return activity_row(
+            id=f"movement-{movement.id}",
+            type=normalized_type,
+            title=movement_type.replace("_", " ").title(),
+            description=movement.reason or movement.notes,
+            quantity_change=movement.quantity_change,
+            warehouse=movement.warehouse,
+            inventory_location=movement.inventory_location_name,
+            reference_type=movement.reference_type,
+            reference_id=movement.reference_id,
+            reference_number=movement.reference_number,
+            created_at=movement.created_at,
+            severity="success" if (movement.quantity_change or 0) >= 0 else "warning",
+        )
+
+    movement_predicates = [StockMovement.inventory_item_id == item_id]
+    if requested_type == "transfer":
+        movement_predicates.append(StockMovement.movement_type.in_(transfer_movement_types))
+    elif requested_type == "adjustment":
+        movement_predicates.append(StockMovement.movement_type.in_(adjustment_movement_types))
+    elif requested_type == "stock_movement":
+        movement_predicates.append(StockMovement.movement_type.notin_((*transfer_movement_types, *adjustment_movement_types)))
+    if requested_type in {"all", "transfer", "adjustment", "stock_movement"}:
+        sources.append(
+            (
+                StockMovement,
+                predicates_for(StockMovement.created_at, *movement_predicates),
+                movement_activity_row,
+            )
+        )
+    if include("note"):
+        sources.append((ItemNote, predicates_for(ItemNote.created_at, ItemNote.inventory_item_id == item_id), lambda note: activity_row(id=f"note-{note.id}", type="note", title=f"{note.note_type or 'General'} note", description=note.note, created_at=note.created_at, reference_type="item_note", reference_id=note.id)))
+    if include("metadata_import"):
+        sources.append((ItemImportChange, predicates_for(ItemImportChange.created_at, ItemImportChange.item_id == item_id), lambda change: activity_row(id=f"item-import-change-{change.id}", type="metadata_import", title=f"{change.field_name.replace('_', ' ').title()} imported", description=f"{change.previous_value!s} → {change.new_value!s} from {change.source_filename or 'CSV'}", created_at=change.created_at, reference_type="import_job", reference_id=change.import_job_id)))
+    if include("receipt"):
+        sources.append((ReceiptItem, predicates_for(ReceiptItem.created_at, ReceiptItem.inventory_item_id == item_id), lambda receipt: activity_row(id=f"receipt-{receipt.id}", type="receipt", title="Receipt line", description=receipt.notes, quantity_change=receipt.quantity_received or receipt.quantity, warehouse=receipt.warehouse, inventory_location=receipt.inventory_location_name, reference_type="receipt", reference_id=receipt.receipt_id, reference_number=receipt.po_or_receipt_number, created_at=receipt.created_at, severity="success")))
+    if include("cycle_count"):
+        sources.append((CycleCountLine, predicates_for(CycleCountLine.created_at, CycleCountLine.item_id == item_id), lambda count: activity_row(id=f"cycle-{count.id}", type="cycle_count", title="Cycle count", description=count.notes, quantity_change=count.variance_quantity, warehouse=count.warehouse, inventory_location=count.inventory_location, reference_type="cycle_count", reference_id=count.cycle_count_id, created_at=count.created_at, severity="warning" if count.variance_quantity else "info")))
+    if include("transfer"):
+        sources.append((InventoryTransferLine, predicates_for(InventoryTransferLine.created_at, InventoryTransferLine.inventory_item_id == item_id), lambda transfer: activity_row(id=f"transfer-{transfer.id}", type="transfer", title="Transfer", description=transfer.notes, quantity_change=transfer.quantity, warehouse=transfer.from_warehouse, inventory_location=transfer.from_inventory_location, reference_type="transfer", reference_id=transfer.transfer_id, created_at=transfer.created_at)))
+    if include("adjustment"):
+        sources.append((StockAdjustmentLine, predicates_for(StockAdjustmentLine.created_at, StockAdjustmentLine.inventory_item_id == item_id), lambda adjustment: activity_row(id=f"adjustment-{adjustment.id}", type="adjustment", title="Adjustment", description=adjustment.notes, quantity_change=adjustment.quantity_change, warehouse=adjustment.warehouse, inventory_location=adjustment.inventory_location, reference_type="stock_adjustment", reference_id=adjustment.adjustment_id, created_at=adjustment.created_at, severity="warning")))
+    if include("allocation"):
+        sources.append((AllocationLine, predicates_for(AllocationLine.created_at, AllocationLine.item_id == item_id), lambda allocation: activity_row(id=f"allocation-{allocation.id}", type="allocation", title="Allocation", description=allocation.notes, quantity_change=allocation.quantity_to_allocate, warehouse=allocation.warehouse, inventory_location=allocation.inventory_location, reference_type="allocation", reference_id=allocation.allocation_id, created_at=allocation.created_at)))
+    if include("pick"):
+        sources.append((PickLine, predicates_for(PickLine.created_at, PickLine.item_id == item_id), lambda pick: activity_row(id=f"pick-{pick.id}", type="pick", title="Pick", description=pick.notes, quantity_change=pick.quantity_to_pick, warehouse=pick.warehouse, inventory_location=pick.inventory_location, reference_type="pick", reference_id=pick.pick_id, created_at=pick.created_at)))
+    if include("fulfillment"):
+        sources.append((FulfillmentLine, predicates_for(FulfillmentLine.created_at, FulfillmentLine.item_id == item_id), lambda fulfillment: activity_row(id=f"fulfillment-{fulfillment.id}", type="fulfillment", title="Fulfillment", description=fulfillment.notes, quantity_change=fulfillment.quantity_to_fulfill, warehouse=fulfillment.warehouse, inventory_location=fulfillment.inventory_location, reference_type="fulfillment", reference_id=fulfillment.fulfillment_id, created_at=fulfillment.created_at, severity="success")))
+    if include("order"):
+        sources.append((OrderItem, predicates_for(OrderItem.created_at, OrderItem.inventory_item_id == item_id), lambda order: activity_row(id=f"order-{order.id}", type="order", title="Order line", description=order.description or order.name, quantity_change=order.quantity_ordered, reference_type="order", reference_id=order.order_id, created_at=order.created_at)))
+
+    total = 0
+    if sources:
+        count_statement = union_all(*(select(func.count(model.id)).where(*predicates) for model, predicates, _mapper in sources))
+        total = sum(int(count or 0) for count in db.scalars(count_statement).all())
+        for model, predicates, mapper in sources:
+            source_rows = db.scalars(
+                select(model)
+                .where(*predicates)
+                .order_by(model.created_at.desc(), model.id.desc())
+                .limit(per_source_limit)
+            ).all()
+            rows.extend(mapper(row) for row in source_rows)
+
+    rows.sort(key=lambda row: row["created_at"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return {"activity": rows[safe_offset : safe_offset + safe_limit], "total": total, "limit": safe_limit, "offset": safe_offset}
 
 
 def search_items(db: Session, *, q: str | None = None, sku: str | None = None, barcode: str | None = None, brand: str | None = None, category: str | None = None, limit: int = 25) -> dict[str, Any]:

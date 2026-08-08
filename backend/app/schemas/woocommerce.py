@@ -337,11 +337,24 @@ class WooCommerceSyncRunRead(BaseModel):
 
 class WooCommerceSyncRunDetail(WooCommerceSyncRunRead):
     errors: list[WooCommerceSyncErrorRead] = []
+    errors_total: int = 0
+    errors_page: int = 1
+    errors_page_size: int = 50
+    errors_total_pages: int = 0
+    errors_returned_count: int = 0
+    errors_has_previous: bool = False
+    errors_has_next: bool = False
 
 
 class WooCommerceSyncRunListResponse(BaseModel):
     sync_runs: list[WooCommerceSyncRunRead]
     total: int
+    page: int = 1
+    page_size: int = 0
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class WooWritebackStockPreviewRequest(BaseModel):
@@ -415,6 +428,12 @@ class WooWritebackQueueRead(BaseModel):
 class WooWritebackQueueListResponse(BaseModel):
     queue: list[WooWritebackQueueRead]
     total: int
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class WooStockSyncRequest(BaseModel):
@@ -464,6 +483,12 @@ class WooStockSyncJobRead(BaseModel):
 class WooStockSyncJobListResponse(BaseModel):
     jobs: list[WooStockSyncJobRead]
     total: int
+    page: int = 1
+    page_size: int = 25
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class WooRemapItemSummary(BaseModel):
@@ -513,6 +538,12 @@ class WooRemapCandidate(BaseModel):
 class WooRemapCandidateListResponse(BaseModel):
     candidates: list[WooRemapCandidate]
     total: int
+    page: int = 1
+    page_size: int = 100
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class WooRemapPreviewRequest(BaseModel):
@@ -547,6 +578,12 @@ class WooRemapCommitResponse(BaseModel):
 class WooRemapMappingListResponse(BaseModel):
     mappings: list[WooRemapMappingRead]
     total: int
+    page: int = 1
+    page_size: int = 100
+    total_pages: int = 0
+    returned_count: int = 0
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class WooRemapDeactivateRequest(BaseModel):

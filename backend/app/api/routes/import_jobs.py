@@ -3,12 +3,12 @@ from io import StringIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.models.imports import ImportJob, ImportPreview, ItemImportChange
-from app.schemas.imports import ImportJobDetail, ImportJobRead
+from app.schemas.imports import ImportChangeListResponse, ImportChangeRead, ImportJobDetail, ImportJobListResponse, ImportJobRead
 from app.services.items import CANONICAL_ITEM_COLUMNS
 from app.services.item_enrichment import ENRICHMENT_COLUMNS
 from app.services.locations import CANONICAL_LOCATION_COLUMNS
@@ -18,22 +18,51 @@ from app.services.item_import_workflow import field_specs_for, rollback_metadata
 router = APIRouter(prefix="/import-jobs", tags=["import-jobs"])
 
 
-@router.get("", response_model=list[ImportJobRead])
+@router.get("", response_model=list[ImportJobRead] | ImportJobListResponse)
 def list_import_jobs(
     outcome: str | None = Query(None),
     status: str | None = Query(None),
     item_imports_only: bool = Query(False),
     limit: int = Query(100, ge=1, le=500),
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=100),
     db: Session = Depends(get_db),
-) -> list[ImportJob]:
-    statement = select(ImportJob)
+) -> list[ImportJob] | ImportJobListResponse:
+    predicates = []
     if outcome:
-        statement = statement.where(ImportJob.outcome == outcome)
+        predicates.append(ImportJob.outcome == outcome)
     if status:
-        statement = statement.where(ImportJob.status == status)
+        predicates.append(ImportJob.status == status)
     if item_imports_only:
-        statement = statement.where(ImportJob.outcome.in_(["add_items", "update_items", "starting_inventory"]))
-    return list(db.scalars(statement.order_by(ImportJob.created_at.desc()).limit(limit)).all())
+        predicates.append(ImportJob.outcome.in_(["add_items", "update_items", "starting_inventory"]))
+    ordering = (ImportJob.created_at.desc(), ImportJob.id.desc())
+    if page is None and page_size is None:
+        return list(db.scalars(select(ImportJob).where(*predicates).order_by(*ordering).limit(limit)).all())
+
+    requested_page = page or 1
+    requested_page_size = page_size or 50
+    total = int(db.scalar(select(func.count(ImportJob.id)).where(*predicates)) or 0)
+    total_pages = (total + requested_page_size - 1) // requested_page_size if total else 0
+    effective_page = min(requested_page, max(total_pages, 1))
+    jobs = list(
+        db.scalars(
+            select(ImportJob)
+            .where(*predicates)
+            .order_by(*ordering)
+            .offset((effective_page - 1) * requested_page_size)
+            .limit(requested_page_size)
+        ).all()
+    )
+    return ImportJobListResponse(
+        jobs=[ImportJobRead.model_validate(job) for job in jobs],
+        total=total,
+        page=effective_page,
+        page_size=requested_page_size,
+        total_pages=total_pages,
+        returned_count=len(jobs),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.get("/{job_id}", response_model=ImportJobDetail)
@@ -86,25 +115,52 @@ def download_failed_rows(job_id: int, db: Session = Depends(get_db)) -> Response
     )
 
 
-@router.get("/{job_id}/changes")
-def get_import_changes(job_id: int, db: Session = Depends(get_db)) -> list[dict]:
+@router.get("/{job_id}/changes", response_model=ImportChangeListResponse)
+def get_import_changes(
+    job_id: int,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> ImportChangeListResponse:
     if db.get(ImportJob, job_id) is None:
         raise HTTPException(status_code=404, detail="Import job not found")
-    rows = db.scalars(select(ItemImportChange).where(ItemImportChange.import_job_id == job_id).order_by(ItemImportChange.item_id, ItemImportChange.id)).all()
-    return [
-        {
-            "id": row.id,
-            "item_id": row.item_id,
-            "sku": row.sku,
-            "field": row.field_name,
-            "before": row.previous_value,
-            "after": row.new_value,
-            "source_filename": row.source_filename,
-            "created_by": row.created_by,
-            "created_at": row.created_at,
-        }
+    predicates = [ItemImportChange.import_job_id == job_id]
+    total = int(db.scalar(select(func.count(ItemImportChange.id)).where(*predicates)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    effective_page = min(page, max(total_pages, 1))
+    rows = list(
+        db.scalars(
+            select(ItemImportChange)
+            .where(*predicates)
+            .order_by(ItemImportChange.item_id.asc(), ItemImportChange.id.asc())
+            .offset((effective_page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    changes = [
+        ImportChangeRead(
+            id=row.id,
+            item_id=row.item_id,
+            sku=row.sku,
+            field=row.field_name,
+            before=row.previous_value,
+            after=row.new_value,
+            source_filename=row.source_filename,
+            created_by=row.created_by,
+            created_at=row.created_at,
+        )
         for row in rows
     ]
+    return ImportChangeListResponse(
+        changes=changes,
+        total=total,
+        page=effective_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        returned_count=len(changes),
+        has_previous=effective_page > 1,
+        has_next=effective_page < total_pages,
+    )
 
 
 @router.post("/{job_id}/rollback")
