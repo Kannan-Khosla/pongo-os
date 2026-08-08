@@ -189,6 +189,22 @@ def test_commit_stops_when_an_item_changed_after_preview(client):
     assert client.get(f"/api/items/{item['id']}").json()["Brand"] == "Changed after preview"
 
 
+def test_add_items_commit_stops_when_sku_or_barcode_appears_after_preview(client):
+    preview = upload(
+        client,
+        "add_items",
+        "SKU,Product name,Barcode\nSTALE-SKU,One,STALE-BC-1\nSTALE-BC-SOURCE,Two,STALE-BC-2\n",
+    ).json()
+    seed_item(client, sku="STALE-SKU", Barcode="OTHER-BARCODE")
+    seed_item(client, sku="OTHER-SKU", Barcode="STALE-BC-2")
+
+    response = commit(client, preview["preview_id"])
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "stale_preview"
+    assert response.json()["detail"]["row_numbers"] == [2, 3]
+
+
 def test_excluded_rows_are_recorded_without_creating_items(client):
     preview = upload(client, "add_items", "SKU,Product name\nEXCLUDE-ME,Do not create\n").json()
     excluded = client.patch(f"/api/items/import/previews/{preview['preview_id']}/rows/2", json={"excluded": True})
@@ -269,6 +285,10 @@ def test_near_limit_5000_row_preview_has_bounded_memory_payload_and_pagination(c
     assert len(page.content) < 250_000
     assert preview_seconds < 30
     assert page_seconds < 2
-    assert commit_seconds < 30
+    # Wall-clock time on shared CI runners is diagnostic only. Query ceilings
+    # catch N+1 regressions deterministically without treating runner speed as
+    # a production PostgreSQL service-level objective.
+    assert preview_query_count <= 5_100
+    assert commit_query_count <= 31_000
     assert peak_bytes < 512 * 1024 * 1024
     assert commit_peak_bytes < 512 * 1024 * 1024

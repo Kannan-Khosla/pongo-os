@@ -805,17 +805,30 @@ def job_result(job: ImportJob) -> dict[str, Any]:
 
 def stale_rows(preview: ImportPreview, rows: list[ImportPreviewRow], db: Session) -> list[int]:
     stale: list[int] = []
-    for row in rows:
-        if row.state not in READY_STATES | {"no_changes"}:
-            continue
-        if preview.outcome == "add_items":
-            sku_exists = db.scalars(select(InventoryItem.id).where(func.lower(func.trim(InventoryItem.sku)) == normalize_identifier(row.sku))).first()
-            barcode_exists = None
-            if row.barcode:
-                barcode_exists = db.scalars(select(InventoryItem.id).where(func.lower(func.trim(InventoryItem.barcode)) == normalize_identifier(row.barcode))).first()
-            if sku_exists is not None or barcode_exists is not None:
-                stale.append(row.row_number)
-            continue
+    ready_rows = [row for row in rows if row.state in READY_STATES | {"no_changes"}]
+    if preview.outcome == "add_items":
+        normalized_skus = {normalize_identifier(row.sku) for row in ready_rows if row.sku}
+        normalized_barcodes = {normalize_identifier(row.barcode) for row in ready_rows if row.barcode}
+        sku_expression = func.lower(func.trim(InventoryItem.sku))
+        barcode_expression = func.lower(func.trim(InventoryItem.barcode))
+        existing_skus = (
+            set(db.scalars(select(sku_expression).where(sku_expression.in_(normalized_skus))).all())
+            if normalized_skus
+            else set()
+        )
+        existing_barcodes = (
+            set(db.scalars(select(barcode_expression).where(barcode_expression.in_(normalized_barcodes))).all())
+            if normalized_barcodes
+            else set()
+        )
+        return [
+            row.row_number
+            for row in ready_rows
+            if normalize_identifier(row.sku) in existing_skus
+            or (row.barcode and normalize_identifier(row.barcode) in existing_barcodes)
+        ]
+
+    for row in ready_rows:
         item = db.get(InventoryItem, row.existing_item_id) if row.existing_item_id else None
         if item is None:
             stale.append(row.row_number)
