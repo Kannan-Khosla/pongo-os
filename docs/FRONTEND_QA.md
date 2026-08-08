@@ -42,6 +42,14 @@ Use this checklist before calling a Pongo Inventory OS frontend pass complete.
 - Barcode scanners are treated as keyboard input across Pongo OS. Search and
   filter text fields that have Apply/Search/Refresh actions should submit on
   Enter so staff can scan a SKU/barcode directly into the current page.
+- Items also provides an on-demand phone-camera scanner for QR, UPC, EAN, and
+  Code 128 values. It must prefer the rear camera, require HTTPS outside local
+  development, stop the camera when closed, and pass the decoded value through
+  the existing Items search without changing stock.
+- The phone-camera scanner must show actionable permission/device errors and
+  keep a manual SKU/barcode search fallback available. Validate it on current
+  iPhone Safari and Android Chrome before each production release that changes
+  the scanner or authentication flow.
 - Reports render only the selected report, not all report tables at once.
 - Insights renders only the selected dashboard tab, loads tab data on demand,
   shows data quality warnings, and does not show fake export buttons.

@@ -3,12 +3,14 @@ import { createPortal } from 'react-dom';
 import './ReportIntelligence.css';
 import { API_BASE_URL, apiFetch } from './api';
 import { ItemImportHistory, ItemImportWorkspace } from './ItemImportWorkspace';
+import MobileCodeScanner from './MobileCodeScanner';
 import {
   ArrowLeft,
   BarChart3,
   Bell,
   Boxes,
   CalendarDays,
+  Camera,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
@@ -5786,6 +5788,7 @@ function LocationDetail({ location, onSave, isNew = false }) {
 
 function ItemsList({ items, pagination = emptyItemsPagination, loading, error, onLoadItems, onRefreshItemFacets }) {
   const [mappingOpen, setMappingOpen] = useState(false);
+  const [cameraScannerOpen, setCameraScannerOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [visibleColumns, setVisibleColumns] = useState(ITEM_DEFAULT_VISIBLE_COLUMNS);
   const [detailId, setDetailId] = useState(null);
@@ -5846,6 +5849,12 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     setBulkOpen(false);
     setPage(1);
     setFilters((current) => ({ ...current, [name]: value }));
+  }
+
+  function searchScannedCode(value) {
+    const scannedValue = value.trim();
+    setSearchDraft(scannedValue);
+    setMessage(`Searching for scanned code ${scannedValue.slice(0, 80)}.`);
   }
 
   function clearFilters() {
@@ -6006,7 +6015,10 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
           </div>
         </div>
         <div className="items-filter-grid-pro">
-          <InventoryKeywordSearch className="field" value={searchDraft} onChange={setSearchDraft} onSearch={(search) => updateFilter('search', search)} label="SKU / Barcode / Product Title" placeholder="Search SKU, barcode, product title, or brand" />
+          <div className="items-camera-search">
+            <InventoryKeywordSearch className="field" value={searchDraft} onChange={setSearchDraft} onSearch={(search) => updateFilter('search', search)} label="SKU / Barcode / Product Title" placeholder="Search SKU, barcode, product title, or brand" />
+            <button aria-label="Scan QR code or barcode with camera" className="action-button items-camera-button" onClick={() => setCameraScannerOpen(true)} type="button"><Camera aria-hidden="true" size={18} /> Scan code</button>
+          </div>
           <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
           <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
           <FilterSelect label="Stock Status" value={filters.stockStatus} options={['in_stock', 'out_of_stock', 'under_par', 'negative_sellable']} onChange={(value) => updateFilter('stockStatus', value)} />
@@ -6082,6 +6094,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
       {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onRefresh={() => openDetail(detailId)} onRefreshItemFacets={onRefreshItemFacets} />}
       {bulkOpen && <BulkEditModal selectedIds={selectedIds} onCommitted={finishBulkEdit} onClose={() => setBulkOpen(false)} />}
       {remapOpen && <LocalRemapSearchModal onClose={() => setRemapOpen(false)} />}
+      <MobileCodeScanner open={cameraScannerOpen} onClose={() => setCameraScannerOpen(false)} onDetected={searchScannedCode} />
     </section>
   );
 }
@@ -11407,7 +11420,7 @@ function GoogleSheetsSettingsPage({ oauthResult = '' }) {
                 <p>{status.configuration_source === 'pongo_database'
                   ? `Encrypted in Pongo${status.configuration_updated_by ? ` · saved by ${status.configuration_updated_by}` : ''}. Blank client fields keep the saved OAuth app.`
                   : 'Google credentials are stored inside Pongo—not in Heroku or any hosting provider.'}</p>
-                <button className="primary-button integration-connect-button" disabled={loading} type="submit"><Link2 size={17} />{loading ? 'Opening Google…' : status.configured ? 'Reconnect Google Account' : 'Connect Google Account'}</button>
+                <button className="primary-button integration-connect-button" disabled={loading} type="submit"><Link2 size={17} />{loading ? 'Opening Google…' : status.configured ? 'Reconnect Google Account' : 'Sign in with Google'}</button>
               </div>
               {message && <div className="integration-inline-success" role="status">{message}</div>}
             </form>

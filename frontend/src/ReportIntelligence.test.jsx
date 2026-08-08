@@ -117,6 +117,21 @@ describe('Report Intelligence performance flow', () => {
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/api/reports/runs/77/google-sheets'))).toBe(true);
   });
 
+  it('links directly to Google sign-in when report sharing is not connected', async () => {
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      const target = String(url);
+      if (target.endsWith('/api/reports')) return response({ reports: [scopedReport], google_sheets_configured: false });
+      if (target.includes('/api/reports/jobs/latest/')) return response(run);
+      return response({});
+    }));
+
+    render(<ReportIntelligencePage apiBaseUrl="" reportKey={scopedReport.key} />);
+
+    const signIn = await screen.findByRole('link', { name: 'Sign in with Google' });
+    expect(signIn).toHaveAttribute('href', '#/settings/google-sheets');
+    expect(screen.getByRole('button', { name: 'Create and open Sheet' })).toBeDisabled();
+  });
+
   it('queues generation and shows the previous verified run while polling', async () => {
     const user = userEvent.setup();
     vi.stubGlobal('fetch', vi.fn((url) => {

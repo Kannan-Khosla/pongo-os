@@ -405,7 +405,11 @@ function SharePanel({ run, catalog, apiBaseUrl, onNotice }) {
         </summary>
         <div className="ri-share-body">
           {!catalog.google_sheets_configured && (
-            <div className="ri-config-note"><AlertTriangle size={16} />Connect a Google account under Settings → Google Sheets first.</div>
+            <div className="ri-config-note">
+              <AlertTriangle aria-hidden="true" size={16} />
+              <span>Google Sheets is not connected.</span>
+              <a href="#/settings/google-sheets">Sign in with Google</a>
+            </div>
           )}
           <label className="ri-field">
             <span>Share with (optional)</span>

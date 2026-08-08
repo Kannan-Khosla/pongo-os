@@ -5106,8 +5106,22 @@ tbody tr:nth-child(even) .sticky-col {
   align-items: end;
 }
 
-.items-filter-grid-pro .field:first-child {
+.items-filter-grid-pro > .field:first-child,
+.items-camera-search {
   grid-column: span 2;
+}
+
+.items-camera-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.items-camera-button {
+  min-height: 42px;
+  white-space: nowrap;
 }
 
 .items-view-card {
@@ -5227,6 +5241,14 @@ tbody tr:nth-child(even) .sticky-col {
   .items-filter-grid-pro,
   .item-editor-page .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .items-camera-search {
+    grid-column: auto;
+  }
+
+  .items-camera-button {
+    min-width: 48px;
   }
 }
 

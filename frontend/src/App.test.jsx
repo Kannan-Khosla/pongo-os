@@ -723,6 +723,27 @@ describe('App shell and workflows', () => {
     });
   });
 
+  it('searches Items from the mobile camera scanner manual fallback', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#items';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    await user.click(screen.getByRole('button', { name: 'Scan QR code or barcode with camera' }));
+
+    const scanner = screen.getByRole('dialog', { name: 'Scan an item code' });
+    await user.type(within(scanner).getByLabelText('Enter barcode or SKU instead'), 'SMOKE001');
+    await user.click(within(scanner).getByRole('button', { name: 'Search item' }));
+
+    expect(screen.getByPlaceholderText('Search SKU, barcode, product title, or brand')).toHaveValue('SMOKE001');
+    await waitFor(() => {
+      expect(fetch.mock.calls.some(([url]) => {
+        const request = new URL(String(url));
+        return request.pathname === '/api/items' && request.searchParams.get('search') === 'SMOKE001';
+      })).toBe(true);
+    });
+  });
+
   it('aborts an obsolete item-list request when moving to Scanner', async () => {
     let itemRequestSignal;
     fetch.mockImplementation((url, options = {}) => {
@@ -1988,7 +2009,7 @@ describe('App shell and workflows', () => {
     await user.type(screen.getByLabelText('OAuth client secret'), 'google-client-secret');
     await user.type(screen.getByLabelText(/Google Drive folder ID/i), 'pongo-folder');
     expect(screen.queryByLabelText(/refresh token/i)).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Connect Google Account' }));
+    await user.click(screen.getByRole('button', { name: 'Sign in with Google' }));
 
     await waitFor(() => {
       const call = fetch.mock.calls.find(([url, options]) => (

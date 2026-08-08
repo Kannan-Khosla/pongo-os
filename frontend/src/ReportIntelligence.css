@@ -730,6 +730,23 @@
   line-height: 1.45;
 }
 
+.ri-config-note span {
+  flex: 1;
+}
+
+.ri-config-note {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ri-config-note a {
+  flex: 0 0 auto;
+  color: var(--ri-indigo);
+  font-weight: 850;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .ri-checks {
   display: flex;
   align-items: center;

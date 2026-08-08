@@ -82,9 +82,10 @@ filters.
 ## External delivery
 
 Google Sheets publishing and SMTP email remain backend-only operations. Staff
-configure Google Sheets under Settings → Google Sheets. Pongo displays the
+configure Google Sheets under Settings → Google Sheets, or follow the direct
+**Sign in with Google** action shown beside a disconnected report. Pongo displays the
 exact authorized redirect URI for a Google OAuth web client. Staff enter the
-client ID/secret once, click **Connect Google Account**, approve access in
+client ID/secret once, click **Sign in with Google**, approve access in
 Google, and return to Pongo. The authorization code is exchanged server-side;
 the resulting refresh token is stored encrypted and is never shown or copied by
 staff.
