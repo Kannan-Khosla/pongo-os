@@ -2,13 +2,13 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-09T08:34:59Z
-EXECUTION MODE: Operate
+LAST UPDATED: 2026-08-09T08:51:33Z
+EXECUTION MODE: Release Readiness and Release
 CURRENT PHASE: Complete
-CURRENT RELEASE RECOMMENDATION: READY FOR REVIEW; NOT DEPLOYED
+CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Pongo Inventory OS now has phone-camera QR/barcode search on Items and all Inventory pages. The Routes page has a read-only planner that includes every operational open order, starts at the Pongo warehouse, splits deliveries across 1–50 drivers, and creates mobile-safe Google Maps links that can be opened or shared. The implementation is local and has not been deployed in this delivery.
+Pongo Inventory OS production now has phone-camera QR/barcode search on Items and all Inventory pages. The Routes page has a read-only planner that includes every operational open order, starts at the Pongo warehouse, splits deliveries across 1–50 drivers, and creates mobile-safe Google Maps links that can be opened or shared. Heroku release v40 deployed commit 96c3816 and passed live smoke verification.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -25,7 +25,7 @@ REQ-QA-001: Focused and full backend/frontend tests, frontend build, diff checks
 
 === 05. SCOPE, NON-GOALS, CONSTRAINTS, AND ASSUMPTIONS ===
 IN SCOPE: phone camera scanner entry points on Items/Inventory; open-order query and deterministic driver assignment; missing-address reporting; keyless Google Maps URL construction; native share/clipboard fallback; responsive UI; tests and docs.
-NON-GOALS: deployment, embedded map tiles, paid Google Routes API, traffic-aware optimization, server-side geocoding/address correction, route persistence, dispatch tracking, driver accounts, proof of delivery, WooCommerce writes, and stock changes.
+NON-GOALS: configuration changes, embedded map tiles, paid Google Routes API, traffic-aware optimization, server-side geocoding/address correction, route persistence, dispatch tracking, driver accounts, proof of delivery, WooCommerce writes, and stock changes.
 CONSTRAINTS: Frontend receives no map credentials. Google Maps URLs have mobile waypoint limits, so long routes must be segmented. Existing completed-order route records remain available as a separate historical workflow.
 ASSUMPTION: Operational open orders are the existing non-historical Woo processing/FooSales set and shipping address fields are the delivery authority.
 
@@ -48,7 +48,7 @@ ADR-SCAN-001 ACCEPTED: Reuse MobileCodeScanner and the page's existing search pi
 4. Add camera scanner to every Inventory subpage and make scan results search immediately. COMPLETED.
 5. Add focused backend/frontend coverage and update product/API/QA/decision docs. COMPLETED.
 6. Run full regression, build, state validation, and final browser cleanup. COMPLETED.
-7. Deploy only after a separate explicit user request. NOT STARTED.
+7. Back up PostgreSQL, deploy to Heroku, restore the worker, and verify production. COMPLETED.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -56,14 +56,15 @@ ROUTE-001 / P0 / COMPLETED / Read-only all-open-order route planning API with ad
 ROUTE-002 / P0 / COMPLETED / Mobile-safe continuous Google Maps direction URLs with optional warehouse return.
 ROUTE-003 / P0 / COMPLETED / Polished responsive planner, per-driver stops, warnings, native share/clipboard, and Google Maps actions.
 QA-001 / P0 / COMPLETED / Full backend/frontend regression, build, diff check, desktop/mobile browser layout, and state validation passed.
-RELEASE-001 / P1 / NOT STARTED / No deployment requested for this delivery.
+RELEASE-001 / P1 / RELEASED / Heroku v40 deployed commit 96c3816 after manual backup b004; web/worker, migration, health, authentication, Routes, Inventory scanner, and browser logs verified.
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
 RISK-002 / MEDIUM / ACCEPTED: Postal grouping is not road/traffic optimization. UI and docs state this clearly; Google Maps provides directions only after the link opens.
 RISK-003 / MEDIUM / MITIGATED: Incomplete addresses could silently disappear. Planner returns and displays every excluded order and reason.
 RISK-004 / LOW / MITIGATED: More drivers than orders. Effective driver count is reduced and the response explains why.
-RISK-005 / MEDIUM / OPEN FOR RELEASE: Current local browser database is an old unmigrated SQLite file and existing endpoints fail on missing tables/columns. Fresh isolated test databases pass; production deployment must use normal Alembic release migration and live data verification.
+RISK-005 / MEDIUM / MITIGATED FOR RELEASE: The obsolete local SQLite file was not used for release evidence. Heroku's PostgreSQL release migration succeeded at revision 20260807_0037 and the authenticated production UI loaded real route/inventory data.
+RISK-006 / HIGH / PRE-EXISTING AND ACCEPTED FOR THIS RELEASE: Production `/ready` remains HTTP 503 because 223 active stock items lack positive unit cost, no operations alert webhook is configured, and production stock authority/writeback are active. This delivery did not alter configuration or any stock-changing path; `/health`, schema, authentication, database, webhooks, reconciliation, and worker checks passed.
 DEPENDENCY-001: Opening a generated link requires Google Maps/web and exposes that link's addresses to Google at staff action time.
 
 === 11. IMPLEMENTATION AND CHANGE LOG ===
@@ -72,6 +73,7 @@ DEPENDENCY-001: Opening a generated link requires Google Maps/web and exposes th
 2026-08-08: Added live route planner UI with default Pongo start, 1–50 drivers, stop cards, warnings, native share/clipboard fallback, and Open Maps links.
 2026-08-08: Added MobileCodeScanner to all Inventory views and made both Inventory and Items scan values execute search immediately.
 2026-08-08: Added backend/frontend tests and updated README, API, QA, UI, and ADR documentation.
+2026-08-09: Committed and pushed 96c3816 to the feature branch and GitHub main, captured Heroku backup b004, paused the worker, deployed Heroku v40, ran the existing Alembic release command, restored the worker, and completed live smoke verification.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
 Final evidence:
@@ -80,17 +82,21 @@ Final evidence:
 - Frontend production build: passed; existing Vite large-chunk warning remains.
 - `git diff --check`: passed after all code and documentation edits.
 - Desktop and 390 px mobile browser layouts visually verified; planner controls and Inventory Scan code entry fit without horizontal overflow. Local test browser tab and servers were closed.
+- Production Heroku build passed with zero npm audit vulnerabilities; the existing Vite large-chunk advisory remains.
+- Heroku release v40 is commit 96c3816 and rollback-eligible. Release migration completed transactionally at schema 20260807_0037.
+- Production `/health` returned HTTP 200; anonymous `/api/auth/me` and `/api/routes/open-orders/plan` returned HTTP 401.
+- Authenticated production Routes rendered the new planner/default warehouse and completed its read-only request; Inventory exposed exactly one camera scan action; browser console errors were empty.
 Security/safety: planning is authenticated through the existing API router, performs no writes, returns no credentials, and calls no map or WooCommerce service. Scanner search performs no stock mutation.
 Browser observation: planner layout and controls rendered locally. Data calls failed because the selected local SQLite file lacks existing migrations (`woocommerce_configuration` table and `orders.is_historical_snapshot` column); this is separate from the fresh-database test evidence.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
-Database migration: none; no schema change.
-Release target: existing production application only after explicit deployment authorization.
-Rollback: revert the application commit; no data rollback is needed because the planner does not persist or mutate data.
-PRODUCTION APPROVAL: Not granted in this delivery request.
+Database migration: none; Heroku's release command confirmed existing head 20260807_0037.
+Release: Heroku v40, commit 96c3816, 2026-08-09T08:47:50Z.
+Recovery: manual PostgreSQL backup b004 completed before release. Application rollback is Heroku v39 at e02a411; v40 is rollback-eligible. No data rollback is expected because the feature is read-only and introduced no schema/data change.
+PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 
 === 14. OPERATIONS, OBSERVABILITY, AND SUPPORT READINESS ===
-The endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Missing addresses, excess driver count, long-link segmentation, loading, empty, share success/failure, and API failure states are visible. Production verification should confirm current open-order totals, representative Edmonton addresses, iPhone Safari camera permission/scanning, Android Chrome camera permission/scanning, and every generated Maps part.
+The endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Web and worker dynos are each running at one Basic dyno. Production UI and API smoke checks passed without browser console errors. Physical iPhone/Android camera permission and real barcode decoding still require device verification by Pongo staff.
 
 === 15. TECHNICAL DEBT AND DEFERRED WORK ===
 Deferred: road/traffic optimization, address validation/geocoding, embedded map preview, persisted dispatch plans, named drivers, per-driver acknowledgements, route completion/proof of delivery, and automated SMS/email sharing. Add only after Pongo validates the simple operational workflow and production measurements justify more infrastructure.
@@ -100,9 +106,9 @@ Known unrelated audit debt remains in PRODUCT_AUDIT.txt.
 Reused the existing scanner component and search flows, the operational order eligibility clause, and platform-native Web Share/clipboard capabilities. This avoided map keys, a new SDK, database schema, background jobs, and a second inventory lookup path. UI guidance applied: one obvious planning action, explicit defaults, visible exclusions, responsive cards, actionable errors, and no claim of optimization that the system does not perform.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Review the completed local implementation and residual limits.
-THEN: If accepted, explicitly authorize commit/push/deployment and verify with real open orders plus iPhone/Android camera permissions in production.
-APPROVAL REQUIRED: A separate explicit user request is required before commit/push/deployment. Production camera verification requires user-granted device permission on iPhone/Android.
+NEXT: Pongo staff verifies one real barcode/QR scan on iPhone Safari and Android Chrome when convenient.
+THEN: Resolve the pre-existing `/ready` gaps: confirm missing unit costs, configure the private operations alert webhook, and separately review stock-authority/writeback safety.
+APPROVAL REQUIRED: None for the completed release. Any configuration change to production stock authority/writeback or credentials requires separate explicit approval.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
 --- DELIVERY RUN: 2026-08-07T18:54:03Z ---
@@ -116,3 +122,9 @@ MODE: Operate
 SUMMARY: Phone-camera inventory scanning and read-only all-open-order multi-driver Google Maps planning implemented and verified locally; not deployed.
 EVIDENCE: 495 backend tests passed with 10 PostgreSQL-only skips; 140 frontend tests passed; production build and diff check passed; desktop and 390px mobile layouts visually verified.
 NEXT ACTION: Review, then explicitly authorize commit/push/deployment and production iPhone/Android plus real-order verification.
+
+--- DELIVERY RUN: 2026-08-09T08:51:33Z ---
+MODE: Release Readiness and Release
+SUMMARY: Inventory camera scanning and open-order multi-driver Google Maps planning deployed to Pongo production as Heroku v40 and verified.
+EVIDENCE: Commit 96c3816; backup b004 completed; Alembic release command passed at 20260807_0037; web and worker up; health 200; auth and planner anonymous boundary 401; signed-in Routes and Inventory smoke checks passed with no browser console errors.
+NEXT ACTION: Verify physical camera decoding on iPhone/Android and separately address the pre-existing readiness gaps for missing unit costs, alerting, and active stock writeback.
