@@ -433,6 +433,28 @@ function mockFetch(url, options = {}) {
   if (target.includes('/api/picks/commit')) return json({ status: 'posted', pick_id: 44, pick_number: 'PICK-0044', total_quantity_picked: 1 });
   if (target.includes('/api/picks')) return json({ picks: [] });
   if (target.includes('/api/fulfillments')) return json({ fulfillments: [] });
+  if (target.includes('/api/routes/open-orders/plan')) return json({
+    start_address: '5855 99 Street NW, Edmonton, AB',
+    requested_driver_count: 1,
+    effective_driver_count: 1,
+    total_open_orders: 2,
+    routable_order_count: 2,
+    excluded_order_count: 0,
+    return_to_start: false,
+    assignment_method: 'balanced_by_postal_area',
+    warnings: [],
+    excluded_orders: [],
+    drivers: [{
+      driver_number: 1,
+      driver_label: 'Driver 1',
+      stop_count: 2,
+      stops: [
+        { stop_sequence: 1, order_id: 701, woo_order_number: '0802', customer_name: 'Avery Stone', address: '200 Delivery Way, Edmonton, AB, T5J 0N3, CA', postal_area: 'T5J' },
+        { stop_sequence: 2, order_id: 702, woo_order_number: '0803', customer_name: 'Morgan Lee', address: '300 Delivery Way, Edmonton, AB, T5K 1A1, CA', postal_area: 'T5K' },
+      ],
+      google_maps_links: [{ part_number: 1, label: 'Stops 1–2', url: 'https://www.google.com/maps/dir/?api=1&origin=5855+99+Street&destination=300+Delivery+Way', stop_sequence_from: 1, stop_sequence_to: 2, stop_count: 2, returns_to_start: false }],
+    }],
+  });
   if (target.includes('/api/routes/candidates')) return json({ total_candidates: 0, candidates: [] });
   if (target.includes('/api/routes')) return json({ routes: [], total: 0 });
   if (target.includes('/api/integrations/woocommerce/status')) return json({
@@ -1035,6 +1057,25 @@ describe('App shell and workflows', () => {
       return request.pathname === '/api/items' && request.searchParams.get('page') === '1' && request.searchParams.get('page_size') === '50';
     })).toBe(true);
     expect(fetch.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/api/locations')).toHaveLength(1);
+  });
+
+  it('opens the phone camera scanner from Inventory and searches the detected code immediately', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    await user.click(screen.getByRole('button', { name: 'Scan QR code or barcode with camera' }));
+    const scanner = screen.getByRole('dialog', { name: 'Scan an item code' });
+    await user.type(within(scanner).getByRole('textbox', { name: /Enter barcode or SKU instead/i }), 'SMOKE001');
+    await user.click(within(scanner).getByRole('button', { name: 'Search item' }));
+
+    await waitFor(() => expect(window.location.hash).toContain('search=SMOKE001'));
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/items' && request.searchParams.get('search') === 'SMOKE001';
+    })).toBe(true));
+    expect(screen.queryByRole('dialog', { name: 'Scan an item code' })).not.toBeInTheDocument();
   });
 
   it('clears and disables Inventory selection while the next page is loading', async () => {
@@ -2455,6 +2496,29 @@ describe('App shell and workflows', () => {
     await user.type(within(candidateToolbar).getByLabelText('Order Date'), '2026-08-01');
     await user.click(within(candidateToolbar).getByRole('button', { name: /^Apply$/i }));
     await waitFor(() => expect(fetch.mock.calls.some(([url]) => new URL(String(url)).searchParams.get('route_date') === '2026-08-01')).toBe(true));
+  });
+
+  it('plans every open order from the warehouse and generates shareable Google Maps routes for any driver count', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#routes';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Route all open orders' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Starting location' })).toHaveValue('5855 99 Street NW, Edmonton, AB');
+    expect(await screen.findByRole('heading', { name: 'Driver 1' })).toBeInTheDocument();
+    expect(screen.getByText('Order #0802')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Maps' })).toHaveAttribute('href', expect.stringContaining('https://www.google.com/maps/dir/'));
+
+    const driverCount = screen.getByRole('spinbutton', { name: 'Number of drivers' });
+    await user.clear(driverCount);
+    await user.type(driverCount, '3');
+    await user.click(screen.getByRole('button', { name: 'Plan all open orders' }));
+
+    await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => (
+      String(url).includes('/api/routes/open-orders/plan')
+      && JSON.parse(options.body || '{}').driver_count === 3
+      && JSON.parse(options.body || '{}').start_address === '5855 99 Street NW, Edmonton, AB'
+    ))).toBe(true));
   });
 
   it('shows all Update All errors and wires resume and cancel actions after refresh', async () => {

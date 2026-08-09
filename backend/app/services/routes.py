@@ -4,6 +4,7 @@ import csv
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
+from urllib.parse import urlencode
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -12,6 +13,12 @@ from app.core.config import get_settings
 from app.models.orders import Order, OrderItem
 from app.models.routes import Route, RouteStop
 from app.schemas.routes import (
+    DriverOpenOrderRoutePlan,
+    GoogleMapsRouteLink,
+    OpenOrderRouteExcludedOrder,
+    OpenOrderRoutePlanRequest,
+    OpenOrderRoutePlanResponse,
+    OpenOrderRoutePlanStop,
     RouteCandidateListResponse,
     RouteCandidateRead,
     RouteCommitResponse,
@@ -29,8 +36,12 @@ from app.schemas.routes import (
     RouteStopRead,
     RouteUpdateRequest,
 )
+from app.services.order_workflow import COMPLETED_LOCAL_STATUSES, operational_order_clause
 
 ROUTE_ELIGIBLE_STATUSES = {"completed", "fulfilled", "partially_fulfilled"}
+DEFAULT_ROUTE_START_ADDRESS = "5855 99 Street NW, Edmonton, AB"
+GOOGLE_MAPS_DIRECTIONS_URL = "https://www.google.com/maps/dir/"
+GOOGLE_MAPS_MOBILE_DELIVERY_STOPS_PER_LINK = 4
 ROUTE_CSV_COLUMNS = [
     "Route Number",
     "Route Date",
@@ -51,6 +62,192 @@ ROUTE_CSV_COLUMNS = [
     "Order Total",
     "Created At",
 ]
+
+
+def plan_open_order_routes(db: Session, payload: OpenOrderRoutePlanRequest) -> OpenOrderRoutePlanResponse:
+    closed_local_statuses = COMPLETED_LOCAL_STATUSES | {"cancelled", "canceled", "failed", "refunded"}
+    orders = list(
+        db.scalars(
+            select(Order)
+            .where(
+                operational_order_clause(),
+                ~func.coalesce(Order.completion_status, "").in_(("completed", "completed_without_picking")),
+                ~func.coalesce(Order.local_status, "").in_(tuple(closed_local_statuses)),
+            )
+            .order_by(Order.date_created.asc().nullslast(), Order.id.asc())
+        ).all()
+    )
+
+    routable: list[tuple[Order, str, str]] = []
+    excluded: list[OpenOrderRouteExcludedOrder] = []
+    for order in orders:
+        address = order_shipping_address(order)
+        if not order.shipping_address_1 or not (order.shipping_city or order.shipping_zip):
+            excluded.append(
+                OpenOrderRouteExcludedOrder(
+                    order_id=order.id,
+                    woo_order_number=order.woo_order_number,
+                    customer_name=order.customer_name,
+                    reason="A street address plus city or postal code is required.",
+                )
+            )
+            continue
+        routable.append((order, address, order_postal_area(order)))
+
+    routable.sort(
+        key=lambda row: (
+            row[2],
+            normalize_postal_code(row[0].shipping_zip),
+            (row[0].shipping_city or "").casefold(),
+            (row[0].shipping_address_1 or "").casefold(),
+            row[0].id,
+        )
+    )
+    effective_driver_count = min(payload.driver_count, len(routable)) if routable else 0
+    warnings: list[str] = []
+    if excluded:
+        warnings.append(f"{len(excluded)} open order(s) were excluded because their delivery address is incomplete.")
+    if routable and payload.driver_count > len(routable):
+        warnings.append(
+            f"Only {len(routable)} driver route(s) were created because there are {len(routable)} routable open order(s)."
+        )
+
+    drivers: list[DriverOpenOrderRoutePlan] = []
+    for driver_index, driver_orders in enumerate(split_balanced(routable, effective_driver_count), start=1):
+        stops = [
+            OpenOrderRoutePlanStop(
+                stop_sequence=stop_sequence,
+                order_id=order.id,
+                woo_order_id=order.woo_order_id,
+                woo_order_number=order.woo_order_number,
+                local_status=order.local_status,
+                customer_name=order.customer_name,
+                customer_phone=order.shipping_phone or order.customer_phone,
+                address=address,
+                postal_area=postal_area or None,
+            )
+            for stop_sequence, (order, address, postal_area) in enumerate(driver_orders, start=1)
+        ]
+        links = build_google_maps_route_links(
+            start_address=payload.start_address.strip() or DEFAULT_ROUTE_START_ADDRESS,
+            stops=stops,
+            return_to_start=payload.return_to_start,
+        )
+        delivery_link_count = sum(1 for link in links if not link.returns_to_start)
+        if delivery_link_count > 1:
+            warnings.append(
+                f"Driver {driver_index} is split into {delivery_link_count} Google Maps parts so every link works reliably on iPhone and Android."
+            )
+        drivers.append(
+            DriverOpenOrderRoutePlan(
+                driver_number=driver_index,
+                driver_label=f"Driver {driver_index}",
+                stop_count=len(stops),
+                stops=stops,
+                google_maps_links=links,
+            )
+        )
+
+    return OpenOrderRoutePlanResponse(
+        start_address=payload.start_address.strip() or DEFAULT_ROUTE_START_ADDRESS,
+        requested_driver_count=payload.driver_count,
+        effective_driver_count=effective_driver_count,
+        total_open_orders=len(orders),
+        routable_order_count=len(routable),
+        excluded_order_count=len(excluded),
+        return_to_start=payload.return_to_start,
+        assignment_method="balanced_by_postal_area",
+        drivers=drivers,
+        excluded_orders=excluded,
+        warnings=warnings,
+    )
+
+
+def order_shipping_address(order: Order) -> str:
+    return ", ".join(
+        part.strip()
+        for part in [
+            order.shipping_address_1,
+            order.shipping_address_2,
+            order.shipping_address_3,
+            order.shipping_city,
+            order.shipping_state,
+            order.shipping_zip,
+            order.shipping_country,
+        ]
+        if part and part.strip()
+    )
+
+
+def normalize_postal_code(value: str | None) -> str:
+    return "".join((value or "").upper().split())
+
+
+def order_postal_area(order: Order) -> str:
+    postal_code = normalize_postal_code(order.shipping_zip)
+    if postal_code:
+        return postal_code[:3]
+    return (order.shipping_city or "").strip().upper()
+
+
+def split_balanced(rows: list, group_count: int) -> list[list]:
+    if group_count <= 0:
+        return []
+    base_size, extra = divmod(len(rows), group_count)
+    groups = []
+    cursor = 0
+    for group_index in range(group_count):
+        group_size = base_size + (1 if group_index < extra else 0)
+        groups.append(rows[cursor : cursor + group_size])
+        cursor += group_size
+    return groups
+
+
+def build_google_maps_route_links(
+    *,
+    start_address: str,
+    stops: list[OpenOrderRoutePlanStop],
+    return_to_start: bool,
+) -> list[GoogleMapsRouteLink]:
+    links: list[GoogleMapsRouteLink] = []
+    origin = start_address
+    for offset in range(0, len(stops), GOOGLE_MAPS_MOBILE_DELIVERY_STOPS_PER_LINK):
+        stop_group = stops[offset : offset + GOOGLE_MAPS_MOBILE_DELIVERY_STOPS_PER_LINK]
+        destination = stop_group[-1].address
+        parameters = {
+            "api": "1",
+            "origin": origin,
+            "destination": destination,
+            "travelmode": "driving",
+        }
+        if len(stop_group) > 1:
+            parameters["waypoints"] = "|".join(stop.address for stop in stop_group[:-1])
+        part_number = len(links) + 1
+        links.append(
+            GoogleMapsRouteLink(
+                part_number=part_number,
+                label=f"Stops {stop_group[0].stop_sequence}–{stop_group[-1].stop_sequence}",
+                url=f"{GOOGLE_MAPS_DIRECTIONS_URL}?{urlencode(parameters)}",
+                stop_sequence_from=stop_group[0].stop_sequence,
+                stop_sequence_to=stop_group[-1].stop_sequence,
+                stop_count=len(stop_group),
+            )
+        )
+        origin = destination
+
+    if return_to_start and stops:
+        links.append(
+            GoogleMapsRouteLink(
+                part_number=len(links) + 1,
+                label="Return to starting location",
+                url=f"{GOOGLE_MAPS_DIRECTIONS_URL}?{urlencode({'api': '1', 'origin': origin, 'destination': start_address, 'travelmode': 'driving'})}",
+                stop_sequence_from=stops[-1].stop_sequence,
+                stop_sequence_to=None,
+                stop_count=0,
+                returns_to_start=True,
+            )
+        )
+    return links
 
 
 def list_route_candidates(

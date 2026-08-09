@@ -779,6 +779,14 @@ No route screenshot was present. Routes use the global Pongo admin shell and
 the same dense operational table language as Orders, Reports, and Fulfillment.
 
 Current behavior:
+- Plan every operational open order with a complete address from the default
+  Pongo warehouse starting point.
+- Choose 1–50 drivers and optionally add a return leg.
+- Keep postal areas together where possible while splitting stop counts evenly.
+- Review every driver assignment and every order excluded for a missing
+  address.
+- Open or share mobile-safe Google Maps direction links; long routes continue
+  in numbered parts.
 - Show eligible completed local orders with shipping/customer snapshots.
 - Filter candidates by status, customer email, Woo order number, and search.
 - Select orders to include as route stops.
@@ -792,7 +800,8 @@ Current behavior:
 
 Safety / not yet built:
 - Do not expose map provider keys in frontend code.
-- Do not call map, geocoding, or route optimization APIs.
+- Keyless Google Maps URLs are allowed; do not call map, geocoding, or paid
+  route-optimization APIs.
 - Do not update WooCommerce.
 - Do not change local inventory quantities.
 - Do not add shipping labels, delivery tracking, or outbound/customer

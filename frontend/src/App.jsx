@@ -50,6 +50,7 @@ import {
 } from 'lucide-react';
 
 const ReportIntelligencePage = lazy(() => import('./ReportIntelligence'));
+const DEFAULT_ROUTE_START_ADDRESS = '5855 99 Street NW, Edmonton, AB';
 
 export const browserNavigation = {
   assign: (url) => window.location.assign(url),
@@ -1278,6 +1279,9 @@ export default function App({ currentUser = null, onLogout = null }) {
   const [routeDetail, setRouteDetail] = useState(null);
   const [routeMapPayload, setRouteMapPayload] = useState(null);
   const [routeProviderMessage, setRouteProviderMessage] = useState('');
+  const [openOrderRoutePlan, setOpenOrderRoutePlan] = useState(null);
+  const [openOrderRoutePlanLoading, setOpenOrderRoutePlanLoading] = useState(false);
+  const [openOrderRoutePlanError, setOpenOrderRoutePlanError] = useState('');
   const [routesLoading, setRoutesLoading] = useState(false);
   const [routesError, setRoutesError] = useState('');
   const [orderNotificationHistory, setOrderNotificationHistory] = useState([]);
@@ -1385,6 +1389,11 @@ export default function App({ currentUser = null, onLogout = null }) {
       }
     }
     if (route.pageId === 'routes') {
+      planOpenOrderRoutes({
+        start_address: DEFAULT_ROUTE_START_ADDRESS,
+        driver_count: 1,
+        return_to_start: false,
+      });
       loadRouteCandidates();
       loadRoutes();
     }
@@ -2495,6 +2504,18 @@ export default function App({ currentUser = null, onLogout = null }) {
     }
   }
 
+  async function planOpenOrderRoutes(payload) {
+    setOpenOrderRoutePlanLoading(true);
+    setOpenOrderRoutePlanError('');
+    try {
+      setOpenOrderRoutePlan(await postJson('/api/routes/open-orders/plan', payload));
+    } catch (error) {
+      setOpenOrderRoutePlanError(error.message || 'Unable to plan routes for open orders.');
+    } finally {
+      setOpenOrderRoutePlanLoading(false);
+    }
+  }
+
   async function loadRoutes(filters = {}) {
     const requestFilters = {
       ...routeFiltersToApi(filters),
@@ -3321,6 +3342,9 @@ export default function App({ currentUser = null, onLogout = null }) {
             routeDetail={routeDetail}
             routeMapPayload={routeMapPayload}
             routeProviderMessage={routeProviderMessage}
+            openOrderRoutePlan={openOrderRoutePlan}
+            openOrderRoutePlanLoading={openOrderRoutePlanLoading}
+            openOrderRoutePlanError={openOrderRoutePlanError}
             routesLoading={routesLoading}
             routesError={routesError}
             onLoadRouteCandidates={loadRouteCandidates}
@@ -3334,6 +3358,7 @@ export default function App({ currentUser = null, onLogout = null }) {
             onReorderRouteStops={reorderRouteStops}
             onSaveRouteStop={saveRouteStop}
             onRouteProviderAction={routeProviderAction}
+            onPlanOpenOrderRoutes={planOpenOrderRoutes}
           />
         </main>
       </div>
@@ -3873,6 +3898,9 @@ function PageBody({
   routeDetail,
   routeMapPayload,
   routeProviderMessage,
+  openOrderRoutePlan,
+  openOrderRoutePlanLoading,
+  openOrderRoutePlanError,
   routesLoading,
   routesError,
   onLoadRouteCandidates,
@@ -3886,6 +3914,7 @@ function PageBody({
   onReorderRouteStops,
   onSaveRouteStop,
   onRouteProviderAction,
+  onPlanOpenOrderRoutes,
 }) {
   if (route.pageId === 'items') {
     return <ItemsPage route={route} items={items} pagination={itemsPagination} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onRefreshItemFacets={onRefreshItemFacets} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
@@ -4107,6 +4136,9 @@ function PageBody({
         detail={routeDetail}
         mapPayload={routeMapPayload}
         providerMessage={routeProviderMessage}
+        openOrderPlan={openOrderRoutePlan}
+        openOrderPlanLoading={openOrderRoutePlanLoading}
+        openOrderPlanError={openOrderRoutePlanError}
         loading={routesLoading}
         error={routesError}
         onLoadCandidates={onLoadRouteCandidates}
@@ -4120,6 +4152,7 @@ function PageBody({
         onReorderStops={onReorderRouteStops}
         onSaveStop={onSaveRouteStop}
         onProviderAction={onRouteProviderAction}
+        onPlanOpenOrders={onPlanOpenOrderRoutes}
       />
     );
   }
@@ -4736,6 +4769,7 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
   const [editingItem, setEditingItem] = useState(null);
   const [adjustingItem, setAdjustingItem] = useState(null);
   const [parItem, setParItem] = useState(null);
+  const [cameraScannerOpen, setCameraScannerOpen] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState([]);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [movementFilters, setMovementFilters] = useState({ movement_type: '', warehouse: '', inventory_location: '', date_from: '', date_to: '' });
@@ -4817,6 +4851,13 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
 
   function submitSearch(nextSearch = queryDraft) {
     window.location.hash = inventoryRouteHref(route, { search: nextSearch.trim(), page: 1 });
+  }
+
+  function searchScannedInventoryCode(value) {
+    const scannedValue = value.trim();
+    setQueryDraft(scannedValue);
+    setMessage(`Searching inventory for scanned code ${scannedValue.slice(0, 80)}.`);
+    submitSearch(scannedValue);
   }
 
   function updateFilter(name, value) {
@@ -5005,7 +5046,7 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
         <Metric label="Under Par" value={summary.under_par_count ?? itemRows.filter((row) => row.underPar).length} />
       </div>
 
-      <InventoryScannerSearch value={queryDraft} onChange={setQueryDraft} onSubmit={submitSearch} onClear={clearFilters} filters={filters} options={options} onFilterChange={updateFilter} />
+      <InventoryScannerSearch value={queryDraft} onChange={setQueryDraft} onSubmit={submitSearch} onClear={clearFilters} filters={filters} options={options} onFilterChange={updateFilter} onOpenScanner={() => setCameraScannerOpen(true)} />
 
       <div className="csv-note">Inventory search uses local Pongo OS data. Picked-order stock writes back when the order is completed; manual stock changes write back automatically. Use Update Stock to retry changed items or Update Stock All to resend every mapped item.</div>
       {error && <div className="api-error">{error}</div>}
@@ -5026,11 +5067,12 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
       {adjustingItem && <StockAdjustmentModal item={adjustingItem} locationRows={enrichedLocationRows.filter((row) => row.item_id === adjustingItem.id)} onClose={() => setAdjustingItem(null)} onCommit={commitStockEdit} />}
       {parItem && <ParLevelModal item={parItem} onClose={() => setParItem(null)} onSave={saveParLevel} />}
       {bulkOpen && <BulkEditModal selectedIds={selectedItemIds} onCommitted={finishBulkEdit} onClose={() => setBulkOpen(false)} />}
+      <MobileCodeScanner open={cameraScannerOpen} onClose={() => setCameraScannerOpen(false)} onDetected={searchScannedInventoryCode} />
     </section>
   );
 }
 
-function InventoryScannerSearch({ value, onChange, onSubmit, onClear, filters, options, onFilterChange }) {
+function InventoryScannerSearch({ value, onChange, onSubmit, onClear, filters, options, onFilterChange, onOpenScanner }) {
   return (
     <div className="inventory-search-card">
       <div className="inventory-search-row">
@@ -5076,6 +5118,7 @@ function InventoryScannerSearch({ value, onChange, onSubmit, onClear, filters, o
           <select value={filters.sortDir} onChange={(event) => onFilterChange('sortDir', event.target.value)}><option value="asc">Ascending</option><option value="desc">Descending</option></select>
         </label>
         <InventoryKeywordSearch className="zenventory-search-field" value={value} onChange={onChange} onSearch={onSubmit} label="Scan or search inventory" placeholder="Search barcode, SKU, product title, or brand" autoFocus />
+        <button aria-label="Scan QR code or barcode with camera" className="inventory-camera-button" onClick={onOpenScanner} type="button"><Camera aria-hidden="true" size={17} /> Scan code</button>
         <button className="inventory-search-button" onClick={() => onSubmit(value.trim())} type="button">Search</button>
         <button className="inventory-reset-button" onClick={onClear} type="button">Reset</button>
       </div>
@@ -5855,6 +5898,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     const scannedValue = value.trim();
     setSearchDraft(scannedValue);
     setMessage(`Searching for scanned code ${scannedValue.slice(0, 80)}.`);
+    updateFilter('search', scannedValue);
   }
 
   function clearFilters() {
@@ -10808,7 +10852,161 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
   );
 }
 
+function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
+  const [form, setForm] = useState({
+    startAddress: DEFAULT_ROUTE_START_ADDRESS,
+    driverCount: 1,
+    returnToStart: false,
+  });
+  const [shareMessage, setShareMessage] = useState('');
+
+  function updateForm(name, value) {
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function buildPlan() {
+    onPlan({
+      start_address: form.startAddress.trim() || DEFAULT_ROUTE_START_ADDRESS,
+      driver_count: Math.max(1, Math.min(50, Number(form.driverCount) || 1)),
+      return_to_start: form.returnToStart,
+    });
+  }
+
+  async function shareLink(link, driverLabel) {
+    setShareMessage('');
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: `${driverLabel} · ${link.label}`,
+          text: `Pongo delivery route for ${driverLabel}`,
+          url: link.url,
+        });
+        setShareMessage(`Shared ${driverLabel} ${link.label}.`);
+        return;
+      }
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(link.url);
+      } else {
+        const copyField = document.createElement('textarea');
+        copyField.value = link.url;
+        copyField.setAttribute('readonly', '');
+        copyField.style.position = 'fixed';
+        copyField.style.opacity = '0';
+        document.body.appendChild(copyField);
+        copyField.select();
+        document.execCommand('copy');
+        copyField.remove();
+      }
+      setShareMessage(`Copied ${driverLabel} ${link.label} link.`);
+    } catch (shareError) {
+      if (shareError?.name !== 'AbortError') setShareMessage('Unable to share automatically. Open Google Maps and copy the address from your browser.');
+    }
+  }
+
+  const drivers = plan?.drivers || [];
+  const excludedOrders = plan?.excluded_orders || [];
+
+  return (
+    <section className="wide-panel open-order-route-planner" aria-labelledby="open-order-route-planner-title">
+      <div className="panel-title route-planner-heading">
+        <div>
+          <span className="route-planner-kicker"><Route aria-hidden="true" size={16} /> Live delivery planning</span>
+          <h2 id="open-order-route-planner-title">Route all open orders</h2>
+          <p>Every open order with a complete delivery address is assigned once. Split the work across any number of drivers, then open or share each route in Google Maps.</p>
+        </div>
+        <button className="primary-button route-planner-submit" disabled={loading || !form.startAddress.trim()} onClick={buildPlan} type="button">
+          <Route aria-hidden="true" size={18} />
+          {loading ? 'Planning routes…' : 'Plan all open orders'}
+        </button>
+      </div>
+
+      <div className="route-planner-controls">
+        <label className="field route-start-field">
+          <span>Starting location</span>
+          <div className="input-with-icon">
+            <input aria-label="Starting location" autoComplete="street-address" maxLength={500} onChange={(event) => updateForm('startAddress', event.target.value)} value={form.startAddress} />
+            <MapPin aria-hidden="true" size={18} />
+          </div>
+          <small>All drivers begin here.</small>
+        </label>
+        <label className="field route-driver-count-field">
+          <span>Drivers</span>
+          <input aria-label="Number of drivers" inputMode="numeric" max="50" min="1" onChange={(event) => updateForm('driverCount', event.target.value)} type="number" value={form.driverCount} />
+          <small>Choose 1, 2, 3, or any number up to 50.</small>
+        </label>
+        <label className="route-return-toggle">
+          <input checked={form.returnToStart} onChange={(event) => updateForm('returnToStart', event.target.checked)} type="checkbox" />
+          <span><strong>Return to starting location</strong><small>Add a final Google Maps link back to 5855 99 Street.</small></span>
+        </label>
+      </div>
+
+      {error && <div className="api-error" role="alert">{error}</div>}
+      {loading && <div className="loading-strip" role="status">Loading every open order and balancing delivery areas…</div>}
+      {shareMessage && <div className="api-success" role="status" aria-live="polite">{shareMessage}</div>}
+
+      {plan && (
+        <>
+          <div className="summary-strip route-planner-summary">
+            <Metric label="Open Orders" value={plan.total_open_orders} />
+            <Metric label="On Routes" value={plan.routable_order_count} />
+            <Metric label="Drivers" value={plan.effective_driver_count} />
+            <Metric label="Need Address" value={plan.excluded_order_count} />
+          </div>
+          <div className="route-planner-note"><MapPin aria-hidden="true" size={17} /><span>Stops are kept together by postal area and divided as evenly as possible. Google Maps then provides the driving directions. Long runs are separated into mobile-safe parts.</span></div>
+          {(plan.warnings || []).map((warning) => <div className="route-planner-warning" key={warning}><TriangleAlert aria-hidden="true" size={17} /><span>{warning}</span></div>)}
+
+          {drivers.length > 0 ? (
+            <div className="driver-route-grid">
+              {drivers.map((driver) => (
+                <article className="driver-route-card" key={driver.driver_number}>
+                  <header>
+                    <div><span>Driver route</span><h3>{driver.driver_label}</h3></div>
+                    <strong>{driver.stop_count} stop{driver.stop_count === 1 ? '' : 's'}</strong>
+                  </header>
+                  <ol className="driver-stop-list">
+                    {(driver.stops || []).map((stop) => (
+                      <li key={stop.order_id}>
+                        <span className="driver-stop-number">{stop.stop_sequence}</span>
+                        <div><strong>Order #{stop.woo_order_number || stop.woo_order_id || stop.order_id}</strong><span>{stop.customer_name || 'Customer name unavailable'}</span><small>{stop.address}</small></div>
+                      </li>
+                    ))}
+                  </ol>
+                  <div className="driver-map-links" aria-label={`${driver.driver_label} Google Maps links`}>
+                    {(driver.google_maps_links || []).map((link) => (
+                      <div className="driver-map-link" key={`${driver.driver_number}-${link.part_number}`}>
+                        <div><strong>{link.label}</strong><small>{link.returns_to_start ? 'Return leg' : `${link.stop_count} delivery stop${link.stop_count === 1 ? '' : 's'}`}</small></div>
+                        <div className="button-row compact">
+                          <button aria-label={`Share ${driver.driver_label} ${link.label}`} className="muted-button" onClick={() => shareLink(link, driver.driver_label)} type="button"><Copy aria-hidden="true" size={16} /> Share</button>
+                          <a className="primary-button" href={link.url} rel="noreferrer" target="_blank"><MapPin aria-hidden="true" size={16} /> Open Maps</a>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="route-planner-empty"><CheckCircle2 aria-hidden="true" size={22} /><div><strong>No routable open orders right now</strong><span>New WooCommerce processing orders will appear here after they sync.</span></div></div>
+          )}
+
+          {excludedOrders.length > 0 && (
+            <details className="route-excluded-orders">
+              <summary>{excludedOrders.length} order{excludedOrders.length === 1 ? '' : 's'} need a delivery address</summary>
+              <div>
+                {excludedOrders.map((order) => <p key={order.order_id}><strong>Order #{order.woo_order_number || order.order_id}</strong><span>{order.customer_name || 'Customer name unavailable'} · {order.reason}</span></p>)}
+              </div>
+            </details>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 function RoutesPage({
+  openOrderPlan,
+  openOrderPlanLoading,
+  openOrderPlanError,
   candidatesData,
   candidatesPagination = emptyServerPagination(50),
   candidatesLoading,
@@ -10833,6 +11031,7 @@ function RoutesPage({
   onReorderStops,
   onSaveStop,
   onProviderAction,
+  onPlanOpenOrders,
 }) {
   const [candidateFilters, setCandidateFilters] = useState(emptyRouteCandidateFilters);
   const [routeFilters, setRouteFilters] = useState(emptyRouteFilters);
@@ -10894,11 +11093,12 @@ function RoutesPage({
 
   return (
     <section className="content-panel routes-page">
+      <OpenOrderRoutePlanner plan={openOrderPlan} loading={openOrderPlanLoading} error={openOrderPlanError} onPlan={onPlanOpenOrders} />
       <div className="wide-panel">
         <div className="panel-title">
           <div>
-            <h2>Route Creation</h2>
-            <p>Create local draft routes from completed local orders. No maps, optimization, WooCommerce, labels, notifications, or inventory changes are performed.</p>
+            <h2>Completed-order route records</h2>
+            <p>Create a saved draft after an order has been completed. This historical workflow stays separate from the live open-order planner above.</p>
           </div>
           <div className="button-row compact">
             <button className="muted-button" onClick={() => onLoadCandidates(candidateFilters)} disabled={candidatesLoading} type="button">

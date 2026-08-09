@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.routes import RouteCandidateListResponse, RouteCommitResponse, RouteDetail, RouteListResponse, RouteMapPayload, RoutePreviewResponse, RouteProviderPreviewResponse, RouteReorderRequest, RouteRequest, RouteStopUpdateRequest, RouteUpdateRequest
+from app.schemas.routes import OpenOrderRoutePlanRequest, OpenOrderRoutePlanResponse, RouteCandidateListResponse, RouteCommitResponse, RouteDetail, RouteListResponse, RouteMapPayload, RoutePreviewResponse, RouteProviderPreviewResponse, RouteReorderRequest, RouteRequest, RouteStopUpdateRequest, RouteUpdateRequest
 from app.services.routes import (
     cancel_route,
     commit_route,
@@ -16,6 +16,7 @@ from app.services.routes import (
     get_route_map_payload,
     list_route_candidates,
     list_routes_page,
+    plan_open_order_routes,
     preview_route,
     preview_route_geocode,
     preview_route_optimization,
@@ -27,6 +28,14 @@ from app.services.routes import (
 from app.services.auth import authenticated_actor
 
 router = APIRouter(prefix="/routes", tags=["routes"])
+
+
+@router.post("/open-orders/plan", response_model=OpenOrderRoutePlanResponse)
+def plan_open_order_delivery_routes(
+    payload: OpenOrderRoutePlanRequest,
+    db: Session = Depends(get_db),
+) -> OpenOrderRoutePlanResponse:
+    return plan_open_order_routes(db, payload)
 
 
 @router.get("/candidates", response_model=RouteCandidateListResponse)

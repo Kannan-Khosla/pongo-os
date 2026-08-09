@@ -497,3 +497,27 @@ and their item-location rows.
 Safety: Database checks independently reject negative stock, negative
 allocation, negative sellable, and allocation greater than stock. Woo order
 reconciliation uses the same lock path before releasing inventory.
+
+## ADR-036: Open-Order Routes Use Keyless Google Maps Links
+
+Decision: Add a read-only open-order planner above the existing completed-order
+route-record workflow. It starts at `5855 99 Street NW, Edmonton, AB`, accepts
+1–50 drivers, captures every operational open order, returns incomplete-address
+orders explicitly, sorts routable stops by postal area/address, and divides
+them into balanced contiguous driver groups. It constructs Google Maps
+directions URLs with `api=1`; each delivery link contains at most four stops so
+it remains usable with the mobile-browser waypoint limit. Long driver runs are
+split into numbered, continuous parts. Staff can open, copy, or natively share
+each link.
+
+Reason: Pongo needs a useful iPhone/Android dispatch workflow now without
+embedding map credentials in React or introducing a paid routing provider.
+Postal-area balancing is predictable and keeps nearby deliveries together,
+while Google Maps supplies the actual driving directions after the link opens.
+
+Safety: Planning performs one read-only order query and writes no route, order,
+inventory, stock movement, audit, or WooCommerce data. No address is sent to
+Google until a staff member opens or shares a generated link. This is not
+traffic-aware optimization, address validation, geocoding, dispatch tracking,
+or proof of delivery. ADR-022 and ADR-025 still govern saved completed-order
+route records and disabled paid-provider integrations.

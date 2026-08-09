@@ -2,105 +2,107 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-07T18:54:03Z
+LAST UPDATED: 2026-08-09T08:34:59Z
 EXECUTION MODE: Operate
 CURRENT PHASE: Complete
-CURRENT RELEASE RECOMMENDATION: DEPLOYED AND VERIFIED FOR PONGO USE
+CURRENT RELEASE RECOMMENDATION: READY FOR REVIEW; NOT DEPLOYED
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Pongo Inventory OS is live and its report-to-Google-Sheets credentials are stored encrypted in the Pongo database. The active delivery replaces manual refresh-token entry with a one-click Google OAuth consent flow and then deploys the verified build. Existing production stock authority and WooCommerce writeback configuration remained unchanged and out of scope.
+Pongo Inventory OS now has phone-camera QR/barcode search on Items and all Inventory pages. The Routes page has a read-only planner that includes every operational open order, starts at the Pongo warehouse, splits deliveries across 1–50 drivers, and creates mobile-safe Google Maps links that can be opened or shared. The implementation is local and has not been deployed in this delivery.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
-Primary user: authenticated Pongo staff configuring report sharing. Success means the user enters the Google OAuth application client ID/secret once, clicks Connect Google Account, approves access at Google, returns to Pongo with a connected status, and never handles a refresh token. Existing report publishing must continue to use the encrypted database configuration.
+Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
 
 === 04. REQUIREMENTS AND ACCEPTANCE CRITERIA ===
-REQ-GOAUTH-001: Settings shows OAuth client ID, client secret, optional Drive folder, and the exact authorized redirect URI; it does not ask for a refresh token.
-REQ-GOAUTH-002: Connect redirects through Google OAuth with Sheets and Drive-file scopes, offline access, consent prompt, and signed expiring state bound to the authenticated actor and callback URI.
-REQ-GOAUTH-003: Callback validates state, exchanges the single-use code server-side, encrypts the refresh token, and redirects to a clear success/denied/failure state.
-REQ-GOAUTH-004: Secrets and refresh tokens are never returned to the browser or logged.
-REQ-GOAUTH-005: Existing manual backend configuration remains compatible; no database migration or hosting-provider dependency is introduced.
-REQ-GOAUTH-006: Backend regression tests, focused frontend tests, production build, and migration check pass before deployment; live health and the Settings screen are verified afterward.
+REQ-SCAN-001: Items and every Inventory subpage expose the existing rear-camera QR/barcode scanner with manual fallback.
+REQ-SCAN-002: A decoded or manually entered scanner value immediately executes the current page search and does not mutate stock.
+REQ-ROUTE-001: Planner defaults to 5855 99 Street NW, Edmonton, AB and accepts 1–50 drivers plus optional return-to-start.
+REQ-ROUTE-002: Every non-historical operational open order with a complete address is assigned to exactly one driver; incomplete addresses are explicitly listed.
+REQ-ROUTE-003: Assignments keep postal areas together where possible and balance stop counts deterministically.
+REQ-ROUTE-004: Every driver receives shareable Google Maps driving links usable on mobile; long routes are continuous numbered parts with no more than three intermediate waypoints.
+REQ-ROUTE-005: Planning is read-only and does not persist routes or mutate orders, WooCommerce, inventory, or stock audit data.
+REQ-QA-001: Focused and full backend/frontend tests, frontend build, diff checks, documentation, and available browser verification pass before deployment.
 
 === 05. SCOPE, NON-GOALS, CONSTRAINTS, AND ASSUMPTIONS ===
-IN SCOPE: OAuth start/callback backend, encrypted credential persistence, Settings UI, focused tests, reporting/API/operations documentation, deployment and read-only live verification.
-NON-GOALS: Google account administration, disconnect/revocation, multi-organization credential isolation, new Google libraries, stock authority/writeback changes, production data changes.
-CONSTRAINTS: Authenticated internal staff only; existing master encryption key and database table are reused; Google requires a separately created OAuth web client and exact redirect URI registration.
-ASSUMPTION: The authenticated Pongo session remains valid during the short Google consent round trip.
+IN SCOPE: phone camera scanner entry points on Items/Inventory; open-order query and deterministic driver assignment; missing-address reporting; keyless Google Maps URL construction; native share/clipboard fallback; responsive UI; tests and docs.
+NON-GOALS: deployment, embedded map tiles, paid Google Routes API, traffic-aware optimization, server-side geocoding/address correction, route persistence, dispatch tracking, driver accounts, proof of delivery, WooCommerce writes, and stock changes.
+CONSTRAINTS: Frontend receives no map credentials. Google Maps URLs have mobile waypoint limits, so long routes must be segmented. Existing completed-order route records remain available as a separate historical workflow.
+ASSUMPTION: Operational open orders are the existing non-historical Woo processing/FooSales set and shipping address fields are the delivery authority.
 
 === 06. SYSTEM, JOURNEY, AND DATA MAP ===
-Journey: Settings -> enter/retain OAuth app credentials -> POST OAuth start -> signed Google authorization URL -> Google consent -> authenticated callback -> code exchange -> encrypted refresh-token save -> Settings success state -> existing verified-report publish path.
-Data: GoogleReportsConfiguration row id 1 stores encrypted client ID, client secret, refresh token, optional folder ID, actor and timestamp. No plaintext secret is returned to React.
-Trust boundaries: browser to authenticated Pongo API; Pongo backend to Google authorization/token endpoints; encrypted database persistence.
+Scanner journey: Items or Inventory -> Scan code -> rear camera or manual code -> existing local search -> matching item results.
+Route journey: Routes -> default warehouse/start + driver count -> POST /api/routes/open-orders/plan -> one read-only operational order query -> address validation -> postal-area sort -> balanced driver groups -> continuous Google Maps URLs -> open/share.
+Data boundaries: Order/customer/address snapshots travel from authenticated Pongo backend to the authenticated frontend. They are not sent to Google by the backend; Google receives addresses only when staff opens or shares a generated URL.
 
 === 07. ARCHITECTURE AND DECISION REGISTER ===
-ADR-GOAUTH-001 ACCEPTED: Use OAuth 2.0 authorization-code flow with the existing httpx dependency and Python standard-library HMAC/base64 utilities. No Google SDK or new dependency.
-ADR-GOAUTH-002 ACCEPTED: Signed stateless state expires after 10 minutes and binds actor plus redirect URI. Google authorization codes provide one-use exchange semantics.
-ADR-GOAUTH-003 ACCEPTED: Keep the existing manual configuration endpoint for compatibility, but remove refresh-token entry from customer navigation.
-ADR-GOAUTH-004 ACCEPTED: Use the existing encrypted database configuration so moving away from Heroku does not require redesign.
+ADR-036 ACCEPTED: Use keyless Google Maps URLs, not a map SDK or paid routing API.
+ADR-036A ACCEPTED: Deterministic postal-area sorting plus balanced contiguous groups provides predictable assignment without claiming traffic optimization.
+ADR-036B ACCEPTED: Limit each mobile delivery link to four stops (three intermediate waypoints plus destination); start later parts at the previous destination.
+ADR-036C ACCEPTED: Keep this planner read-only and separate from saved completed-order route records.
+ADR-SCAN-001 ACCEPTED: Reuse MobileCodeScanner and the page's existing search pipeline instead of creating a second scanner/search backend.
 
 === 08. ROADMAP AND ACTIVE DELIVERY PLAN ===
-1. Inspect existing Google configuration/report publishing path and current tests. COMPLETED.
-2. Implement OAuth start, callback, secure persistence, and redirect status. COMPLETED.
-3. Replace manual refresh-token UI with one-click consent and exact redirect URI guidance. COMPLETED.
-4. Add backend/frontend regression coverage and update docs. COMPLETED.
-5. Run backend/frontend/build/migration/release checks. COMPLETED for available local checks.
-6. Commit, push, deploy, and verify live health/UI. IN PROGRESS; explicitly authorized by user on 2026-08-07.
+1. Inspect scanner, order, route, and UI architecture. COMPLETED.
+2. Add read-only open-order route planning schemas/service/API. COMPLETED.
+3. Add driver planning, stop review, Google Maps open/share, exclusions, and responsive UI. COMPLETED.
+4. Add camera scanner to every Inventory subpage and make scan results search immediately. COMPLETED.
+5. Add focused backend/frontend coverage and update product/API/QA/decision docs. COMPLETED.
+6. Run full regression, build, state validation, and final browser cleanup. COMPLETED.
+7. Deploy only after a separate explicit user request. NOT STARTED.
 
 === 09. WORK ITEM REGISTER ===
-GOAUTH-001 / P0 / COMPLETED / Backend: authorization URL, expiring encrypted state, callback exchange and encrypted refresh-token persistence.
-GOAUTH-002 / P0 / COMPLETED / Frontend: one-click connection screen with accessible status, exact redirect URI, and no refresh-token input.
-GOAUTH-003 / P0 / COMPLETED / QA: OAuth security/route tests, frontend behavior, full regression/build and fresh migration.
-GOAUTH-004 / P0 / COMPLETED / Release: commit 99f390a pushed and deployed as Heroku v36; health/auth boundary and authenticated UI passed.
+SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
+ROUTE-001 / P0 / COMPLETED / Read-only all-open-order route planning API with address exclusions and 1–50 driver balancing.
+ROUTE-002 / P0 / COMPLETED / Mobile-safe continuous Google Maps direction URLs with optional warehouse return.
+ROUTE-003 / P0 / COMPLETED / Polished responsive planner, per-driver stops, warnings, native share/clipboard, and Google Maps actions.
+QA-001 / P0 / COMPLETED / Full backend/frontend regression, build, diff check, desktop/mobile browser layout, and state validation passed.
+RELEASE-001 / P1 / NOT STARTED / No deployment requested for this delivery.
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
-RISK-001 / HIGH / MITIGATED: OAuth state tampering or callback mix-up. Encrypted authenticated state expires after ten minutes and is bound to actor plus redirect URI; tamper test passes.
-RISK-002 / HIGH / MITIGATED: Google may not return a refresh token. Consent/offline access are forced and callback fails closed with actionable UI.
-RISK-003 / MEDIUM / MITIGATED FOR DELIVERY: OAuth client redirect URI may not be registered in Google Cloud. Settings displays the exact callback URI; external Google-client setup remains a Pongo operator dependency.
-RISK-004 / HIGH / ACCEPTED FOR THIS SCOPED RELEASE: PRODUCT_AUDIT documents unrelated P1 release/stock findings and a non-green historical release gate. This delivery does not enable stock authority/writeback; full relevant regression evidence is required before this deployment.
-DEPENDENCY-001: Google OAuth web client must be created by Pongo and configured with the displayed redirect URI before Connect can complete.
+RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
+RISK-002 / MEDIUM / ACCEPTED: Postal grouping is not road/traffic optimization. UI and docs state this clearly; Google Maps provides directions only after the link opens.
+RISK-003 / MEDIUM / MITIGATED: Incomplete addresses could silently disappear. Planner returns and displays every excluded order and reason.
+RISK-004 / LOW / MITIGATED: More drivers than orders. Effective driver count is reduced and the response explains why.
+RISK-005 / MEDIUM / OPEN FOR RELEASE: Current local browser database is an old unmigrated SQLite file and existing endpoints fail on missing tables/columns. Fresh isolated test databases pass; production deployment must use normal Alembic release migration and live data verification.
+DEPENDENCY-001: Opening a generated link requires Google Maps/web and exposes that link's addresses to Google at staff action time.
 
 === 11. IMPLEMENTATION AND CHANGE LOG ===
-2026-08-07: Delivery initialized at HEAD 99eae99. Existing encrypted Google configuration and report publishing flow retained.
-2026-08-07: Added authenticated OAuth start/callback routes, ten-minute encrypted actor/URI-bound state, server-side code exchange, encrypted refresh-token persistence, and safe callback redirects.
-2026-08-07: Replaced manual refresh-token UI with Connect/Reconnect Google Account, exact redirect URI guidance, denial/failure/success states, and updated report/configuration copy.
-2026-08-07: Updated API, reporting, and production operations documentation. No schema or dependency change.
-2026-08-07: Committed 99f390a, pushed the existing branch, and deployed Heroku v36. Release command completed successfully with schema remaining at 20260807_0036.
+2026-08-08: Added OpenOrderRoutePlan request/response schemas, route-planning service, and POST /api/routes/open-orders/plan.
+2026-08-08: Added postal-area sorting, balanced driver groups, missing-address exclusions, four-stop mobile link segmentation, and optional return link.
+2026-08-08: Added live route planner UI with default Pongo start, 1–50 drivers, stop cards, warnings, native share/clipboard fallback, and Open Maps links.
+2026-08-08: Added MobileCodeScanner to all Inventory views and made both Inventory and Items scan values execute search immediately.
+2026-08-08: Added backend/frontend tests and updated README, API, QA, UI, and ADR documentation.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
-Current delivery evidence at 2026-08-07T18:49Z:
-- Focused backend reporting/OAuth: 34 passed, 1 existing Starlette TestClient deprecation warning.
-- Full backend SQLite suite: 436 passed, 7 PostgreSQL-only skipped, 1 existing Starlette TestClient deprecation warning.
-- Focused Google UI: 2 passed, 88 skipped by filter.
-- Full frontend: 6 files and 107 tests passed.
-- Production frontend build: passed; existing charts/main chunks remain above Vite's 500 kB advisory threshold.
-- Fresh isolated SQLite Alembic upgrade: passed through 20260807_0036. Initial attempt through the venv Alembic executable failed only because its shebang points to an old local path; `python -m alembic` passed.
-- `git diff --check`: passed.
-Security proof: state integrity/expiry/actor binding implemented; tampered state blocked before exchange; callback code is server-only; secrets remain encrypted/masked; route authentication and SameSite=Lax session behavior retained.
+Final evidence:
+- Focused backend routes: 10 passed; full backend: 495 passed, 10 PostgreSQL-only skipped, one existing Starlette TestClient deprecation warning.
+- Focused frontend App suite: 114 passed; full frontend: 7 files and 140 tests passed.
+- Frontend production build: passed; existing Vite large-chunk warning remains.
+- `git diff --check`: passed after all code and documentation edits.
+- Desktop and 390 px mobile browser layouts visually verified; planner controls and Inventory Scan code entry fit without horizontal overflow. Local test browser tab and servers were closed.
+Security/safety: planning is authenticated through the existing API router, performs no writes, returns no credentials, and calls no map or WooCommerce service. Scanner search performs no stock mutation.
+Browser observation: planner layout and controls rendered locally. Data calls failed because the selected local SQLite file lacks existing migrations (`woocommerce_configuration` table and `orders.is_historical_snapshot` column); this is separate from the fresh-database test evidence.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
-Database migration: none planned; reuse schema 20260807_0036.
-Release target: existing Heroku production application at inventory.pongo.ca after tests pass.
-Rollback: redeploy previous release/commit 99eae99. OAuth data is additive configuration; previous manual endpoint remains compatible.
-PRODUCTION APPROVAL: User explicitly requested “have one click google sign on, and deploy it” on 2026-08-07.
+Database migration: none; no schema change.
+Release target: existing production application only after explicit deployment authorization.
+Rollback: revert the application commit; no data rollback is needed because the planner does not persist or mutate data.
+PRODUCTION APPROVAL: Not granted in this delivery request.
 
 === 14. OPERATIONS, OBSERVABILITY, AND SUPPORT READINESS ===
-Post-deploy evidence: Heroku v36 released commit 99f390a and remains rollback-eligible; release migration succeeded; custom-domain `/health` returned HTTP 200; anonymous `/api/auth/me` returned HTTP 401. The authenticated live Settings page rendered Not connected, Connect Google Account, no refresh-token field, and the exact production callback `https://inventory.pongo.ca/api/reports/google-sheets/oauth/callback`. Google consent was not initiated and no Google account was modified.
-Build observations: Heroku build succeeded; existing test-only npm high-severity advisory and Vite large-chunk warnings remain visible and unchanged.
-Support: callback success/denied/failed states return the user to Settings with an actionable message.
+The endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Missing addresses, excess driver count, long-link segmentation, loading, empty, share success/failure, and API failure states are visible. Production verification should confirm current open-order totals, representative Edmonton addresses, iPhone Safari camera permission/scanning, Android Chrome camera permission/scanning, and every generated Maps part.
 
 === 15. TECHNICAL DEBT AND DEFERRED WORK ===
-Deferred: disconnect/revoke action, multi-organization isolation, granular admin RBAC, and provider-independent secrets/KMS strategy. Add only when Pongo expands beyond the current trusted single-organization deployment.
-Known unrelated audit debt remains in PRODUCT_AUDIT.txt and is not broadened into this scoped change.
+Deferred: road/traffic optimization, address validation/geocoding, embedded map preview, persisted dispatch plans, named drivers, per-driver acknowledgements, route completion/proof of delivery, and automated SMS/email sharing. Add only after Pongo validates the simple operational workflow and production measurements justify more infrastructure.
+Known unrelated audit debt remains in PRODUCT_AUDIT.txt.
 
 === 16. CONTINUOUS IMPROVEMENT AND LEARNING ===
-Ponytail decision: reuse existing Settings page, encrypted row, httpx, and platform primitives; no OAuth SDK or schema migration.
-UI guidance applied: one primary CTA, visible keyboard focus through existing controls, aria-live status, precise error copy, and the exact redirect URI rather than a long onboarding wizard.
+Reused the existing scanner component and search flows, the operational order eligibility clause, and platform-native Web Share/clipboard capabilities. This avoided map keys, a new SDK, database schema, background jobs, and a second inventory lookup path. UI guidance applied: one obvious planning action, explicit defaults, visible exclusions, responsive cards, actionable errors, and no claim of optimization that the system does not perform.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Pongo operator creates/uses a Google OAuth web client, registers the exact callback shown in Settings, enters client ID/secret, and clicks Connect Google Account.
-THEN: approve Google Sheets and Drive-file access in Google's consent screen; Pongo will return to Settings and show Connected.
-APPROVAL REQUIRED: Only the user should grant Google account access. No engineering or hosting change is required.
-APPROVALS: Production deployment is already explicitly approved. Google consent itself remains a user action because it grants access to the user's Google account.
+NEXT: Review the completed local implementation and residual limits.
+THEN: If accepted, explicitly authorize commit/push/deployment and verify with real open orders plus iPhone/Android camera permissions in production.
+APPROVAL REQUIRED: A separate explicit user request is required before commit/push/deployment. Production camera verification requires user-granted device permission on iPhone/Android.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
 --- DELIVERY RUN: 2026-08-07T18:54:03Z ---
@@ -108,3 +110,9 @@ MODE: Operate
 SUMMARY: One-click Google Sheets OAuth implemented, deployed, and verified on Pongo production.
 EVIDENCE: Commit 99f390a; Heroku v36; 436 backend tests passed with 7 PostgreSQL-only skips; 107 frontend tests passed; production build and fresh migration 0036 passed; live health 200, anonymous auth 401, authenticated Settings showed Connect Google Account and exact callback URI.
 NEXT ACTION: Pongo operator must register the displayed callback in a Google OAuth web client and approve access through the in-app button.
+
+--- DELIVERY RUN: 2026-08-09T08:34:59Z ---
+MODE: Operate
+SUMMARY: Phone-camera inventory scanning and read-only all-open-order multi-driver Google Maps planning implemented and verified locally; not deployed.
+EVIDENCE: 495 backend tests passed with 10 PostgreSQL-only skips; 140 frontend tests passed; production build and diff check passed; desktop and 390px mobile layouts visually verified.
+NEXT ACTION: Review, then explicitly authorize commit/push/deployment and production iPhone/Android plus real-order verification.

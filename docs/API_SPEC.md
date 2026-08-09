@@ -67,7 +67,7 @@ local-only route creation/management.
   `/api/allocations/auto/commit`
 - Picks and scanner picks: `/api/picks`
 - Fulfillments: `/api/fulfillments`
-- Routes: `/api/routes`
+- Routes and open-order delivery planning: `/api/routes`
 
 ## Health
 
@@ -2298,10 +2298,32 @@ SKU/barcode order report with search by SKU, barcode, description, and date rang
 
 ## Routes
 
-Route creation is local-only. These endpoints do not call WooCommerce, maps,
-geocoding, routing, shipping label, outbound/customer notification, inventory
-stock, or stock
-movement services.
+Route records are local-only. The open-order planner constructs keyless Google
+Maps direction URLs but does not send orders to Google, call a map/geocoding
+API, persist a route, call WooCommerce, or change inventory/order state.
+
+### POST /api/routes/open-orders/plan
+
+Build a read-only delivery plan from every non-historical operational open
+order with a complete shipping address.
+
+Request body:
+- `start_address` (defaults to `5855 99 Street NW, Edmonton, AB`)
+- `driver_count` (1–50)
+- `return_to_start`
+
+Routable orders are sorted by postal area and address, then divided into
+balanced contiguous driver groups so nearby postal areas stay together when
+possible. Each order appears in at most one driver plan. Orders missing a
+street plus city/postal code are returned in `excluded_orders` with an
+actionable reason rather than silently omitted.
+
+Each driver includes ordered stop snapshots and one or more shareable Google
+Maps direction URLs. Delivery links contain at most four stops so the three
+intermediate-waypoint mobile-browser limit is respected. Long routes therefore
+continue as numbered parts, with each part beginning at the prior part's last
+stop. Planning is synchronous, read-only, and does not create `routes` or
+`route_stops` rows.
 
 Eligible route candidates are non-historical local orders with
 `local_status = completed`, `fulfilled`, or `partially_fulfilled` that are not
@@ -2399,9 +2421,9 @@ become eligible for a future route because cancelled routes are ignored by the
 candidate filter.
 
 Not implemented yet:
-- route optimization
-- geocoding
-- maps
+- traffic-aware or road-network route optimization
+- address validation/geocoding
+- embedded in-app maps
 - delivery tracking
 - customer notifications
 

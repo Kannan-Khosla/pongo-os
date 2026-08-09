@@ -1,6 +1,7 @@
 import csv
 from datetime import datetime, timezone
 from io import StringIO
+from urllib.parse import parse_qs, urlparse
 
 from sqlalchemy.orm import Session
 
@@ -8,6 +9,30 @@ from app.models.orders import Order
 from tests.test_fulfillments_api import picked_order
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
+
+
+def seed_open_delivery_order(client, index: int, *, postal_code: str | None = None, address: bool = True, local_status: str = "open") -> int:
+    with Session(client.test_engine) as db:
+        order = Order(
+            woo_order_id=20_000 + index,
+            woo_order_number=f"DEL-{index:03d}",
+            woo_status="processing",
+            local_status=local_status,
+            completion_status="open" if local_status == "open" else local_status,
+            is_historical_snapshot=False,
+            customer_name=f"Delivery Customer {index}",
+            customer_phone=f"780-555-{index:04d}",
+            shipping_address_1=f"{100 + index} Delivery Street" if address else None,
+            shipping_city="Edmonton" if address else None,
+            shipping_state="AB" if address else None,
+            shipping_country="CA" if address else None,
+            shipping_zip=(postal_code or f"T5{index % 5} 0A{index % 10}") if address else None,
+            date_created=datetime(2026, 8, 8, 12, index % 60, tzinfo=timezone.utc),
+        )
+        db.add(order)
+        db.commit()
+        db.refresh(order)
+        return order.id
 
 
 def fulfilled_route_order(client, monkeypatch, sku="ROUTE-SKU", barcode="ROUTE-BAR", woo_id=901, product_id=501, partial=False):
@@ -52,6 +77,77 @@ def route_payload(order_ids):
         "created_by": "pytest",
         "notes": "Manual route",
     }
+
+
+def test_open_order_route_planner_balances_every_routable_order_across_drivers(client):
+    order_ids = [
+        seed_open_delivery_order(client, index, postal_code=postal_code)
+        for index, postal_code in enumerate(
+            ["T5A 0A1", "T5A 0A2", "T5A 0A3", "T5B 0B1", "T5B 0B2", "T5B 0B3", "T6C 0C1", "T6C 0C2", "T6C 0C3"],
+            start=1,
+        )
+    ]
+    excluded_id = seed_open_delivery_order(client, 20, address=False)
+    seed_open_delivery_order(client, 21, local_status="completed")
+
+    response = client.post(
+        "/api/routes/open-orders/plan",
+        json={"start_address": "5855 99 Street NW, Edmonton, AB", "driver_count": 3},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total_open_orders"] == 10
+    assert body["routable_order_count"] == 9
+    assert body["excluded_order_count"] == 1
+    assert body["effective_driver_count"] == 3
+    assert [driver["stop_count"] for driver in body["drivers"]] == [3, 3, 3]
+    assert {stop["order_id"] for driver in body["drivers"] for stop in driver["stops"]} == set(order_ids)
+    assert body["excluded_orders"][0]["order_id"] == excluded_id
+    assert [[stop["postal_area"] for stop in driver["stops"]] for driver in body["drivers"]] == [
+        ["T5A", "T5A", "T5A"],
+        ["T5B", "T5B", "T5B"],
+        ["T6C", "T6C", "T6C"],
+    ]
+    first_link = body["drivers"][0]["google_maps_links"][0]
+    query = parse_qs(urlparse(first_link["url"]).query)
+    assert query["api"] == ["1"]
+    assert query["origin"] == ["5855 99 Street NW, Edmonton, AB"]
+    assert query["travelmode"] == ["driving"]
+    assert client.get("/api/routes").json()["total"] == 0
+
+
+def test_open_order_route_planner_segments_long_runs_for_mobile_google_maps(client):
+    for index in range(1, 10):
+        seed_open_delivery_order(client, index)
+
+    response = client.post(
+        "/api/routes/open-orders/plan",
+        json={"start_address": "5855 99 Street", "driver_count": 1, "return_to_start": True},
+    )
+
+    assert response.status_code == 200, response.text
+    driver = response.json()["drivers"][0]
+    delivery_links = [link for link in driver["google_maps_links"] if not link["returns_to_start"]]
+    return_links = [link for link in driver["google_maps_links"] if link["returns_to_start"]]
+    assert [link["stop_count"] for link in delivery_links] == [4, 4, 1]
+    assert len(return_links) == 1
+    assert parse_qs(urlparse(return_links[0]["url"]).query)["destination"] == ["5855 99 Street"]
+    for link in delivery_links:
+        waypoints = parse_qs(urlparse(link["url"]).query).get("waypoints", [""])[0].split("|")
+        assert len([waypoint for waypoint in waypoints if waypoint]) <= 3
+
+
+def test_open_order_route_planner_validates_driver_count_and_handles_no_orders(client):
+    empty = client.post("/api/routes/open-orders/plan", json={"driver_count": 1})
+    too_few = client.post("/api/routes/open-orders/plan", json={"driver_count": 0})
+    too_many = client.post("/api/routes/open-orders/plan", json={"driver_count": 51})
+
+    assert empty.status_code == 200
+    assert empty.json()["drivers"] == []
+    assert empty.json()["effective_driver_count"] == 0
+    assert too_few.status_code == 422
+    assert too_many.status_code == 422
 
 
 def test_route_candidates_include_fulfilled_and_partial_with_warning(client, monkeypatch):

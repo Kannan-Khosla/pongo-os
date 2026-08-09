@@ -42,6 +42,67 @@ class RouteRequest(BaseModel):
     notes: str | None = None
 
 
+class OpenOrderRoutePlanRequest(BaseModel):
+    start_address: str = Field(
+        default="5855 99 Street NW, Edmonton, AB",
+        min_length=3,
+        max_length=500,
+    )
+    driver_count: int = Field(default=1, ge=1, le=50)
+    return_to_start: bool = False
+
+
+class OpenOrderRoutePlanStop(BaseModel):
+    stop_sequence: int
+    order_id: int
+    woo_order_id: int | None = None
+    woo_order_number: str | None = None
+    local_status: str | None = None
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    address: str
+    postal_area: str | None = None
+
+
+class OpenOrderRouteExcludedOrder(BaseModel):
+    order_id: int
+    woo_order_number: str | None = None
+    customer_name: str | None = None
+    reason: str
+
+
+class GoogleMapsRouteLink(BaseModel):
+    part_number: int
+    label: str
+    url: str
+    stop_sequence_from: int | None = None
+    stop_sequence_to: int | None = None
+    stop_count: int = 0
+    returns_to_start: bool = False
+
+
+class DriverOpenOrderRoutePlan(BaseModel):
+    driver_number: int
+    driver_label: str
+    stop_count: int
+    stops: list[OpenOrderRoutePlanStop] = Field(default_factory=list)
+    google_maps_links: list[GoogleMapsRouteLink] = Field(default_factory=list)
+
+
+class OpenOrderRoutePlanResponse(BaseModel):
+    start_address: str
+    requested_driver_count: int
+    effective_driver_count: int
+    total_open_orders: int
+    routable_order_count: int
+    excluded_order_count: int
+    return_to_start: bool
+    assignment_method: str
+    drivers: list[DriverOpenOrderRoutePlan] = Field(default_factory=list)
+    excluded_orders: list[OpenOrderRouteExcludedOrder] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class RoutePreviewStop(BaseModel):
     stop_sequence: int
     order_id: int
