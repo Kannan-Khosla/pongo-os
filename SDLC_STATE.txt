@@ -2,13 +2,13 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-10T21:01:55Z
+LAST UPDATED: 2026-08-10T21:07:34Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Demo-access production deployment authorized; release preparation in progress
-CURRENT RELEASE RECOMMENDATION: READY FOR AUTHORIZED DEPLOYMENT; demo account creation is blocked on a compliant password
+CURRENT PHASE: Demo-access release deployed and verified; production demo account pending a compliant password
+CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED; account provisioning remains blocked by the existing password policy
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Production remains on the previously deployed commit 29dded1. The current local change adds an isolated `demo` access level: authentication uses the normal user store, but every protected product query is rebound to a seeded mock-only database. Demo users can browse the application and run explicitly non-persisting previews; production data, writes, WooCommerce, and Google integrations are blocked. No production account, migration, or deployment has been performed.
+Production is running Heroku v49 at commit aab78e0 with schema revision 20260810_0038. The release adds an isolated `demo` access level: authentication uses the normal user store, but every protected product query is rebound to a seeded mock-only database. Demo users can browse the application and run explicitly non-persisting previews; production data, writes, WooCommerce, and Google integrations are blocked. Existing staff access was verified after deployment. No production demo account was created because the supplied password did not meet the existing 12-character minimum.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -85,7 +85,8 @@ ADR-DEMO-002 ACCEPTED: Keep staff access unchanged; allow demo GET/HEAD/OPTIONS 
 15. Define demo isolation and read-only acceptance criteria. COMPLETED.
 16. Add demo role/migration, mock datastore, central authorization guard, account script, and UI labeling. COMPLETED.
 17. Run focused/full regressions, build, migration validation, docs/state validation, and diff/security review. COMPLETED.
-18. Create the requested production demo account and deploy only after explicit release authorization. PENDING.
+18. Commit, back up, deploy, migrate, and verify the authorized demo-access release. COMPLETED.
+19. Create and smoke-test the requested production demo account after receiving a compliant password. PENDING.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -96,7 +97,7 @@ QA-001 / P0 / COMPLETED / Full backend/frontend regression, build, diff check, d
 RELEASE-001 / P1 / RELEASED / Heroku v40 deployed commit 96c3816 after manual backup b004; web/worker, migration, health, authentication, Routes, Inventory scanner, and browser logs verified.
 WI-STOCKCSV-001 / P0 / RELEASED / Exact per-location stock override through item import CSV, using audited stock adjustment primitives and stale-preview protection; deployed and verified on production as Heroku v42.
 WI-STOCKCSV-002 / P0 / RELEASED / Full inventory export uploads directly; unchanged rows skip, safe blank locations resolve, exclusions/errors block the file, and changed rows commit in one locked audited transaction; deployed as Heroku v43.
-WI-DEMO-001 / P0 / READY FOR RELEASE / Isolated read-only demo role with seeded fictional catalog, inventory, orders, operational history, route data, and guarded operator account creation.
+WI-DEMO-001 / P0 / RELEASED / Isolated read-only demo role with seeded fictional catalog, inventory, orders, operational history, route data, and guarded operator account creation; Heroku v49 at aab78e0.
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
@@ -115,7 +116,7 @@ RISK-STOCKCSV-006 / HIGH / MITIGATED: Every CSV item, including unchanged rows, 
 RISK-DEMO-001 / CRITICAL / MITIGATED IN CODE: A demo query could expose production data. Authentication and role lookup happen first; the same cached request session is then closed and rebound to the isolated demo engine before any route query executes. Regression tests seed a production-only sentinel and prove it is absent.
 RISK-DEMO-002 / HIGH / MITIGATED IN CODE: A demo action could mutate production or call an external service. Non-read requests fail closed outside the reviewed preview allowlist; all WooCommerce and Google Sheets routes are blocked before session rebinding.
 RISK-DEMO-003 / MEDIUM / ACCEPTED: The mock database is process-local and resets when a web process restarts. This is appropriate for a read-only demonstration; persistent writable demos remain out of scope.
-BLOCK-DEMO-001 / P0 / ACCOUNT CREATION ONLY: The requested demo password does not meet the existing 12-character minimum. Deployment may proceed, but the production demo account must not be created until the user supplies a compliant password.
+BLOCK-DEMO-001 / P0 / ACCOUNT CREATION ONLY: The requested demo password does not meet the existing 12-character minimum. The feature is deployed, but the production demo account must not be created until the user supplies a compliant password.
 
 === 11. IMPLEMENTATION AND CHANGE LOG ===
 2026-08-08: Added OpenOrderRoutePlan request/response schemas, route-planning service, and POST /api/routes/open-orders/plan.
@@ -130,6 +131,7 @@ BLOCK-DEMO-001 / P0 / ACCOUNT CREATION ONLY: The requested demo password does no
 2026-08-10: Repaired direct full-export stock override, optional warehouse/location scope, safe blank-location handling, strict all-or-nothing commit, pre-stale locking for unchanged rows, resolved-location duplicate detection, direct Items action, automatic mapping bypass, recovery for old exclusions, and clear no-change completion UX.
 2026-08-10: Committed and pushed 462823e to the protected-workflow feature branch, captured Heroku backup b006, paused the worker, deployed Heroku v43, completed the existing Alembic release command, restored the worker, and passed non-destructive live schema/UI verification.
 2026-08-10: Added the `demo` access level, isolated seeded mock database, centralized read-only/integration authorization, demo account operator script, visible responsive demo labeling, migration 20260810_0038, tests, and documentation. No production action taken.
+2026-08-10: Committed and pushed aab78e0 to the protected-workflow feature branch, captured Heroku PostgreSQL backup b010, deployed Heroku v49, migrated production to 20260810_0038, and verified web, worker, health, authentication, database, and signed-in staff Items UI. No demo account was created.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
 Final evidence:
@@ -149,11 +151,12 @@ Production stock CSV evidence: Heroku v42 reports commit 64fa33c; `/health` retu
 Full-file stock repair verification: 21 focused import tests passed; full backend 504 passed with 10 PostgreSQL-only skips; full frontend 145 passed; production build passed; both independent backend/UI re-reviews found no remaining blocker; `git diff --check` passed. The 1,500-row SQLite regression previewed in 0.236 seconds and committed all rows in 0.925 seconds through one adjustment. Existing Starlette TestClient deprecation and Vite large-chunk warnings remain.
 Production full-file repair evidence: Heroku v43 reports commit 462823e; manual PostgreSQL backup b006 completed before deployment; web and worker Basic dynos are up; `/health` returned HTTP 200; anonymous import schema returned HTTP 401; PostgreSQL is at Alembic head 20260807_0037; deployed schema 2026-08-10.2 requires SKU and In stock for `update_stock`; signed-in Items and stock-import screens rendered the direct workflow with no browser console errors. No CSV was uploaded and no inventory changed.
 Demo verification evidence: auth/readiness backend tests passed (9 total); demo API coverage confirms mock-only items across dashboard, inventory, locations, receipts, movements, counts, orders, allocations, picks, fulfillments, routes, and reports; forbidden writes/integrations return the expected 403 codes. Full backend passed 512 tests with 10 PostgreSQL-only skips; full frontend passed 148 tests; the production build passed with the existing large-chunk warning. Fresh SQLite migration to 20260810_0038, downgrade to 0037, and re-upgrade all passed. The account script created a demo user against the migrated disposable database; state validation and `git diff --check` passed.
+Production demo-access evidence: Heroku v49 reports commit aab78e0; manual PostgreSQL backup b010 completed before deployment; release migration completed transactionally at 20260810_0038; web and worker Basic dynos are up; `/health` returned HTTP 200; anonymous `/api/auth/me` returned HTTP 401; PostgreSQL has one existing staff user and no demo account. The signed-in production Items UI rendered `Item catalog`, showed no demo banner for staff, and produced no browser warnings or errors. `/ready` retains only the pre-existing 223 missing positive unit costs and missing operations alert webhook blockers.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
-Database migration: local migration 20260810_0038 adds `users.access_level` with `staff` default and a `staff|demo` check; it has not run in production.
-Release: production baseline is Heroku v48 at commit 29dded1. The user authorized deploying the verified demo-access release on 2026-08-10; execution is in progress.
-Recovery: Continuous Protection is enabled; production PostgreSQL is available at 385 MB. Capture a fresh manual backup before running migration 0038. Application rollback target is Heroku v48; old code remains compatible with the additive column.
+Database migration: production is at 20260810_0038; it adds `users.access_level` with `staff` default and a `staff|demo` check. The release migration completed transactionally.
+Release: production is Heroku v49 at commit aab78e0. The authorized demo-access release is deployed and verified; demo account provisioning remains pending a compliant password.
+Recovery: Continuous Protection is enabled and manual predeployment backup b010 completed. Application rollback target is Heroku v48 at commit 29dded1; old code remains compatible with the additive column.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
 
@@ -173,8 +176,8 @@ Reused the existing scanner component and search flows, the operational order el
 For demo access, rebinding the existing request session provides one fail-closed isolation point for the whole backend and avoids demo branches in every service or a second frontend.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Commit/push the exact verified release, capture a PostgreSQL backup, deploy migration 0038 and code, then verify production staff and mock-data boundaries.
-THEN: Create the requested production demo account after the user supplies a password containing at least 12 characters.
+NEXT: Obtain a password containing at least 12 characters, create `demo@pongo.ca` with the guarded operator script, and run an authenticated mock-only production smoke test.
+THEN: Hand the demo credentials to the authorized operator through an appropriate secure channel; do not record the password in source control or lifecycle state.
 APPROVAL STATE: The user explicitly authorized production deployment on 2026-08-10. Account email is approved. The supplied password was rejected by the existing length policy and is not recorded here.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
@@ -231,3 +234,9 @@ MODE: Build Approved Scope
 SUMMARY: Isolated read-only demo access implemented and fully verified locally with seeded fictional data and central production-data/write/integration guards; not deployed.
 EVIDENCE: Full backend 512 passed/10 skipped; full frontend 148 passed; production build passed; fresh migration up/down/up passed; demo account script passed against the disposable migrated database; state and diff checks passed. A production-only sentinel is absent from demo responses, major workspaces return 200, and writes/integrations return explicit 403 codes.
 NEXT ACTION: Obtain the desired demo email and explicit deployment authorization, then back up, deploy, create the account, and run mock-only production smoke checks.
+
+--- DELIVERY RUN: 2026-08-10T21:07:34Z ---
+MODE: Release Readiness and Release
+SUMMARY: Isolated read-only demo access deployed and verified on Pongo production as Heroku v49; account creation remains pending a compliant password.
+EVIDENCE: Commit aab78e0; PostgreSQL backup b010 completed; Alembic 20260810_0038; web and worker up; health 200; anonymous auth 401; signed-in staff Items loaded without a demo banner or browser errors; no production demo account exists.
+NEXT ACTION: Supply a password containing at least 12 characters, then create `demo@pongo.ca` and verify its mock-only, read-only production boundary.
