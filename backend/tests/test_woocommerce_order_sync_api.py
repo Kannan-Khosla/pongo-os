@@ -225,7 +225,7 @@ def test_order_preview_fails_closed_for_duplicate_sku(client, monkeypatch):
 
 def test_order_commit_creates_local_order_lines_and_auto_allocates(client, monkeypatch):
     created_item = seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 6, "Allocated": 1})
-    fake = patch_woo_order_client(monkeypatch, [woo_order()])
+    fake = patch_woo_order_client(monkeypatch, [woo_order(customer_note="Please leave the order beside the garage.")])
 
     response = client.post("/api/integrations/woocommerce/orders/commit", json={"created_by": "pytest"})
 
@@ -242,6 +242,7 @@ def test_order_commit_creates_local_order_lines_and_auto_allocates(client, monke
     assert detail["local_status"] == "allocated"
     assert detail["allocation_status"] == "auto_allocated"
     assert detail["pick_status"] == "ready_to_pick"
+    assert detail["customer_note"] == "Please leave the order beside the garage."
     assert detail["lines"][0]["item_id"] == created_item["id"]
     assert detail["lines"][0]["quantity_allocated"] == 2
     assert detail["lines"][0]["quantity_picked"] == 0

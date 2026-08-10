@@ -106,7 +106,8 @@ const mockOrderDetail = {
   discount_total: 3,
   shipping_total: 2,
   tax_total: 3,
-  workflow_notes: 'Leave at the receiving desk.',
+  customer_note: 'Leave at the receiving desk.',
+  workflow_notes: 'Woo reconciliation: Line 18058 quantity changed from 0 to 1.',
   lines: [{
     id: 9001,
     sku: 'SMOKE-001',
@@ -2797,6 +2798,7 @@ describe('App shell and workflows', () => {
     expect(await screen.findByRole('dialog', { name: 'View Customer Order' })).toBeInTheDocument();
     expect(screen.getByText('Ship/Bill To')).toBeInTheDocument();
     const invoice = screen.getByLabelText('Invoice for order 0802');
+    expect(invoice.parentElement).toBe(document.body);
     expect(within(invoice).getByRole('img', { name: 'Pongo Pet Supplies' })).toHaveAttribute('src', '/pongo-logo.png');
     expect(within(invoice).getByText('Billing details')).toBeInTheDocument();
     expect(within(invoice).getByText('100 Billing Ave')).toBeInTheDocument();
@@ -2805,6 +2807,8 @@ describe('App shell and workflows', () => {
     expect(within(invoice).getByText('Cash on delivery')).toBeInTheDocument();
     expect(within(invoice).getByText('Completed')).toBeInTheDocument();
     expect(within(invoice).getByText('Leave at the receiving desk.')).toBeInTheDocument();
+    expect(within(invoice).queryByText(/Woo reconciliation/)).not.toBeInTheDocument();
+    expect(within(invoice).queryByText(/WooCommerce|CAD|Local order ID|Printed/)).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Close' }));
 
     const printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
@@ -3153,6 +3157,7 @@ describe('App shell and workflows', () => {
 
     await user.click(screen.getByRole('menuitem', { name: 'Print' }));
     await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
+    expect(screen.getByLabelText('Selected customer invoices').parentElement).toBe(document.body);
     expect(document.body).not.toHaveClass('bulk-order-printing');
 
     await user.click(screen.getByRole('button', { name: 'Actions' }));

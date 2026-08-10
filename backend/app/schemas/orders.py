@@ -95,6 +95,7 @@ class OpenOrderDetail(OpenOrderRead):
     discount_total: float | None = None
     shipping_total: float | None = None
     tax_total: float | None = None
+    customer_note: str | None = None
     workflow_notes: str | None = None
     lines: list[OpenOrderLineRead]
 

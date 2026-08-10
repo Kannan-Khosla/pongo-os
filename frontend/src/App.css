@@ -4546,45 +4546,39 @@ tbody tr:nth-child(even) .sticky-col {
 
 @page {
   size: auto;
-  margin: 10mm;
+  margin: 0;
 }
 
 @media print {
-
-  body * {
-    visibility: hidden !important;
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
   }
 
-  body.single-order-printing .order-invoice-print,
-  body.single-order-printing .order-invoice-print * {
-    visibility: visible !important;
+  body.single-order-printing > *:not(.order-invoice-print),
+  body.bulk-order-printing > *:not(.bulk-print-sheet) {
+    display: none !important;
   }
 
-  body.bulk-order-printing .bulk-print-sheet,
-  body.bulk-order-printing .bulk-print-sheet * {
-    visibility: visible !important;
-  }
-
-  body.bulk-order-printing .bulk-print-sheet {
-    position: absolute;
-    inset: 0 auto auto 0;
-    display: block;
+  body.bulk-order-printing > .bulk-print-sheet {
+    display: block !important;
     width: 100%;
     color: #111;
   }
 
-  body.single-order-printing .order-invoice-print {
-    position: absolute;
-    inset: 0 auto auto 0;
+  body.single-order-printing > .order-invoice-print {
     display: block !important;
     width: 100%;
-    padding: 0;
     border: 0;
     box-shadow: none;
   }
 
   .order-invoice {
+    box-sizing: border-box;
     width: 100%;
+    padding: 10mm;
     color: #15152a;
     font-size: 12px;
     font-family: Arial, Helvetica, sans-serif;
@@ -4639,15 +4633,9 @@ tbody tr:nth-child(even) .sticky-col {
     font-size: 28px;
   }
 
-  .invoice-title p {
-    margin: 0;
-    color: #62627a;
-    font-size: 12px;
-  }
-
   .invoice-reference-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 1px;
     margin-top: 18px;
     border: 1px solid #d9d9e5;
@@ -4680,7 +4668,7 @@ tbody tr:nth-child(even) .sticky-col {
 
   .invoice-address-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 14px;
     margin: 20px 0;
   }
@@ -4778,6 +4766,7 @@ tbody tr:nth-child(even) .sticky-col {
     color: #26263b;
     font-size: 11px;
     line-height: 1.45;
+    white-space: pre-wrap;
   }
 
   .invoice-totals {

@@ -1067,7 +1067,7 @@ def get_open_order_detail(db: Session, order_id: int) -> OpenOrderDetail | None:
     order = db.scalars(
         select(Order)
         .where(Order.id == order_id, Order.is_historical_snapshot.is_(False))
-        .options(defer(Order.raw_woo_payload), selectinload(Order.items).selectinload(OrderItem.inventory_item))
+        .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
     ).one_or_none()
     if order is None:
         return None
@@ -1084,6 +1084,7 @@ def get_open_order_detail(db: Session, order_id: int) -> OpenOrderDetail | None:
             "discount_total": decimal_to_float(order.discount_total),
             "shipping_total": decimal_to_float(order.shipping_total),
             "tax_total": decimal_to_float(order.tax_total),
+            "customer_note": str((order.raw_woo_payload or {}).get("customer_note") or "").strip() or None,
             "workflow_notes": order.workflow_notes,
             "lines": [line_to_read(line) for line in sorted(order.items, key=lambda item: item.line_number or item.id)],
         }

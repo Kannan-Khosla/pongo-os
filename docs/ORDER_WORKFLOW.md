@@ -90,6 +90,9 @@ client-side results paging, a horizontally scrollable operational table, bulk
 Actions, per-order actions, and a printable customer-order dialog. It does not
 show the pick scanner or history panels.
 
+Customer invoices print from an isolated page root, show the WooCommerce
+checkout customer note, and omit internal workflow notes and identifiers.
+
 ## Auto-Allocation
 
 Order sync runs FIFO auto-allocation after it has stored and matched the current

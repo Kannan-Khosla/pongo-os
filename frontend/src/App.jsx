@@ -10078,7 +10078,7 @@ function InvoiceAddress({ label, address, fallbackName, fallbackEmail, fallbackP
   );
 }
 
-function OrderInvoice({ order, className = '' }) {
+export function OrderInvoice({ order, className = '' }) {
   if (!order) return null;
   const orderNumber = order.woo_order_number || order.woo_order_id || order.id;
   const paymentMethod = order.payment_method_title || order.payment_method || 'Not provided';
@@ -10089,9 +10089,8 @@ function OrderInvoice({ order, className = '' }) {
           <img className="invoice-logo" src="/pongo-logo.png" alt="Pongo Pet Supplies" />
         </div>
         <div className="invoice-title">
-          <span>Customer invoice</span>
+          <span>Invoice</span>
           <h1>Order #{orderNumber}</h1>
-          <p>{order.currency || 'CAD'} · {order.order_source || 'WooCommerce'}</p>
         </div>
       </header>
 
@@ -10100,8 +10099,6 @@ function OrderInvoice({ order, className = '' }) {
         <div><span>Order status</span><strong>Completed</strong></div>
         <div><span>Payment</span><strong>{paymentMethod}</strong></div>
         <div><span>Ship via</span><strong>{order.shipping_via || 'Not provided'}</strong></div>
-        <div><span>Customer ID</span><strong>{order.customer_id || 'Guest'}</strong></div>
-        <div><span>Last updated</span><strong>{formatDateTime(order.date_modified || order.last_synced_at)}</strong></div>
       </section>
 
       <div className="invoice-address-grid">
@@ -10119,15 +10116,6 @@ function OrderInvoice({ order, className = '' }) {
           fallbackEmail={order.customer_email}
           fallbackPhone={order.customer_phone}
         />
-        <section className="invoice-address-block invoice-contact-block">
-          <h2>Customer & fulfillment</h2>
-          <strong>{order.company || order.customer_name || 'Customer'}</strong>
-          <span>{order.customer_email || 'Email not provided'}</span>
-          <span>{order.customer_phone || 'Phone not provided'}</span>
-          <span>Ship from: {order.ship_from || 'Main Warehouse'}</span>
-          <span>Allocation: {order.allocation_status || '—'}</span>
-          <span>Picking: {order.pick_status || '—'}</span>
-        </section>
       </div>
 
       <table className="invoice-lines-table">
@@ -10138,7 +10126,7 @@ function OrderInvoice({ order, className = '' }) {
           {(order.lines || []).map((line) => (
             <tr key={line.id}>
               <td><strong>{line.sku || '—'}</strong><span>{line.barcode || ''}</span></td>
-              <td><strong>{decodeHtmlEntities(line.name || 'Unnamed product')}</strong><span>Picked {formatNumber(line.quantity_picked)} · Fulfilled {formatNumber(line.quantity_fulfilled)}</span></td>
+              <td><strong>{decodeHtmlEntities(line.name || 'Unnamed product')}</strong></td>
               <td>{formatNumber(line.quantity_ordered)}</td>
               <td>{formatCurrency(line.unit_price)}</td>
               <td>{formatCurrency(line.line_tax)}</td>
@@ -10152,9 +10140,7 @@ function OrderInvoice({ order, className = '' }) {
       <section className="invoice-closing-grid">
         <div className="invoice-notes">
           <h2>Order notes</h2>
-          <p>{order.workflow_notes || 'No customer or operational notes were supplied.'}</p>
-          <span>WooCommerce order ID: {order.woo_order_id || '—'}</span>
-          <span>Local order ID: {order.id || '—'}</span>
+          <p>{order.customer_note || 'No delivery notes were provided.'}</p>
         </div>
         <dl className="invoice-totals">
           <div><dt>Subtotal</dt><dd>{formatCurrency(order.subtotal)}</dd></div>
@@ -10167,18 +10153,19 @@ function OrderInvoice({ order, className = '' }) {
 
       <footer className="invoice-footer">
         <span>Pongo Pet Supplies · pongo.ca</span>
-        <span>Order #{orderNumber} · Printed {formatDateTime(new Date().toISOString())}</span>
+        <span>Order #{orderNumber}</span>
       </footer>
     </article>
   );
 }
 
 function BulkPrintSheet({ orders }) {
-  if (!orders.length) return null;
-  return (
+  if (!orders.length || typeof document === 'undefined') return null;
+  return createPortal(
     <section className="bulk-print-sheet" aria-label="Selected customer invoices">
       {orders.map((order) => <OrderInvoice key={order.id} order={order} />)}
-    </section>
+    </section>,
+    document.body,
   );
 }
 
@@ -10390,8 +10377,11 @@ function OpenOrderDetailPanel({ order, onClose, onPrint }) {
           <button className="primary-button" onClick={onPrint} type="button"><Printer size={17} />Print</button>
           <button className="muted-button" onClick={onClose} type="button">Close</button>
         </footer>
-        <OrderInvoice className="order-invoice-print" order={order} />
       </section>
+      {typeof document !== 'undefined' && createPortal(
+        <OrderInvoice className="order-invoice-print" order={order} />,
+        document.body,
+      )}
     </div>
   );
 }
