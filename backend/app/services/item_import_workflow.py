@@ -638,7 +638,7 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
 
         row.sku = str(parsed.get("sku") or "") or None
         row.barcode = str(parsed.get("barcode") or "") or None
-        row.product_name = str(parsed.get("product_name") or (item.description if item is not None else "") or "") or None
+        row.product_name = (str(parsed.get("product_name") or (item.description if item is not None else "") or "")[:500] or None)
         row.normalized_data = {key: serializable(value) for key, value in parsed.items()}
         row.existing_item_id = item.id if item is not None else None
         row.source_item_hash = item_value_hash(item, relevant_attributes) if item is not None else None

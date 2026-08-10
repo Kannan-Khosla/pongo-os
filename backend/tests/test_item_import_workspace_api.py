@@ -223,6 +223,21 @@ def test_full_inventory_export_updates_stock_and_accepts_blank_zero_location(cli
     assert client.get(f"/api/items/{unchanged['id']}").json()["In Stock"] == 0
 
 
+def test_stock_csv_accepts_an_existing_description_longer_than_the_preview_label(client):
+    description = "Long product description " * 30
+    item = seed_item(client, sku="LONG-STOCK-DESCRIPTION", Description=description, **{"In Stock": 1, "Allocated": 0})
+
+    response = upload(client, "update_stock", "SKU,In Stock\nLONG-STOCK-DESCRIPTION,2\n")
+
+    assert response.status_code == 201, response.text
+    preview = response.json()
+    row = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()["rows"][0]
+    assert row["product_name"] == description[:500]
+    result = commit(client, preview["preview_id"])
+    assert result.status_code == 200, result.text
+    assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 2
+
+
 def test_stock_csv_is_all_or_nothing_and_cannot_exclude_errors(client):
     item = seed_item(client, sku="ATOMIC-STOCK", **{"In Stock": 10, "Allocated": 0})
     movements_before = client.get("/api/stock-movements", params={"item_id": item["id"]}).json()["total"]
