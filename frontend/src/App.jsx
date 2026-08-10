@@ -51,6 +51,14 @@ import {
 
 const ReportIntelligencePage = lazy(() => import('./ReportIntelligence'));
 const DEFAULT_ROUTE_START_ADDRESS = '5855 99 Street NW, Edmonton, AB';
+const ROUTE_DIRECTIONS = ['north', 'south', 'east', 'west', 'central'];
+
+function defaultRouteDirectionAssignments(driverCount) {
+  const count = Math.max(1, Math.min(50, Number(driverCount) || 1));
+  const assignments = Object.fromEntries(Array.from({ length: count }, (_, index) => [index + 1, []]));
+  ROUTE_DIRECTIONS.forEach((direction, index) => assignments[(index % count) + 1].push(direction));
+  return assignments;
+}
 
 export const browserNavigation = {
   assign: (url) => window.location.assign(url),
@@ -10884,18 +10892,77 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
     startAddress: DEFAULT_ROUTE_START_ADDRESS,
     driverCount: 1,
     returnToStart: false,
+    assignmentMethod: 'equal_time',
   });
   const [shareMessage, setShareMessage] = useState('');
+  const [selectedOrderIds, setSelectedOrderIds] = useState([]);
+  const [orderDirections, setOrderDirections] = useState({});
+  const [driverDirections, setDriverDirections] = useState(() => defaultRouteDirectionAssignments(1));
+  const [orderSearch, setOrderSearch] = useState('');
+  const initializedOrdersRef = useRef(false);
+
+  const availableOrders = plan?.available_orders || [];
+  const normalizedDriverCount = Math.max(1, Math.min(50, Number(form.driverCount) || 1));
+  const selectedOrderIdSet = new Set(selectedOrderIds);
+  const filteredOrders = availableOrders.filter((order) => {
+    const query = orderSearch.trim().toLocaleLowerCase();
+    if (!query) return true;
+    return [order.woo_order_number, order.woo_order_id, order.customer_name, order.address, order.postal_area]
+      .some((value) => String(value || '').toLocaleLowerCase().includes(query));
+  });
+  const allVisibleSelected = filteredOrders.length > 0 && filteredOrders.every((order) => selectedOrderIdSet.has(order.order_id));
+
+  useEffect(() => {
+    if (!plan || initializedOrdersRef.current) return;
+    setSelectedOrderIds(availableOrders.map((order) => order.order_id));
+    setOrderDirections(Object.fromEntries(availableOrders.map((order) => [order.order_id, order.direction])));
+    initializedOrdersRef.current = true;
+  }, [plan]);
 
   function updateForm(name, value) {
     setForm((current) => ({ ...current, [name]: value }));
   }
 
+  function updateDriverCount(value) {
+    updateForm('driverCount', value);
+    setDriverDirections(defaultRouteDirectionAssignments(value));
+  }
+
+  function toggleOrder(orderId) {
+    setSelectedOrderIds((current) => (current.includes(orderId) ? current.filter((id) => id !== orderId) : [...current, orderId]));
+  }
+
+  function selectVisibleOrders() {
+    const visibleIds = filteredOrders.map((order) => order.order_id);
+    setSelectedOrderIds((current) => [...new Set([...current, ...visibleIds])]);
+  }
+
+  function clearVisibleOrders() {
+    const visibleIds = new Set(filteredOrders.map((order) => order.order_id));
+    setSelectedOrderIds((current) => current.filter((id) => !visibleIds.has(id)));
+  }
+
+  function toggleDriverDirection(driverNumber, direction) {
+    setDriverDirections((current) => {
+      const selected = current[driverNumber] || [];
+      return {
+        ...current,
+        [driverNumber]: selected.includes(direction) ? selected.filter((candidate) => candidate !== direction) : [...selected, direction],
+      };
+    });
+  }
+
   function buildPlan() {
     onPlan({
       start_address: form.startAddress.trim() || DEFAULT_ROUTE_START_ADDRESS,
-      driver_count: Math.max(1, Math.min(50, Number(form.driverCount) || 1)),
+      driver_count: normalizedDriverCount,
       return_to_start: form.returnToStart,
+      order_ids: selectedOrderIds,
+      assignment_method: form.assignmentMethod,
+      order_directions: selectedOrderIds.map((orderId) => ({ order_id: orderId, direction: orderDirections[orderId] || 'central' })),
+      direction_assignments: form.assignmentMethod === 'directions'
+        ? Array.from({ length: normalizedDriverCount }, (_, index) => ({ driver_number: index + 1, directions: driverDirections[index + 1] || [] }))
+        : [],
     });
   }
 
@@ -10938,12 +11005,12 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
       <div className="panel-title route-planner-heading">
         <div>
           <span className="route-planner-kicker"><Route aria-hidden="true" size={16} /> Live delivery planning</span>
-          <h2 id="open-order-route-planner-title">Route all open orders</h2>
-          <p>Every open order with a complete delivery address is assigned once. Split the work across any number of drivers, then open or share each route in Google Maps.</p>
+          <h2 id="open-order-route-planner-title">Plan selected open orders</h2>
+          <p>Choose today’s deliveries, balance estimated workload across drivers, or assign North, South, East, West, and Central zones.</p>
         </div>
-        <button className="primary-button route-planner-submit" disabled={loading || !form.startAddress.trim()} onClick={buildPlan} type="button">
+        <button className="primary-button route-planner-submit" disabled={loading || !form.startAddress.trim() || selectedOrderIds.length === 0} onClick={buildPlan} type="button">
           <Route aria-hidden="true" size={18} />
-          {loading ? 'Planning routes…' : 'Plan all open orders'}
+          {loading ? 'Planning routes…' : `Plan ${selectedOrderIds.length} selected`}
         </button>
       </div>
 
@@ -10958,7 +11025,7 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
         </label>
         <label className="field route-driver-count-field">
           <span>Drivers</span>
-          <input aria-label="Number of drivers" inputMode="numeric" max="50" min="1" onChange={(event) => updateForm('driverCount', event.target.value)} type="number" value={form.driverCount} />
+          <input aria-label="Number of drivers" inputMode="numeric" max="50" min="1" onChange={(event) => updateDriverCount(event.target.value)} type="number" value={form.driverCount} />
           <small>Choose 1, 2, 3, or any number up to 50.</small>
         </label>
         <label className="route-return-toggle">
@@ -10967,19 +11034,67 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
         </label>
       </div>
 
+      <fieldset className="route-strategy-options">
+        <legend>How should orders be split?</legend>
+        <label className={form.assignmentMethod === 'equal_time' ? 'selected' : ''}>
+          <input checked={form.assignmentMethod === 'equal_time'} name="route-assignment-method" onChange={() => updateForm('assignmentMethod', 'equal_time')} type="radio" />
+          <span><strong>Equal estimated time</strong><small>Balances area, postal transitions, and stop workload so driver estimates stay as close as possible.</small></span>
+        </label>
+        <label className={form.assignmentMethod === 'directions' ? 'selected' : ''}>
+          <input checked={form.assignmentMethod === 'directions'} name="route-assignment-method" onChange={() => updateForm('assignmentMethod', 'directions')} type="radio" />
+          <span><strong>Direction zones</strong><small>Assign one or more zones to each driver. A zone can be shared by multiple drivers.</small></span>
+        </label>
+      </fieldset>
+
+      {form.assignmentMethod === 'directions' && (
+        <div className="route-driver-zone-assignments" aria-label="Direction assignments by driver">
+          {Array.from({ length: normalizedDriverCount }, (_, index) => {
+            const driverNumber = index + 1;
+            return (
+              <fieldset key={driverNumber}>
+                <legend>Driver {driverNumber}</legend>
+                <div>{ROUTE_DIRECTIONS.map((direction) => <label key={direction}><input checked={(driverDirections[driverNumber] || []).includes(direction)} onChange={() => toggleDriverDirection(driverNumber, direction)} type="checkbox" /><span>{direction}</span></label>)}</div>
+              </fieldset>
+            );
+          })}
+        </div>
+      )}
+
+      {plan && (
+        <section className="route-order-selector" aria-labelledby="route-order-selector-title">
+          <div className="route-order-selector-heading">
+            <div><h3 id="route-order-selector-title">Choose open orders</h3><p>{selectedOrderIds.length} of {availableOrders.length} routable orders selected.</p></div>
+            <div className="button-row compact"><button className="muted-button" disabled={!filteredOrders.length || allVisibleSelected} onClick={selectVisibleOrders} type="button">Select visible</button><button className="muted-button" disabled={!filteredOrders.some((order) => selectedOrderIdSet.has(order.order_id))} onClick={clearVisibleOrders} type="button">Clear visible</button></div>
+          </div>
+          <label className="field route-order-search"><span>Find an order</span><div className="input-with-icon"><input aria-label="Find an open order" onChange={(event) => setOrderSearch(event.target.value)} placeholder="Order, customer, postal code, or address" value={orderSearch} /><Search aria-hidden="true" size={18} /></div></label>
+          <div className="route-order-table-wrap">
+            <table className="route-order-table">
+              <thead><tr><th><input aria-label="Select all visible open orders" checked={allVisibleSelected} onChange={(event) => (event.target.checked ? selectVisibleOrders() : clearVisibleOrders())} type="checkbox" /></th><th>Order</th><th>Customer</th><th>Delivery address</th><th>Direction</th></tr></thead>
+              <tbody>
+                {filteredOrders.map((order) => {
+                  const orderNumber = order.woo_order_number || order.woo_order_id || order.order_id;
+                  return <tr key={order.order_id}><td><input aria-label={`Select order ${orderNumber}`} checked={selectedOrderIdSet.has(order.order_id)} onChange={() => toggleOrder(order.order_id)} type="checkbox" /></td><td><strong>#{orderNumber}</strong><small>{order.postal_area || 'No postal area'}</small></td><td>{order.customer_name || 'Customer name unavailable'}</td><td>{order.address}</td><td><select aria-label={`Direction for order ${orderNumber}`} onChange={(event) => setOrderDirections((current) => ({ ...current, [order.order_id]: event.target.value }))} value={orderDirections[order.order_id] || order.direction}>{ROUTE_DIRECTIONS.map((direction) => <option key={direction} value={direction}>{direction.charAt(0).toUpperCase() + direction.slice(1)}</option>)}</select></td></tr>;
+                })}
+                {filteredOrders.length === 0 && <tr><td colSpan={5}><div className="empty-table-row">No open orders match this search.</div></td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       {error && <div className="api-error" role="alert">{error}</div>}
-      {loading && <div className="loading-strip" role="status">Loading every open order and balancing delivery areas…</div>}
+      {loading && <div className="loading-strip" role="status">Building routes for the selected open orders…</div>}
       {shareMessage && <div className="api-success" role="status" aria-live="polite">{shareMessage}</div>}
 
       {plan && (
         <>
           <div className="summary-strip route-planner-summary">
             <Metric label="Open Orders" value={plan.total_open_orders} />
-            <Metric label="On Routes" value={plan.routable_order_count} />
+            <Metric label="Selected" value={plan.selected_order_count ?? plan.routable_order_count} />
             <Metric label="Drivers" value={plan.effective_driver_count} />
             <Metric label="Need Address" value={plan.excluded_order_count} />
           </div>
-          <div className="route-planner-note"><MapPin aria-hidden="true" size={17} /><span>Stops are kept together by postal area and divided as evenly as possible. Google Maps then provides the driving directions. Long runs are separated into mobile-safe parts.</span></div>
+          <div className="route-planner-note"><MapPin aria-hidden="true" size={17} /><span>{plan.assignment_method === 'directions' ? 'Orders are grouped using your driver direction assignments.' : 'Routes are balanced using estimated area and stop workload.'} {plan.estimate_basis || 'Google Maps supplies live driving directions after a link opens.'} Long runs are separated into mobile-safe parts.</span></div>
           {(plan.warnings || []).map((warning) => <div className="route-planner-warning" key={warning}><TriangleAlert aria-hidden="true" size={17} /><span>{warning}</span></div>)}
 
           {drivers.length > 0 ? (
@@ -10987,8 +11102,8 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
               {drivers.map((driver) => (
                 <article className="driver-route-card" key={driver.driver_number}>
                   <header>
-                    <div><span>Driver route</span><h3>{driver.driver_label}</h3></div>
-                    <strong>{driver.stop_count} stop{driver.stop_count === 1 ? '' : 's'}</strong>
+                    <div><span>Driver route</span><h3>{driver.driver_label}</h3>{driver.directions?.length > 0 && <small>{driver.directions.map((direction) => direction.charAt(0).toUpperCase() + direction.slice(1)).join(' · ')}</small>}</div>
+                    <strong>{driver.stop_count} stop{driver.stop_count === 1 ? '' : 's'} · {driver.estimated_duration_minutes || 0} min est.</strong>
                   </header>
                   <ol className="driver-stop-list">
                     {(driver.stops || []).map((stop) => (
@@ -11013,7 +11128,7 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
               ))}
             </div>
           ) : (
-            <div className="route-planner-empty"><CheckCircle2 aria-hidden="true" size={22} /><div><strong>No routable open orders right now</strong><span>New WooCommerce processing orders will appear here after they sync.</span></div></div>
+            <div className="route-planner-empty"><CheckCircle2 aria-hidden="true" size={22} /><div><strong>{availableOrders.length ? 'No orders selected for this plan' : 'No routable open orders right now'}</strong><span>{availableOrders.length ? 'Choose at least one open order above, then plan the routes.' : 'New WooCommerce processing orders will appear here after they sync.'}</span></div></div>
           )}
 
           {excludedOrders.length > 0 && (

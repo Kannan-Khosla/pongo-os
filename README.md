@@ -49,7 +49,7 @@ Implemented locally:
 - Fulfillment/completion report
 - Completed orders export
 - SKU Orders report
-- Open-order delivery planning from the Pongo warehouse, balanced across 1–50 drivers with shareable Google Maps direction links, plus local completed-order route records
+- Selectable open-order delivery planning from the Pongo warehouse, balanced by estimated workload or assigned North/South/East/West/Central zones across 1–50 drivers, with shareable Google Maps direction links plus local completed-order route records
 - Cookie-based staff login and registration with production registration access-code protection; no RBAC
 - Immutable, hash-verified report runs with interactive dashboards, CSV/PDF, Google Sheets, and audited email sharing
 - Resumable background full-catalog WooCommerce stock-sync jobs with progress, retry, resume, and cancel controls

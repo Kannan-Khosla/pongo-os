@@ -2187,6 +2187,190 @@ tbody tr:nth-child(even) .sticky-col {
   gap: 3px;
 }
 
+.route-strategy-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.route-strategy-options > legend {
+  grid-column: 1 / -1;
+  margin-bottom: -4px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.route-strategy-options > label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid #d7e1e6;
+  border-radius: 9px;
+  background: var(--white);
+  cursor: pointer;
+}
+
+.route-strategy-options > label.selected {
+  border-color: #879bd5;
+  background: #f3f6ff;
+  box-shadow: inset 0 0 0 1px #879bd5;
+}
+
+.route-strategy-options input,
+.route-driver-zone-assignments input,
+.route-order-table input {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+}
+
+.route-strategy-options label > span {
+  display: grid;
+  gap: 3px;
+}
+
+.route-strategy-options small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.route-driver-zone-assignments {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 10px;
+}
+
+.route-driver-zone-assignments fieldset {
+  margin: 0;
+  padding: 11px 12px 12px;
+  border: 1px solid #dbe4ea;
+  border-radius: 9px;
+  background: #f8fafb;
+}
+
+.route-driver-zone-assignments legend {
+  padding: 0 5px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.route-driver-zone-assignments fieldset > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.route-driver-zone-assignments label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid #d5dfe5;
+  border-radius: 999px;
+  background: var(--white);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.route-order-selector {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #dce5eb;
+  border-radius: 10px;
+  background: #f8fafb;
+}
+
+.route-order-selector-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.route-order-selector-heading h3,
+.route-order-selector-heading p {
+  margin: 0;
+}
+
+.route-order-selector-heading p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.route-order-search {
+  max-width: 560px;
+  margin: 0;
+}
+
+.route-order-table-wrap {
+  max-height: 430px;
+  overflow: auto;
+  border: 1px solid #dbe4ea;
+  border-radius: 8px;
+  background: var(--white);
+  overscroll-behavior: contain;
+}
+
+.route-order-table {
+  width: 100%;
+  min-width: 820px;
+  border-collapse: collapse;
+}
+
+.route-order-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 9px 10px;
+  border-bottom: 1px solid #dbe4ea;
+  background: #f4f7f9;
+  color: #566976;
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.route-order-table td {
+  padding: 10px;
+  border-bottom: 1px solid #edf1f3;
+  color: #293f4b;
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+.route-order-table td:nth-child(4) {
+  min-width: 280px;
+}
+
+.route-order-table td > small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.route-order-table select {
+  min-width: 112px;
+  min-height: 38px;
+  border: 1px solid #cfd9df;
+  border-radius: 7px;
+  background: var(--white);
+  padding: 0 8px;
+  color: var(--ink);
+}
+
 .route-planner-summary {
   grid-template-columns: repeat(4, minmax(130px, 1fr));
   margin-bottom: 0;
@@ -2253,6 +2437,14 @@ tbody tr:nth-child(even) .sticky-col {
 .driver-route-card > header span {
   min-width: 0;
   margin: 0;
+}
+
+.driver-route-card > header small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
 }
 
 .driver-route-card > header span {
@@ -4492,8 +4684,29 @@ tbody tr:nth-child(even) .sticky-col {
   }
 
   .route-planner-controls,
-  .route-planner-summary {
+  .route-planner-summary,
+  .route-strategy-options,
+  .route-driver-zone-assignments {
     grid-template-columns: 1fr;
+  }
+
+  .route-strategy-options > legend {
+    grid-column: auto;
+  }
+
+  .route-order-selector-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .route-order-selector-heading .button-row,
+  .route-order-selector-heading button,
+  .route-order-search {
+    width: 100%;
+  }
+
+  .route-order-table-wrap {
+    -webkit-overflow-scrolling: touch;
   }
 
   .driver-map-link .button-row,

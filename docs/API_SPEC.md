@@ -2313,19 +2313,32 @@ API, persist a route, call WooCommerce, or change inventory/order state.
 
 ### POST /api/routes/open-orders/plan
 
-Build a read-only delivery plan from every non-historical operational open
-order with a complete shipping address.
+Build a read-only delivery plan from selected non-historical operational open
+orders with complete shipping addresses. Omitting `order_ids` preserves the
+legacy behavior and selects every routable order; an empty list selects none.
 
 Request body:
 - `start_address` (defaults to `5855 99 Street NW, Edmonton, AB`)
 - `driver_count` (1–50)
 - `return_to_start`
+- `order_ids` (optional list of at most 5,000 local order IDs)
+- `assignment_method` (`equal_time` or `directions`)
+- `order_directions` (optional per-order North/South/East/West/Central corrections)
+- `direction_assignments` (driver numbers with zero or more assigned directions)
 
-Routable orders are sorted by postal area and address, then divided into
-balanced contiguous driver groups so nearby postal areas stay together when
-possible. Each order appears in at most one driver plan. Orders missing a
-street plus city/postal code are returned in `excluded_orders` with an
-actionable reason rather than silently omitted.
+`equal_time` uses a deterministic delivery-area and stop-workload estimate to
+minimize the estimated duration spread while keeping postal areas together when
+possible. It does not claim live Google travel or traffic time. `directions`
+supports North, South, East, West, and Central; each driver may receive several
+directions and each direction may be shared by several drivers. Every selected
+order appears at most once. Orders missing a street plus city/postal code are
+returned in `excluded_orders` with an actionable reason rather than silently
+omitted.
+
+The response includes `available_orders`, `available_order_count`,
+`selected_order_count`, `estimate_basis`, per-stop `direction`, and each
+driver's assigned `directions` and `estimated_duration_minutes`. IDs that are no
+longer eligible are safely skipped with a warning.
 
 Each driver includes ordered stop snapshots and one or more shareable Google
 Maps direction URLs. Delivery links contain at most four stops so the three

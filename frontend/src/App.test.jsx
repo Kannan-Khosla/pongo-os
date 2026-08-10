@@ -440,19 +440,28 @@ function mockFetch(url, options = {}) {
     requested_driver_count: 1,
     effective_driver_count: 1,
     total_open_orders: 2,
+    available_order_count: 2,
+    selected_order_count: 2,
     routable_order_count: 2,
     excluded_order_count: 0,
     return_to_start: false,
-    assignment_method: 'balanced_by_postal_area',
+    assignment_method: 'equal_time',
+    estimate_basis: 'Delivery-area and stop-count estimate.',
     warnings: [],
     excluded_orders: [],
+    available_orders: [
+      { order_id: 701, woo_order_number: '0802', customer_name: 'Avery Stone', address: '200 Delivery Way, Edmonton, AB, T5J 0N3, CA', postal_area: 'T5J', direction: 'central' },
+      { order_id: 702, woo_order_number: '0803', customer_name: 'Morgan Lee', address: '300 Delivery Way, Edmonton, AB, T5K 1A1, CA', postal_area: 'T5K', direction: 'central' },
+    ],
     drivers: [{
       driver_number: 1,
       driver_label: 'Driver 1',
       stop_count: 2,
+      estimated_duration_minutes: 30,
+      directions: ['central'],
       stops: [
-        { stop_sequence: 1, order_id: 701, woo_order_number: '0802', customer_name: 'Avery Stone', address: '200 Delivery Way, Edmonton, AB, T5J 0N3, CA', postal_area: 'T5J' },
-        { stop_sequence: 2, order_id: 702, woo_order_number: '0803', customer_name: 'Morgan Lee', address: '300 Delivery Way, Edmonton, AB, T5K 1A1, CA', postal_area: 'T5K' },
+        { stop_sequence: 1, order_id: 701, woo_order_number: '0802', customer_name: 'Avery Stone', address: '200 Delivery Way, Edmonton, AB, T5J 0N3, CA', postal_area: 'T5J', direction: 'central' },
+        { stop_sequence: 2, order_id: 702, woo_order_number: '0803', customer_name: 'Morgan Lee', address: '300 Delivery Way, Edmonton, AB, T5K 1A1, CA', postal_area: 'T5K', direction: 'central' },
       ],
       google_maps_links: [{ part_number: 1, label: 'Stops 1–2', url: 'https://www.google.com/maps/dir/?api=1&origin=5855+99+Street&destination=300+Delivery+Way', stop_sequence_from: 1, stop_sequence_to: 2, stop_count: 2, returns_to_start: false }],
     }],
@@ -2515,26 +2524,32 @@ describe('App shell and workflows', () => {
     await waitFor(() => expect(fetch.mock.calls.some(([url]) => new URL(String(url)).searchParams.get('route_date') === '2026-08-01')).toBe(true));
   });
 
-  it('plans every open order from the warehouse and generates shareable Google Maps routes for any driver count', async () => {
+  it('plans only selected open orders and sends direction assignments for multiple drivers', async () => {
     const user = userEvent.setup();
     window.location.hash = '#routes';
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Route all open orders' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Plan selected open orders' })).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Starting location' })).toHaveValue('5855 99 Street NW, Edmonton, AB');
     expect(await screen.findByRole('heading', { name: 'Driver 1' })).toBeInTheDocument();
     expect(screen.getByText('Order #0802')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open Maps' })).toHaveAttribute('href', expect.stringContaining('https://www.google.com/maps/dir/'));
 
+    await user.click(screen.getByRole('checkbox', { name: 'Select order 0803' }));
+    await user.click(screen.getByRole('radio', { name: /Direction zones/i }));
+
     const driverCount = screen.getByRole('spinbutton', { name: 'Number of drivers' });
     await user.clear(driverCount);
-    await user.type(driverCount, '3');
-    await user.click(screen.getByRole('button', { name: 'Plan all open orders' }));
+    await user.type(driverCount, '2');
+    await user.click(screen.getByRole('button', { name: 'Plan 1 selected' }));
 
     await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => (
       String(url).includes('/api/routes/open-orders/plan')
-      && JSON.parse(options.body || '{}').driver_count === 3
+      && JSON.parse(options.body || '{}').driver_count === 2
       && JSON.parse(options.body || '{}').start_address === '5855 99 Street NW, Edmonton, AB'
+      && JSON.parse(options.body || '{}').assignment_method === 'directions'
+      && JSON.stringify(JSON.parse(options.body || '{}').order_ids) === '[701]'
+      && JSON.parse(options.body || '{}').direction_assignments.length === 2
     ))).toBe(true));
   });
 

@@ -502,9 +502,14 @@ reconciliation uses the same lock path before releasing inventory.
 
 Decision: Add a read-only open-order planner above the existing completed-order
 route-record workflow. It starts at `5855 99 Street NW, Edmonton, AB`, accepts
-1–50 drivers, captures every operational open order, returns incomplete-address
-orders explicitly, sorts routable stops by postal area/address, and divides
-them into balanced contiguous driver groups. It constructs Google Maps
+1–50 drivers, lists every routable operational open order for explicit staff
+selection, and returns incomplete-address orders explicitly. Staff choose either
+estimated-time balancing or direction-zone assignment. Estimated-time balancing
+minimizes the spread of a deterministic workload estimate based on stop count,
+delivery direction, and postal-area transitions. Direction mode assigns North,
+South, East, West, and Central to one or more drivers; a driver may own several
+directions and a direction may be shared. Postal-code suggestions can be
+corrected per order before planning. The planner constructs Google Maps
 directions URLs with `api=1`; each delivery link contains at most four stops so
 it remains usable with the mobile-browser waypoint limit. Long driver runs are
 split into numbered, continuous parts. Staff can open, copy, or natively share
@@ -512,12 +517,15 @@ each link.
 
 Reason: Pongo needs a useful iPhone/Android dispatch workflow now without
 embedding map credentials in React or introducing a paid routing provider.
-Postal-area balancing is predictable and keeps nearby deliveries together,
-while Google Maps supplies the actual driving directions after the link opens.
+The deterministic estimate is available without sharing addresses with a
+provider, while Google Maps supplies actual live driving directions only after
+a staff member opens a link.
 
 Safety: Planning performs one read-only order query and writes no route, order,
 inventory, stock movement, audit, or WooCommerce data. No address is sent to
 Google until a staff member opens or shares a generated link. This is not
-traffic-aware optimization, address validation, geocoding, dispatch tracking,
-or proof of delivery. ADR-022 and ADR-025 still govern saved completed-order
-route records and disabled paid-provider integrations.
+traffic-aware optimization, and the displayed minutes are explicitly an
+estimate rather than a Google travel time. This is also not address validation,
+geocoding, dispatch tracking, or proof of delivery. ADR-022 and ADR-025 still
+govern saved completed-order route records and disabled paid-provider
+integrations.

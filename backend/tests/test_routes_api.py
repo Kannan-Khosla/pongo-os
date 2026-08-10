@@ -79,7 +79,7 @@ def route_payload(order_ids):
     }
 
 
-def test_open_order_route_planner_balances_every_routable_order_across_drivers(client):
+def test_open_order_route_planner_balances_selected_orders_by_estimated_time(client):
     order_ids = [
         seed_open_delivery_order(client, index, postal_code=postal_code)
         for index, postal_code in enumerate(
@@ -98,23 +98,66 @@ def test_open_order_route_planner_balances_every_routable_order_across_drivers(c
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["total_open_orders"] == 10
+    assert body["available_order_count"] == 9
+    assert body["selected_order_count"] == 9
     assert body["routable_order_count"] == 9
     assert body["excluded_order_count"] == 1
     assert body["effective_driver_count"] == 3
     assert [driver["stop_count"] for driver in body["drivers"]] == [3, 3, 3]
     assert {stop["order_id"] for driver in body["drivers"] for stop in driver["stops"]} == set(order_ids)
     assert body["excluded_orders"][0]["order_id"] == excluded_id
-    assert [[stop["postal_area"] for stop in driver["stops"]] for driver in body["drivers"]] == [
-        ["T5A", "T5A", "T5A"],
-        ["T5B", "T5B", "T5B"],
-        ["T6C", "T6C", "T6C"],
-    ]
+    assert body["assignment_method"] == "equal_time"
+    assert len({driver["estimated_duration_minutes"] for driver in body["drivers"]}) == 1
+    assert {order["order_id"] for order in body["available_orders"]} == set(order_ids)
     first_link = body["drivers"][0]["google_maps_links"][0]
     query = parse_qs(urlparse(first_link["url"]).query)
     assert query["api"] == ["1"]
     assert query["origin"] == ["5855 99 Street NW, Edmonton, AB"]
     assert query["travelmode"] == ["driving"]
     assert client.get("/api/routes").json()["total"] == 0
+
+
+def test_open_order_route_planner_only_routes_selected_orders(client):
+    order_ids = [seed_open_delivery_order(client, index) for index in range(1, 5)]
+
+    response = client.post(
+        "/api/routes/open-orders/plan",
+        json={"driver_count": 2, "order_ids": order_ids[:2]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["available_order_count"] == 4
+    assert body["selected_order_count"] == 2
+    assert {stop["order_id"] for driver in body["drivers"] for stop in driver["stops"]} == set(order_ids[:2])
+
+
+def test_open_order_route_planner_assigns_direction_zones_to_requested_drivers(client):
+    north = seed_open_delivery_order(client, 1, postal_code="T5X 1A1")
+    south = seed_open_delivery_order(client, 2, postal_code="T6X 1A1")
+    east = seed_open_delivery_order(client, 3, postal_code="T6A 1A1")
+    west = seed_open_delivery_order(client, 4, postal_code="T5P 1A1")
+    central = seed_open_delivery_order(client, 5, postal_code="T5J 1A1")
+
+    response = client.post(
+        "/api/routes/open-orders/plan",
+        json={
+            "driver_count": 2,
+            "assignment_method": "directions",
+            "direction_assignments": [
+                {"driver_number": 1, "directions": ["north", "east"]},
+                {"driver_number": 2, "directions": ["south", "west", "central"]},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["assignment_method"] == "directions"
+    assert {stop["order_id"] for stop in body["drivers"][0]["stops"]} == {north, east}
+    assert {stop["order_id"] for stop in body["drivers"][1]["stops"]} == {south, west, central}
+    assert body["drivers"][0]["directions"] == ["north", "east"]
+    assert body["drivers"][1]["directions"] == ["south", "west", "central"]
 
 
 def test_open_order_route_planner_segments_long_runs_for_mobile_google_maps(client):
@@ -142,12 +185,21 @@ def test_open_order_route_planner_validates_driver_count_and_handles_no_orders(c
     empty = client.post("/api/routes/open-orders/plan", json={"driver_count": 1})
     too_few = client.post("/api/routes/open-orders/plan", json={"driver_count": 0})
     too_many = client.post("/api/routes/open-orders/plan", json={"driver_count": 51})
+    invalid_assignment = client.post(
+        "/api/routes/open-orders/plan",
+        json={
+            "driver_count": 1,
+            "assignment_method": "directions",
+            "direction_assignments": [{"driver_number": 2, "directions": ["north"]}],
+        },
+    )
 
     assert empty.status_code == 200
     assert empty.json()["drivers"] == []
     assert empty.json()["effective_driver_count"] == 0
     assert too_few.status_code == 422
     assert too_many.status_code == 422
+    assert invalid_assignment.status_code == 422
 
 
 def test_route_candidates_include_fulfilled_and_partial_with_warning(client, monkeypatch):
