@@ -2,13 +2,13 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-10T21:34:03Z
+LAST UPDATED: 2026-08-10T21:37:15Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Demo-only Mythodus branding implemented and verified; authorized deployment in progress
-CURRENT RELEASE RECOMMENDATION: READY FOR AUTHORIZED DEPLOYMENT
+CURRENT PHASE: Demo-only Mythodus branding deployed and verified on production
+CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Production is running Heroku v49 at commit aab78e0 with schema revision 20260810_0038. The isolated demo account remains verified with mock-only data and blocked writes. A local frontend change now adds a top-right “Powered By: Mythodus” lockup with the supplied logo and Newsreader Bold to the global demo header only; staff sessions remain unchanged. The change passed the full frontend suite, production build, and desktop/mobile visual checks and is being prepared for the user-authorized deployment.
+Production is running Heroku v50 at commit 4dc8bcd with schema revision 20260810_0038. The isolated demo account remains verified with mock-only data and blocked writes. Every demo workspace now shows a top-right “Powered By: Mythodus” lockup with the supplied logo and Newsreader Bold in the global header; staff sessions remain unchanged. The live Items and Routes workspaces rendered the lockup without browser warnings or errors.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -89,7 +89,7 @@ ADR-DEMO-003 ACCEPTED: Render the Mythodus lockup once in the existing global to
 17. Run focused/full regressions, build, migration validation, docs/state validation, and diff/security review. COMPLETED.
 18. Commit, back up, deploy, migrate, and verify the authorized demo-access release. COMPLETED.
 19. Create and smoke-test the requested production demo account after receiving a compliant password. COMPLETED.
-20. Add, verify, and deploy demo-only Mythodus branding across every workspace. IN PROGRESS.
+20. Add, verify, and deploy demo-only Mythodus branding across every workspace. COMPLETED.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -101,7 +101,7 @@ RELEASE-001 / P1 / RELEASED / Heroku v40 deployed commit 96c3816 after manual ba
 WI-STOCKCSV-001 / P0 / RELEASED / Exact per-location stock override through item import CSV, using audited stock adjustment primitives and stale-preview protection; deployed and verified on production as Heroku v42.
 WI-STOCKCSV-002 / P0 / RELEASED / Full inventory export uploads directly; unchanged rows skip, safe blank locations resolve, exclusions/errors block the file, and changed rows commit in one locked audited transaction; deployed as Heroku v43.
 WI-DEMO-001 / P0 / RELEASED / Isolated read-only demo role with seeded fictional catalog, inventory, orders, operational history, route data, and guarded operator account creation; Heroku v49 at aab78e0.
-WI-DEMO-BRAND-001 / P1 / VERIFIED / Global demo-only top-right Mythodus lockup with supplied logo, Newsreader Bold, staff-session exclusion, and responsive header layout; production deployment pending.
+WI-DEMO-BRAND-001 / P1 / RELEASED / Global demo-only top-right Mythodus lockup with supplied logo, Newsreader Bold, staff-session exclusion, and responsive header layout; Heroku v50 at 4dc8bcd.
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
@@ -139,6 +139,7 @@ BLOCK-DEMO-001 / P0 / RESOLVED: The user supplied a compliant 12-character passw
 2026-08-10: Committed and pushed aab78e0 to the protected-workflow feature branch, captured Heroku PostgreSQL backup b010, deployed Heroku v49, migrated production to 20260810_0038, and verified web, worker, health, authentication, database, and signed-in staff Items UI. No demo account was created.
 2026-08-10: Created the authorized production demo account with the guarded operator script and completed an authenticated mock-only/read-only smoke test. The UI returned eight fictional items; POST /api/items returned 403; PostgreSQL confirmed one demo user and zero smoke-test item rows.
 2026-08-10: Added the supplied Mythodus logo and a demo-only “Powered By: Mythodus” Newsreader Bold lockup to the global top header. Added staff/demo rendering assertions and verified desktop plus 390 px layouts; no backend, database, authentication, or staff-interface behavior changed.
+2026-08-10: Committed and pushed 4dc8bcd, captured PostgreSQL backup b011, deployed Heroku v50, ran the unchanged Alembic release gate successfully, and verified health, web/worker dynos, demo Items/Routes branding, mock catalog continuity, and clean browser logs.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
 Final evidence:
@@ -161,11 +162,12 @@ Demo verification evidence: auth/readiness backend tests passed (9 total); demo 
 Production demo-access evidence: Heroku v49 reports commit aab78e0; manual PostgreSQL backup b010 completed before deployment; release migration completed transactionally at 20260810_0038; web and worker Basic dynos are up; `/health` returned HTTP 200; anonymous `/api/auth/me` returned HTTP 401. Immediately after release and before account provisioning, PostgreSQL had one existing staff user and no demo account. The signed-in production Items UI rendered `Item catalog`, showed no demo banner for staff, and produced no browser warnings or errors. `/ready` retains only the pre-existing 223 missing positive unit costs and missing operations alert webhook blockers.
 Production demo-account evidence: the guarded one-off process exited successfully; login returned HTTP 200; the authenticated UI visibly identified mock-only, read-only demo scope; Items returned exactly eight fictional `DEMO-*` products rather than the production catalog; an attempted POST `/api/items` returned HTTP 403; PostgreSQL reported one demo user and zero rows for the blocked smoke-test SKU; browser warnings and errors were empty.
 Mythodus branding verification: all 148 frontend tests passed; the Vite production build passed with the existing large-chunk warning; `git diff --check` passed. The authenticated local demo rendered the supplied logo and “Powered By: Mythodus” in the global header on desktop and at 390 × 844 without crowding navigation or account controls. A staff-session regression assertion confirms the lockup is absent outside demo access.
+Production Mythodus evidence: Heroku v50 reports commit 4dc8bcd; PostgreSQL backup b011 completed before deployment; the release command exited 0 at existing schema head 20260810_0038; web and worker Basic dynos are up; `/health` returned HTTP 200. The authenticated demo Items page retained its eight fictional products, and both Items and Routes showed the global Mythodus lockup with the supplied logo and no browser warnings or errors.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
 Database migration: production is at 20260810_0038; it adds `users.access_level` with `staff` default and a `staff|demo` check. The release migration completed transactionally.
-Release: production remains Heroku v49 at commit aab78e0. The user authorized deploying the verified demo-only Mythodus branding; the release is in progress and has no schema or configuration change.
-Recovery: Continuous Protection is enabled and manual predeployment backup b010 completed. Application rollback target is Heroku v48 at commit 29dded1; old code remains compatible with the additive column.
+Release: production is Heroku v50 at commit 4dc8bcd. The authorized demo-only Mythodus branding is deployed and verified; there was no schema or configuration change.
+Recovery: Continuous Protection is enabled and manual predeployment backup b011 completed. Application rollback target is Heroku v49 at commit aab78e0; both versions use schema 20260810_0038.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
 
@@ -185,9 +187,9 @@ Reused the existing scanner component and search flows, the operational order el
 For demo access, rebinding the existing request session provides one fail-closed isolation point for the whole backend and avoids demo branches in every service or a second frontend.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Commit and push the exact verified frontend release, capture a fresh PostgreSQL backup, deploy to Heroku, and verify demo plus staff visibility boundaries.
-THEN: Record the production release version, health, browser rendering, and rollback target.
-APPROVAL STATE: The user explicitly authorized implementing and deploying the demo-only Mythodus branding on 2026-08-10. No password or credential is recorded in source control or lifecycle state.
+NEXT: No release action remains. Review the live demo presentation with stakeholders and rotate the demo password through the guarded script when needed.
+THEN: Re-run the demo/staff visibility regression after any future global-header or authentication change.
+APPROVAL STATE: The user explicitly authorized implementing and deploying the demo-only Mythodus branding on 2026-08-10. Deployment is complete; no password or credential is recorded in source control or lifecycle state.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
 --- DELIVERY RUN: 2026-08-07T18:54:03Z ---
@@ -255,3 +257,9 @@ MODE: Operate
 SUMMARY: Production demo account created and its isolated mock-only, read-only behavior verified end to end.
 EVIDENCE: Account script exited 0; login 200; visible demo banner; exactly eight fictional `DEMO-*` items; POST /api/items 403; PostgreSQL one demo user and zero blocked smoke-test rows; no browser warnings or errors.
 NEXT ACTION: None. Rotate the password through the guarded operator script if access should change.
+
+--- DELIVERY RUN: 2026-08-10T21:37:15Z ---
+MODE: Release Readiness and Release
+SUMMARY: Demo-only top-right “Powered By: Mythodus” branding with the supplied logo and Newsreader Bold deployed and verified on Pongo production.
+EVIDENCE: Commit 4dc8bcd; backup b011; Heroku v50; release command exit 0 at schema 20260810_0038; web/worker up; health 200; 148 frontend tests and production build passed; local desktop/390 px plus live Items/Routes visual checks passed without browser errors.
+NEXT ACTION: None. Revalidate the global header after future authentication or shell changes.
