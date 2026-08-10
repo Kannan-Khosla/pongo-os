@@ -16,6 +16,10 @@ const schema = {
       fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_items'] }],
     },
     {
+      key: 'update_stock', label: 'Override stock levels', description: 'Set exact stock.', changes: 'Creates one audited stock adjustment.', does_not_change: 'Allocated and sellable remain system-managed.', required_fields: ['sku', 'warehouse', 'inventory_location', 'stock_quantity'],
+      fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_stock'] }, { key: 'warehouse', label: 'Warehouse', type: 'text', required_for: ['update_stock'] }, { key: 'inventory_location', label: 'Inventory location', type: 'text', required_for: ['update_stock'] }, { key: 'stock_quantity', label: 'In stock', type: 'decimal', required_for: ['update_stock'] }],
+    },
+    {
       key: 'starting_inventory', label: 'Set starting inventory', description: 'Record onboarding stock.', changes: 'Creates audited starting-inventory movements.', does_not_change: 'Existing operational inventory is never overwritten.', required_fields: ['sku', 'starting_quantity', 'starting_warehouse', 'starting_location'],
       fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_quantity', label: 'Starting quantity', type: 'decimal', required_for: ['starting_inventory'] }, { key: 'starting_warehouse', label: 'Warehouse', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_location', label: 'Inventory location', type: 'text', required_for: ['starting_inventory'] }],
     },
@@ -39,6 +43,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
   window.sessionStorage.clear();
   window.location.hash = '';
+});
+
+it('offers an audited stock override with a current-stock export', async () => {
+  const user = userEvent.setup();
+  vi.stubGlobal('fetch', vi.fn((url) => String(url).endsWith('/schema') ? response(schema) : response({})));
+  render(<ItemImportWorkspace />);
+
+  await user.click(await screen.findByRole('button', { name: /Override stock levels/i }));
+  await user.click(screen.getByRole('button', { name: /^Continue/i }));
+
+  expect(screen.getByRole('heading', { name: 'Upload your CSV' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: /Download template/i })).toHaveAttribute('href', expect.stringContaining('/templates/update_stock'));
+  expect(screen.getByRole('link', { name: /Export editable current stock/i })).toHaveAttribute('href', expect.stringContaining('/templates/update_stock?include_existing=true'));
 });
 
 it('keeps a rejected upload in the upload step with a human-readable error', async () => {

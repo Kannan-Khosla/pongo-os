@@ -446,10 +446,10 @@ required fields, examples, upload limit, and preview lifetime.
 
 ### GET /api/items/import/templates/{outcome}
 
-Returns an outcome-specific CSV. `outcome` is `add_items`, `update_items`, or
-`starting_inventory`. `include_existing=true` is supported only for
-`update_items` and exports editable metadata for existing items. Metadata
-templates never include inventory quantities.
+Returns an outcome-specific CSV. `outcome` is `add_items`, `update_items`,
+`update_stock`, or `starting_inventory`. `include_existing=true` is supported
+for `update_items` and `update_stock`; the latter exports exact current stock by
+SKU and active item-location. Metadata templates never include quantities.
 
 ### POST /api/items/import/previews
 
@@ -484,8 +484,11 @@ Revalidates persisted rows against current item/location data.
 ### POST /api/items/import/previews/{preview_id}/commit
 
 Requires JSON `idempotency_key`. Stops on a stale preview. Metadata commits are
-transactional and stock-invariant. Starting inventory delegates to the guarded
-opening-balance mutation and creates audited movement rows.
+transactional and stock-invariant. `update_stock` commits exact location counts
+as one locked, idempotent stock adjustment and returns `stock_adjustment_id` and
+`stock_units_delta`. When live writeback is enabled it also returns
+`woo_stock_sync_job_id` for the queued chunked sync. Starting inventory delegates
+to the guarded opening-balance mutation and creates audited movement rows.
 
 ### POST /api/items/import/previews/{preview_id}/cancel
 

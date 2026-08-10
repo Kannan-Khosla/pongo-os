@@ -4586,6 +4586,7 @@ tbody tr:nth-child(even) .sticky-col {
   .order-invoice {
     width: 100%;
     color: #15152a;
+    font-size: 12px;
     font-family: Arial, Helvetica, sans-serif;
     print-color-adjust: exact;
     -webkit-print-color-adjust: exact;
@@ -4623,7 +4624,7 @@ tbody tr:nth-child(even) .sticky-col {
 
   .invoice-title > span {
     color: #62627a;
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 800;
     letter-spacing: 0.16em;
   }
@@ -4635,13 +4636,13 @@ tbody tr:nth-child(even) .sticky-col {
   .invoice-title h1 {
     margin: 4px 0;
     color: #15152a;
-    font-size: 26px;
+    font-size: 28px;
   }
 
   .invoice-title p {
     margin: 0;
     color: #62627a;
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .invoice-reference-grid {
@@ -4666,14 +4667,14 @@ tbody tr:nth-child(even) .sticky-col {
   .invoice-notes h2 {
     margin: 0;
     color: #62627a;
-    font-size: 8px;
+    font-size: 10px;
     font-weight: 800;
     letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
   .invoice-reference-grid strong {
-    font-size: 10px;
+    font-size: 12px;
     text-transform: capitalize;
   }
 
@@ -4691,8 +4692,8 @@ tbody tr:nth-child(even) .sticky-col {
     gap: 3px;
     padding-left: 10px;
     border-left: 2px solid #f36b36;
-    font-size: 9px;
-    line-height: 1.35;
+    font-size: 11px;
+    line-height: 1.45;
   }
 
   .invoice-address-block h2 {
@@ -4700,14 +4701,14 @@ tbody tr:nth-child(even) .sticky-col {
   }
 
   .invoice-address-block strong {
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .invoice-lines-table {
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
-    font-size: 9px;
+    font-size: 11px;
   }
 
   .invoice-lines-table thead {
@@ -4727,7 +4728,7 @@ tbody tr:nth-child(even) .sticky-col {
     padding: 8px 7px;
     background: #1718a8;
     color: #fff;
-    font-size: 8px;
+    font-size: 10px;
     letter-spacing: 0.06em;
     text-align: right;
     text-transform: uppercase;
@@ -4754,7 +4755,7 @@ tbody tr:nth-child(even) .sticky-col {
     display: block;
     margin-top: 3px;
     color: #6d6d80;
-    font-size: 8px;
+    font-size: 10px;
   }
 
   .invoice-closing-grid {
@@ -4769,13 +4770,13 @@ tbody tr:nth-child(even) .sticky-col {
     flex-direction: column;
     gap: 5px;
     color: #62627a;
-    font-size: 8px;
+    font-size: 10px;
   }
 
   .invoice-notes p {
     margin: 0 0 4px;
     color: #26263b;
-    font-size: 9px;
+    font-size: 11px;
     line-height: 1.45;
   }
 
@@ -4789,7 +4790,7 @@ tbody tr:nth-child(even) .sticky-col {
     gap: 20px;
     padding: 6px 4px;
     border-bottom: 1px solid #e2e2ea;
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .invoice-totals dt,
@@ -4802,7 +4803,7 @@ tbody tr:nth-child(even) .sticky-col {
     border-bottom: 0 !important;
     background: #fff0e8;
     color: #15152a;
-    font-size: 14px !important;
+    font-size: 17px !important;
     font-weight: 900;
   }
 
@@ -4814,7 +4815,7 @@ tbody tr:nth-child(even) .sticky-col {
     padding-top: 9px;
     border-top: 1px solid #d9d9e5;
     color: #6d6d80;
-    font-size: 8px;
+    font-size: 10px;
   }
 
   .print-order-panel .table-pager,

@@ -317,6 +317,7 @@ const mockImportSchema = {
   outcomes: [
     { key: 'add_items', label: 'Add new items', description: 'Create products that do not yet exist.', changes: 'Creates item records and metadata.', does_not_change: 'Inventory quantities and movement history will not change.', required_fields: ['sku'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['add_items'] }, { key: 'product_name', label: 'Product name', type: 'text', required_for: [] }] },
     { key: 'update_items', label: 'Update item details', description: 'Update existing products by SKU.', changes: 'Updates approved metadata.', does_not_change: 'On hand, allocated, available, and movement history will not change.', required_fields: ['sku'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_items'] }, { key: 'product_name', label: 'Product name', type: 'text', required_for: [] }] },
+    { key: 'update_stock', label: 'Override stock levels', description: 'Set exact stock by location.', changes: 'Creates one audited stock adjustment.', does_not_change: 'Allocated and sellable remain system-managed.', required_fields: ['sku', 'warehouse', 'inventory_location', 'stock_quantity'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_stock'] }, { key: 'warehouse', label: 'Warehouse', type: 'text', required_for: ['update_stock'] }, { key: 'inventory_location', label: 'Inventory location', type: 'text', required_for: ['update_stock'] }, { key: 'stock_quantity', label: 'In stock', type: 'decimal', required_for: ['update_stock'] }] },
     { key: 'starting_inventory', label: 'Set starting inventory', description: 'Record physical stock at onboarding.', changes: 'Creates audited starting-inventory movements.', does_not_change: 'Existing operational inventory is never overwritten.', required_fields: ['sku', 'starting_quantity', 'starting_warehouse', 'starting_location'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_quantity', label: 'Starting quantity', type: 'decimal', required_for: ['starting_inventory'] }, { key: 'starting_warehouse', label: 'Warehouse', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_location', label: 'Inventory location', type: 'text', required_for: ['starting_inventory'] }] },
   ],
 };
@@ -1328,6 +1329,8 @@ describe('App shell and workflows', () => {
     expect(update).toHaveTextContent('On hand, allocated, available, and movement history will not change.');
     const starting = screen.getByRole('button', { name: /Set starting inventory/i });
     expect(starting).toHaveTextContent('Creates audited starting-inventory movements.');
+    const stock = screen.getByRole('button', { name: /Override stock levels/i });
+    expect(stock).toHaveTextContent('Allocated and sellable remain system-managed.');
     expect(screen.queryByText(/closing stock/i)).not.toBeInTheDocument();
   });
 

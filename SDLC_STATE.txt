@@ -2,16 +2,17 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-09T08:51:33Z
+LAST UPDATED: 2026-08-10T06:31:21Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Complete
-CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
+CURRENT PHASE: Production release authorized; pre-deployment validation in progress
+CURRENT RELEASE RECOMMENDATION: READY FOR AUTHORIZED DEPLOYMENT
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Pongo Inventory OS production now has phone-camera QR/barcode search on Items and all Inventory pages. The Routes page has a read-only planner that includes every operational open order, starts at the Pongo warehouse, splits deliveries across 1–50 drivers, and creates mobile-safe Google Maps links that can be opened or shared. Heroku release v40 deployed commit 96c3816 and passed live smoke verification.
+The current production baseline is Heroku v41 at commit c94a0ca. The stock CSV override, CSV parser correction, and larger print typography are locally verified. The user explicitly authorized production deployment on 2026-08-10; backup, deployment, and live verification are now in progress.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
+Stock CSV success means staff can export/edit a CSV, preview exact per-location quantity changes, and commit valid rows without manually adjusting each item; every changed quantity remains auditable and allocated stock remains system-controlled.
 
 === 04. REQUIREMENTS AND ACCEPTANCE CRITERIA ===
 REQ-SCAN-001: Items and every Inventory subpage expose the existing rear-camera QR/barcode scanner with manual fallback.
@@ -22,17 +23,25 @@ REQ-ROUTE-003: Assignments keep postal areas together where possible and balance
 REQ-ROUTE-004: Every driver receives shareable Google Maps driving links usable on mobile; long routes are continuous numbered parts with no more than three intermediate waypoints.
 REQ-ROUTE-005: Planning is read-only and does not persist routes or mutate orders, WooCommerce, inventory, or stock audit data.
 REQ-QA-001: Focused and full backend/frontend tests, frontend build, diff checks, documentation, and available browser verification pass before deployment.
+REQ-STOCKCSV-001: The item import workspace exposes an Override stock levels outcome with a schema-owned CSV template.
+REQ-STOCKCSV-002: Each row identifies an existing item by exact SKU, an active warehouse/location, and a non-negative exact In stock quantity; zero is valid.
+REQ-STOCKCSV-003: Preview displays current quantity, requested quantity, and variance without mutating stock. Invalid, duplicate, unmatched, or stale rows are not committed.
+REQ-STOCKCSV-004: Commit applies all included ready rows as one idempotent audited stock adjustment, recalculates item totals through the existing stock service, and does not accept Allocated or Sellable overrides.
+REQ-STOCKCSV-005: Retrying the same commit cannot apply stock twice, and a quantity changed after preview must require re-preview rather than silently overwrite newer work.
 
 === 05. SCOPE, NON-GOALS, CONSTRAINTS, AND ASSUMPTIONS ===
 IN SCOPE: phone camera scanner entry points on Items/Inventory; open-order query and deterministic driver assignment; missing-address reporting; keyless Google Maps URL construction; native share/clipboard fallback; responsive UI; tests and docs.
 NON-GOALS: configuration changes, embedded map tiles, paid Google Routes API, traffic-aware optimization, server-side geocoding/address correction, route persistence, dispatch tracking, driver accounts, proof of delivery, WooCommerce writes, and stock changes.
 CONSTRAINTS: Frontend receives no map credentials. Google Maps URLs have mobile waypoint limits, so long routes must be segmented. Existing completed-order route records remain available as a separate historical workflow.
 ASSUMPTION: Operational open orders are the existing non-historical Woo processing/FooSales set and shipping address fields are the delivery authority.
+STOCK CSV IN SCOPE: CSV-only exact per-location stock overrides through the existing six-step item import workspace, validation/preview, audit movements, history, tests, and docs.
+STOCK CSV NON-GOALS: changing allocated/sellable quantities, creating items/warehouses/locations, XLSX support, background processing, or metadata rollback for stock.
 
 === 06. SYSTEM, JOURNEY, AND DATA MAP ===
 Scanner journey: Items or Inventory -> Scan code -> rear camera or manual code -> existing local search -> matching item results.
 Route journey: Routes -> default warehouse/start + driver count -> POST /api/routes/open-orders/plan -> one read-only operational order query -> address validation -> postal-area sort -> balanced driver groups -> continuous Google Maps URLs -> open/share.
 Data boundaries: Order/customer/address snapshots travel from authenticated Pongo backend to the authenticated frontend. They are not sent to Google by the backend; Google receives addresses only when staff opens or shares a generated URL.
+Stock CSV journey: Items -> Import CSV -> Override stock levels -> upload/map columns -> review current/new/variance -> confirm -> one audited stock adjustment -> results/history. Quantity authority is the selected active inventory location; item totals remain derived by the existing location inventory service.
 
 === 07. ARCHITECTURE AND DECISION REGISTER ===
 ADR-036 ACCEPTED: Use keyless Google Maps URLs, not a map SDK or paid routing API.
@@ -40,6 +49,8 @@ ADR-036A ACCEPTED: Deterministic postal-area sorting plus balanced contiguous gr
 ADR-036B ACCEPTED: Limit each mobile delivery link to four stops (three intermediate waypoints plus destination); start later parts at the previous destination.
 ADR-036C ACCEPTED: Keep this planner read-only and separate from saved completed-order route records.
 ADR-SCAN-001 ACCEPTED: Reuse MobileCodeScanner and the page's existing search pipeline instead of creating a second scanner/search backend.
+ADR-STOCKCSV-001 ACCEPTED: Reuse the item import workspace for mapping/preview/idempotency and the stock adjustment service for locks, totals, and audit movements; CSV In stock is an absolute location quantity, not a delta.
+ADR-STOCKCSV-002 ACCEPTED: SKU is the only item identity, Warehouse plus Inventory location is the stock identity, and Allocated/Sellable remain derived operational fields.
 
 === 08. ROADMAP AND ACTIVE DELIVERY PLAN ===
 1. Inspect scanner, order, route, and UI architecture. COMPLETED.
@@ -49,6 +60,10 @@ ADR-SCAN-001 ACCEPTED: Reuse MobileCodeScanner and the page's existing search pi
 5. Add focused backend/frontend coverage and update product/API/QA/decision docs. COMPLETED.
 6. Run full regression, build, state validation, and final browser cleanup. COMPLETED.
 7. Back up PostgreSQL, deploy to Heroku, restore the worker, and verify production. COMPLETED.
+8. Define stock CSV contract and update lifecycle state. COMPLETED.
+9. Implement backend schema, preview validation, locked audited commit, and API results. COMPLETED.
+10. Expose the outcome in the existing import UI and add regression coverage/docs. COMPLETED.
+11. Run focused/full verification and hand off without deployment. COMPLETED.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -57,6 +72,7 @@ ROUTE-002 / P0 / COMPLETED / Mobile-safe continuous Google Maps direction URLs w
 ROUTE-003 / P0 / COMPLETED / Polished responsive planner, per-driver stops, warnings, native share/clipboard, and Google Maps actions.
 QA-001 / P0 / COMPLETED / Full backend/frontend regression, build, diff check, desktop/mobile browser layout, and state validation passed.
 RELEASE-001 / P1 / RELEASED / Heroku v40 deployed commit 96c3816 after manual backup b004; web/worker, migration, health, authentication, Routes, Inventory scanner, and browser logs verified.
+WI-STOCKCSV-001 / P0 / VERIFIED / Exact per-location stock override through item import CSV, using audited stock adjustment primitives and stale-preview protection; production release authorized and in progress.
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
@@ -66,6 +82,9 @@ RISK-004 / LOW / MITIGATED: More drivers than orders. Effective driver count is 
 RISK-005 / MEDIUM / MITIGATED FOR RELEASE: The obsolete local SQLite file was not used for release evidence. Heroku's PostgreSQL release migration succeeded at revision 20260807_0037 and the authenticated production UI loaded real route/inventory data.
 RISK-006 / HIGH / PRE-EXISTING AND ACCEPTED FOR THIS RELEASE: Production `/ready` remains HTTP 503 because 223 active stock items lack positive unit cost, no operations alert webhook is configured, and production stock authority/writeback are active. This delivery did not alter configuration or any stock-changing path; `/health`, schema, authentication, database, webhooks, reconciliation, and worker checks passed.
 DEPENDENCY-001: Opening a generated link requires Google Maps/web and exposes that link's addresses to Google at staff action time.
+RISK-STOCKCSV-001 / HIGH / MITIGATED: Preview performs a stale check and the adjustment service repeats the expected-quantity check under the stock lock before writing.
+RISK-STOCKCSV-002 / HIGH / MITIGATED: No direct Item.in_stock write was added; commit routes through the existing adjustment service and creates adjustment lines plus stock movements.
+RISK-STOCKCSV-003 / MEDIUM / MITIGATED: FIFO allocation reuses the manual adjustment path, and enabled Woo writeback queues the existing chunked worker after local commit.
 
 === 11. IMPLEMENTATION AND CHANGE LOG ===
 2026-08-08: Added OpenOrderRoutePlan request/response schemas, route-planning service, and POST /api/routes/open-orders/plan.
@@ -74,6 +93,8 @@ DEPENDENCY-001: Opening a generated link requires Google Maps/web and exposes th
 2026-08-08: Added MobileCodeScanner to all Inventory views and made both Inventory and Items scan values execute search immediately.
 2026-08-08: Added backend/frontend tests and updated README, API, QA, UI, and ADR documentation.
 2026-08-09: Committed and pushed 96c3816 to the feature branch and GitHub main, captured Heroku backup b004, paused the worker, deployed Heroku v40, ran the existing Alembic release command, restored the worker, and completed live smoke verification.
+2026-08-10: Approved exact stock-by-location CSV override and recorded requirements, safety contract, and implementation plan. No production action taken.
+2026-08-10: Implemented Override stock levels, editable current-stock export, exact per-location preview/variance, locked audited batch commit, FIFO follow-up, and optional queued Woo stock sync. Updated UI, tests, and documentation; no deployment.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
 Final evidence:
@@ -88,27 +109,31 @@ Final evidence:
 - Authenticated production Routes rendered the new planner/default warehouse and completed its read-only request; Inventory exposed exactly one camera scan action; browser console errors were empty.
 Security/safety: planning is authenticated through the existing API router, performs no writes, returns no credentials, and calls no map or WooCommerce service. Scanner search performs no stock mutation.
 Browser observation: planner layout and controls rendered locally. Data calls failed because the selected local SQLite file lacks existing migrations (`woocommerce_configuration` table and `orders.is_historical_snapshot` column); this is separate from the fresh-database test evidence.
+Stock CSV verification: focused backend import suite 15 passed; full backend 498 passed and 10 PostgreSQL-only skipped; full frontend 141 passed; production frontend build passed; `git diff --check` passed. The existing Starlette TestClient deprecation and Vite large-chunk warning remain.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
 Database migration: none; Heroku's release command confirmed existing head 20260807_0037.
-Release: Heroku v40, commit 96c3816, 2026-08-09T08:47:50Z.
-Recovery: manual PostgreSQL backup b004 completed before release. Application rollback is Heroku v39 at e02a411; v40 is rollback-eligible. No data rollback is expected because the feature is read-only and introduced no schema/data change.
+Release baseline: Heroku v41, commit c94a0ca, observed 2026-08-10. Heroku v40 at commit 96c3816 remains the prior feature release.
+Recovery: manual PostgreSQL backup b004 completed before v40. Application rollback is available through Heroku releases. No schema change is included in the pending stock CSV release.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
+ACTIVE STOCK CSV RELEASE STATE: Local implementation and verification complete. No migration is required. The user explicitly requested “deploy” on 2026-08-10; production execution is authorized.
 
 === 14. OPERATIONS, OBSERVABILITY, AND SUPPORT READINESS ===
 The endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Web and worker dynos are each running at one Basic dyno. Production UI and API smoke checks passed without browser console errors. Physical iPhone/Android camera permission and real barcode decoding still require device verification by Pongo staff.
+Stock CSV validation and local commit remain synchronous at current Pongo scale and use the existing import-size limits, database transaction, stock mutation lock, adjustment audit, and idempotency controls. When live WooCommerce writeback is enabled, the already-existing chunked stock-sync worker is queued after commit so remote API calls do not hold the import request open.
 
 === 15. TECHNICAL DEBT AND DEFERRED WORK ===
 Deferred: road/traffic optimization, address validation/geocoding, embedded map preview, persisted dispatch plans, named drivers, per-driver acknowledgements, route completion/proof of delivery, and automated SMS/email sharing. Add only after Pongo validates the simple operational workflow and production measurements justify more infrastructure.
+Deferred for stock CSV: changing allocated/sellable quantities, creating missing master data, background jobs, and customer-facing stock rollback. Add only with explicit requirements and tested operational rules.
 Known unrelated audit debt remains in PRODUCT_AUDIT.txt.
 
 === 16. CONTINUOUS IMPROVEMENT AND LEARNING ===
-Reused the existing scanner component and search flows, the operational order eligibility clause, and platform-native Web Share/clipboard capabilities. This avoided map keys, a new SDK, database schema, background jobs, and a second inventory lookup path. UI guidance applied: one obvious planning action, explicit defaults, visible exclusions, responsive cards, actionable errors, and no claim of optimization that the system does not perform.
+Reused the existing scanner component and search flows, the operational order eligibility clause, and platform-native Web Share/clipboard capabilities. For stock CSV, the design deliberately reuses the existing import and stock-adjustment pipelines instead of adding a second stock mutation system, database schema, dependency, or background job.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Pongo staff verifies one real barcode/QR scan on iPhone Safari and Android Chrome when convenient.
-THEN: Resolve the pre-existing `/ready` gaps: confirm missing unit costs, configure the private operations alert webhook, and separately review stock-authority/writeback safety.
-APPROVAL REQUIRED: None for the completed release. Any configuration change to production stock authority/writeback or credentials requires separate explicit approval.
+NEXT: Commit and publish the verified release, capture a PostgreSQL backup, deploy the exact revision, and run non-destructive production smoke checks.
+THEN: Record the Heroku release, backup, schema, process, health, authentication, and stock-import UI evidence.
+APPROVAL RECEIVED: User explicitly requested production deployment on 2026-08-10. Separate approval remains required for stock-authority/writeback configuration changes or a real inventory-changing smoke import.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
 --- DELIVERY RUN: 2026-08-07T18:54:03Z ---
@@ -128,3 +153,15 @@ MODE: Release Readiness and Release
 SUMMARY: Inventory camera scanning and open-order multi-driver Google Maps planning deployed to Pongo production as Heroku v40 and verified.
 EVIDENCE: Commit 96c3816; backup b004 completed; Alembic release command passed at 20260807_0037; web and worker up; health 200; auth and planner anonymous boundary 401; signed-in Routes and Inventory smoke checks passed with no browser console errors.
 NEXT ACTION: Verify physical camera decoding on iPhone/Android and separately address the pre-existing readiness gaps for missing unit costs, alerting, and active stock writeback.
+
+--- DELIVERY RUN: 2026-08-10T06:28:07Z ---
+MODE: Build Approved Scope
+SUMMARY: Implemented and locally verified exact per-location stock override through the guided item CSV import workspace; not deployed.
+EVIDENCE: 15 focused backend import tests, 498 full backend tests with 10 PostgreSQL-only skips, 141 frontend tests, production frontend build, and git diff check passed. Stock writes use locked idempotent adjustment batches with movement audit, FIFO follow-up, stale-preview protection, and queued Woo sync when enabled.
+NEXT ACTION: Review the local change, then explicitly approve commit/push/deployment if desired; release should include backup and a small production stock-CSV smoke test.
+
+--- DELIVERY RUN: 2026-08-10T06:31:21Z ---
+MODE: Release Readiness and Release
+SUMMARY: Production deployment authorized; exact release scope and local verification confirmed, with no schema migration or new dependency.
+EVIDENCE: Target is pongo-inventory-os-kannan on Heroku. Current source revision is c94a0ca plus the verified stock CSV, parser, print typography, tests, and documentation changes; git diff check and credential-pattern scan passed.
+NEXT ACTION: Commit and publish the release, capture a production PostgreSQL backup and current release baseline, deploy, then run non-destructive live checks.

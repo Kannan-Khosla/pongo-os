@@ -11,12 +11,13 @@ Items → Import items opens a full-page, six-step workflow:
 5. Confirm the exact changes.
 6. Review results and recovery actions.
 
-The three outcomes are deliberately separate:
+The four outcomes are deliberately separate:
 
 | Outcome | Allowed effect | Explicitly protected |
 | --- | --- | --- |
 | Add new items | Creates new item records and approved metadata. Existing SKUs are blocked. | On hand, allocated, available, on order, stock movement history. |
 | Update item details | Matches by SKU and changes approved item metadata. Blank cells preserve current values unless “clear blank values” is enabled. | On hand, allocated, available, on order, stock movement history. |
+| Override stock levels | Matches an existing item-location by exact SKU, warehouse, and inventory location, then sets its exact In stock quantity through one audited adjustment. | Allocated and sellable stay system-managed; item details and movement history are never overwritten. |
 | Set starting inventory | For an existing, zero-stock item with no stock movement history, creates one audited opening-balance movement at an active location. | Any item with operational stock or stock history; allocated always starts at zero. |
 
 WooCommerce catalog sync and connection repair remain separate actions under
@@ -27,18 +28,21 @@ variations remain separate items.
 
 `GET /api/items/import/schema` is the source of truth for supported outcomes,
 field labels, types, aliases, requirements, examples, the maximum upload size,
-and preview lifetime. The current schema version is `2026-08-06.1`.
+and preview lifetime. The current schema version is `2026-08-10.1`.
 
 Templates are generated from that same schema:
 
 - `GET /api/items/import/templates/add_items`
 - `GET /api/items/import/templates/update_items`
 - `GET /api/items/import/templates/update_items?include_existing=true`
+- `GET /api/items/import/templates/update_stock`
+- `GET /api/items/import/templates/update_stock?include_existing=true`
 - `GET /api/items/import/templates/starting_inventory`
 
-Metadata templates never contain On hand, Allocated, Available, or stock
-movement columns. The starting-inventory template contains only SKU, starting
-quantity, warehouse, inventory location, and an optional reference note.
+Metadata templates never contain In stock, Allocated, Sellable, or stock
+movement columns. The editable stock export contains only SKU, warehouse,
+inventory location, exact In stock, and an optional reference note. The
+starting-inventory template remains limited to onboarding fields.
 
 On the Items page, selecting a missing title, barcode, brand, category, or unit
 cost quality card exposes an `Export CSV` action. It calls the filtered item
@@ -62,14 +66,18 @@ uses the guided workspace endpoints.
   documented aliases. Ambiguous fields remain unmatched.
 - Require one destination per source and prevent the same destination from
   being mapped twice.
-- Match update and starting-inventory rows by normalized exact SKU only.
+- Match update, stock-override, and starting-inventory rows by normalized exact SKU only.
 - Never fall back to barcode for an update. This prevents a mistyped SKU from
   renaming the wrong item.
-- Detect duplicate SKUs and barcodes in the file and database.
+- Detect duplicate SKUs and barcodes in the file and database. Stock override
+  permits one SKU at multiple locations but blocks duplicate SKU/location rows.
 - Validate URLs, booleans, whole numbers, non-negative decimals, field lengths,
   and active warehouse/location pairs.
 - Show row-specific error codes, invalid values, human messages, and suggested
   actions. Rows can be corrected inline or excluded.
+- Stock override requires a non-negative exact In stock value and one existing,
+  active item-location assignment. Zero is valid; Allocated and Sellable are
+  never accepted from the CSV.
 
 ## Preview, commit, and concurrency
 
@@ -88,6 +96,16 @@ rolls back all metadata changes. Starting inventory uses the existing guarded
 stock mutation service per row; its idempotency key is stable per preview row,
 and every successful row creates both a stock movement and inventory audit
 event.
+
+Stock overrides are committed as one transaction and one stock-adjustment
+batch. The service locks the affected item/location rows, verifies each locked
+quantity still equals the previewed quantity, calculates the variance, and
+uses the standard adjustment path to recalculate totals and create movement
+audit rows. Any stale or failed row rolls back the whole included stock batch.
+After commit, the existing FIFO allocation runs in the transaction. When live
+WooCommerce stock writeback is enabled, the existing chunked stock-sync worker
+is queued so a large CSV does not hold the browser request open for one remote
+call per item. Stock movements are intentionally not customer-rollbackable.
 
 ## History, audit, and recovery
 
@@ -157,12 +175,16 @@ Before release:
 5. Add an item with metadata and verify all quantities remain zero.
 6. Update an item that already has stock; compare on hand, allocated, available,
    and movement count before and after.
-7. Record starting inventory on a new zero-stock item and verify one movement.
-8. Repeat that starting-inventory file and verify the row is blocked.
-9. Change an item after preview and verify commit returns stale-preview 409.
-10. Fix and exclude rows inline, then verify only valid included rows commit.
-11. Download original and failed-row files from history.
-12. Roll back an update, then modify an imported field and verify a second or
+7. Export editable current stock, change one location to an exact value, and
+   verify one adjustment, one movement, correct variance, and unchanged allocation.
+8. Change location stock after preview and verify stock commit returns 409
+   without overwriting the newer count.
+9. Verify negative stock and duplicate SKU/location rows are blocked.
+10. Record starting inventory on a new zero-stock item and verify one movement.
+11. Repeat that starting-inventory file and verify the row is blocked.
+12. Fix and exclude rows inline, then verify only valid included rows commit.
+13. Download original and failed-row files from history.
+14. Roll back an update, then modify an imported field and verify a second or
     stale rollback is refused safely.
 
 No production database or live WooCommerce connection is needed for this QA.

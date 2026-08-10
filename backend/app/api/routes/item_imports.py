@@ -69,7 +69,7 @@ def get_import_schema(response: Response) -> dict[str, Any]:
 @router.get("/templates/{outcome}")
 def download_template(outcome: str, include_existing: bool = Query(False), db: Session = Depends(get_db)) -> Response:
     content = template_csv(outcome, db, include_existing=include_existing)
-    suffix = "-existing" if include_existing and outcome == "update_items" else ""
+    suffix = "-existing" if include_existing and outcome in {"update_items", "update_stock"} else ""
     return Response(
         content=content,
         media_type="text/csv; charset=utf-8",

@@ -64,7 +64,7 @@
 .import-stage-heading h3 { margin: 0; font-size: clamp(22px, 3vw, 30px); letter-spacing: -.02em; }
 .import-stage-heading p { max-width: 720px; margin: 8px 0 0; color: var(--import-muted); line-height: 1.55; }
 
-.outcome-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 28px 0 18px; }
+.outcome-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 28px 0 18px; }
 .outcome-card { display: grid; grid-template-columns: auto 1fr auto; gap: 13px; min-height: 250px; padding: 21px; border: 1px solid var(--import-line); border-radius: 12px; background: #fff; color: inherit; text-align: left; cursor: pointer; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
 .outcome-card:hover { transform: translateY(-2px); border-color: #8ea6e6; box-shadow: 0 12px 28px rgba(30, 64, 175, .09); }
 .outcome-card.selected { border: 2px solid var(--import-blue); padding: 20px; background: linear-gradient(180deg, #f9fbff 0%, #fff 55%); box-shadow: 0 0 0 3px rgba(23, 61, 166, .08); }

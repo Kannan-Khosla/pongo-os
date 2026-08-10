@@ -20,14 +20,19 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
 from app.models.imports import ImportError, ImportJob, ImportMappingProfile, ImportPreview, ImportPreviewRow, ItemImportChange
-from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryLocation, StockMovement
+from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation, InventoryLocation, StockMovement
+from app.schemas.woocommerce import WooStockSyncRequest
 from app.services.items import apply_calculated_fields
-from app.services.location_inventory import get_or_create_item_location, set_opening_balance
+from app.services.location_inventory import StaleStockQuantityError, create_committed_adjustment_batch, get_or_create_item_location, set_opening_balance
+from app.services.order_workflow import auto_allocate_processing_orders_fifo
+from app.services.woocommerce_access import effective_woocommerce_settings
+from app.services.woocommerce_stock_sync_jobs import create_stock_sync_job
+from app.services.woocommerce_writeback import stock_writeback_enabled
 
 
 logger = logging.getLogger("pongo.item_import")
-SCHEMA_VERSION = "2026-08-06.1"
-OUTCOMES = {"add_items", "update_items", "starting_inventory"}
+SCHEMA_VERSION = "2026-08-10.1"
+OUTCOMES = {"add_items", "update_items", "starting_inventory", "update_stock"}
 READY_STATES = {"will_create", "will_update"}
 ISSUE_STATES = {"needs_attention", "duplicate", "unmatched", "blocked"}
 ALLOWED_MIME_TYPES = {"", "text/csv", "text/plain", "application/csv", "application/vnd.ms-excel", "application/octet-stream"}
@@ -71,7 +76,7 @@ def field(
 
 METADATA_OUTCOMES = ["add_items", "update_items"]
 FIELD_SPECS = [
-    field("sku", "SKU", "sku", "text", [*METADATA_OUTCOMES, "starting_inventory"], aliases=["Item SKU", "Product SKU", "Code"], required_for=["add_items", "update_items", "starting_inventory"], example="DOG-FOOD-001", description="The unique item code used to match products.", nullable=False, max_length=120),
+    field("sku", "SKU", "sku", "text", [*METADATA_OUTCOMES, "starting_inventory", "update_stock"], aliases=["Item SKU", "Product SKU", "Code"], required_for=["add_items", "update_items", "starting_inventory", "update_stock"], example="DOG-FOOD-001", description="The unique item code used to match products.", nullable=False, max_length=120),
     field("product_name", "Product name", "description", "text", METADATA_OUTCOMES, aliases=["Description", "Product title", "Name", "Item name"], example="ACANA Adult Dog Recipe", description="The customer-facing product or item name."),
     field("barcode", "Barcode", "barcode", "text", METADATA_OUTCOMES, aliases=["UPC", "EAN", "GTIN", "UPC code"], example="064992123456", description="A unique scannable barcode.", max_length=120),
     field("category", "Category", "category", "text", METADATA_OUTCOMES, aliases=["Product category", "Item category"], example="Dry Dog Food", max_length=200),
@@ -88,8 +93,8 @@ FIELD_SPECS = [
     field("par_level", "Par level", "par_level", "decimal", METADATA_OUTCOMES, aliases=["Minimum stock", "Reorder point"], example="4"),
     field("default_econ_order", "Default economic order", "default_econ_order", "decimal", METADATA_OUTCOMES, aliases=["Economic order quantity", "EOQ"], example="6"),
     field("default_lead_time_days", "Default lead time days", "default_lead_time_days", "integer", METADATA_OUTCOMES, aliases=["Lead time", "Lead time days", "Default Lead Time (Days)"], example="5"),
-    field("warehouse", "Warehouse", "warehouse", "text", METADATA_OUTCOMES, aliases=["Warehouse name"], example="Main Warehouse", max_length=120),
-    field("inventory_location", "Inventory location", "inventory_location", "text", METADATA_OUTCOMES, aliases=["Location", "Bin", "Location code"], example="A-01", max_length=200),
+    field("warehouse", "Warehouse", "warehouse", "text", [*METADATA_OUTCOMES, "update_stock"], aliases=["Warehouse name"], required_for=["update_stock"], example="Main Warehouse", max_length=120),
+    field("inventory_location", "Inventory location", "inventory_location", "text", [*METADATA_OUTCOMES, "update_stock"], aliases=["Location", "Bin", "Location code"], required_for=["update_stock"], example="A-01", max_length=200),
     field("default_location", "Default location", "default_location", "text", METADATA_OUTCOMES, aliases=["Primary location"], example="A-01", max_length=200),
     field("assembly", "Assembly", "assembly", "boolean", METADATA_OUTCOMES, aliases=["Is assembly"], example="No", nullable=False),
     field("serializable", "Serializable", "serializable", "boolean", METADATA_OUTCOMES, aliases=["Serialized"], example="No", nullable=False),
@@ -101,10 +106,11 @@ FIELD_SPECS = [
     field("storage_length", "Storage length", "storage_length", "decimal", METADATA_OUTCOMES, aliases=["Length"], example="12"),
     field("storage_width", "Storage width", "storage_width", "decimal", METADATA_OUTCOMES, aliases=["Width"], example="8"),
     field("storage_height", "Storage height", "storage_height", "decimal", METADATA_OUTCOMES, aliases=["Height"], example="4"),
+    field("stock_quantity", "In stock", None, "decimal", ["update_stock"], aliases=["On hand", "Stock", "Quantity", "Current stock"], required_for=["update_stock"], example="24", description="The exact physical quantity at this warehouse location after the import.", nullable=False, quantity_related=True),
     field("starting_quantity", "Starting quantity", None, "decimal", ["starting_inventory"], aliases=["Starting inventory", "Initial quantity", "Opening quantity", "Quantity"], required_for=["starting_inventory"], example="24", description="The physical quantity present at the beginning of onboarding.", nullable=False, quantity_related=True),
     field("starting_warehouse", "Warehouse", None, "text", ["starting_inventory"], aliases=["Warehouse name"], required_for=["starting_inventory"], example="Main Warehouse", nullable=False, max_length=120),
     field("starting_location", "Inventory location", None, "text", ["starting_inventory"], aliases=["Location", "Bin", "Location code"], required_for=["starting_inventory"], example="A-01", nullable=False, max_length=200),
-    field("note", "Reference note", None, "text", ["starting_inventory"], aliases=["Reference", "Notes", "Reason"], example="Initial warehouse count", max_length=500),
+    field("note", "Reference note", None, "text", ["starting_inventory", "update_stock"], aliases=["Reference", "Notes", "Reason"], example="Physical count", max_length=500),
 ]
 
 FIELD_BY_KEY = {spec["key"]: spec for spec in FIELD_SPECS}
@@ -127,6 +133,12 @@ OUTCOME_CONTENT = {
         "description": "Record the physical quantity present at the beginning of onboarding.",
         "changes": "Creates audited starting-inventory movements at an eligible location.",
         "does_not_change": "Existing operational inventory is never overwritten.",
+    },
+    "update_stock": {
+        "label": "Override stock levels",
+        "description": "Set exact physical stock by SKU and inventory location.",
+        "changes": "Creates one audited stock adjustment for the included quantity changes.",
+        "does_not_change": "Allocated and sellable quantities remain system-managed; item details are not edited.",
     },
 }
 
@@ -174,7 +186,7 @@ def schema_document() -> dict[str, Any]:
         "accepted_file_types": [".csv"],
         "max_file_bytes": settings.item_import_max_bytes,
         "preview_ttl_hours": settings.item_import_preview_ttl_hours,
-        "protected_inventory_fields": ["On hand", "Allocated", "Available", "Stock movement history"],
+        "protected_inventory_fields": ["Allocated", "Available", "Stock movement history"],
         "outcomes": [
             {
                 "key": outcome,
@@ -182,7 +194,7 @@ def schema_document() -> dict[str, Any]:
                 "fields": schema_fields(outcome),
                 "required_fields": [spec["key"] for spec in FIELD_SPECS if outcome in spec["required_for"]],
             }
-            for outcome in ["add_items", "update_items", "starting_inventory"]
+            for outcome in ["add_items", "update_items", "update_stock", "starting_inventory"]
         ],
     }
 
@@ -209,6 +221,11 @@ def template_csv(outcome: str, db: Session, *, include_existing: bool = False) -
     if include_existing and outcome == "update_items":
         for item in db.scalars(select(InventoryItem).order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())).all():
             writer.writerow({spec["label"]: safe_csv_value(getattr(item, spec["attribute"], "")) for spec in specs})
+    elif include_existing and outcome == "update_stock":
+        item_locations = db.scalars(select(InventoryItemLocation).join(InventoryItem).where(InventoryItemLocation.active.is_(True)).options(selectinload(InventoryItemLocation.inventory_item)).order_by(InventoryItem.sku.asc().nullslast(), InventoryItemLocation.warehouse, InventoryItemLocation.inventory_location, InventoryItemLocation.id)).all()
+        for row in item_locations:
+            values = {"sku": row.inventory_item.sku, "warehouse": row.warehouse, "inventory_location": row.inventory_location, "stock_quantity": row.in_stock, "note": ""}
+            writer.writerow({spec["label"]: safe_csv_value(values.get(spec["key"], "")) for spec in specs})
     else:
         writer.writerow({spec["label"]: safe_csv_value(spec["example"]) for spec in specs})
     return buffer.getvalue()
@@ -265,7 +282,7 @@ def parse_csv_bytes(content: bytes) -> tuple[str, list[str], list[dict[str, str]
     except csv.Error:
         dialect = csv.excel
     try:
-        reader = csv.reader(StringIO(text), dialect, strict=True)
+        reader = csv.reader(StringIO(text), csv.excel, delimiter=dialect.delimiter, strict=True)
         raw_headers = next(reader)
         headers = [header.strip() for header in raw_headers]
         if not any(headers):
@@ -291,7 +308,7 @@ def parse_csv_bytes(content: bytes) -> tuple[str, list[str], list[dict[str, str]
 
 async def create_preview(file: UploadFile, outcome: str, db: Session, *, actor: str) -> ImportPreview:
     if outcome not in OUTCOMES:
-        raise HTTPException(status_code=422, detail={"code": "invalid_outcome", "message": "Choose Add new items, Update item details, or Set starting inventory."})
+        raise HTTPException(status_code=422, detail={"code": "invalid_outcome", "message": "Choose Add new items, Update item details, Override stock levels, or Set starting inventory."})
     filename = safe_filename(file.filename)
     if Path(filename).suffix.casefold() != ".csv":
         raise HTTPException(status_code=400, detail={"code": "invalid_file_type", "message": "Choose a CSV file ending in .csv."})
@@ -437,6 +454,15 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
     missing_mapping = sorted(required - mapped_destinations)
     mapped_rows = {row.id: destination_values(row, preview) for row in rows}
     sku_counts = Counter(normalize_identifier(values.get("sku")) for values in mapped_rows.values() if normalize_identifier(values.get("sku")))
+    stock_scope_counts = Counter(
+        (
+            normalize_identifier(values.get("sku")),
+            normalize_identifier(values.get("warehouse")),
+            normalize_identifier(values.get("inventory_location")),
+        )
+        for values in mapped_rows.values()
+        if normalize_identifier(values.get("sku")) and normalize_identifier(values.get("warehouse")) and normalize_identifier(values.get("inventory_location"))
+    )
     barcode_counts = Counter(normalize_identifier(values.get("barcode")) for values in mapped_rows.values() if normalize_identifier(values.get("barcode")))
 
     sku_keys = {normalize_identifier(values.get("sku")) for values in mapped_rows.values() if normalize_identifier(values.get("sku"))}
@@ -455,6 +481,12 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
             by_sku[normalize_identifier(item.sku)].append(item)
         if item.barcode:
             by_barcode[normalize_identifier(item.barcode)].append(item)
+    item_locations: dict[tuple[int, str, str], dict[int, InventoryItemLocation]] = defaultdict(dict)
+    if outcome == "update_stock" and items:
+        for item_location in db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id.in_([item.id for item in items]), InventoryItemLocation.active.is_(True))).all():
+            for location_name in {item_location.inventory_location, item_location.location_code, item_location.location_name}:
+                if location_name:
+                    item_locations[(item_location.inventory_item_id, normalize_identifier(item_location.warehouse), normalize_identifier(location_name))][item_location.id] = item_location
     movement_item_ids = set(db.scalars(select(StockMovement.inventory_item_id).where(StockMovement.inventory_item_id.in_([item.id for item in items])).distinct()).all()) if outcome == "starting_inventory" and items else set()
     locations = active_location_map(db)
     allow_blank_clears = bool((preview.options_json or {}).get("allow_blank_clears"))
@@ -472,7 +504,10 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
 
         sku_key = normalize_identifier(parsed.get("sku"))
         barcode_key = normalize_identifier(parsed.get("barcode"))
-        if sku_key and sku_counts[sku_key] > 1:
+        stock_scope = (sku_key, normalize_identifier(parsed.get("warehouse")), normalize_identifier(parsed.get("inventory_location")))
+        if outcome == "update_stock" and all(stock_scope) and stock_scope_counts[stock_scope] > 1:
+            row_issues.append(issue("duplicate_stock_location_in_file", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} and this inventory location appear more than once in this file.", parsed.get("sku"), "Keep one stock value for each SKU and inventory location."))
+        elif outcome != "update_stock" and sku_key and sku_counts[sku_key] > 1:
             row_issues.append(issue("duplicate_sku_in_file", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} appears more than once in this file.", parsed.get("sku"), "Keep one row for this SKU or give each item a unique SKU."))
         if barcode_key and barcode_counts[barcode_key] > 1:
             row_issues.append(issue("duplicate_barcode_in_file", "barcode", f"Row {row.row_number}: Barcode {parsed.get('barcode')!r} appears more than once in this file.", parsed.get("barcode"), "Correct or remove the duplicate barcode."))
@@ -483,7 +518,7 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
             row_issues.append(issue("ambiguous_sku", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} matches multiple existing items.", parsed.get("sku"), "Resolve the duplicate SKU in Items before importing."))
         if outcome == "add_items" and item is not None:
             row_issues.append(issue("sku_already_exists", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} already exists in Pongo OS.", parsed.get("sku"), "Exclude this row or use Update item details."))
-        if outcome in {"update_items", "starting_inventory"} and sku_key and not matches:
+        if outcome in {"update_items", "starting_inventory", "update_stock"} and sku_key and not matches:
             row_issues.append(issue("sku_not_found", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} was not found in Pongo OS.", parsed.get("sku"), "Correct the SKU or exclude this row."))
 
         if barcode_key:
@@ -520,7 +555,7 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
                     row_issues.append(issue("incomplete_location", "inventory_location", f"Row {row.row_number}: Warehouse and inventory location are both required when assigning a location.", location_name, "Choose an active warehouse and location."))
                 elif len(locations.get((normalize_identifier(warehouse), normalize_identifier(location_name)), [])) != 1:
                     row_issues.append(issue("invalid_location", "inventory_location", f"Row {row.row_number}: {warehouse} / {location_name} does not match one active inventory location.", location_name, "Choose an active warehouse and location from Pongo OS."))
-        else:
+        elif outcome == "starting_inventory":
             quantity = parsed.get("starting_quantity")
             warehouse = parsed.get("starting_warehouse")
             location_name = parsed.get("starting_location")
@@ -534,6 +569,31 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
                     "location": {"field": "starting_location", "label": "Destination", "before": None, "after": f"{warehouse} / {location_name}" if warehouse and location_name else None},
                 }
                 relevant_attributes = ["in_stock", "allocated"]
+        else:
+            quantity = parsed.get("stock_quantity")
+            warehouse = parsed.get("warehouse")
+            location_name = parsed.get("inventory_location")
+            if quantity is not None and quantity < 0:
+                row_issues.append(issue("negative_stock", "stock_quantity", f"Row {row.row_number}: In stock cannot be negative.", quantity, "Enter zero or a positive physical count."))
+            if warehouse and location_name and len(locations.get((normalize_identifier(warehouse), normalize_identifier(location_name)), [])) != 1:
+                row_issues.append(issue("invalid_location", "inventory_location", f"Row {row.row_number}: {warehouse} / {location_name} does not match one active inventory location.", location_name, "Choose an active warehouse and location from Pongo OS."))
+            if item is not None and warehouse and location_name:
+                candidates = list(item_locations.get((item.id, normalize_identifier(warehouse), normalize_identifier(location_name)), {}).values())
+                if len(candidates) != 1:
+                    row_issues.append(issue("item_location_not_found", "inventory_location", f"Row {row.row_number}: SKU {item.sku!r} is not assigned to exactly one active {warehouse} / {location_name} location.", location_name, "Assign the item to this location in Pongo OS, then preview the CSV again."))
+                else:
+                    item_location = candidates[0]
+                    current = Decimal(item_location.in_stock or 0)
+                    parsed["_inventory_item_location_id"] = item_location.id
+                    parsed["_expected_quantity"] = current
+                    if quantity is not None and current != quantity:
+                        variance = quantity - current
+                        scope_label = f"{warehouse} / {location_name}"
+                        changes = {
+                            "in_stock": {"field": "stock_quantity", "label": f"In stock · {scope_label}", "before": serializable(current), "after": serializable(quantity)},
+                            "variance": {"field": "stock_quantity", "label": f"Variance · {scope_label}", "before": 0, "after": serializable(variance)},
+                        }
+                    relevant_attributes = ["in_stock", "allocated"]
 
         if row.excluded:
             state = "excluded"
@@ -542,7 +602,7 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
             state = "duplicate" if any("duplicate" in code or "already_exists" in code or "ambiguous" in code for code in codes) else ("unmatched" if "sku_not_found" in codes else ("blocked" if "starting_inventory_ineligible" in codes else "needs_attention"))
         elif outcome == "add_items":
             state = "will_create"
-        elif outcome == "update_items":
+        elif outcome in {"update_items", "update_stock"}:
             state = "will_update" if changes else "no_changes"
         else:
             state = "will_update"
@@ -561,6 +621,7 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
     counts = Counter(row.state for row in rows)
     starting_units = sum((Decimal(str(row.normalized_data.get("starting_quantity") or 0)) for row in rows if row.state == "will_update" and outcome == "starting_inventory"), Decimal("0"))
     valuation = sum((Decimal(str(row.normalized_data.get("starting_quantity") or 0)) * Decimal(str((items_by_id.get(row.existing_item_id).unit_cost if items_by_id.get(row.existing_item_id) else 0) or 0)) for row in rows if row.state == "will_update" and outcome == "starting_inventory"), Decimal("0"))
+    stock_units_delta = sum((Decimal(str((row.proposed_changes or {}).get("variance", {}).get("after") or 0)) for row in rows if row.state == "will_update" and outcome == "update_stock"), Decimal("0"))
     preview.summary_json = {
         **(preview.summary_json or {}),
         "total_rows": len(rows),
@@ -576,6 +637,7 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
         "missing_required_mappings": missing_mapping,
         "starting_units": serializable(starting_units),
         "estimated_valuation": serializable(valuation),
+        "stock_units_delta": serializable(stock_units_delta),
     }
     preview.status = "draft" if missing_mapping else "ready"
     db.flush()
@@ -805,7 +867,7 @@ def job_result(job: ImportJob) -> dict[str, Any]:
 
 def stale_rows(preview: ImportPreview, rows: list[ImportPreviewRow], db: Session) -> list[int]:
     stale: list[int] = []
-    ready_rows = [row for row in rows if row.state in READY_STATES | {"no_changes"}]
+    ready_rows = [row for row in rows if row.state in READY_STATES | ({"no_changes"} if preview.outcome != "update_stock" else set())]
     if preview.outcome == "add_items":
         normalized_skus = {normalize_identifier(row.sku) for row in ready_rows if row.sku}
         normalized_barcodes = {normalize_identifier(row.barcode) for row in ready_rows if row.barcode}
@@ -832,6 +894,13 @@ def stale_rows(preview: ImportPreview, rows: list[ImportPreviewRow], db: Session
         item = db.get(InventoryItem, row.existing_item_id) if row.existing_item_id else None
         if item is None:
             stale.append(row.row_number)
+            continue
+        if preview.outcome == "update_stock":
+            location_id = (row.normalized_data or {}).get("_inventory_item_location_id")
+            item_location = db.get(InventoryItemLocation, location_id) if location_id else None
+            expected = Decimal(str((row.normalized_data or {}).get("_expected_quantity") or 0))
+            if item_location is None or not item_location.active or item_location.inventory_item_id != item.id or Decimal(item_location.in_stock or 0) != expected:
+                stale.append(row.row_number)
             continue
         attributes = [attribute for attribute in row.proposed_changes if attribute in SPEC_BY_ATTRIBUTE]
         if preview.outcome == "starting_inventory":
@@ -913,7 +982,7 @@ def apply_metadata_row(preview: ImportPreview, row: ImportPreviewRow, job: Impor
     return item
 
 
-def finalize_job(job: ImportJob, preview: ImportPreview, *, created: int, updated: int, unchanged: int, excluded: int, failed: int, starting_units: Decimal, started: float) -> dict[str, Any]:
+def finalize_job(job: ImportJob, preview: ImportPreview, *, created: int, updated: int, unchanged: int, excluded: int, failed: int, starting_units: Decimal, started: float, extra_result: dict[str, Any] | None = None) -> dict[str, Any]:
     successful = created + updated + unchanged
     status = "failed" if successful == 0 and failed else ("completed_with_errors" if failed else "completed")
     job.status = status
@@ -941,6 +1010,7 @@ def finalize_job(job: ImportJob, preview: ImportPreview, *, created: int, update
         "starting_units": serializable(starting_units),
         "estimated_valuation": (preview.summary_json or {}).get("estimated_valuation", 0),
         "duration_ms": job.duration_ms,
+        **(extra_result or {}),
     }
     job.result_json = result
     preview.status = "committed"
@@ -1025,6 +1095,72 @@ def commit_preview(preview: ImportPreview, db: Session, *, actor: str, idempoten
             db.commit()
             logger.exception(json.dumps({"event": "item_import_commit_failed", "preview_id": preview.id, "outcome": preview.outcome}))
             raise HTTPException(status_code=500, detail={"code": "import_transaction_failed", "message": "The import could not be completed. No item metadata changes were saved.", "import_job_id": failed_job.id}) from exc
+    elif preview.outcome == "update_stock":
+        try:
+            unchanged = sum(1 for row in rows if row.state == "no_changes")
+            stock_rows = [row for row in rows if row.state == "will_update"]
+            lines = [
+                {
+                    "item_id": row.existing_item_id,
+                    "inventory_item_location_id": row.normalized_data["_inventory_item_location_id"],
+                    "new_quantity": row.normalized_data["stock_quantity"],
+                    "expected_quantity": row.normalized_data["_expected_quantity"],
+                    "notes": row.normalized_data.get("note") or None,
+                }
+                for row in stock_rows
+            ]
+            adjustment = None
+            if lines:
+                adjustment = create_committed_adjustment_batch(
+                    db,
+                    lines,
+                    adjustment_type="correction",
+                    reason=f"CSV stock override from {preview.file_name}",
+                    notes=f"Item import job #{job.id}",
+                    created_by=actor,
+                    idempotency_key=f"item-import:{preview.id}:{idempotency_key}",
+                )
+                if not getattr(adjustment, "_idempotent_replay", False):
+                    auto_allocate_processing_orders_fifo(db, source=f"item-import:{job.id}")
+            updated = len(stock_rows)
+            result = finalize_job(
+                job,
+                preview,
+                created=0,
+                updated=updated,
+                unchanged=unchanged,
+                excluded=excluded,
+                failed=failed,
+                starting_units=starting_units,
+                started=started,
+                extra_result={"stock_adjustment_id": adjustment.id if adjustment else None, "stock_units_delta": (preview.summary_json or {}).get("stock_units_delta", 0)},
+            )
+            item_ids = {row.existing_item_id for row in stock_rows if row.existing_item_id}
+            db.commit()
+        except StaleStockQuantityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail={"code": "stale_preview", "message": str(exc) + " Review a refreshed preview before importing."}) from exc
+        except Exception as exc:
+            db.rollback()
+            failed_job = ImportJob(file_name=preview.file_name, import_type=f"items_{preview.outcome}", file_sha256=preview.file_sha256, preview_id=preview.id, outcome=preview.outcome, idempotency_key=idempotency_key, total_rows=len(rows), successful_rows=0, failed_rows=len(rows) - excluded, status="failed", created_by=actor, completed_at=utcnow(), duration_ms=round((perf_counter() - started) * 1000), result_json={"status": "failed", "message": "The stock import transaction was rolled back safely."})
+            db.add(failed_job)
+            db.commit()
+            logger.exception(json.dumps({"event": "item_import_commit_failed", "preview_id": preview.id, "outcome": preview.outcome}))
+            raise HTTPException(status_code=500, detail={"code": "import_transaction_failed", "message": "The stock import could not be completed. No stock changes were saved.", "import_job_id": failed_job.id}) from exc
+
+        try:
+            settings = effective_woocommerce_settings(db, get_settings())
+            if item_ids and stock_writeback_enabled(settings):
+                sync_job = create_stock_sync_job(db, WooStockSyncRequest(idempotency_key=f"item-import:{preview.id}", requested_by=actor))
+                result = {**result, "woo_stock_sync_job_id": sync_job.id}
+                job = db.get(ImportJob, result["import_job_id"])
+                preview = db.get(ImportPreview, result["preview_id"])
+                job.result_json = result
+                preview.result_json = result
+                db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(json.dumps({"event": "item_import_stock_writeback_queue_failed", "preview_id": preview.id, "item_count": len(item_ids)}))
     else:
         db.commit()
         for row in rows:

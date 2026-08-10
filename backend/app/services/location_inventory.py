@@ -39,6 +39,10 @@ class LocationStockChange:
     new_item_allocated: Decimal
 
 
+class StaleStockQuantityError(ValueError):
+    pass
+
+
 def to_decimal(value) -> Decimal:
     if value in (None, ""):
         return Decimal("0")
@@ -1136,11 +1140,20 @@ def create_committed_adjustment_batch(
         if item is None or row is None or row.inventory_item_id != item.id:
             raise ValueError("Adjustment line item/location is invalid.")
         old_quantity = row.in_stock or Decimal("0")
+        if "expected_quantity" in payload and old_quantity != to_decimal(payload["expected_quantity"]):
+            raise StaleStockQuantityError(f"Stock changed after preview for SKU {item.sku or item.id} at {row.warehouse} / {row.inventory_location}.")
+        if "new_quantity" in payload:
+            new_quantity = to_decimal(payload["new_quantity"])
+            if new_quantity < 0:
+                raise ValueError("Exact stock quantity cannot be negative.")
+            quantity_change = new_quantity - old_quantity
+        else:
+            quantity_change = to_decimal(payload["quantity_change"])
         change = adjust_location_stock(
             db,
             item,
             row,
-            payload["quantity_change"],
+            quantity_change,
             adjustment_type=adjustment_type,
             reason=reason,
             reference_number=adjustment.adjustment_number,
@@ -1160,7 +1173,7 @@ def create_committed_adjustment_batch(
                 inventory_location=row.inventory_location,
                 old_quantity=old_quantity,
                 new_quantity=change.new_location_stock,
-                quantity_change=to_decimal(payload["quantity_change"]),
+                quantity_change=quantity_change,
                 unit_cost=item.unit_cost,
                 notes=payload.get("notes"),
             )

@@ -124,6 +124,9 @@ See `docs/ITEM_IMPORTS.md`.
   option can clear nullable metadata fields.
 - Starting inventory is rejected when the item already has stock, allocation,
   or any movement history.
+- Override stock levels accepts SKU, Warehouse, Inventory location, In stock,
+  and optional Reference note. In stock is an exact non-negative location count,
+  not a delta; Allocated and Sellable remain system-managed.
 
 Compatibility endpoints `/api/items/import/preview` and
 `/api/items/import/commit` still accept the canonical legacy header above. They
@@ -140,6 +143,10 @@ Current implementation: `GET /api/items/export` exports filtered backend rows
 using this exact header order. Adding `editable=true` preserves the same filters
 but emits only update-safe metadata columns; it never includes stock quantities
 or movement fields.
+
+The guided import workspace separately provides an editable current-stock CSV
+for audited exact quantity overrides. Keeping metadata and stock outcomes
+separate prevents a routine product-detail import from mutating inventory.
 
 Do not include frontend-only/internal fields such as:
 - id

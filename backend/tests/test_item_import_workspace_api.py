@@ -26,13 +26,15 @@ def commit(client, preview_id: str, key: str | None = None):
 def test_schema_and_templates_are_backend_owned_and_stock_safe(client):
     schema = client.get("/api/items/import/schema")
     add_template = client.get("/api/items/import/templates/add_items")
+    stock_template = client.get("/api/items/import/templates/update_stock")
     starting_template = client.get("/api/items/import/templates/starting_inventory")
 
     assert schema.status_code == 200
-    assert [outcome["key"] for outcome in schema.json()["outcomes"]] == ["add_items", "update_items", "starting_inventory"]
+    assert [outcome["key"] for outcome in schema.json()["outcomes"]] == ["add_items", "update_items", "update_stock", "starting_inventory"]
     assert schema.headers["x-import-schema-version"] == add_template.headers["x-import-schema-version"]
     assert "On hand" not in add_template.text
     assert "Allocated" not in add_template.text
+    assert stock_template.text.splitlines()[0] == "SKU,Warehouse,Inventory location,In stock,Reference note"
     assert starting_template.text.splitlines()[0] == "SKU,Starting quantity,Warehouse,Inventory location,Reference note"
 
 
@@ -108,6 +110,63 @@ def test_update_metadata_never_changes_quantities_or_stock_history(client):
     assert restored["Unit Cost"] == 2
     assert restored["In Stock"] == 17
     assert client.get("/api/stock-movements", params={"item_id": original["id"]}).json()["total"] == movements_before
+
+
+def test_stock_csv_sets_exact_location_quantity_with_one_audited_adjustment(client):
+    item = seed_item(client, sku="STOCK-CSV", **{"In Stock": 10, "Allocated": 3})
+    movements_before = client.get("/api/stock-movements", params={"item_id": item["id"]}).json()["total"]
+    editable = client.get("/api/items/import/templates/update_stock", params={"include_existing": True})
+    assert "STOCK-CSV,Main Warehouse,Rack 1,10," in editable.text
+    csv_text = "SKU,Warehouse,Inventory Location,In Stock,Reference note\nSTOCK-CSV,Main Warehouse,Rack 1,4,Physical count\n"
+    preview = upload(client, "update_stock", csv_text).json()
+
+    assert preview["summary"]["update_count"] == 1
+    assert preview["summary"]["stock_units_delta"] == -6
+    row = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()["rows"][0]
+    assert row["proposed_changes"]["in_stock"] == {"field": "stock_quantity", "label": "In stock · Main Warehouse / Rack 1", "before": 10, "after": 4}
+    assert row["proposed_changes"]["variance"]["after"] == -6
+
+    key = str(uuid4())
+    first = commit(client, preview["preview_id"], key)
+    replay = commit(client, preview["preview_id"], key)
+    assert first.status_code == replay.status_code == 200, first.text
+    assert first.json() == replay.json()
+    assert first.json()["updated_count"] == 1
+    assert first.json()["stock_adjustment_id"]
+    updated = client.get(f"/api/items/{item['id']}").json()
+    assert updated["In Stock"] == 4
+    assert updated["Allocated"] == 3
+    assert updated["Sellable"] == 1
+    movements = client.get("/api/stock-movements", params={"item_id": item["id"]}).json()
+    assert movements["total"] == movements_before + 1
+    assert movements["movements"][0]["quantity_delta"] == -6
+
+
+def test_stock_csv_rejects_negative_duplicate_and_stale_location_counts(client):
+    item = seed_item(client, sku="STOCK-STALE", **{"In Stock": 10, "Allocated": 0})
+    duplicate = upload(client, "update_stock", "SKU,Warehouse,Inventory Location,In Stock\nSTOCK-STALE,Main Warehouse,Rack 1,7\nSTOCK-STALE,Main Warehouse,Rack 1,8\n").json()
+    assert duplicate["summary"]["duplicate_count"] == 2
+
+    negative = upload(client, "update_stock", "SKU,Warehouse,Inventory Location,In Stock\nSTOCK-STALE,Main Warehouse,Rack 1,-1\n").json()
+    assert negative["summary"]["needs_attention_count"] == 1
+
+    preview = upload(client, "update_stock", "SKU,Warehouse,Inventory Location,In Stock\nSTOCK-STALE,Main Warehouse,Rack 1,5\n").json()
+    location = client.get("/api/inventory/locations", params={"item_id": item["id"]}).json()["rows"][0]
+    changed = client.post(
+        "/api/inventory/adjustments",
+        json={
+            "idempotency_key": str(uuid4()),
+            "adjustment_type": "correction",
+            "reason": "Changed after CSV preview",
+            "lines": [{"item_id": item["id"], "inventory_item_location_id": location["id"], "quantity_change": 1}],
+        },
+    )
+    assert changed.status_code == 201, changed.text
+
+    response = commit(client, preview["preview_id"])
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "stale_preview"
+    assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 11
 
 
 def test_duplicate_can_be_corrected_inline_before_commit(client):
@@ -224,6 +283,15 @@ def test_upload_boundary_rejects_wrong_extensions_and_duplicate_headers(client):
     assert wrong_extension.json()["detail"]["code"] == "invalid_file_type"
     assert duplicate_headers.status_code == 400
     assert duplicate_headers.json()["detail"]["code"] == "duplicate_headers"
+
+
+def test_upload_accepts_standard_escaped_quotes(client):
+    response = upload(client, "add_items", 'SKU,Product name\nQUOTED-CSV-1,"Original"", Cat Treats"\n')
+
+    assert response.status_code == 201, response.text
+    preview = response.json()
+    rows = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()
+    assert rows["rows"][0]["product_name"] == 'Original", Cat Treats'
 
 
 def test_near_limit_5000_row_preview_has_bounded_memory_payload_and_pagination(client):

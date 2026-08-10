@@ -268,14 +268,15 @@ Still intentionally delayed:
 
 ## Item Import And WooCommerce Catalog Workflows
 
-Items → **Import items** is a dedicated six-step workspace for three explicit
-outcomes: Add new items, Update item details, or Set starting inventory. The
+Items → **Import items** is a dedicated six-step workspace for four explicit
+outcomes: Add new items, Update item details, Override stock levels, or Set starting inventory. The
 backend owns the field schema and templates, persists resumable previews,
 suggests and saves column mappings, supports row-level correction/exclusion,
 stops stale commits, records field-level audit history, and produces original
 and failed-row downloads. Metadata imports cannot change on hand, allocated,
-available, or movement history. Starting inventory is a separate guarded action
-that is allowed only before operational stock/history exists.
+available, or movement history. Stock overrides set exact per-location In stock
+through the audited adjustment service while Allocated and Sellable remain
+system-managed. Starting inventory remains limited to pre-operational stock.
 
 WooCommerce catalog sync is separate under Items → More. It previews and imports
 every Woo simple product and purchasable variation through the backend-only
