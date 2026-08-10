@@ -276,10 +276,12 @@ stops stale commits, records field-level audit history, and produces original
 and failed-row downloads. Metadata imports cannot change on hand, allocated,
 available, or movement history. **Update stock CSV** accepts a full inventory
 export directly: SKU and In stock are mandatory, while warehouse/location are
-used when present and unrelated columns are ignored. Matching quantities are
-skipped; every changed row is applied in one audited transaction, and any bad
-or excluded row blocks the whole stock file. Allocated and Sellable remain
-system-managed. Starting inventory remains limited to pre-operational stock.
+ignored with unrelated columns. Multiple location rows for one SKU are summed
+into one exact SKU total. Matching totals are skipped, unknown SKUs remain
+unchanged, and every matched difference is applied in one audited transaction.
+Invalid quantities, allocation conflicts, or stale stock block every matched
+change. Allocated and Sellable remain system-managed. Starting inventory
+remains limited to pre-operational stock.
 
 WooCommerce catalog sync is separate under Items → More. It previews and imports
 every Woo simple product and purchasable variation through the backend-only

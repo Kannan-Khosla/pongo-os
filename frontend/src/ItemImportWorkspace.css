@@ -158,7 +158,7 @@
 .row-editor-fields input { min-height: 42px; border: 1px solid #cbd5e1; border-radius: 7px; padding: 0 11px; font: inherit; }
 
 .import-summary-grid,
-.result-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 24px; }
+.result-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 24px; }
 .result-metrics { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 .import-summary-grid > div,
 .result-metrics > div { padding: 17px; border: 1px solid var(--import-line); border-radius: 10px; background: #fbfcfe; }
@@ -190,6 +190,7 @@
 .import-status-will_create,
 .import-status-will_update,
 .import-status-completed { background: #e2f7ef; color: #09634c; }
+.import-status-skipped { background: #eef2f7; color: #56657b; }
 .import-status-needs_attention,
 .import-status-duplicate,
 .import-status-unmatched,

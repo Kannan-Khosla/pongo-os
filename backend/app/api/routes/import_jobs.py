@@ -34,7 +34,7 @@ def list_import_jobs(
     if status:
         predicates.append(ImportJob.status == status)
     if item_imports_only:
-        predicates.append(ImportJob.outcome.in_(["add_items", "update_items", "starting_inventory"]))
+        predicates.append(ImportJob.outcome.in_(["add_items", "update_items", "update_stock", "starting_inventory"]))
     ordering = (ImportJob.created_at.desc(), ImportJob.id.desc())
     if page is None and page_size is None:
         return list(db.scalars(select(ImportJob).where(*predicates).order_by(*ordering).limit(limit)).all())
@@ -92,7 +92,7 @@ def download_failed_rows(job_id: int, db: Session = Depends(get_db)) -> Response
 
     canonical_columns = (
         [spec["label"] for spec in field_specs_for(job.outcome)]
-        if job.outcome in {"add_items", "update_items", "starting_inventory"}
+        if job.outcome in {"add_items", "update_items", "update_stock", "starting_inventory"}
         else (ENRICHMENT_COLUMNS if str(job.import_type or "").startswith("items_enrichment") else (CANONICAL_LOCATION_COLUMNS if job.import_type == "locations" else CANONICAL_ITEM_COLUMNS))
     )
     fieldnames = [*canonical_columns, "Error Code", "Error Field", "Error Message", "Suggested action"]

@@ -448,15 +448,16 @@ required fields, examples, upload limit, and preview lifetime.
 
 Returns an outcome-specific CSV. `outcome` is `add_items`, `update_items`,
 `update_stock`, or `starting_inventory`. `include_existing=true` is supported
-for `update_items` and `update_stock`; the latter exports exact current stock by
-SKU and active item-location. Metadata templates never include quantities.
+for `update_items` and `update_stock`; the latter exports one exact current total
+per SKU. Metadata templates never include quantities.
 
 ### POST /api/items/import/previews
 
 Accepts multipart `outcome` and `file`. Validates the upload boundary, persists
 the exact source, source hash, actor, detected columns, suggested mappings, and
 all normalized preview rows. For `update_stock`, SKU and In stock are required;
-warehouse/location are optional and extra export columns are ignored. Returns a
+distinct location rows are summed by SKU, warehouse/location and extra export
+columns are ignored, and both source-row and SKU counts are returned. Returns a
 resumable `preview_id` and summary.
 
 ### GET /api/items/import/previews/{preview_id}
@@ -486,11 +487,12 @@ Revalidates persisted rows against current item/location data.
 ### POST /api/items/import/previews/{preview_id}/commit
 
 Requires JSON `idempotency_key`. Stops on a stale preview. Metadata commits are
-transactional and stock-invariant. `update_stock` refuses exclusions or any
-invalid/unmatched/ambiguous row, skips quantities that already match, and commits
-all changed counts as one locked, idempotent transaction and stock adjustment.
-Every imported item is locked before the final stale check, including unchanged
-rows. It returns `stock_adjustment_id` and `stock_units_delta`. When live writeback is enabled it also returns
+transactional and stock-invariant. `update_stock` refuses exclusions and true
+safety errors, records unknown SKUs as nonblocking skips, skips totals that
+already match, and commits all matched changes as one locked, idempotent
+transaction and stock adjustment. Every matched item is locked before the final
+stale check, including unchanged rows. It returns `stock_adjustment_id`,
+`stock_units_delta`, `skipped_count`, `source_row_count`, and `sku_count`. When live writeback is enabled it also returns
 `woo_stock_sync_job_id` for the queued chunked sync. Starting inventory delegates
 to the guarded opening-balance mutation and creates audited movement rows.
 

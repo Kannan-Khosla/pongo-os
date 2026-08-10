@@ -17,7 +17,7 @@ const schema = {
     },
     {
       key: 'update_stock', label: 'Override stock levels', description: 'Set exact stock.', changes: 'Creates one audited stock adjustment.', does_not_change: 'Allocated and sellable remain system-managed.', required_fields: ['sku', 'stock_quantity'],
-      fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_stock'] }, { key: 'warehouse', label: 'Warehouse', type: 'text', required_for: [] }, { key: 'inventory_location', label: 'Inventory location', type: 'text', required_for: [] }, { key: 'stock_quantity', label: 'In stock', type: 'decimal', required_for: ['update_stock'] }],
+      fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_stock'] }, { key: 'stock_quantity', label: 'In stock', type: 'decimal', required_for: ['update_stock'] }],
     },
     {
       key: 'starting_inventory', label: 'Set starting inventory', description: 'Record onboarding stock.', changes: 'Creates audited starting-inventory movements.', does_not_change: 'Existing operational inventory is never overwritten.', required_fields: ['sku', 'starting_quantity', 'starting_warehouse', 'starting_location'],
@@ -45,11 +45,11 @@ function stockPreview(summary, overrides = {}) {
     file: { name: 'inventory.csv', size: 80, row_count: 1, header_count: 4 }, status: 'ready',
     source_columns: [
       { source: 'SKU', destination: 'sku', confidence: 'exact', samples: ['STOCK-1'] },
-      { source: 'Warehouse', destination: 'warehouse', confidence: 'exact', samples: ['Main Warehouse'] },
-      { source: 'Inventory Location', destination: 'inventory_location', confidence: 'exact', samples: ['A-01'] },
+      { source: 'Warehouse', destination: null, confidence: 'none', samples: ['Main Warehouse'] },
+      { source: 'Inventory Location', destination: null, confidence: 'none', samples: ['A-01'] },
       { source: 'In Stock', destination: 'stock_quantity', confidence: 'exact', samples: ['12'] },
     ],
-    mapping: { SKU: 'sku', Warehouse: 'warehouse', 'Inventory Location': 'inventory_location', 'In Stock': 'stock_quantity' },
+    mapping: { SKU: 'sku', Warehouse: null, 'Inventory Location': null, 'In Stock': 'stock_quantity' },
     options: { allow_blank_clears: false }, summary, ...overrides,
   };
 }
@@ -75,7 +75,7 @@ it('offers an audited stock override with a current-stock export', async () => {
 
 it('auto-validates mapped stock CSVs and reviews the whole file as one transaction', async () => {
   const user = userEvent.setup();
-  const summary = { total_rows: 1, ready_count: 1, create_count: 0, update_count: 1, no_changes_count: 0, needs_attention_count: 0, duplicate_count: 0, unmatched_count: 0, blocked_count: 0, excluded_count: 0, stock_units_delta: 2 };
+  const summary = { total_rows: 1, source_row_count: 1, sku_count: 1, ready_count: 1, create_count: 0, update_count: 1, no_changes_count: 0, skipped_count: 0, needs_attention_count: 0, duplicate_count: 0, unmatched_count: 0, blocked_count: 0, blocking_count: 0, excluded_count: 0, stock_units_delta: 2 };
   const row = { id: 1, row_number: 2, sku: 'STOCK-1', barcode: null, product_name: 'Stock item', normalized_data: { sku: 'STOCK-1', warehouse: 'Main Warehouse', inventory_location: 'A-01', stock_quantity: 12 }, proposed_changes: { in_stock: { field: 'stock_quantity', label: 'In stock', before: 10, after: 12 } }, issues: [], state: 'will_update', excluded: false };
   const fetchMock = vi.fn((url, init = {}) => {
     const target = String(url);
@@ -95,21 +95,21 @@ it('auto-validates mapped stock CSVs and reviews the whole file as one transacti
   const reviewHeading = await screen.findByRole('heading', { name: 'Review and fix issues' });
   expect(reviewHeading).toHaveFocus();
   expect(screen.queryByRole('heading', { name: 'Match your columns' })).not.toBeInTheDocument();
-  expect(screen.getByText(/every difference will be applied together in one transaction/i)).toBeInTheDocument();
+  expect(screen.getByText(/every matched difference will be applied together/i)).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /Exclude row 2/i })).not.toBeInTheDocument();
   expect(fetchMock.mock.calls.some(([url, init = {}]) => String(url).endsWith('/mapping') && init.method === 'PATCH')).toBe(true);
 
   await user.click(screen.getByRole('button', { name: /Review import/i }));
   expect(await screen.findByRole('heading', { name: 'Review changes before import' })).toBeInTheDocument();
-  expect(screen.getByText(/entire CSV is one transaction/i)).toBeInTheDocument();
+  expect(screen.getByText(/matched SKU.*will update together in one transaction/i)).toBeInTheDocument();
   await user.type(screen.getByRole('textbox', { name: 'Type STOCK to confirm' }), 'STOCK');
-  await user.click(screen.getByRole('checkbox', { name: /I reviewed every row/i }));
+  await user.click(screen.getByRole('checkbox', { name: /I reviewed the matched updates and skipped SKUs/i }));
   expect(screen.getByRole('button', { name: /Apply 1 stock change/i })).toBeEnabled();
 });
 
 it('blocks stock review and commit when any row is excluded', async () => {
   const user = userEvent.setup();
-  const summary = { total_rows: 2, ready_count: 1, create_count: 0, update_count: 1, no_changes_count: 0, needs_attention_count: 0, duplicate_count: 0, unmatched_count: 0, blocked_count: 0, excluded_count: 1, stock_units_delta: 2 };
+  const summary = { total_rows: 2, source_row_count: 2, sku_count: 2, ready_count: 1, create_count: 0, update_count: 1, no_changes_count: 0, skipped_count: 0, needs_attention_count: 0, duplicate_count: 0, unmatched_count: 0, blocked_count: 0, blocking_count: 1, excluded_count: 1, stock_units_delta: 2 };
   const row = { id: 1, row_number: 2, sku: 'STOCK-1', barcode: null, product_name: 'Stock item', normalized_data: {}, proposed_changes: {}, issues: [], state: 'excluded', excluded: true };
   vi.stubGlobal('fetch', vi.fn((url) => {
     const target = String(url);
@@ -120,21 +120,44 @@ it('blocks stock review and commit when any row is excluded', async () => {
   }));
   render(<ItemImportWorkspace initialPreviewId="stock-preview" />);
 
-  expect(await screen.findByText('This stock import is blocked')).toBeInTheDocument();
-  expect(screen.getByText(/No stock will change unless the whole file can be applied in one transaction/i)).toBeInTheDocument();
+  expect(await screen.findByText(/1 issue.*block this stock import/i)).toBeInTheDocument();
+  expect(screen.getByText(/Fix the blocking issue/i)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /Review import/i })).toBeDisabled();
   expect(await screen.findByRole('button', { name: /Include row 2/i })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Excluded' })).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: /Confirm/i }));
   await user.type(screen.getByRole('textbox', { name: 'Type STOCK to confirm' }), 'STOCK');
-  await user.click(screen.getByRole('checkbox', { name: /I reviewed every row/i }));
+  await user.click(screen.getByRole('checkbox', { name: /I reviewed the matched updates and skipped SKUs/i }));
   expect(screen.getByRole('button', { name: /Apply 1 stock change/i })).toBeDisabled();
+});
+
+it('shows unknown stock SKUs as safe skips without blocking matched updates', async () => {
+  const user = userEvent.setup();
+  const summary = { total_rows: 2, source_row_count: 2, sku_count: 2, ready_count: 1, update_count: 1, no_changes_count: 0, skipped_count: 1, needs_attention_count: 0, duplicate_count: 0, unmatched_count: 0, blocked_count: 0, blocking_count: 0, excluded_count: 0, stock_units_delta: 2 };
+  const rows = [
+    { id: 1, row_number: 2, sku: 'STOCK-1', product_name: 'Stock item', proposed_changes: { in_stock: { field: 'stock_quantity', label: 'Total in stock', before: 10, after: 12 } }, issues: [], state: 'will_update', excluded: false },
+    { id: 2, row_number: 3, sku: 'MISSING-1', product_name: null, proposed_changes: {}, issues: [{ code: 'sku_not_found', message: 'SKU MISSING-1 was not found in Pongo OS.', blocking: false }], state: 'skipped', excluded: false },
+  ];
+  vi.stubGlobal('fetch', vi.fn((url) => {
+    const target = String(url);
+    if (target.endsWith('/schema')) return response(schema);
+    if (target.includes('/rows?')) return response({ rows, total: 2, page: 1, page_size: 50, total_pages: 1 });
+    if (target.endsWith('/stock-preview')) return response(stockPreview(summary));
+    return response({});
+  }));
+  render(<ItemImportWorkspace initialPreviewId="stock-preview" />);
+
+  expect(await screen.findByText('Not in Pongo — skipped')).toBeInTheDocument();
+  expect(screen.getByText(/1 SKU.*not found in Pongo will stay unchanged/i)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Review import/i })).toBeEnabled();
+  await user.click(screen.getByRole('button', { name: /Review import/i }));
+  expect(await screen.findByText(/1 SKU.*not found in Pongo will be skipped/i)).toBeInTheDocument();
 });
 
 it('finishes an all-matching stock file without implying a stock mutation', async () => {
   const user = userEvent.setup();
-  const summary = { total_rows: 1, ready_count: 0, create_count: 0, update_count: 0, no_changes_count: 1, needs_attention_count: 0, duplicate_count: 0, unmatched_count: 0, blocked_count: 0, excluded_count: 0, stock_units_delta: 0 };
+  const summary = { total_rows: 1, source_row_count: 1, sku_count: 1, ready_count: 0, create_count: 0, update_count: 0, no_changes_count: 1, skipped_count: 0, needs_attention_count: 0, duplicate_count: 0, unmatched_count: 0, blocked_count: 0, blocking_count: 0, excluded_count: 0, stock_units_delta: 0 };
   const row = { id: 1, row_number: 2, sku: 'STOCK-1', barcode: null, product_name: 'Stock item', normalized_data: {}, proposed_changes: {}, issues: [], state: 'no_changes', excluded: false };
   vi.stubGlobal('fetch', vi.fn((url) => {
     const target = String(url);
@@ -146,11 +169,11 @@ it('finishes an all-matching stock file without implying a stock mutation', asyn
   render(<ItemImportWorkspace initialPreviewId="stock-preview" />);
 
   await user.click(await screen.findByRole('button', { name: /Review import/i }));
-  expect(await screen.findByText('No stock changes needed')).toBeInTheDocument();
+  expect(await screen.findByText('No matched stock changes are needed')).toBeInTheDocument();
   expect(screen.queryByRole('textbox', { name: /Type STOCK/i })).not.toBeInTheDocument();
   const finish = screen.getByRole('button', { name: /Finish — no stock changes/i });
   expect(finish).toBeDisabled();
-  await user.click(screen.getByRole('checkbox', { name: /I reviewed every row/i }));
+  await user.click(screen.getByRole('checkbox', { name: /I reviewed the matched updates and skipped SKUs/i }));
   expect(finish).toBeEnabled();
 });
 
@@ -227,6 +250,20 @@ it('reconciles excluded rows in the completed import totals', async () => {
 
   expect(await screen.findByRole('heading', { name: 'Import completed' })).toBeInTheDocument();
   expect(screen.getByText('Excluded').nextElementSibling).toHaveTextContent('1');
+});
+
+it('shows skipped stock SKUs and their download in completed results', async () => {
+  const completed = stockPreview({}, {
+    status: 'committed',
+    result: { status: 'completed', outcome: 'update_stock', import_job_id: 19, created_count: 0, updated_count: 1, unchanged_count: 2, skipped_count: 3, excluded_count: 0, failed_count: 0, duration_ms: 24, starting_units: 0, stock_units_delta: -4 },
+  });
+  vi.stubGlobal('fetch', vi.fn((url) => String(url).endsWith('/schema') ? response(schema) : response(completed)));
+
+  render(<ItemImportWorkspace initialPreviewId="stock-preview" />);
+
+  expect(await screen.findByRole('heading', { name: 'Import completed' })).toBeInTheDocument();
+  expect(screen.getByText('Skipped').nextElementSibling).toHaveTextContent('3');
+  expect(screen.getByRole('link', { name: /Download skipped\/failed rows/i })).toHaveAttribute('href', expect.stringContaining('/api/import-jobs/19/failed-rows'));
 });
 
 it('makes every confirmation row reachable instead of showing a capped sample', async () => {

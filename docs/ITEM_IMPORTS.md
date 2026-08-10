@@ -17,7 +17,7 @@ The four outcomes are deliberately separate:
 | --- | --- | --- |
 | Add new items | Creates new item records and approved metadata. Existing SKUs are blocked. | On hand, allocated, available, on order, stock movement history. |
 | Update item details | Matches by SKU and changes approved item metadata. Blank cells preserve current values unless “clear blank values” is enabled. | On hand, allocated, available, on order, stock movement history. |
-| Override stock levels | Matches by exact SKU, optionally narrows by warehouse/location, skips matching quantities, and sets every changed count through one audited adjustment. | Any invalid or excluded row blocks the whole file; allocated and sellable stay system-managed. |
+| Override stock levels | Matches by exact SKU, sums location rows into one exact total per SKU, skips matching totals and unknown SKUs, and applies every matched change through one audited adjustment. | CSV locations never reassign stock; invalid quantities, allocation conflicts, and stale stock block every matched change. Allocated and sellable stay system-managed. |
 | Set starting inventory | For an existing, zero-stock item with no stock movement history, creates one audited opening-balance movement at an active location. | Any item with operational stock or stock history; allocated always starts at zero. |
 
 WooCommerce catalog sync and connection repair remain separate actions under
@@ -28,7 +28,7 @@ variations remain separate items.
 
 `GET /api/items/import/schema` is the source of truth for supported outcomes,
 field labels, types, aliases, requirements, examples, the maximum upload size,
-and preview lifetime. The current schema version is `2026-08-10.2`.
+and preview lifetime. The current schema version is `2026-08-10.3`.
 
 Templates are generated from that same schema:
 
@@ -40,9 +40,9 @@ Templates are generated from that same schema:
 - `GET /api/items/import/templates/starting_inventory`
 
 Metadata templates never contain In stock, Allocated, Sellable, or stock
-movement columns. The editable stock export contains only SKU, warehouse,
-inventory location, exact In stock, and an optional reference note. The
-starting-inventory template remains limited to onboarding fields.
+movement columns. The editable stock export contains one total row per item:
+SKU, exact In stock, and an optional reference note. The starting-inventory
+template remains limited to onboarding fields.
 
 On the Items page, selecting a missing title, barcode, brand, category, or unit
 cost quality card exposes an `Export CSV` action. It calls the filtered item
@@ -70,19 +70,20 @@ uses the guided workspace endpoints.
 - Never fall back to barcode for an update. This prevents a mistyped SKU from
   renaming the wrong item.
 - Detect duplicate SKUs and barcodes in the file and database. Stock override
-  permits one SKU at multiple locations but blocks duplicate SKU/location rows.
+  sums distinct location rows for one SKU and blocks repeated SKU/location rows
+  to prevent accidental double counting.
 - Validate URLs, booleans, whole numbers, non-negative decimals, field lengths,
   and active warehouse/location pairs.
 - Show row-specific error codes, invalid values, human messages, and suggested
   actions. Rows can be corrected inline or excluded.
-- Stock override requires only exact SKU and a non-negative In stock value.
-  Warehouse and inventory location narrow the match when supplied; a full
-  inventory export can be uploaded directly and unrelated columns are ignored.
-- A blank location resolves to the SKU's one active assignment, or is accepted
-  unchanged when the scoped total already matches. A changed positive total
-  across multiple locations is ambiguous and must be supplied per location.
-  Zero may clear multiple unallocated locations. Allocated and Sellable are
-  never accepted from the CSV.
+- Stock override requires only exact SKU and a non-negative In stock value. A
+  full inventory export can be uploaded directly; warehouse, location, and
+  unrelated columns are ignored after distinct location rows are summed by SKU.
+- A SKU absent from Pongo is a visible, downloadable skip. A Pongo SKU absent
+  from the file remains unchanged.
+- Existing Pongo assignments are preserved. Total variance is applied to
+  UNASSIGNED first, then the default assignment, then remaining assignments;
+  no assignment is created and stock never drops below allocated quantity.
 
 ## Preview, commit, and concurrency
 
@@ -102,13 +103,13 @@ stock mutation service per row; its idempotency key is stable per preview row,
 and every successful row creates both a stock movement and inventory audit
 event.
 
-Stock overrides are all-or-nothing: every source row must be ready or already
-unchanged, and exclusions are not allowed. One transaction and one stock
-adjustment lock every CSV item's stock scope before the final stale check,
-verify stock and allocation still equal the preview, calculate each variance,
-recalculate totals, and create movement audit rows. Duplicate aliases resolving
-to the same location are blocked during preview. Any invalid, ambiguous,
-excluded, stale, or failed row changes nothing.
+Stock overrides are all-or-nothing across every matched SKU. Unknown SKUs are
+recorded as nonblocking skips; exclusions are not allowed. One transaction and
+one stock adjustment lock every matched SKU before the final stale check,
+verify its total, allocation, and active assignment set still equal the preview,
+calculate each variance, recalculate totals, and create movement audit rows.
+Any invalid quantity, ambiguous Pongo SKU, allocation conflict, missing safe
+assignment, inconsistent total, excluded row, or stale match changes nothing.
 After commit, the existing FIFO allocation runs in the transaction. When live
 WooCommerce stock writeback is enabled, the existing chunked stock-sync worker
 is queued so a large CSV does not hold the browser request open for one remote

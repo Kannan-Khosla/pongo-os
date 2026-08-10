@@ -39,7 +39,7 @@ def test_schema_and_templates_are_backend_owned_and_stock_safe(client):
     assert schema.headers["x-import-schema-version"] == add_template.headers["x-import-schema-version"]
     assert "On hand" not in add_template.text
     assert "Allocated" not in add_template.text
-    assert stock_template.text.splitlines()[0] == "SKU,Warehouse,Inventory location,In stock,Reference note"
+    assert stock_template.text.splitlines()[0] == "SKU,In stock,Reference note"
     assert starting_template.text.splitlines()[0] == "SKU,Starting quantity,Warehouse,Inventory location,Reference note"
 
 
@@ -117,18 +117,18 @@ def test_update_metadata_never_changes_quantities_or_stock_history(client):
     assert client.get("/api/stock-movements", params={"item_id": original["id"]}).json()["total"] == movements_before
 
 
-def test_stock_csv_sets_exact_location_quantity_with_one_audited_adjustment(client):
+def test_stock_csv_sets_exact_sku_total_with_one_audited_adjustment(client):
     item = seed_item(client, sku="STOCK-CSV", **{"In Stock": 10, "Allocated": 3})
     movements_before = client.get("/api/stock-movements", params={"item_id": item["id"]}).json()["total"]
     editable = client.get("/api/items/import/templates/update_stock", params={"include_existing": True})
-    assert "STOCK-CSV,Main Warehouse,Rack 1,10," in editable.text
+    assert "STOCK-CSV,10," in editable.text
     csv_text = "SKU,Warehouse,Inventory Location,In Stock,Reference note\nSTOCK-CSV,Main Warehouse,Rack 1,4,Physical count\n"
     preview = upload(client, "update_stock", csv_text).json()
 
     assert preview["summary"]["update_count"] == 1
     assert preview["summary"]["stock_units_delta"] == -6
     row = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()["rows"][0]
-    assert row["proposed_changes"]["in_stock"] == {"field": "stock_quantity", "label": "In stock · Main Warehouse / Rack 1", "before": 10, "after": 4}
+    assert row["proposed_changes"]["in_stock"] == {"field": "stock_quantity", "label": "Total in stock", "before": 10, "after": 4}
     assert row["proposed_changes"]["variance"]["after"] == -6
 
     key = str(uuid4())
@@ -174,7 +174,7 @@ def test_stock_csv_rejects_negative_duplicate_and_stale_location_counts(client):
     assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 11
 
 
-def test_stock_csv_rejects_two_aliases_for_the_same_location(client):
+def test_stock_csv_sums_multiple_location_rows_into_one_sku_total(client):
     location = client.post(
         "/api/locations",
         json={"warehouse": "Main Warehouse", "code": "ALIAS-CODE", "name": "Alias Display", "isActive": True},
@@ -188,9 +188,42 @@ def test_stock_csv_rejects_two_aliases_for_the_same_location(client):
         "SKU,Warehouse,Inventory Location,In Stock\nSTOCK-ALIAS,Main Warehouse,Alias Display,8\nSTOCK-ALIAS,Main Warehouse,ALIAS-CODE,7\n",
     ).json()
 
-    assert preview["summary"]["duplicate_count"] == 2
-    assert commit(client, preview["preview_id"]).status_code == 409
-    assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 10
+    assert preview["summary"]["source_row_count"] == 2
+    assert preview["summary"]["sku_count"] == 1
+    assert preview["summary"]["update_count"] == 1
+    assert preview["summary"]["duplicate_count"] == 0
+    result = commit(client, preview["preview_id"])
+    assert result.status_code == 200, result.text
+    assert result.json()["updated_count"] == 1
+    assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 15
+
+
+def test_stock_csv_reaggregates_original_rows_after_manual_quantity_mapping(client):
+    item = seed_item(client, sku="STOCK-REMAPPED", **{"In Stock": 10, "Allocated": 0})
+    csv_text = (
+        "SKU,Warehouse,Inventory Location,In Stock,Counted\n"
+        "STOCK-REMAPPED,Main Warehouse,Rack 1,1,4\n"
+        "STOCK-REMAPPED,Main Warehouse,Rack 2,2,5\n"
+    )
+    preview = upload(client, "update_stock", csv_text).json()
+    initial = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()["rows"][0]
+    assert initial["proposed_changes"]["in_stock"]["after"] == 3
+
+    remapped = client.patch(
+        f"/api/items/import/previews/{preview['preview_id']}/mapping",
+        json={
+            "mapping": {"SKU": "sku", "Warehouse": None, "Inventory Location": None, "In Stock": None, "Counted": "stock_quantity"},
+            "allow_blank_clears": False,
+        },
+    )
+    assert remapped.status_code == 200, remapped.text
+    assert remapped.json()["summary"]["source_row_count"] == 2
+    assert remapped.json()["summary"]["sku_count"] == 1
+    row = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()["rows"][0]
+    assert row["proposed_changes"]["in_stock"]["after"] == 9
+    result = commit(client, preview["preview_id"])
+    assert result.status_code == 200, result.text
+    assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 9
 
 
 def test_full_inventory_export_updates_stock_and_accepts_blank_zero_location(client):
@@ -238,7 +271,7 @@ def test_stock_csv_accepts_an_existing_description_longer_than_the_preview_label
     assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 2
 
 
-def test_stock_csv_is_all_or_nothing_and_cannot_exclude_errors(client):
+def test_stock_csv_skips_unknown_skus_without_partial_failure(client):
     item = seed_item(client, sku="ATOMIC-STOCK", **{"In Stock": 10, "Allocated": 0})
     movements_before = client.get("/api/stock-movements", params={"item_id": item["id"]}).json()["total"]
     preview = upload(
@@ -247,28 +280,65 @@ def test_stock_csv_is_all_or_nothing_and_cannot_exclude_errors(client):
         "SKU,In Stock\nATOMIC-STOCK,4\nUNKNOWN-STOCK,7\n",
     ).json()
     assert preview["summary"]["update_count"] == 1
-    assert preview["summary"]["unmatched_count"] == 1
+    assert preview["summary"]["skipped_count"] == 1
+    assert preview["summary"]["blocking_count"] == 0
+    rows = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()["rows"]
+    assert [row["state"] for row in rows] == ["will_update", "skipped"]
 
-    excluded = client.patch(
-        f"/api/items/import/previews/{preview['preview_id']}/rows/3",
-        json={"excluded": True},
-    )
-    assert excluded.status_code == 200, excluded.text
     response = commit(client, preview["preview_id"])
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "stock_import_not_ready"
-    assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 10
-    assert client.get("/api/stock-movements", params={"item_id": item["id"]}).json()["total"] == movements_before
+    assert response.status_code == 200, response.text
+    assert response.json()["updated_count"] == 1
+    assert response.json()["skipped_count"] == 1
+    assert response.json()["failed_count"] == 0
+    assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 4
+    assert client.get("/api/stock-movements", params={"item_id": item["id"]}).json()["total"] == movements_before + 1
+    skipped = client.get(f"/api/import-jobs/{response.json()['import_job_id']}/failed-rows")
+    assert skipped.status_code == 200
+    assert "UNKNOWN-STOCK" in skipped.text
+    assert "UNKNOWN-STOCK,7," in skipped.text
 
 
 def test_stock_csv_blocks_quantity_below_existing_allocation(client):
     item = seed_item(client, sku="ALLOCATED-STOCK", **{"In Stock": 10, "Allocated": 3})
-    preview = upload(client, "update_stock", "SKU,In Stock\nALLOCATED-STOCK,2\n").json()
+    safe = seed_item(client, sku="SAFE-STOCK", **{"In Stock": 10, "Allocated": 0})
+    preview = upload(client, "update_stock", "SKU,In Stock\nALLOCATED-STOCK,2\nSAFE-STOCK,4\n").json()
 
     assert preview["summary"]["needs_attention_count"] == 1
     row = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()["rows"][0]
     assert row["issues"][0]["code"] == "stock_below_allocated"
     assert commit(client, preview["preview_id"]).status_code == 409
+    assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 10
+    assert client.get(f"/api/items/{safe['id']}").json()["In Stock"] == 10
+
+
+def test_stock_csv_blocks_inconsistent_item_and_location_allocations(client):
+    item = seed_item(client, sku="ALLOCATION-MISMATCH", **{"In Stock": 10, "Allocated": 3})
+    with Session(client.test_engine) as db:
+        location = db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == item["id"])).one()
+        location.allocated = Decimal("0")
+        location.sellable = location.in_stock
+        db.commit()
+
+    preview = upload(client, "update_stock", "SKU,In Stock\nALLOCATION-MISMATCH,8\n").json()
+    row = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()["rows"][0]
+    assert row["issues"][0]["code"] == "stock_allocation_mismatch"
+    assert commit(client, preview["preview_id"]).status_code == 409
+    updated = client.get(f"/api/items/{item['id']}").json()
+    assert updated["In Stock"] == 10
+    assert updated["Allocated"] == 3
+
+
+def test_stock_csv_treats_physical_location_deactivation_as_a_stale_preview(client):
+    item = seed_item(client, sku="PHYSICAL-LOCATION-STALE", **{"In Stock": 10, "Allocated": 0})
+    preview = upload(client, "update_stock", "SKU,In Stock\nPHYSICAL-LOCATION-STALE,4\n").json()
+    with Session(client.test_engine) as db:
+        assignment = db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == item["id"])).one()
+        db.get(InventoryLocation, assignment.location_id).active = False
+        db.commit()
+
+    response = commit(client, preview["preview_id"])
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "stale_preview"
     assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 10
 
 
@@ -295,6 +365,70 @@ def test_stock_commit_locks_every_row_before_the_final_stale_check(client, monke
     assert result.status_code == 200, result.text
     assert result.json()["unchanged_count"] == 1
     assert calls[:2] == ["lock", "stale"]
+
+
+def test_stock_csv_preserves_multiple_assignments_and_rejects_assignment_changes_after_preview(client):
+    item = seed_item(client, sku="MULTI-LOCATION-STOCK", **{"In Stock": 10, "Allocated": 3})
+    with Session(client.test_engine) as db:
+        model = db.get(InventoryItem, item["id"])
+        default = db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == model.id)).one()
+        default.in_stock = Decimal("8")
+        default.sellable = Decimal("5")
+        unassigned_location = InventoryLocation(client="Pongo", warehouse="Main Warehouse", location_code="UNASSIGNED-MULTI", location_name="UNASSIGNED", active=True)
+        db.add(unassigned_location)
+        db.flush()
+        db.add(InventoryItemLocation(
+            inventory_item_id=model.id,
+            location_id=unassigned_location.id,
+            client="Pongo",
+            warehouse="Main Warehouse",
+            inventory_location="UNASSIGNED",
+            location_code="UNASSIGNED-MULTI",
+            location_name="UNASSIGNED",
+            is_default_location=False,
+            in_stock=Decimal("2"),
+            allocated=Decimal("0"),
+            sellable=Decimal("2"),
+            on_order=Decimal("0"),
+            under_par=False,
+            active=True,
+        ))
+        db.commit()
+
+    preview = upload(client, "update_stock", "SKU,In Stock\nMULTI-LOCATION-STOCK,5\n").json()
+    result = commit(client, preview["preview_id"])
+    assert result.status_code == 200, result.text
+    with Session(client.test_engine) as db:
+        locations = list(db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == item["id"]).order_by(InventoryItemLocation.is_default_location.desc())).all())
+        assert [(row.inventory_location, row.in_stock) for row in locations] == [("Rack 1", Decimal("5")), ("UNASSIGNED", Decimal("0"))]
+
+    stale_preview = upload(client, "update_stock", "SKU,In Stock\nMULTI-LOCATION-STOCK,7\n").json()
+    with Session(client.test_engine) as db:
+        extra_location = InventoryLocation(client="Pongo", warehouse="Main Warehouse", location_code="EXTRA-MULTI", location_name="Extra multi", active=True)
+        db.add(extra_location)
+        db.flush()
+        db.add(InventoryItemLocation(
+            inventory_item_id=item["id"],
+            location_id=extra_location.id,
+            client="Pongo",
+            warehouse="Main Warehouse",
+            inventory_location="Extra multi",
+            location_code="EXTRA-MULTI",
+            location_name="Extra multi",
+            is_default_location=False,
+            in_stock=Decimal("0"),
+            allocated=Decimal("0"),
+            sellable=Decimal("0"),
+            on_order=Decimal("0"),
+            under_par=False,
+            active=True,
+        ))
+        db.commit()
+
+    stale = commit(client, stale_preview["preview_id"])
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "stale_preview"
+    assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 5
 
 
 def test_1500_stock_rows_commit_in_one_adjustment(client):

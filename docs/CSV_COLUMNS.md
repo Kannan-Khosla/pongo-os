@@ -124,12 +124,12 @@ See `docs/ITEM_IMPORTS.md`.
   option can clear nullable metadata fields.
 - Starting inventory is rejected when the item already has stock, allocation,
   or any movement history.
-- Override stock levels requires SKU and In stock. Warehouse and Inventory
-  location are optional scope fields, and Reference note is optional. A standard
-  full inventory export may be uploaded without deleting its extra columns.
-  In stock is an exact non-negative count, not a delta; matching quantities are
-  skipped, the full file commits atomically, and Allocated/Sellable remain
-  system-managed.
+- Override stock levels requires SKU and In stock; Reference note is optional.
+  A standard full inventory export may be uploaded without deleting its extra
+  columns. Warehouse and Inventory Location are ignored after distinct location
+  rows are summed into one exact non-negative total per SKU. Matching totals and
+  unknown SKUs are skipped, all matched changes commit atomically, and
+  Allocated/Sellable remain system-managed.
 
 Compatibility endpoints `/api/items/import/preview` and
 `/api/items/import/commit` still accept the canonical legacy header above. They
