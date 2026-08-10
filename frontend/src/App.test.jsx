@@ -914,12 +914,15 @@ describe('App shell and workflows', () => {
 
     expect(onLogout).toHaveBeenCalledOnce();
     expect(document.querySelector('.auth-account')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Powered by Mythodus')).not.toBeInTheDocument();
   });
 
   it('labels demo sessions and never polls external integrations', async () => {
     render(<App currentUser={{ display_name: 'Demo', email: 'demo@example.test', access_level: 'demo' }} />);
 
     expect(screen.getByText(/Mock data only/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Powered by Mythodus')).toBeInTheDocument();
+    expect(screen.getByAltText('Mythodus logo')).toHaveAttribute('src', '/mythodus-logo.jpeg');
     await waitFor(() => expect(fetch.mock.calls.length).toBeGreaterThan(0));
     expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/integrations/'))).toBe(false);
   });

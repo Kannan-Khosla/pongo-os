@@ -3191,8 +3191,10 @@ export default function App({ currentUser = null, onLogout = null }) {
         />
         {isDemo && (
           <div className="demo-mode-banner" role="status">
-            <CheckCircle2 size={18} aria-hidden="true" />
-            <span><strong>Demo workspace</strong> Mock data only · Read-only · Production inventory is never shown or changed</span>
+            <span className="demo-mode-message">
+              <CheckCircle2 size={18} aria-hidden="true" />
+              <span><strong>Demo workspace</strong> Mock data only · Read-only · Production inventory is never shown or changed</span>
+            </span>
           </div>
         )}
         <NewOrderNotificationRegion
@@ -3666,6 +3668,12 @@ function TopHeader({ meta, currentUser, onLogout, notifications = [], unreadCoun
             {onLogout && <button onClick={onLogout} type="button"><LogOut size={16} aria-hidden="true" /> Sign out</button>}
           </div>
         </details>
+        {currentUser?.access_level === 'demo' && (
+          <div className="demo-powered-by" aria-label="Powered by Mythodus">
+            <span className="demo-powered-copy"><span>Powered By:</span><strong>Mythodus</strong></span>
+            <img src="/mythodus-logo.jpeg" alt="Mythodus logo" />
+          </div>
+        )}
       </div>
     </header>
   );
