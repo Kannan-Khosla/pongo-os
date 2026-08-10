@@ -3056,8 +3056,12 @@ describe('App shell and workflows', () => {
     await screen.findByText('Smoke Test Item');
     const inventoryTable = screen.getByText('SMOKE-001').closest('table');
     await user.click(within(inventoryTable).getByRole('button', { name: 'Open inventory actions' }));
+    const inventoryMenu = screen.getByRole('menu');
+    expect(inventoryMenu).toHaveClass('floating-menu');
+    expect(inventoryMenu.parentElement).toBe(document.body);
     await user.click(screen.getByRole('menuitem', { name: 'Edit Current Stock' }));
     const dialog = await screen.findByRole('dialog', { name: 'Edit current stock' });
+    expect(dialog.closest('.app-overlay-root')?.parentElement).toBe(document.body);
     const newQuantity = within(dialog).getByRole('spinbutton', { name: 'New Stock Quantity' });
     await user.clear(newQuantity);
     await user.type(newQuantity, '10');

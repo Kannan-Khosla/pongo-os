@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -253,6 +254,8 @@ function RowEditor({ row, fields, onClose, onSave, busy }) {
   const previousFocusRef = useRef(document.activeElement);
   useEffect(() => {
     const dialog = dialogRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     const focusable = () => [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')];
     function handleKeyDown(event) {
       if (event.key === 'Escape') {
@@ -270,18 +273,22 @@ function RowEditor({ row, fields, onClose, onSave, busy }) {
     dialog.addEventListener('keydown', handleKeyDown);
     return () => {
       dialog.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = previousOverflow;
       previousFocusRef.current?.focus();
     };
   }, []);
-  return (
-    <div className="import-drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <aside className="import-row-drawer" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="row-editor-title" aria-describedby={row.issues?.length ? 'row-editor-issues' : undefined}>
-        <header><div><span>CSV row {row.row_number}</span><h3 id="row-editor-title">Fix item data</h3></div><button aria-label="Close row editor" onClick={onClose} type="button"><X size={19} /></button></header>
-        {row.issues?.length > 0 && <div className="row-issue-list" id="row-editor-issues">{row.issues.map((candidate, index) => <div key={`${candidate.code}-${index}`}><AlertTriangle size={16} /><span><strong>{candidate.message}</strong>{candidate.suggested_action && <small>{candidate.suggested_action}</small>}</span></div>)}</div>}
-        <div className="row-editor-fields">{fields.map((field, index) => <label key={field.key}><span>{field.label}</span><input autoFocus={index === 0} type={['decimal', 'integer'].includes(field.type) ? 'number' : 'text'} value={values[field.key]} onChange={(event) => setValues((current) => ({ ...current, [field.key]: event.target.value }))} /></label>)}</div>
-        <footer><button className="import-quiet-button" onClick={onClose} type="button">Cancel</button><button className="import-primary-button" disabled={busy} onClick={() => onSave(values)} type="button">Save and revalidate</button></footer>
-      </aside>
-    </div>
+  return createPortal(
+    <div className="item-import-workspace import-overlay-root">
+      <div className="import-drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+        <aside className="import-row-drawer" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="row-editor-title" aria-describedby={row.issues?.length ? 'row-editor-issues' : undefined}>
+          <header><div><span>CSV row {row.row_number}</span><h3 id="row-editor-title">Fix item data</h3></div><button aria-label="Close row editor" onClick={onClose} type="button"><X size={19} /></button></header>
+          {row.issues?.length > 0 && <div className="row-issue-list" id="row-editor-issues">{row.issues.map((candidate, index) => <div key={`${candidate.code}-${index}`}><AlertTriangle size={16} /><span><strong>{candidate.message}</strong>{candidate.suggested_action && <small>{candidate.suggested_action}</small>}</span></div>)}</div>}
+          <div className="row-editor-fields">{fields.map((field, index) => <label key={field.key}><span>{field.label}</span><input autoFocus={index === 0} type={['decimal', 'integer'].includes(field.type) ? 'number' : 'text'} value={values[field.key]} onChange={(event) => setValues((current) => ({ ...current, [field.key]: event.target.value }))} /></label>)}</div>
+          <footer><button className="import-quiet-button" onClick={onClose} type="button">Cancel</button><button className="import-primary-button" disabled={busy} onClick={() => onSave(values)} type="button">Save and revalidate</button></footer>
+        </aside>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

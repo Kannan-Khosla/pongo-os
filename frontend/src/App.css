@@ -1504,6 +1504,17 @@ tbody tr:hover {
   color: var(--pongo-blue);
 }
 
+.floating-menu {
+  position: fixed;
+  right: auto;
+  bottom: auto;
+  z-index: 1100;
+  max-width: calc(100vw - 20px);
+  max-height: calc(100dvh - 20px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .menu-dot {
   width: 15px;
   height: 15px;
@@ -2993,7 +3004,7 @@ tbody tr:nth-child(even) .sticky-col {
 .order-dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 120;
+  z-index: 1000;
   display: grid;
   place-items: center;
   padding: 28px;
@@ -4162,23 +4173,29 @@ tbody tr:nth-child(even) .sticky-col {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 1000;
   display: grid;
   place-items: center;
   padding: 28px;
   background: rgba(21, 36, 42, 0.42);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .import-modal {
   width: min(1180px, calc(100vw - 56px));
-  max-height: calc(100vh - 56px);
+  max-height: calc(100dvh - 56px);
   overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--line);
   background: var(--white);
   box-shadow: 0 18px 50px rgba(20, 35, 41, 0.25);
 }
 
 .modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4580,8 +4597,9 @@ tbody tr:nth-child(even) .sticky-col {
     width: 100%;
     padding: 10mm;
     color: #15152a;
-    font-size: 12px;
-    font-family: Arial, Helvetica, sans-serif;
+    font-size: 15px;
+    font-family: "Helvetica Neue", Arial, Helvetica, sans-serif;
+    line-height: 1.4;
     print-color-adjust: exact;
     -webkit-print-color-adjust: exact;
   }
@@ -4599,8 +4617,8 @@ tbody tr:nth-child(even) .sticky-col {
     align-items: flex-start;
     justify-content: space-between;
     gap: 24px;
-    padding-bottom: 18px;
-    border-bottom: 3px solid #1718a8;
+    padding-bottom: 16px;
+    border-bottom: 2px solid #1718a8;
   }
 
   .invoice-brand {
@@ -4617,10 +4635,11 @@ tbody tr:nth-child(even) .sticky-col {
   }
 
   .invoice-title > span {
-    color: #62627a;
-    font-size: 11px;
+    color: #4f5264;
+    font-size: 12px;
     font-weight: 800;
     letter-spacing: 0.16em;
+    text-transform: uppercase;
   }
 
   .invoice-title {
@@ -4630,39 +4649,43 @@ tbody tr:nth-child(even) .sticky-col {
   .invoice-title h1 {
     margin: 4px 0;
     color: #15152a;
-    font-size: 28px;
+    font-size: 32px;
+    letter-spacing: -0.02em;
   }
 
   .invoice-reference-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 1px;
-    margin-top: 18px;
-    border: 1px solid #d9d9e5;
-    background: #d9d9e5;
+    margin-top: 20px;
+    border-block: 1px solid #bfc3cf;
+    background: #fff;
   }
 
   .invoice-reference-grid > div {
     display: grid;
-    gap: 4px;
-    min-height: 44px;
-    padding: 8px 10px;
-    background: #f7f7fb;
+    gap: 5px;
+    min-height: 48px;
+    padding: 10px 12px;
+    background: #fff;
+  }
+
+  .invoice-reference-grid > div + div {
+    border-left: 1px solid #e0e2e8;
   }
 
   .invoice-reference-grid span,
   .invoice-address-block h2,
   .invoice-notes h2 {
     margin: 0;
-    color: #62627a;
-    font-size: 10px;
+    color: #56596a;
+    font-size: 11px;
     font-weight: 800;
     letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
   .invoice-reference-grid strong {
-    font-size: 12px;
+    font-size: 14px;
     text-transform: capitalize;
   }
 
@@ -4677,11 +4700,11 @@ tbody tr:nth-child(even) .sticky-col {
     display: flex;
     min-height: 108px;
     flex-direction: column;
-    gap: 3px;
-    padding-left: 10px;
-    border-left: 2px solid #f36b36;
-    font-size: 11px;
-    line-height: 1.45;
+    gap: 4px;
+    padding-left: 12px;
+    border-left: 2px solid #c85a32;
+    font-size: 13px;
+    line-height: 1.5;
   }
 
   .invoice-address-block h2 {
@@ -4689,14 +4712,14 @@ tbody tr:nth-child(even) .sticky-col {
   }
 
   .invoice-address-block strong {
-    font-size: 12px;
+    font-size: 14px;
   }
 
   .invoice-lines-table {
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .invoice-lines-table thead {
@@ -4713,10 +4736,12 @@ tbody tr:nth-child(even) .sticky-col {
   }
 
   .invoice-lines-table th {
-    padding: 8px 7px;
-    background: #1718a8;
-    color: #fff;
-    font-size: 10px;
+    padding: 10px 7px;
+    border-top: 2px solid #1718a8;
+    border-bottom: 1px solid #9da2b2;
+    background: #fff;
+    color: #24263a;
+    font-size: 11px;
     letter-spacing: 0.06em;
     text-align: right;
     text-transform: uppercase;
@@ -4733,7 +4758,7 @@ tbody tr:nth-child(even) .sticky-col {
   .invoice-lines-table th:nth-child(2) { width: 34%; }
 
   .invoice-lines-table td {
-    padding: 9px 7px;
+    padding: 11px 7px;
     border-bottom: 1px solid #dedee8;
     text-align: right;
     vertical-align: top;
@@ -4742,8 +4767,8 @@ tbody tr:nth-child(even) .sticky-col {
   .invoice-lines-table td span {
     display: block;
     margin-top: 3px;
-    color: #6d6d80;
-    font-size: 10px;
+    color: #5e6172;
+    font-size: 11px;
   }
 
   .invoice-closing-grid {
@@ -4757,15 +4782,15 @@ tbody tr:nth-child(even) .sticky-col {
     display: flex;
     flex-direction: column;
     gap: 5px;
-    color: #62627a;
-    font-size: 10px;
+    color: #56596a;
+    font-size: 12px;
   }
 
   .invoice-notes p {
     margin: 0 0 4px;
     color: #26263b;
-    font-size: 11px;
-    line-height: 1.45;
+    font-size: 13px;
+    line-height: 1.55;
     white-space: pre-wrap;
   }
 
@@ -4777,9 +4802,9 @@ tbody tr:nth-child(even) .sticky-col {
     display: flex;
     justify-content: space-between;
     gap: 20px;
-    padding: 6px 4px;
+    padding: 8px 4px;
     border-bottom: 1px solid #e2e2ea;
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .invoice-totals dt,
@@ -4788,11 +4813,12 @@ tbody tr:nth-child(even) .sticky-col {
   }
 
   .invoice-grand-total {
-    margin-top: 4px;
+    margin-top: 5px;
+    border-top: 2px solid #1718a8;
     border-bottom: 0 !important;
-    background: #fff0e8;
+    background: #fff;
     color: #15152a;
-    font-size: 17px !important;
+    font-size: 19px !important;
     font-weight: 900;
   }
 
@@ -4804,7 +4830,7 @@ tbody tr:nth-child(even) .sticky-col {
     padding-top: 9px;
     border-top: 1px solid #d9d9e5;
     color: #6d6d80;
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .print-order-panel .table-pager,
@@ -4889,7 +4915,7 @@ tbody tr:nth-child(even) .sticky-col {
 .drawer-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: 1000;
   display: flex;
   justify-content: flex-end;
   background: rgb(15 23 42 / 0.35);
@@ -5247,7 +5273,7 @@ tbody tr:nth-child(even) .sticky-col {
   position: relative;
 }
 
-.items-command-menu > summary {
+.items-command-trigger {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -5259,24 +5285,15 @@ tbody tr:nth-child(even) .sticky-col {
   color: var(--pongo-blue);
   font-size: 12px;
   font-weight: 850;
-  list-style: none;
   cursor: pointer;
 }
 
-.items-command-menu > summary::-webkit-details-marker {
-  display: none;
-}
-
-.items-command-menu[open] > summary {
+.items-command-trigger[aria-expanded="true"] {
   border-color: #879bd5;
   background: #f3f6ff;
 }
 
 .items-command-popover {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 8px);
-  left: 0;
   display: grid;
   width: 300px;
   padding: 7px;
@@ -5284,11 +5301,6 @@ tbody tr:nth-child(even) .sticky-col {
   border-radius: 10px;
   background: #fff;
   box-shadow: 0 18px 42px rgba(25, 39, 72, .17);
-}
-
-.items-command-popover.align-right {
-  right: 0;
-  left: auto;
 }
 
 .items-command-popover > :is(button, a) {

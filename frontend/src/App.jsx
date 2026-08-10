@@ -5189,16 +5189,95 @@ function InventoryParActions({ item, onEdit, onPar, onStock, onMovements }) {
   return <InventoryActionsMenu actions={actions} />;
 }
 
+function BodyPortal({ children }) {
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, []);
+  if (typeof document === 'undefined') return null;
+  return createPortal(<div className="app-shell app-overlay-root">{children}</div>, document.body);
+}
+
+function FloatingMenu({ open, triggerRef, onClose, className, align = 'start', closeOnAction = false, menuRole = 'menu', children }) {
+  const popoverRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  const [position, setPosition] = useState(null);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    if (!open) {
+      setPosition(null);
+      return undefined;
+    }
+
+    function updatePosition() {
+      const trigger = triggerRef.current;
+      const popover = popoverRef.current;
+      if (!trigger || !popover) return;
+      const triggerRect = trigger.getBoundingClientRect();
+      const popoverRect = popover.getBoundingClientRect();
+      const gutter = 10;
+      const gap = 6;
+      const width = Math.min(popoverRect.width, window.innerWidth - (gutter * 2));
+      const height = Math.min(popoverRect.height, window.innerHeight - (gutter * 2));
+      const preferredLeft = align === 'end' ? triggerRect.right - width : triggerRect.left;
+      const left = Math.min(Math.max(gutter, preferredLeft), Math.max(gutter, window.innerWidth - width - gutter));
+      const roomBelow = window.innerHeight - triggerRect.bottom - gutter;
+      const roomAbove = triggerRect.top - gutter;
+      const top = roomBelow < height + gap && roomAbove > roomBelow
+        ? Math.max(gutter, triggerRect.top - height - gap)
+        : Math.min(triggerRect.bottom + gap, Math.max(gutter, window.innerHeight - height - gutter));
+      setPosition({ left, top });
+    }
+
+    function closeOnOutsidePointer(event) {
+      if (!triggerRef.current?.contains(event.target) && !popoverRef.current?.contains(event.target)) onCloseRef.current();
+    }
+
+    function closeOnEscape(event) {
+      if (event.key === 'Escape') onCloseRef.current();
+    }
+
+    updatePosition();
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', closeOnEscape);
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [align, open, triggerRef]);
+
+  if (!open || typeof document === 'undefined') return null;
+  return createPortal(
+    <div
+      className={`${className} floating-menu`}
+      onClick={(event) => { if (closeOnAction && event.target.closest?.('button, a')) onCloseRef.current(); }}
+      ref={popoverRef}
+      role={menuRole}
+      style={{ left: position?.left ?? 0, top: position?.top ?? 0, visibility: position ? 'visible' : 'hidden' }}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 function InventoryActionsMenu({ actions }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef(null);
   return (
     <div className="inventory-actions-menu">
-      <button className="inventory-actions-trigger" onClick={() => setOpen((current) => !current)} aria-haspopup="menu" aria-expanded={open} aria-label="Open inventory actions" type="button">
+      <button ref={triggerRef} className="inventory-actions-trigger" onClick={() => setOpen((current) => !current)} aria-haspopup="menu" aria-expanded={open} aria-label="Open inventory actions" type="button">
         <Menu size={18} />
         <span>Actions</span>
       </button>
-      {open && (
-        <div className="inventory-actions-popover" role="menu">
+      <FloatingMenu className="inventory-actions-popover" onClose={() => setOpen(false)} open={open} triggerRef={triggerRef}>
           {actions.map((action) => {
             const Icon = action.icon;
             return (
@@ -5208,8 +5287,7 @@ function InventoryActionsMenu({ actions }) {
               </button>
             );
           })}
-        </div>
-      )}
+      </FloatingMenu>
     </div>
   );
 }
@@ -5405,7 +5483,7 @@ function ProductInfoModal({ item, onClose, onSave }) {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
+    <BodyPortal><div className="modal-backdrop" role="presentation">
       <section className="import-modal" role="dialog" aria-modal="true" aria-label="Edit product info">
         <div className="modal-header"><div><h2>Edit Product Info</h2><p>{item.SKU || productTitle(item)}. Stock quantities are not edited here.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close edit product info" title="Close" type="button"><X size={20} /></button></div>
         <div className="form-grid">
@@ -5420,7 +5498,7 @@ function ProductInfoModal({ item, onClose, onSave }) {
         {error && <div className="api-error">{error}</div>}
         <div className="detail-actions"><button className="muted-button" onClick={onClose} type="button">Cancel</button><button className="primary-button" onClick={save} type="button"><Save size={16} />Save Product Info</button></div>
       </section>
-    </div>
+    </div></BodyPortal>
   );
 }
 
@@ -5473,7 +5551,7 @@ function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
+    <BodyPortal><div className="modal-backdrop" role="presentation">
       <section className="import-modal" role="dialog" aria-modal="true" aria-label="Edit current stock">
         <div className="modal-header"><div><h2>Edit Current Stock</h2><p>{item.SKU || productTitle(item)}. This creates an audited stock adjustment.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close edit current stock" title="Close" type="button"><X size={20} /></button></div>
         <div className="form-grid">
@@ -5492,7 +5570,7 @@ function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
         {error && <div className="api-error">{error}</div>}
         <div className="detail-actions"><button className="muted-button" onClick={onClose} type="button">Cancel</button><button className="primary-button" onClick={commit} type="button"><Save size={16} />Commit Adjustment</button></div>
       </section>
-    </div>
+    </div></BodyPortal>
   );
 }
 
@@ -5508,7 +5586,7 @@ function ParLevelModal({ item, onClose, onSave }) {
     }
   }
   return (
-    <div className="modal-backdrop" role="presentation">
+    <BodyPortal><div className="modal-backdrop" role="presentation">
       <section className="import-modal" role="dialog" aria-modal="true" aria-label="Edit par level">
         <div className="modal-header"><div><h2>Edit Par Level</h2><p>{item.SKU || productTitle(item)}. This does not change stock.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close edit par level" title="Close" type="button"><X size={20} /></button></div>
         <div className="form-grid">
@@ -5519,7 +5597,7 @@ function ParLevelModal({ item, onClose, onSave }) {
         {error && <div className="api-error">{error}</div>}
         <div className="detail-actions"><button className="muted-button" onClick={onClose} type="button">Cancel</button><button className="primary-button" onClick={save} type="button"><Save size={16} />Save Par Level</button></div>
       </section>
-    </div>
+    </div></BodyPortal>
   );
 }
 
@@ -5829,6 +5907,17 @@ function LocationDetail({ location, onSave, isNew = false }) {
   );
 }
 
+function ItemsCommandMenu({ label, align = 'start', children }) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef(null);
+  return (
+    <div className="items-command-menu">
+      <button ref={triggerRef} aria-expanded={open} className="action-button items-command-trigger" onClick={() => setOpen((current) => !current)} type="button">{label} <ChevronDown size={16} /></button>
+      <FloatingMenu align={align} className="items-command-popover" closeOnAction menuRole={null} onClose={() => setOpen(false)} open={open} triggerRef={triggerRef}>{children}</FloatingMenu>
+    </div>
+  );
+}
+
 function ItemsList({ items, pagination = emptyItemsPagination, loading, error, onLoadItems, onRefreshItemFacets }) {
   const [mappingOpen, setMappingOpen] = useState(false);
   const [cameraScannerOpen, setCameraScannerOpen] = useState(false);
@@ -6037,24 +6126,18 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
             <a className="primary-button" href="#/items/new"><Plus size={17} /> Add item</a>
             <a className="action-button items-import-button" href="#/items/import"><Upload size={17} /> Import items</a>
             <a className="action-button" href="#/items/import?outcome=update_stock"><RefreshCw size={17} /> Update stock CSV</a>
-            <details className="items-command-menu">
-              <summary className="action-button">Export <ChevronDown size={16} /></summary>
-              <div className="items-command-popover">
+            <ItemsCommandMenu label="Export">
                 <button onClick={() => exportItemsCsv(filters)} type="button"><Download size={16} /><span><strong>Current view</strong><small>Export the current filters</small></span></button>
                 <button onClick={() => exportItemsCsv({})} type="button"><Download size={16} /><span><strong>All items</strong><small>Export the complete item list</small></span></button>
                 <a href={`${API_BASE_URL}/api/items/import/templates/update_items?include_existing=true`}><FileSpreadsheet size={16} /><span><strong>Editable item details</strong><small>Update existing metadata</small></span></a>
                 <a href={`${API_BASE_URL}/api/items/import/templates/add_items`}><FileSpreadsheet size={16} /><span><strong>New-item template</strong><small>Start a clean add-items file</small></span></a>
-              </div>
-            </details>
-            <details className="items-command-menu">
-              <summary className="action-button">More <ChevronDown size={16} /></summary>
-              <div className="items-command-popover align-right">
+            </ItemsCommandMenu>
+            <ItemsCommandMenu align="end" label="More">
                 <button onClick={() => { onLoadItems({ ...filters, page, pageSize }); loadDataQuality(); }} type="button"><RefreshCw size={16} /><span><strong>Refresh items</strong><small>Reload items and quality checks</small></span></button>
                 <a href="#/items/imports"><History size={16} /><span><strong>Import history</strong><small>Jobs, changes, and failures</small></span></a>
                 <button onClick={() => setMappingOpen(true)} type="button"><Link2 size={16} /><span><strong>Sync WooCommerce catalog</strong><small>Preview storefront mappings</small></span></button>
                 <button onClick={() => setRemapOpen(true)} type="button"><Link2 size={16} /><span><strong>Fix connection exceptions</strong><small>Resolve unmatched products</small></span></button>
-              </div>
-            </details>
+            </ItemsCommandMenu>
             {!!selectedIds.length && <button className="action-button" disabled={loading} onClick={() => setBulkOpen(true)} type="button"><Edit3 size={17} /> Bulk edit {selectedIds.length}</button>}
             {filtersChanged && <button className="muted-button" onClick={clearFilters} type="button">Clear filters</button>}
           </div>
@@ -6179,7 +6262,7 @@ function ImportMappingsModal({ onClose, onImported }) {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
+    <BodyPortal><div className="modal-backdrop" role="presentation">
       <section className="import-modal mapping-import-modal" role="dialog" aria-modal="true" aria-label="Import WooCommerce mappings">
         <div className="modal-header">
           <div><h2>WooCommerce connections</h2><p>One local stock item per simple product or purchasable variation. Variable parents stay informational.</p></div>
@@ -6196,7 +6279,7 @@ function ImportMappingsModal({ onClose, onImported }) {
           {error && <div className="api-error">{error}</div>}
         </div>
       </section>
-    </div>
+    </div></BodyPortal>
   );
 }
 
@@ -6277,7 +6360,7 @@ function ImportModal({ onClose, onImported }) {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
+    <BodyPortal><div className="modal-backdrop" role="presentation">
       <section className="import-modal" role="dialog" aria-modal="true" aria-label="Import CSV">
         <div className="modal-header">
           <div>
@@ -6326,7 +6409,7 @@ function ImportModal({ onClose, onImported }) {
         {loading && <div className="loading-strip">Working on CSV import...</div>}
         {error && <div className="api-error">{error}</div>}
       </section>
-    </div>
+    </div></BodyPortal>
   );
 }
 
@@ -6474,7 +6557,7 @@ function LocationImportModal({ onClose, onImported }) {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
+    <BodyPortal><div className="modal-backdrop" role="presentation">
       <section className="import-modal" role="dialog" aria-modal="true" aria-label="Import locations CSV">
         <div className="modal-header">
           <div>
@@ -6513,7 +6596,7 @@ function LocationImportModal({ onClose, onImported }) {
         {loading && <div className="loading-strip">Working on locations CSV import...</div>}
         {error && <div className="api-error">{error}</div>}
       </section>
-    </div>
+    </div></BodyPortal>
   );
 }
 
@@ -6666,7 +6749,7 @@ function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh, onRefreshIt
   const item = detail?.item;
   const tabs = ['overview', 'stock', 'activity', 'history', 'edit'];
   return (
-    <div className="drawer-backdrop" role="presentation">
+    <BodyPortal><div className="drawer-backdrop" role="presentation">
       <aside className="detail-drawer" role="dialog" aria-modal="true" aria-label="Item detail">
         <div className="modal-header">
           <div>
@@ -6689,7 +6772,7 @@ function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh, onRefreshIt
           </>
         )}
       </aside>
-    </div>
+    </div></BodyPortal>
   );
 }
 
@@ -6838,7 +6921,7 @@ function BulkEditModal({ selectedIds, onCommitted, onClose }) {
   }
 
   return (
-    <div className="modal-backdrop bulk-edit-backdrop" role="presentation">
+    <BodyPortal><div className="modal-backdrop bulk-edit-backdrop" role="presentation">
       <section className="import-modal bulk-edit-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-edit-title">
         <div className="modal-header">
           <div><h2 id="bulk-edit-title">Bulk edit inventory items</h2><p>{selectedIds.length} selected item(s). SKU, barcode, stock quantities, and WooCommerce identity stay protected.</p></div>
@@ -6875,7 +6958,7 @@ function BulkEditModal({ selectedIds, onCommitted, onClose }) {
           <div className="detail-actions bulk-edit-actions"><button className="muted-button" disabled={loading} onClick={onClose} type="button">Cancel</button><button className="muted-button" disabled={loading} onClick={previewChanges} type="button"><Search size={16} />Preview changes</button><button className="primary-button" disabled={loading || !preview?.can_commit} onClick={commitChanges} type="button"><Save size={16} />Apply to {selectedIds.length} item(s)</button></div>
         </div>
       </section>
-    </div>
+    </div></BodyPortal>
   );
 }
 
@@ -6957,7 +7040,7 @@ function LocalRemapSearchModal({ onClose }) {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
+    <BodyPortal><div className="modal-backdrop" role="presentation">
       <section className="import-modal" role="dialog" aria-modal="true" aria-label="Remap WooCommerce exceptions">
         <div className="modal-header"><div><h2>Fix WooCommerce connections</h2><p>Search a Woo record, select a local item, preview conflicts, then save the local connection. Stock and WooCommerce stay unchanged.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close WooCommerce connection fixes" title="Close" type="button"><X size={20} /></button></div>
         <div className="import-steps">
@@ -6977,7 +7060,7 @@ function LocalRemapSearchModal({ onClose }) {
           {loading && <div className="loading-strip">Loading remap data...</div>}{error && <div className="api-error">{error}</div>}{message && <div className="api-success">{message}</div>}
         </div>
       </section>
-    </div>
+    </div></BodyPortal>
   );
 }
 
@@ -9831,24 +9914,16 @@ function AllocationExceptionOrdersTable({ lines, focused, loading, onClearFocus,
 
 function AllocationExceptionActions({ label, canAdjust, canAllocate, disabled = false, onView, onAdjust, onAllocate }) {
   const [open, setOpen] = useState(false);
-  const menuRef = useRef(null);
-  useEffect(() => {
-    if (!open) return undefined;
-    const close = (event) => { if (!menuRef.current?.contains(event.target)) setOpen(false); };
-    const escape = (event) => { if (event.key === 'Escape') setOpen(false); };
-    document.addEventListener('pointerdown', close);
-    document.addEventListener('keydown', escape);
-    return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', escape); };
-  }, [open]);
+  const triggerRef = useRef(null);
   const actions = [
     { label: 'View affected orders', icon: Search, enabled: true, run: onView },
     { label: 'Update stock levels', icon: SlidersHorizontal, enabled: canAdjust, run: onAdjust },
     { label: 'Allocate available stock', icon: CheckCircle2, enabled: canAllocate, run: onAllocate },
   ];
   return (
-    <div className="order-actions-menu" ref={menuRef}>
-      <button className="order-actions-trigger" onClick={() => setOpen((value) => !value)} aria-label={`Open allocation actions for ${label || 'exception'}`} aria-haspopup="menu" aria-expanded={open} disabled={disabled} type="button"><EllipsisVertical size={20} /></button>
-      {open && <div className="order-actions-popover allocation-actions-popover" role="menu">{actions.map((action) => { const Icon = action.icon; return <button key={action.label} disabled={disabled || !action.enabled} onClick={() => { setOpen(false); action.run?.(); }} role="menuitem" type="button"><Icon size={16} />{action.label}</button>; })}</div>}
+    <div className="order-actions-menu">
+      <button ref={triggerRef} className="order-actions-trigger" onClick={() => setOpen((value) => !value)} aria-label={`Open allocation actions for ${label || 'exception'}`} aria-haspopup="menu" aria-expanded={open} disabled={disabled} type="button"><EllipsisVertical size={20} /></button>
+      <FloatingMenu align="end" className="order-actions-popover allocation-actions-popover" onClose={() => setOpen(false)} open={open} triggerRef={triggerRef}>{actions.map((action) => { const Icon = action.icon; return <button key={action.label} disabled={disabled || !action.enabled} onClick={() => { setOpen(false); action.run?.(); }} role="menuitem" type="button"><Icon size={16} />{action.label}</button>; })}</FloatingMenu>
     </div>
   );
 }
@@ -9939,7 +10014,7 @@ function AllocationStockModal({ line, onClose, onSaved }) {
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
+    <BodyPortal><div className="modal-backdrop" role="presentation">
       <section className="import-modal allocation-stock-modal" role="dialog" aria-modal="true" aria-label="Update stock levels">
         <div className="modal-header"><div><h2>Update Stock Levels</h2><p>{line.sku || line.barcode} · {decodeHtmlEntities(line.description || '')}</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close stock adjustment" type="button"><X size={20} /></button></div>
         <div className="allocation-stock-warning"><TriangleAlert size={18} /><span>This creates an audited stock adjustment. Enter only stock that is physically present.</span></div>
@@ -9954,7 +10029,7 @@ function AllocationStockModal({ line, onClose, onSaved }) {
         {error && <div className="api-error">{error}</div>}
         <div className="detail-actions"><button className="muted-button" onClick={onClose} type="button">Cancel</button><button className="primary-button" onClick={commit} disabled={loading || !newQuantity} type="button"><Save size={16} />Update and Auto-Allocate</button></div>
       </section>
-    </div>
+    </div></BodyPortal>
   );
 }
 
@@ -10023,6 +10098,7 @@ function printVisibleRoot(bodyClass) {
 
 function BulkActionsBar({ selectedCount, actions, busy = false, label = 'Bulk actions' }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef(null);
   return (
     <div className="bulk-actions-bar">
       <div>
@@ -10030,12 +10106,11 @@ function BulkActionsBar({ selectedCount, actions, busy = false, label = 'Bulk ac
         <span>{selectedCount ? `${selectedCount} order${selectedCount === 1 ? '' : 's'} selected` : 'Select one or more orders'}</span>
       </div>
       <div className="bulk-actions-menu">
-        <button aria-expanded={open} className="bulk-actions-trigger" disabled={busy} onClick={() => setOpen((current) => !current)} type="button">
+        <button ref={triggerRef} aria-expanded={open} aria-haspopup="menu" className="bulk-actions-trigger" disabled={busy} onClick={() => setOpen((current) => !current)} type="button">
           Actions
           <ChevronDown size={18} />
         </button>
-        {open && (
-          <div className="bulk-actions-popover" role="menu">
+        <FloatingMenu align="end" className="bulk-actions-popover" onClose={() => setOpen(false)} open={open} triggerRef={triggerRef}>
             {actions.map((action) => (
               <button
                 className={action.danger ? 'danger-action' : ''}
@@ -10052,8 +10127,7 @@ function BulkActionsBar({ selectedCount, actions, busy = false, label = 'Bulk ac
                 <span>{action.label}</span>
               </button>
             ))}
-          </div>
-        )}
+        </FloatingMenu>
       </div>
     </div>
   );
@@ -10243,43 +10317,8 @@ function openOrderState(order) {
 
 function OrderActionsMenu({ order, disabled, onView, onEdit, onPrint, onComplete, onUnpick, onTimeline }) {
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState({ left: 0, top: 0 });
   const triggerRef = useRef(null);
-  const popoverRef = useRef(null);
   const orderNumber = order.woo_order_number || order.woo_order_id;
-
-  useEffect(() => {
-    if (!open) return undefined;
-    function updatePosition() {
-      const trigger = triggerRef.current;
-      if (!trigger) return;
-      const rect = trigger.getBoundingClientRect();
-      const menuWidth = Math.min(235, window.innerWidth - 20);
-      const menuHeight = 290;
-      const gutter = 10;
-      const left = Math.min(Math.max(gutter, rect.left), Math.max(gutter, window.innerWidth - menuWidth - gutter));
-      const opensAbove = rect.bottom + menuHeight + gutter > window.innerHeight && rect.top > menuHeight;
-      const top = opensAbove ? Math.max(gutter, rect.top - menuHeight - 6) : rect.bottom + 6;
-      setPosition({ left, top });
-    }
-    function closeOnOutsidePointer(event) {
-      if (!triggerRef.current?.contains(event.target) && !popoverRef.current?.contains(event.target)) setOpen(false);
-    }
-    function closeOnEscape(event) {
-      if (event.key === 'Escape') setOpen(false);
-    }
-    updatePosition();
-    document.addEventListener('pointerdown', closeOnOutsidePointer);
-    document.addEventListener('keydown', closeOnEscape);
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsidePointer);
-      document.removeEventListener('keydown', closeOnEscape);
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [open]);
 
   const actions = [
     { label: 'View order', icon: Search, onClick: onView },
@@ -10294,8 +10333,7 @@ function OrderActionsMenu({ order, disabled, onView, onEdit, onPrint, onComplete
       <button ref={triggerRef} className="order-actions-trigger" onClick={() => setOpen((current) => !current)} aria-label={`Open actions for order ${orderNumber}`} aria-haspopup="menu" aria-expanded={open} disabled={disabled} type="button">
         <ClipboardList size={20} />
       </button>
-      {open && typeof document !== 'undefined' && createPortal(
-        <div className="order-actions-popover" ref={popoverRef} role="menu" style={{ left: position.left, top: position.top }}>
+      <FloatingMenu align="end" className="order-actions-popover" onClose={() => setOpen(false)} open={open} triggerRef={triggerRef}>
           {actions.map((action) => {
             const Icon = action.icon;
             return (
@@ -10305,9 +10343,7 @@ function OrderActionsMenu({ order, disabled, onView, onEdit, onPrint, onComplete
               </button>
             );
           })}
-        </div>,
-        document.body,
-      )}
+      </FloatingMenu>
     </div>
   );
 }
@@ -10330,7 +10366,7 @@ function OpenOrderDetailPanel({ order, onClose, onPrint }) {
     [shipping.city || order.shipping_city, shipping.state || order.shipping_state, shipping.postcode || order.shipping_zip].filter(Boolean).join(' '),
   ].filter(Boolean);
   return (
-    <div className="order-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <BodyPortal><div className="order-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section aria-labelledby="open-order-detail-title" aria-modal="true" className="order-detail-dialog print-order-panel" id="open-order-detail" role="dialog" tabIndex={-1}>
         <header className="order-detail-dialog-header">
           <h2 id="open-order-detail-title">View Customer Order</h2>
@@ -10382,7 +10418,7 @@ function OpenOrderDetailPanel({ order, onClose, onPrint }) {
         <OrderInvoice className="order-invoice-print" order={order} />,
         document.body,
       )}
-    </div>
+    </div></BodyPortal>
   );
 }
 

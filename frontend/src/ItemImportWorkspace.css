@@ -11,6 +11,8 @@
   color: var(--import-ink);
 }
 
+.item-import-workspace.import-overlay-root { display: contents; }
+
 .import-page-intro,
 .import-stage-actions,
 .review-toolbar,
