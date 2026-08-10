@@ -274,8 +274,11 @@ backend owns the field schema and templates, persists resumable previews,
 suggests and saves column mappings, supports row-level correction/exclusion,
 stops stale commits, records field-level audit history, and produces original
 and failed-row downloads. Metadata imports cannot change on hand, allocated,
-available, or movement history. Stock overrides set exact per-location In stock
-through the audited adjustment service while Allocated and Sellable remain
+available, or movement history. **Update stock CSV** accepts a full inventory
+export directly: SKU and In stock are mandatory, while warehouse/location are
+used when present and unrelated columns are ignored. Matching quantities are
+skipped; every changed row is applied in one audited transaction, and any bad
+or excluded row blocks the whole stock file. Allocated and Sellable remain
 system-managed. Starting inventory remains limited to pre-operational stock.
 
 WooCommerce catalog sync is separate under Items → More. It previews and imports

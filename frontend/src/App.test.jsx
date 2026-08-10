@@ -317,7 +317,7 @@ const mockImportSchema = {
   outcomes: [
     { key: 'add_items', label: 'Add new items', description: 'Create products that do not yet exist.', changes: 'Creates item records and metadata.', does_not_change: 'Inventory quantities and movement history will not change.', required_fields: ['sku'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['add_items'] }, { key: 'product_name', label: 'Product name', type: 'text', required_for: [] }] },
     { key: 'update_items', label: 'Update item details', description: 'Update existing products by SKU.', changes: 'Updates approved metadata.', does_not_change: 'On hand, allocated, available, and movement history will not change.', required_fields: ['sku'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_items'] }, { key: 'product_name', label: 'Product name', type: 'text', required_for: [] }] },
-    { key: 'update_stock', label: 'Override stock levels', description: 'Set exact stock by location.', changes: 'Creates one audited stock adjustment.', does_not_change: 'Allocated and sellable remain system-managed.', required_fields: ['sku', 'warehouse', 'inventory_location', 'stock_quantity'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_stock'] }, { key: 'warehouse', label: 'Warehouse', type: 'text', required_for: ['update_stock'] }, { key: 'inventory_location', label: 'Inventory location', type: 'text', required_for: ['update_stock'] }, { key: 'stock_quantity', label: 'In stock', type: 'decimal', required_for: ['update_stock'] }] },
+    { key: 'update_stock', label: 'Override stock levels', description: 'Set exact stock by location.', changes: 'Creates one audited stock adjustment.', does_not_change: 'Allocated and sellable remain system-managed.', required_fields: ['sku', 'stock_quantity'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_stock'] }, { key: 'warehouse', label: 'Warehouse', type: 'text', required_for: [] }, { key: 'inventory_location', label: 'Inventory location', type: 'text', required_for: [] }, { key: 'stock_quantity', label: 'In stock', type: 'decimal', required_for: ['update_stock'] }] },
     { key: 'starting_inventory', label: 'Set starting inventory', description: 'Record physical stock at onboarding.', changes: 'Creates audited starting-inventory movements.', does_not_change: 'Existing operational inventory is never overwritten.', required_fields: ['sku', 'starting_quantity', 'starting_warehouse', 'starting_location'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_quantity', label: 'Starting quantity', type: 'decimal', required_for: ['starting_inventory'] }, { key: 'starting_warehouse', label: 'Warehouse', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_location', label: 'Inventory location', type: 'text', required_for: ['starting_inventory'] }] },
   ],
 };
@@ -869,6 +869,7 @@ describe('App shell and workflows', () => {
     await screen.findByText('Smoke Test Item');
     expect(screen.getByRole('link', { name: 'Add item' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Import items' })).toHaveAttribute('href', '#/items/import');
+    expect(screen.getByRole('link', { name: 'Update stock CSV' })).toHaveAttribute('href', '#/items/import?outcome=update_stock');
     expect(screen.getByText('Export')).toBeInTheDocument();
     expect(screen.getByText('More')).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Item data quality' })).toHaveTextContent('Missing image');
@@ -878,6 +879,18 @@ describe('App shell and workflows', () => {
     expect(within(actions).getByRole('button', { name: 'Export CSV' })).toBeInTheDocument();
     expect(within(actions).getByRole('link', { name: 'Import completed CSV' })).toHaveAttribute('href', '#/items/import?outcome=update_items');
     await waitFor(() => expect(fetch.mock.calls.some(([url]) => String(url).includes('data_quality=missing_cost'))).toBe(true));
+  });
+
+  it('opens the stock CSV override directly from the item catalog', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#items';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    await user.click(screen.getByRole('link', { name: 'Update stock CSV' }));
+
+    expect(await screen.findByRole('heading', { name: 'Upload your CSV' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Export editable current stock/i })).toHaveAttribute('href', expect.stringContaining('/templates/update_stock?include_existing=true'));
   });
 
   it('keeps sign out in the top-right account menu', async () => {

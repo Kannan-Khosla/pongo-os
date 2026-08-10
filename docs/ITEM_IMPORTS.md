@@ -17,7 +17,7 @@ The four outcomes are deliberately separate:
 | --- | --- | --- |
 | Add new items | Creates new item records and approved metadata. Existing SKUs are blocked. | On hand, allocated, available, on order, stock movement history. |
 | Update item details | Matches by SKU and changes approved item metadata. Blank cells preserve current values unless “clear blank values” is enabled. | On hand, allocated, available, on order, stock movement history. |
-| Override stock levels | Matches an existing item-location by exact SKU, warehouse, and inventory location, then sets its exact In stock quantity through one audited adjustment. | Allocated and sellable stay system-managed; item details and movement history are never overwritten. |
+| Override stock levels | Matches by exact SKU, optionally narrows by warehouse/location, skips matching quantities, and sets every changed count through one audited adjustment. | Any invalid or excluded row blocks the whole file; allocated and sellable stay system-managed. |
 | Set starting inventory | For an existing, zero-stock item with no stock movement history, creates one audited opening-balance movement at an active location. | Any item with operational stock or stock history; allocated always starts at zero. |
 
 WooCommerce catalog sync and connection repair remain separate actions under
@@ -28,7 +28,7 @@ variations remain separate items.
 
 `GET /api/items/import/schema` is the source of truth for supported outcomes,
 field labels, types, aliases, requirements, examples, the maximum upload size,
-and preview lifetime. The current schema version is `2026-08-10.1`.
+and preview lifetime. The current schema version is `2026-08-10.2`.
 
 Templates are generated from that same schema:
 
@@ -75,8 +75,13 @@ uses the guided workspace endpoints.
   and active warehouse/location pairs.
 - Show row-specific error codes, invalid values, human messages, and suggested
   actions. Rows can be corrected inline or excluded.
-- Stock override requires a non-negative exact In stock value and one existing,
-  active item-location assignment. Zero is valid; Allocated and Sellable are
+- Stock override requires only exact SKU and a non-negative In stock value.
+  Warehouse and inventory location narrow the match when supplied; a full
+  inventory export can be uploaded directly and unrelated columns are ignored.
+- A blank location resolves to the SKU's one active assignment, or is accepted
+  unchanged when the scoped total already matches. A changed positive total
+  across multiple locations is ambiguous and must be supplied per location.
+  Zero may clear multiple unallocated locations. Allocated and Sellable are
   never accepted from the CSV.
 
 ## Preview, commit, and concurrency
@@ -97,11 +102,13 @@ stock mutation service per row; its idempotency key is stable per preview row,
 and every successful row creates both a stock movement and inventory audit
 event.
 
-Stock overrides are committed as one transaction and one stock-adjustment
-batch. The service locks the affected item/location rows, verifies each locked
-quantity still equals the previewed quantity, calculates the variance, and
-uses the standard adjustment path to recalculate totals and create movement
-audit rows. Any stale or failed row rolls back the whole included stock batch.
+Stock overrides are all-or-nothing: every source row must be ready or already
+unchanged, and exclusions are not allowed. One transaction and one stock
+adjustment lock every CSV item's stock scope before the final stale check,
+verify stock and allocation still equal the preview, calculate each variance,
+recalculate totals, and create movement audit rows. Duplicate aliases resolving
+to the same location are blocked during preview. Any invalid, ambiguous,
+excluded, stale, or failed row changes nothing.
 After commit, the existing FIFO allocation runs in the transaction. When live
 WooCommerce stock writeback is enabled, the existing chunked stock-sync worker
 is queued so a large CSV does not hold the browser request open for one remote
@@ -156,6 +163,12 @@ On 2026-08-06, the automated SQLite/TestClient benchmark processed a 5,000-row,
 | 25-row page payload with 1,797-character names | 205,742 bytes |
 | Preview SQL statements | 5,014 |
 | Commit SQL statements | 35,011 |
+
+On 2026-08-10, the atomic stock regression previewed 1,500 existing SKUs in
+0.236 seconds and changed all 1,500 in 0.925 seconds through one adjustment and
+one transaction on local SQLite. This proves the requested file-level behavior,
+not Heroku/PostgreSQL capacity; production timing must still be observed on the
+first controlled Pongo import.
 
 The statement counts are dominated by required per-row persistence and audit
 writes; catalog matching is set-based rather than one lookup per row. These are

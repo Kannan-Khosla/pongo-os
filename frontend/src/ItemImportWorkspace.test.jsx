@@ -16,8 +16,8 @@ const schema = {
       fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_items'] }],
     },
     {
-      key: 'update_stock', label: 'Override stock levels', description: 'Set exact stock.', changes: 'Creates one audited stock adjustment.', does_not_change: 'Allocated and sellable remain system-managed.', required_fields: ['sku', 'warehouse', 'inventory_location', 'stock_quantity'],
-      fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_stock'] }, { key: 'warehouse', label: 'Warehouse', type: 'text', required_for: ['update_stock'] }, { key: 'inventory_location', label: 'Inventory location', type: 'text', required_for: ['update_stock'] }, { key: 'stock_quantity', label: 'In stock', type: 'decimal', required_for: ['update_stock'] }],
+      key: 'update_stock', label: 'Override stock levels', description: 'Set exact stock.', changes: 'Creates one audited stock adjustment.', does_not_change: 'Allocated and sellable remain system-managed.', required_fields: ['sku', 'stock_quantity'],
+      fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_stock'] }, { key: 'warehouse', label: 'Warehouse', type: 'text', required_for: [] }, { key: 'inventory_location', label: 'Inventory location', type: 'text', required_for: [] }, { key: 'stock_quantity', label: 'In stock', type: 'decimal', required_for: ['update_stock'] }],
     },
     {
       key: 'starting_inventory', label: 'Set starting inventory', description: 'Record onboarding stock.', changes: 'Creates audited starting-inventory movements.', does_not_change: 'Existing operational inventory is never overwritten.', required_fields: ['sku', 'starting_quantity', 'starting_warehouse', 'starting_location'],
@@ -39,6 +39,21 @@ function preview(summary) {
   };
 }
 
+function stockPreview(summary, overrides = {}) {
+  return {
+    preview_id: 'stock-preview', outcome: 'update_stock', outcome_content: schema.outcomes[2],
+    file: { name: 'inventory.csv', size: 80, row_count: 1, header_count: 4 }, status: 'ready',
+    source_columns: [
+      { source: 'SKU', destination: 'sku', confidence: 'exact', samples: ['STOCK-1'] },
+      { source: 'Warehouse', destination: 'warehouse', confidence: 'exact', samples: ['Main Warehouse'] },
+      { source: 'Inventory Location', destination: 'inventory_location', confidence: 'exact', samples: ['A-01'] },
+      { source: 'In Stock', destination: 'stock_quantity', confidence: 'exact', samples: ['12'] },
+    ],
+    mapping: { SKU: 'sku', Warehouse: 'warehouse', 'Inventory Location': 'inventory_location', 'In Stock': 'stock_quantity' },
+    options: { allow_blank_clears: false }, summary, ...overrides,
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   window.sessionStorage.clear();
@@ -56,6 +71,87 @@ it('offers an audited stock override with a current-stock export', async () => {
   expect(screen.getByRole('heading', { name: 'Upload your CSV' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: /Download template/i })).toHaveAttribute('href', expect.stringContaining('/templates/update_stock'));
   expect(screen.getByRole('link', { name: /Export editable current stock/i })).toHaveAttribute('href', expect.stringContaining('/templates/update_stock?include_existing=true'));
+});
+
+it('auto-validates mapped stock CSVs and reviews the whole file as one transaction', async () => {
+  const user = userEvent.setup();
+  const summary = { total_rows: 1, ready_count: 1, create_count: 0, update_count: 1, no_changes_count: 0, needs_attention_count: 0, duplicate_count: 0, unmatched_count: 0, blocked_count: 0, excluded_count: 0, stock_units_delta: 2 };
+  const row = { id: 1, row_number: 2, sku: 'STOCK-1', barcode: null, product_name: 'Stock item', normalized_data: { sku: 'STOCK-1', warehouse: 'Main Warehouse', inventory_location: 'A-01', stock_quantity: 12 }, proposed_changes: { in_stock: { field: 'stock_quantity', label: 'In stock', before: 10, after: 12 } }, issues: [], state: 'will_update', excluded: false };
+  const fetchMock = vi.fn((url, init = {}) => {
+    const target = String(url);
+    if (target.endsWith('/schema')) return response(schema);
+    if (target.endsWith('/previews') && init.method === 'POST') return response(stockPreview(summary, { status: 'draft' }));
+    if (target.endsWith('/mapping') && init.method === 'PATCH') return response(stockPreview(summary));
+    if (target.includes('/rows?')) return response({ rows: [row], total: 1, page: 1, page_size: 50, total_pages: 1 });
+    return response({});
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<ItemImportWorkspace initialOutcome="update_stock" />);
+
+  await screen.findByRole('heading', { name: 'Upload your CSV' });
+  await user.upload(document.querySelector('.import-dropzone input'), new File(['SKU,Warehouse,Inventory Location,In Stock\nSTOCK-1,Main Warehouse,A-01,12'], 'inventory.csv', { type: 'text/csv' }));
+  await user.click(screen.getByRole('button', { name: /Upload and review stock/i }));
+
+  const reviewHeading = await screen.findByRole('heading', { name: 'Review and fix issues' });
+  expect(reviewHeading).toHaveFocus();
+  expect(screen.queryByRole('heading', { name: 'Match your columns' })).not.toBeInTheDocument();
+  expect(screen.getByText(/every difference will be applied together in one transaction/i)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Exclude row 2/i })).not.toBeInTheDocument();
+  expect(fetchMock.mock.calls.some(([url, init = {}]) => String(url).endsWith('/mapping') && init.method === 'PATCH')).toBe(true);
+
+  await user.click(screen.getByRole('button', { name: /Review import/i }));
+  expect(await screen.findByRole('heading', { name: 'Review changes before import' })).toBeInTheDocument();
+  expect(screen.getByText(/entire CSV is one transaction/i)).toBeInTheDocument();
+  await user.type(screen.getByRole('textbox', { name: 'Type STOCK to confirm' }), 'STOCK');
+  await user.click(screen.getByRole('checkbox', { name: /I reviewed every row/i }));
+  expect(screen.getByRole('button', { name: /Apply 1 stock change/i })).toBeEnabled();
+});
+
+it('blocks stock review and commit when any row is excluded', async () => {
+  const user = userEvent.setup();
+  const summary = { total_rows: 2, ready_count: 1, create_count: 0, update_count: 1, no_changes_count: 0, needs_attention_count: 0, duplicate_count: 0, unmatched_count: 0, blocked_count: 0, excluded_count: 1, stock_units_delta: 2 };
+  const row = { id: 1, row_number: 2, sku: 'STOCK-1', barcode: null, product_name: 'Stock item', normalized_data: {}, proposed_changes: {}, issues: [], state: 'excluded', excluded: true };
+  vi.stubGlobal('fetch', vi.fn((url) => {
+    const target = String(url);
+    if (target.endsWith('/schema')) return response(schema);
+    if (target.includes('/rows?')) return response({ rows: [row], total: 2, page: 1, page_size: 50, total_pages: 1 });
+    if (target.endsWith('/stock-preview')) return response(stockPreview(summary));
+    return response({});
+  }));
+  render(<ItemImportWorkspace initialPreviewId="stock-preview" />);
+
+  expect(await screen.findByText('This stock import is blocked')).toBeInTheDocument();
+  expect(screen.getByText(/No stock will change unless the whole file can be applied in one transaction/i)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Review import/i })).toBeDisabled();
+  expect(await screen.findByRole('button', { name: /Include row 2/i })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Excluded' })).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: /Confirm/i }));
+  await user.type(screen.getByRole('textbox', { name: 'Type STOCK to confirm' }), 'STOCK');
+  await user.click(screen.getByRole('checkbox', { name: /I reviewed every row/i }));
+  expect(screen.getByRole('button', { name: /Apply 1 stock change/i })).toBeDisabled();
+});
+
+it('finishes an all-matching stock file without implying a stock mutation', async () => {
+  const user = userEvent.setup();
+  const summary = { total_rows: 1, ready_count: 0, create_count: 0, update_count: 0, no_changes_count: 1, needs_attention_count: 0, duplicate_count: 0, unmatched_count: 0, blocked_count: 0, excluded_count: 0, stock_units_delta: 0 };
+  const row = { id: 1, row_number: 2, sku: 'STOCK-1', barcode: null, product_name: 'Stock item', normalized_data: {}, proposed_changes: {}, issues: [], state: 'no_changes', excluded: false };
+  vi.stubGlobal('fetch', vi.fn((url) => {
+    const target = String(url);
+    if (target.endsWith('/schema')) return response(schema);
+    if (target.includes('/rows?')) return response({ rows: [row], total: 1, page: 1, page_size: 25, total_pages: 1 });
+    if (target.endsWith('/stock-preview')) return response(stockPreview(summary));
+    return response({});
+  }));
+  render(<ItemImportWorkspace initialPreviewId="stock-preview" />);
+
+  await user.click(await screen.findByRole('button', { name: /Review import/i }));
+  expect(await screen.findByText('No stock changes needed')).toBeInTheDocument();
+  expect(screen.queryByRole('textbox', { name: /Type STOCK/i })).not.toBeInTheDocument();
+  const finish = screen.getByRole('button', { name: /Finish — no stock changes/i });
+  expect(finish).toBeDisabled();
+  await user.click(screen.getByRole('checkbox', { name: /I reviewed every row/i }));
+  expect(finish).toBeEnabled();
 });
 
 it('keeps a rejected upload in the upload step with a human-readable error', async () => {
@@ -185,6 +281,7 @@ it('labels completed import jobs as completed in history', async () => {
   render(<ItemImportHistory />);
 
   expect(within(await screen.findByRole('cell', { name: 'Completed' })).getByText('Completed')).toHaveClass('import-status-completed');
+  expect(screen.getByRole('option', { name: 'Override stock levels' })).toHaveValue('update_stock');
   expect(screen.queryByText('Will update')).not.toBeInTheDocument();
   await user.click(screen.getByRole('link', { name: 'New import' }));
   expect(sessionStorage.getItem('pongo.item-import.preview')).toBeNull();

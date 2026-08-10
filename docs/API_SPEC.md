@@ -455,7 +455,9 @@ SKU and active item-location. Metadata templates never include quantities.
 
 Accepts multipart `outcome` and `file`. Validates the upload boundary, persists
 the exact source, source hash, actor, detected columns, suggested mappings, and
-all normalized preview rows. Returns a resumable `preview_id` and summary.
+all normalized preview rows. For `update_stock`, SKU and In stock are required;
+warehouse/location are optional and extra export columns are ignored. Returns a
+resumable `preview_id` and summary.
 
 ### GET /api/items/import/previews/{preview_id}
 
@@ -484,9 +486,11 @@ Revalidates persisted rows against current item/location data.
 ### POST /api/items/import/previews/{preview_id}/commit
 
 Requires JSON `idempotency_key`. Stops on a stale preview. Metadata commits are
-transactional and stock-invariant. `update_stock` commits exact location counts
-as one locked, idempotent stock adjustment and returns `stock_adjustment_id` and
-`stock_units_delta`. When live writeback is enabled it also returns
+transactional and stock-invariant. `update_stock` refuses exclusions or any
+invalid/unmatched/ambiguous row, skips quantities that already match, and commits
+all changed counts as one locked, idempotent transaction and stock adjustment.
+Every imported item is locked before the final stale check, including unchanged
+rows. It returns `stock_adjustment_id` and `stock_units_delta`. When live writeback is enabled it also returns
 `woo_stock_sync_job_id` for the queued chunked sync. Starting inventory delegates
 to the guarded opening-balance mutation and creates audited movement rows.
 

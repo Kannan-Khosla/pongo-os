@@ -65,6 +65,10 @@ function hasBlockingIssues(summary) {
   return ['needs_attention_count', 'duplicate_count', 'unmatched_count', 'blocked_count'].some((key) => Number(summary?.[key] || 0) > 0);
 }
 
+function stockImportBlocked(summary) {
+  return hasBlockingIssues(summary) || Number(summary?.excluded_count || 0) > 0;
+}
+
 function downloadHref(outcome, includeExisting = false) {
   return `${API_BASE_URL}/api/items/import/templates/${outcome}${includeExisting ? '?include_existing=true' : ''}`;
 }
@@ -128,7 +132,7 @@ function SummaryCards({ summary, outcome }) {
       ? [
         ['Ready', summary?.ready_count],
         ['No changes', summary?.no_changes_count],
-        ['Needs attention', (summary?.needs_attention_count || 0) + (summary?.duplicate_count || 0) + (summary?.unmatched_count || 0) + (summary?.blocked_count || 0)],
+        ['Needs attention', (summary?.needs_attention_count || 0) + (summary?.duplicate_count || 0) + (summary?.unmatched_count || 0) + (summary?.blocked_count || 0) + (summary?.excluded_count || 0)],
         ['Net stock change', summary?.stock_units_delta],
       ]
     : [
@@ -181,7 +185,7 @@ function UploadStep({ schema, outcome, file, setFile, onUpload, busy, onBack }) 
         <input accept=".csv,text/csv" ref={inputRef} onChange={(event) => choose(event.target.files?.[0])} type="file" />
         {file ? <><CheckCircle2 size={32} /><strong>{file.name}</strong><span>{formatNumber(file.size / 1024)} KB · Ready to inspect</span><button className="import-text-button" onClick={(event) => { event.preventDefault(); setFile(null); inputRef.current.value = ''; }} type="button">Choose a different file</button></> : <><UploadCloud size={34} /><strong>Drop your CSV here</strong><span>or click to browse · UTF-8 · up to {formatNumber((schema?.max_file_bytes || 0) / 1048576)} MB</span></>}
       </label>
-      <div className="import-stage-actions"><button className="import-quiet-button" onClick={onBack} type="button"><ArrowLeft size={17} /> Back</button><button className="import-primary-button" disabled={!file || busy} onClick={onUpload} type="button">{busy ? 'Reading and checking…' : 'Upload and match columns'} <ArrowRight size={17} /></button></div>
+      <div className="import-stage-actions"><button className="import-quiet-button" onClick={onBack} type="button"><ArrowLeft size={17} /> Back</button><button className="import-primary-button" disabled={!file || busy} onClick={onUpload} type="button">{busy ? 'Reading and checking…' : outcome === 'update_stock' ? 'Upload and review stock' : 'Upload and match columns'} <ArrowRight size={17} /></button></div>
     </section>
   );
 }
@@ -280,6 +284,7 @@ function ReviewStep({ schema, preview, setPreview, onContinue, onBack, busy, set
   const [searchDraft, setSearchDraft] = useState('');
   const [editing, setEditing] = useState(null);
   const fields = outcomeSchema(schema, preview.outcome)?.fields || [];
+  const isStockImport = preview.outcome === 'update_stock';
 
   async function loadRows(nextPage = 1) {
     setBusy(true);
@@ -314,15 +319,17 @@ function ReviewStep({ schema, preview, setPreview, onContinue, onBack, busy, set
   }
 
   const issueCount = (preview.summary?.needs_attention_count || 0) + (preview.summary?.duplicate_count || 0) + (preview.summary?.unmatched_count || 0) + (preview.summary?.blocked_count || 0);
+  const stockBlocked = isStockImport && stockImportBlocked(preview.summary);
+  const rowFilters = [['', 'All'], ['needs_attention', 'Needs attention'], ['duplicate', 'Duplicates'], ['unmatched', 'Not found'], ['blocked', 'Blocked'], ['will_create', 'Will create'], ['will_update', 'Will update'], ...(!isStockImport || preview.summary?.excluded_count ? [['excluded', 'Excluded']] : [])];
   return (
     <section className="import-stage wide" aria-labelledby="review-title">
-      <div className="import-stage-heading"><span>Step 4</span><h3 id="review-title">Review and fix issues</h3><p>Nothing has been imported. Correct rows here or exclude them from this run.</p></div>
+      <div className="import-stage-heading"><span>Step 4</span><h3 id="review-title">Review and fix issues</h3><p>{isStockImport ? 'Nothing has changed yet. Every row must be valid before the entire stock file can be applied.' : 'Nothing has been imported. Correct rows here or exclude them from this run.'}</p></div>
       <SummaryCards summary={preview.summary} outcome={preview.outcome} />
-      <div className={`import-notice ${issueCount ? 'warning' : 'success'}`}>{issueCount ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}<span><strong>{issueCount ? `${formatNumber(issueCount)} row(s) need a decision` : 'Every row is ready'}</strong><small>{issueCount ? 'Fix the values, exclude those rows, or continue with the valid rows.' : 'Review the proposed changes before confirming.'}</small></span></div>
-      <div className="review-toolbar"><div className="import-segmented" aria-label="Row status filter">{[['', 'All'], ['needs_attention', 'Needs attention'], ['duplicate', 'Duplicates'], ['unmatched', 'Not found'], ['blocked', 'Blocked'], ['will_create', 'Will create'], ['will_update', 'Will update'], ['excluded', 'Excluded']].map(([value, label]) => <button className={state === value ? 'active' : ''} key={label} onClick={() => setState(value)} type="button">{label}</button>)}</div><form onSubmit={(event) => { event.preventDefault(); setSearch(searchDraft); }}><Search size={16} /><input aria-label="Search preview rows" placeholder="Search SKU, barcode, name" value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} /></form></div>
-      <div className="review-table-wrap"><table className="review-table"><thead><tr><th>Row</th><th>SKU / barcode</th><th>Product</th><th>Result</th><th>Issue or proposed change</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{rowsData.rows.map((row) => <tr key={row.id} className={row.excluded ? 'excluded' : ''}><td>{row.row_number}</td><td><strong>{row.sku || '—'}</strong><small>{row.barcode || ''}</small></td><td>{row.product_name || '—'}</td><td><StatusPill state={row.state} /></td><td>{row.issues?.[0] ? <span className="row-message issue">{row.issues[0].message}</span> : <span className="row-change-summary">{Object.values(row.proposed_changes || {}).slice(0, 2).map((change) => change.label).join(', ') || 'No data changes'}{Object.keys(row.proposed_changes || {}).length > 2 && ` +${Object.keys(row.proposed_changes).length - 2}`}</span>}</td><td><div className="row-actions"><button aria-label={`Edit row ${row.row_number}`} onClick={() => setEditing(row)} type="button"><Pencil size={16} /></button><button aria-label={`${row.excluded ? 'Include' : 'Exclude'} row ${row.row_number}`} onClick={() => updateRow(row, { excluded: !row.excluded })} type="button">{row.excluded ? <RotateCcw size={16} /> : <X size={16} />}</button></div></td></tr>)}</tbody></table>{!rowsData.rows.length && <div className="review-empty">No rows match this filter.</div>}</div>
+      <div className={`import-notice ${stockBlocked || issueCount ? 'warning' : 'success'}`}>{stockBlocked || issueCount ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}<span><strong>{stockBlocked ? 'This stock import is blocked' : issueCount ? `${formatNumber(issueCount)} row(s) need a decision` : 'Every row is ready'}</strong><small>{stockBlocked ? 'Fix every row. No stock will change unless the whole file can be applied in one transaction.' : issueCount ? 'Fix the values, exclude those rows, or continue with the valid rows.' : isStockImport ? 'Matching quantities will be skipped; every difference will be applied together in one transaction.' : 'Review the proposed changes before confirming.'}</small></span></div>
+      <div className="review-toolbar"><div className="import-segmented" aria-label="Row status filter">{rowFilters.map(([value, label]) => <button className={state === value ? 'active' : ''} key={label} onClick={() => setState(value)} type="button">{label}</button>)}</div><form onSubmit={(event) => { event.preventDefault(); setSearch(searchDraft); }}><Search size={16} /><input aria-label="Search preview rows" placeholder="Search SKU, barcode, name" value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} /></form></div>
+      <div className="review-table-wrap"><table className="review-table"><thead><tr><th>Row</th><th>SKU / barcode</th><th>Product</th><th>Result</th><th>Issue or proposed change</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{rowsData.rows.map((row) => <tr key={row.id} className={row.excluded ? 'excluded' : ''}><td>{row.row_number}</td><td><strong>{row.sku || '—'}</strong><small>{row.barcode || ''}</small></td><td>{row.product_name || '—'}</td><td><StatusPill state={row.state} /></td><td>{row.issues?.[0] ? <span className="row-message issue">{row.issues[0].message}</span> : <span className="row-change-summary">{Object.values(row.proposed_changes || {}).slice(0, 2).map((change) => change.label).join(', ') || 'No data changes'}{Object.keys(row.proposed_changes || {}).length > 2 && ` +${Object.keys(row.proposed_changes).length - 2}`}</span>}</td><td><div className="row-actions"><button aria-label={`Edit row ${row.row_number}`} onClick={() => setEditing(row)} type="button"><Pencil size={16} /></button>{(!isStockImport || row.excluded) && <button aria-label={`${row.excluded ? 'Include' : 'Exclude'} row ${row.row_number}`} onClick={() => updateRow(row, { excluded: !row.excluded })} type="button">{row.excluded ? <RotateCcw size={16} /> : <X size={16} />}</button>}</div></td></tr>)}</tbody></table>{!rowsData.rows.length && <div className="review-empty">No rows match this filter.</div>}</div>
       <div className="review-pagination"><span>{formatNumber(rowsData.total)} row(s)</span><div><button disabled={rowsData.page <= 1 || busy} onClick={() => loadRows(rowsData.page - 1)} type="button">Previous</button><span>Page {rowsData.page} of {Math.max(rowsData.total_pages, 1)}</span><button disabled={rowsData.page >= rowsData.total_pages || busy} onClick={() => loadRows(rowsData.page + 1)} type="button">Next</button></div></div>
-      <div className="import-stage-actions"><button className="import-quiet-button" onClick={onBack} type="button"><ArrowLeft size={17} /> Back</button><button className="import-primary-button" disabled={!preview.summary?.ready_count || busy} onClick={onContinue} type="button">Review import <ArrowRight size={17} /></button></div>
+      <div className="import-stage-actions"><button className="import-quiet-button" onClick={onBack} type="button"><ArrowLeft size={17} /> Back</button><button className="import-primary-button" disabled={busy || stockBlocked || (!isStockImport && !preview.summary?.ready_count)} onClick={onContinue} type="button">Review import <ArrowRight size={17} /></button></div>
       {editing && <RowEditor busy={busy} fields={fields} row={editing} onClose={() => setEditing(null)} onSave={(values) => updateRow(editing, { values })} />}
     </section>
   );
@@ -331,22 +338,27 @@ function ReviewStep({ schema, preview, setPreview, onContinue, onBack, busy, set
 function ConfirmStep({ preview, rowsData, onLoadPage, onBack, onCommit, busy }) {
   const [confirmed, setConfirmed] = useState(false);
   const [typed, setTyped] = useState('');
-  const confirmationWord = preview.outcome === 'starting_inventory' ? 'START' : preview.outcome === 'update_stock' ? 'STOCK' : '';
-  const enabled = confirmed && (!confirmationWord || typed === confirmationWord);
+  const isStockImport = preview.outcome === 'update_stock';
   const readyCount = preview.summary?.ready_count || 0;
+  const noStockChanges = isStockImport && readyCount === 0;
+  const confirmationWord = preview.outcome === 'starting_inventory' ? 'START' : isStockImport && !noStockChanges ? 'STOCK' : '';
+  const stockBlocked = isStockImport && stockImportBlocked(preview.summary);
+  const enabled = confirmed && (!confirmationWord || typed === confirmationWord) && !stockBlocked;
   const rows = rowsData.rows || [];
   const proposedChanges = rows.flatMap((row) => Object.values(row.proposed_changes || {}).map((change) => ({ ...change, row_id: row.id, sku: row.sku })));
   return (
     <section className="import-stage wide" aria-labelledby="confirm-title">
-      <div className="import-stage-heading"><span>Step 5</span><h3 id="confirm-title">Review changes before import</h3><p>The preview is saved. Every source row is available page by page; if an item changed since validation, commit will stop and ask you to refresh.</p></div>
+      <div className="import-stage-heading"><span>Step 5</span><h3 id="confirm-title">Review changes before import</h3><p>{preview.outcome === 'update_stock' ? 'The entire CSV is one transaction. Matching stock stays unchanged, every difference is applied together, and any issue stops the whole file—there is no partial import.' : 'The preview is saved. Every source row is available page by page; if an item changed since validation, commit will stop and ask you to refresh.'}</p></div>
       <SummaryCards summary={preview.summary} outcome={preview.outcome} />
       <div className="confirm-protection"><ShieldCheck size={22} /><div><strong>{preview.outcome_content?.changes}</strong><p>{preview.outcome_content?.does_not_change}</p></div></div>
       <div className="change-table-wrap"><table className="change-table"><thead><tr><th>SKU</th><th>Field</th><th>Current value</th><th>New value</th></tr></thead><tbody>{proposedChanges.map((change) => <tr key={`${change.row_id}-${change.field}`}><td>{change.sku}</td><td>{change.label}</td><td>{String(change.before ?? 'Blank')}</td><td>{String(change.after ?? 'Blank')}</td></tr>)}</tbody></table>{!proposedChanges.length && <div className="review-empty">No field-level changes on this page.</div>}</div>
       <div className="review-pagination"><span>{formatNumber(rowsData.total || 0)} source row(s) available for review</span><div><button disabled={rowsData.page <= 1 || busy} onClick={() => onLoadPage(rowsData.page - 1)} type="button">Previous</button><span>Page {rowsData.page} of {Math.max(rowsData.total_pages, 1)}</span><button disabled={rowsData.page >= rowsData.total_pages || busy} onClick={() => onLoadPage(rowsData.page + 1)} type="button">Next</button></div></div>
-      {hasBlockingIssues(preview.summary) && <div className="import-notice warning"><AlertTriangle size={18} /><span><strong>Only valid rows will import</strong><small>Rows needing attention stay unchanged and will be available as a correction file in the results.</small></span></div>}
+      {noStockChanges && <div className="import-notice success"><CheckCircle2 size={18} /><span><strong>No stock changes needed</strong><small>Every quantity already matches this CSV. Finishing records the completed check without creating a stock adjustment.</small></span></div>}
+      {stockBlocked && <div className="import-notice warning"><AlertTriangle size={18} /><span><strong>Import blocked</strong><small>Return to review and fix every row. No stock rows will import separately.</small></span></div>}
+      {preview.outcome !== 'update_stock' && hasBlockingIssues(preview.summary) && <div className="import-notice warning"><AlertTriangle size={18} /><span><strong>Only valid rows will import</strong><small>Rows needing attention stay unchanged and will be available as a correction file in the results.</small></span></div>}
       {confirmationWord && <label className="typed-confirm"><span>Type <strong>{confirmationWord}</strong> to confirm this audited stock change</span><input aria-label={`Type ${confirmationWord} to confirm`} autoComplete="off" value={typed} onChange={(event) => setTyped(event.target.value.toUpperCase())} /></label>}
-      <label className="import-checkbox-card confirmation"><input checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" /><span><strong>I reviewed the outcome, valid row count, and applicable change pages</strong><small>I understand this action creates an audit record and cannot silently overwrite newer data.</small></span></label>
-      <div className="import-stage-actions"><button className="import-quiet-button" onClick={onBack} type="button"><ArrowLeft size={17} /> Back</button><button className="import-primary-button" disabled={!enabled || busy} onClick={onCommit} type="button">{busy ? 'Importing safely…' : preview.outcome === 'starting_inventory' ? 'Record starting inventory' : preview.outcome === 'update_stock' ? `Apply ${formatNumber(readyCount)} stock change${readyCount === 1 ? '' : 's'}` : `Import ${formatNumber(readyCount)} ready item${readyCount === 1 ? '' : 's'}`} <Check size={17} /></button></div>
+      <label className="import-checkbox-card confirmation"><input checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" /><span><strong>{preview.outcome === 'update_stock' ? 'I reviewed every row and understand the whole file is applied as one transaction' : 'I reviewed the outcome, valid row count, and applicable change pages'}</strong><small>{preview.outcome === 'update_stock' ? 'Matching quantities are skipped; any validation or stale-data issue stops all stock changes.' : 'I understand this action creates an audit record and cannot silently overwrite newer data.'}</small></span></label>
+      <div className="import-stage-actions"><button className="import-quiet-button" onClick={onBack} type="button"><ArrowLeft size={17} /> Back</button><button className="import-primary-button" disabled={!enabled || busy} onClick={onCommit} type="button">{busy ? 'Importing safely…' : preview.outcome === 'starting_inventory' ? 'Record starting inventory' : noStockChanges ? 'Finish — no stock changes' : isStockImport ? `Apply ${formatNumber(readyCount)} stock change${readyCount === 1 ? '' : 's'}` : `Import ${formatNumber(readyCount)} ready item${readyCount === 1 ? '' : 's'}`} <Check size={17} /></button></div>
     </section>
   );
 }
@@ -366,6 +378,7 @@ function ResultsStep({ preview, onNewImport }) {
 }
 
 export function ItemImportWorkspace({ initialPreviewId = '', initialOutcome = '', onCommitted = null }) {
+  const workspaceRef = useRef(null);
   const [schema, setSchema] = useState(null);
   const [outcome, setOutcome] = useState(initialOutcome);
   const [file, setFile] = useState(null);
@@ -393,6 +406,14 @@ export function ItemImportWorkspace({ initialPreviewId = '', initialOutcome = ''
     }).catch(() => sessionStorage.removeItem(PREVIEW_KEY)).finally(() => setBusy(false));
   }, [initialOutcome, initialPreviewId]);
 
+  useEffect(() => {
+    const heading = workspaceRef.current?.querySelector('.import-stage-heading h3');
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus();
+    }
+  }, [step]);
+
   function remember(saved) {
     setPreview(saved);
     sessionStorage.setItem(PREVIEW_KEY, saved.preview_id);
@@ -410,6 +431,14 @@ export function ItemImportWorkspace({ initialPreviewId = '', initialOutcome = ''
       remember(saved);
       setStep(3);
       setMaxStep(3);
+      const requiredFields = outcomeSchema(schema, outcome)?.required_fields || [];
+      const mappedFields = new Set(Object.values(saved.mapping || {}).filter(Boolean));
+      if (outcome === 'update_stock' && requiredFields.every((field) => mappedFields.has(field))) {
+        const validated = await requestJson(`/api/items/import/previews/${saved.preview_id}/mapping`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mapping: saved.mapping, allow_blank_clears: false }) }, 'Stock rows could not be validated.');
+        remember(validated);
+        setStep(4);
+        setMaxStep(4);
+      }
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -472,7 +501,7 @@ export function ItemImportWorkspace({ initialPreviewId = '', initialOutcome = ''
 
   const intro = outcomeSchema(schema, outcome);
   return (
-    <section className="item-import-workspace">
+    <section className="item-import-workspace" ref={workspaceRef}>
       <PageIntro title="Import items" description={intro ? `${intro.label}: ${intro.description}` : 'A guided workspace for adding items, updating details, overriding stock, or recording starting inventory.'} onCancel={preview || step > 1 ? cancel : null} />
       <Stepper current={step} maxStep={maxStep} onChange={setStep} />
       {error && <div className="import-error" role="alert"><AlertTriangle size={18} /><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')} type="button"><X size={16} /></button></div>}
@@ -561,7 +590,7 @@ export function ItemImportHistory({ onRolledBack = null }) {
     <section className="item-import-workspace history-page">
       <PageIntro title="Item import history" description="Every item import, who ran it, what changed, and which rows need attention." />
       {error && <div className="import-error" role="alert"><AlertTriangle size={18} /><span>{error}</span></div>}
-      <div className="history-toolbar"><a className="import-primary-button" href="#/items/import" onClick={() => sessionStorage.removeItem(PREVIEW_KEY)}><PackagePlus size={17} /> New import</a><label><span>Outcome</span><select value={outcome} onChange={(event) => setOutcome(event.target.value)}><option value="">All outcomes</option><option value="add_items">Add new items</option><option value="update_items">Update item details</option><option value="starting_inventory">Set starting inventory</option></select></label><label><span>Status</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="completed">Completed</option><option value="completed_with_errors">Completed with errors</option><option value="failed">Failed</option></select></label><button className="import-secondary-button" disabled={busy} onClick={() => load(jobsPagination.page, jobsPagination.page_size)} type="button"><RefreshCw size={16} /> Refresh</button></div>
+      <div className="history-toolbar"><a className="import-primary-button" href="#/items/import" onClick={() => sessionStorage.removeItem(PREVIEW_KEY)}><PackagePlus size={17} /> New import</a><label><span>Outcome</span><select value={outcome} onChange={(event) => setOutcome(event.target.value)}><option value="">All outcomes</option><option value="add_items">Add new items</option><option value="update_items">Update item details</option><option value="update_stock">Override stock levels</option><option value="starting_inventory">Set starting inventory</option></select></label><label><span>Status</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="completed">Completed</option><option value="completed_with_errors">Completed with errors</option><option value="failed">Failed</option></select></label><button className="import-secondary-button" disabled={busy} onClick={() => load(jobsPagination.page, jobsPagination.page_size)} type="button"><RefreshCw size={16} /> Refresh</button></div>
       <div className="history-table-wrap">
         <table className="history-table">
           <thead><tr><th>Import</th><th>Outcome</th><th>File</th><th>Result</th><th>Rows</th><th>Run by</th><th>Completed</th><th></th></tr></thead>

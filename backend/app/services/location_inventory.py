@@ -1142,6 +1142,8 @@ def create_committed_adjustment_batch(
         old_quantity = row.in_stock or Decimal("0")
         if "expected_quantity" in payload and old_quantity != to_decimal(payload["expected_quantity"]):
             raise StaleStockQuantityError(f"Stock changed after preview for SKU {item.sku or item.id} at {row.warehouse} / {row.inventory_location}.")
+        if "expected_allocated" in payload and (row.allocated or Decimal("0")) != to_decimal(payload["expected_allocated"]):
+            raise StaleStockQuantityError(f"Allocation changed after preview for SKU {item.sku or item.id} at {row.warehouse} / {row.inventory_location}.")
         if "new_quantity" in payload:
             new_quantity = to_decimal(payload["new_quantity"])
             if new_quantity < 0:

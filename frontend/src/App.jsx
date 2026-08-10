@@ -1100,7 +1100,7 @@ function parseHashRoute() {
   }
   if (path === 'items/import') {
     const importOutcome = query.get('outcome') || '';
-    return { pageId: 'items', itemView: 'import', importPreviewId: query.get('preview') || '', importOutcome: ['add_items', 'update_items', 'starting_inventory'].includes(importOutcome) ? importOutcome : '' };
+    return { pageId: 'items', itemView: 'import', importPreviewId: query.get('preview') || '', importOutcome: ['add_items', 'update_items', 'update_stock', 'starting_inventory'].includes(importOutcome) ? importOutcome : '' };
   }
   if (path === 'items/imports') {
     return { pageId: 'items', itemView: 'import-history' };
@@ -6036,6 +6036,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
           <div className="button-row items-actions">
             <a className="primary-button" href="#/items/new"><Plus size={17} /> Add item</a>
             <a className="action-button items-import-button" href="#/items/import"><Upload size={17} /> Import items</a>
+            <a className="action-button" href="#/items/import?outcome=update_stock"><RefreshCw size={17} /> Update stock CSV</a>
             <details className="items-command-menu">
               <summary className="action-button">Export <ChevronDown size={16} /></summary>
               <div className="items-command-popover">
