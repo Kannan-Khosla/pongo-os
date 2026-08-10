@@ -2,17 +2,18 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-10T07:14:11Z
+LAST UPDATED: 2026-08-10T21:01:55Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Full-file stock override deployed and verified on Heroku v43
-CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
+CURRENT PHASE: Demo-access production deployment authorized; release preparation in progress
+CURRENT RELEASE RECOMMENDATION: READY FOR AUTHORIZED DEPLOYMENT; demo account creation is blocked on a compliant password
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Heroku v43 is live with direct full-inventory CSV stock replacement. Only SKU and In stock are mandatory, safe blank locations resolve automatically, matching quantities are skipped, and any bad/excluded/stale row prevents every stock change. A generated 1,500-row file committed as one adjustment and one transaction in the local regression test; production was verified without uploading a CSV or changing stock.
+Production remains on the previously deployed commit 29dded1. The current local change adds an isolated `demo` access level: authentication uses the normal user store, but every protected product query is rebound to a seeded mock-only database. Demo users can browse the application and run explicitly non-persisting previews; production data, writes, WooCommerce, and Google integrations are blocked. No production account, migration, or deployment has been performed.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
 Stock CSV success means staff can export/edit a CSV, preview exact per-location quantity changes, and commit valid rows without manually adjusting each item; every changed quantity remains auditable and allocated stock remains system-controlled.
+Demo success means a prospect can sign in, browse all major workspaces with credible fictional data, and cannot read or change production records or access external integrations.
 
 === 04. REQUIREMENTS AND ACCEPTANCE CRITERIA ===
 REQ-SCAN-001: Items and every Inventory subpage expose the existing rear-camera QR/barcode scanner with manual fallback.
@@ -31,6 +32,11 @@ REQ-STOCKCSV-005: Retrying the same commit cannot apply stock twice, and a quant
 REQ-STOCKCSV-006: A full inventory export with extra columns may be uploaded directly; SKU and In stock are the only mandatory stock fields, while warehouse/location narrow the target when supplied.
 REQ-STOCKCSV-007: A stock import is all-or-nothing. Unmatched, ambiguous, invalid, stale, or excluded rows block the entire commit; unchanged rows are skipped.
 REQ-STOCKCSV-008: All changed rows commit in one database transaction and one audited adjustment, including a 1,500-product file; the UI must not imply partial batches.
+REQ-DEMO-001: A demo account reports `access_level=demo`, `data_scope=mock`, and read-only permissions.
+REQ-DEMO-002: Every protected demo query uses a separate seeded mock database; no production item, order, customer, integration, or configuration row is visible.
+REQ-DEMO-003: All persisted mutations and external integration routes fail closed with explicit HTTP 403 codes; only reviewed non-persisting previews may use POST.
+REQ-DEMO-004: Desktop and mobile UI clearly label the demo workspace and do not poll WooCommerce.
+REQ-DEMO-005: A guarded operator script creates or rotates a demo user without exposing or hard-coding a password.
 
 === 05. SCOPE, NON-GOALS, CONSTRAINTS, AND ASSUMPTIONS ===
 IN SCOPE: phone camera scanner entry points on Items/Inventory; open-order query and deterministic driver assignment; missing-address reporting; keyless Google Maps URL construction; native share/clipboard fallback; responsive UI; tests and docs.
@@ -40,12 +46,15 @@ ASSUMPTION: Operational open orders are the existing non-historical Woo processi
 STOCK CSV IN SCOPE: CSV-only exact per-location stock overrides through the existing six-step item import workspace, validation/preview, audit movements, history, tests, and docs.
 STOCK CSV NON-GOALS: changing allocated/sellable quantities, creating items/warehouses/locations, XLSX support, background processing, or metadata rollback for stock.
 CURRENT STOCK CSV INPUT FACT: The user's inventoryexport.csv has 1,726 data rows, one warehouse, 71 named locations, 456 blank location cells, no blank SKUs or stock values, no negative stock, and no duplicate SKU/warehouse/location scopes. Extra columns are intentionally ignored.
+DEMO IN SCOPE: one demo role, isolated in-memory seeded data, centralized read/write and integration guards, visible banner/account label, migration, operator script, regression coverage, and documentation.
+DEMO NON-GOALS: multi-tenant organization isolation, granular staff roles, writable sandbox workflows, persistent per-demo customization, external OAuth/WooCommerce calls, or a public self-registration flow.
 
 === 06. SYSTEM, JOURNEY, AND DATA MAP ===
 Scanner journey: Items or Inventory -> Scan code -> rear camera or manual code -> existing local search -> matching item results.
 Route journey: Routes -> default warehouse/start + driver count -> POST /api/routes/open-orders/plan -> one read-only operational order query -> address validation -> postal-area sort -> balanced driver groups -> continuous Google Maps URLs -> open/share.
 Data boundaries: Order/customer/address snapshots travel from authenticated Pongo backend to the authenticated frontend. They are not sent to Google by the backend; Google receives addresses only when staff opens or shares a generated URL.
 Stock CSV journey: Items -> Import CSV -> Override stock levels -> upload/map columns -> review current/new/variance -> confirm -> one audited stock adjustment -> results/history. Quantity authority is the selected active inventory location; item totals remain derived by the existing location inventory service.
+Demo journey: operator creates demo user -> prospect signs in -> auth response identifies mock/read-only scope -> protected request session switches to the seeded demo database -> existing pages render fictional items, stock, orders, reports, and routes -> writes/integrations return a safe 403.
 
 === 07. ARCHITECTURE AND DECISION REGISTER ===
 ADR-036 ACCEPTED: Use keyless Google Maps URLs, not a map SDK or paid routing API.
@@ -55,6 +64,8 @@ ADR-036C ACCEPTED: Keep this planner read-only and separate from saved completed
 ADR-SCAN-001 ACCEPTED: Reuse MobileCodeScanner and the page's existing search pipeline instead of creating a second scanner/search backend.
 ADR-STOCKCSV-001 ACCEPTED: Reuse the item import workspace for mapping/preview/idempotency and the stock adjustment service for locks, totals, and audit movements; CSV In stock is an absolute location quantity, not a delta.
 ADR-STOCKCSV-002 ACCEPTED: SKU is the item identity; Warehouse and Inventory location narrow stock scope when present, while blank scope is resolved only when unambiguous or already matching. Allocated/Sellable remain derived operational fields.
+ADR-DEMO-001 ACCEPTED: Rebind the existing request-scoped SQLAlchemy session to a separately seeded SQLite database after authenticating the demo user. This centralizes isolation across all routers without duplicating pages or adding query filters.
+ADR-DEMO-002 ACCEPTED: Keep staff access unchanged; allow demo GET/HEAD/OPTIONS plus a small explicit set of non-persisting previews, and block integrations regardless of HTTP method.
 
 === 08. ROADMAP AND ACTIVE DELIVERY PLAN ===
 1. Inspect scanner, order, route, and UI architecture. COMPLETED.
@@ -71,6 +82,10 @@ ADR-STOCKCSV-002 ACCEPTED: SKU is the item identity; Warehouse and Inventory loc
 12. Back up PostgreSQL, deploy the verified stock CSV release, restore the worker, and verify production without changing inventory. COMPLETED.
 13. Repair direct full-export compatibility and enforce an atomic all-or-nothing stock commit. COMPLETED.
 14. Verify generated 1,500-row behavior, deploy with a new backup, and recheck production without changing stock. COMPLETED.
+15. Define demo isolation and read-only acceptance criteria. COMPLETED.
+16. Add demo role/migration, mock datastore, central authorization guard, account script, and UI labeling. COMPLETED.
+17. Run focused/full regressions, build, migration validation, docs/state validation, and diff/security review. COMPLETED.
+18. Create the requested production demo account and deploy only after explicit release authorization. PENDING.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -81,6 +96,7 @@ QA-001 / P0 / COMPLETED / Full backend/frontend regression, build, diff check, d
 RELEASE-001 / P1 / RELEASED / Heroku v40 deployed commit 96c3816 after manual backup b004; web/worker, migration, health, authentication, Routes, Inventory scanner, and browser logs verified.
 WI-STOCKCSV-001 / P0 / RELEASED / Exact per-location stock override through item import CSV, using audited stock adjustment primitives and stale-preview protection; deployed and verified on production as Heroku v42.
 WI-STOCKCSV-002 / P0 / RELEASED / Full inventory export uploads directly; unchanged rows skip, safe blank locations resolve, exclusions/errors block the file, and changed rows commit in one locked audited transaction; deployed as Heroku v43.
+WI-DEMO-001 / P0 / READY FOR RELEASE / Isolated read-only demo role with seeded fictional catalog, inventory, orders, operational history, route data, and guarded operator account creation.
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
@@ -96,6 +112,10 @@ RISK-STOCKCSV-003 / MEDIUM / MITIGATED: FIFO allocation reuses the manual adjust
 RISK-STOCKCSV-004 / HIGH / MITIGATED: Partial stock success can leave the database inconsistent with the submitted physical count. Backend and UI block commit unless every source row is valid or already unchanged; exclusions also block.
 RISK-STOCKCSV-005 / HIGH / MITIGATED: Blank location resolves one assignment, an already-matching total, or a zero across unallocated locations; a changed positive multi-location total blocks with an actionable ambiguity error.
 RISK-STOCKCSV-006 / HIGH / MITIGATED: Every CSV item, including unchanged rows, is locked before the final stale check and remains locked through commit. Resolved location IDs also detect code/name aliases targeting the same stock row.
+RISK-DEMO-001 / CRITICAL / MITIGATED IN CODE: A demo query could expose production data. Authentication and role lookup happen first; the same cached request session is then closed and rebound to the isolated demo engine before any route query executes. Regression tests seed a production-only sentinel and prove it is absent.
+RISK-DEMO-002 / HIGH / MITIGATED IN CODE: A demo action could mutate production or call an external service. Non-read requests fail closed outside the reviewed preview allowlist; all WooCommerce and Google Sheets routes are blocked before session rebinding.
+RISK-DEMO-003 / MEDIUM / ACCEPTED: The mock database is process-local and resets when a web process restarts. This is appropriate for a read-only demonstration; persistent writable demos remain out of scope.
+BLOCK-DEMO-001 / P0 / ACCOUNT CREATION ONLY: The requested demo password does not meet the existing 12-character minimum. Deployment may proceed, but the production demo account must not be created until the user supplies a compliant password.
 
 === 11. IMPLEMENTATION AND CHANGE LOG ===
 2026-08-08: Added OpenOrderRoutePlan request/response schemas, route-planning service, and POST /api/routes/open-orders/plan.
@@ -109,6 +129,7 @@ RISK-STOCKCSV-006 / HIGH / MITIGATED: Every CSV item, including unchanged rows, 
 2026-08-10: Committed and pushed 64fa33c to the protected-workflow feature branch, captured Heroku backup b005, paused the worker, deployed Heroku v42, completed the existing Alembic release command, restored the worker, and passed non-destructive live verification.
 2026-08-10: Repaired direct full-export stock override, optional warehouse/location scope, safe blank-location handling, strict all-or-nothing commit, pre-stale locking for unchanged rows, resolved-location duplicate detection, direct Items action, automatic mapping bypass, recovery for old exclusions, and clear no-change completion UX.
 2026-08-10: Committed and pushed 462823e to the protected-workflow feature branch, captured Heroku backup b006, paused the worker, deployed Heroku v43, completed the existing Alembic release command, restored the worker, and passed non-destructive live schema/UI verification.
+2026-08-10: Added the `demo` access level, isolated seeded mock database, centralized read-only/integration authorization, demo account operator script, visible responsive demo labeling, migration 20260810_0038, tests, and documentation. No production action taken.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
 Final evidence:
@@ -127,30 +148,34 @@ Stock CSV verification: focused backend import suite 15 passed; full backend 498
 Production stock CSV evidence: Heroku v42 reports commit 64fa33c; `/health` returned 200; anonymous auth and import-schema requests returned 401; PostgreSQL is at Alembic head 20260807_0037; deployed schema version 2026-08-10.1 lists `update_stock`; signed-in UI displayed Override stock levels plus both stock template links with no console errors. No CSV was uploaded and no stock was mutated.
 Full-file stock repair verification: 21 focused import tests passed; full backend 504 passed with 10 PostgreSQL-only skips; full frontend 145 passed; production build passed; both independent backend/UI re-reviews found no remaining blocker; `git diff --check` passed. The 1,500-row SQLite regression previewed in 0.236 seconds and committed all rows in 0.925 seconds through one adjustment. Existing Starlette TestClient deprecation and Vite large-chunk warnings remain.
 Production full-file repair evidence: Heroku v43 reports commit 462823e; manual PostgreSQL backup b006 completed before deployment; web and worker Basic dynos are up; `/health` returned HTTP 200; anonymous import schema returned HTTP 401; PostgreSQL is at Alembic head 20260807_0037; deployed schema 2026-08-10.2 requires SKU and In stock for `update_stock`; signed-in Items and stock-import screens rendered the direct workflow with no browser console errors. No CSV was uploaded and no inventory changed.
+Demo verification evidence: auth/readiness backend tests passed (9 total); demo API coverage confirms mock-only items across dashboard, inventory, locations, receipts, movements, counts, orders, allocations, picks, fulfillments, routes, and reports; forbidden writes/integrations return the expected 403 codes. Full backend passed 512 tests with 10 PostgreSQL-only skips; full frontend passed 148 tests; the production build passed with the existing large-chunk warning. Fresh SQLite migration to 20260810_0038, downgrade to 0037, and re-upgrade all passed. The account script created a demo user against the migrated disposable database; state validation and `git diff --check` passed.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
-Database migration: none; Heroku's release command confirmed existing head 20260807_0037.
-Release: Heroku v43, commit 462823e, 2026-08-10T07:08:52Z.
-Recovery: manual PostgreSQL backup b006 completed before v43 (378.00 MB source, 22.59 MB backup). Application rollback is Heroku v42 at 64fa33c. No schema change was included; PostgreSQL remains at 20260807_0037.
+Database migration: local migration 20260810_0038 adds `users.access_level` with `staff` default and a `staff|demo` check; it has not run in production.
+Release: production baseline is Heroku v48 at commit 29dded1. The user authorized deploying the verified demo-access release on 2026-08-10; execution is in progress.
+Recovery: Continuous Protection is enabled; production PostgreSQL is available at 385 MB. Capture a fresh manual backup before running migration 0038. Application rollback target is Heroku v48; old code remains compatible with the additive column.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
 
 === 14. OPERATIONS, OBSERVABILITY, AND SUPPORT READINESS ===
 The route endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Web and worker dynos are each running at one Basic dyno. Production UI and API smoke checks passed without browser console errors. Physical iPhone/Android camera permission and real barcode decoding still require device verification by Pongo staff.
 Stock CSV validation and local commit remain synchronous at current Pongo scale and use the existing import-size limits, database transaction, stock mutation lock, adjustment audit, and idempotency controls. When live WooCommerce writeback is enabled, the already-existing chunked stock-sync worker is queued after commit so remote API calls do not hold the import request open.
+Demo operations: accounts are created/rotated by `backend/scripts/create_demo_user.py`; passwords are prompted and never committed. Mock data is generated in memory on first demo request, so no cleanup job or customer-data retention policy is required.
 
 === 15. TECHNICAL DEBT AND DEFERRED WORK ===
 Deferred: road/traffic optimization, address validation/geocoding, embedded map preview, persisted dispatch plans, named drivers, per-driver acknowledgements, route completion/proof of delivery, and automated SMS/email sharing. Add only after Pongo validates the simple operational workflow and production measurements justify more infrastructure.
 Deferred for stock CSV: changing allocated/sellable quantities, creating missing master data, background jobs, and customer-facing stock rollback. Add only with explicit requirements and tested operational rules.
 Known unrelated audit debt remains in PRODUCT_AUDIT.txt.
+Deferred for demo access: persistent writable sandboxes, tenant-specific demo datasets, self-service invitations, and granular staff permissions. Add only if the read-only sales demo proves insufficient.
 
 === 16. CONTINUOUS IMPROVEMENT AND LEARNING ===
 Reused the existing scanner component and search flows, the operational order eligibility clause, and platform-native Web Share/clipboard capabilities. For stock CSV, the design deliberately reuses the existing import and stock-adjustment pipelines instead of adding a second stock mutation system, database schema, dependency, or background job.
+For demo access, rebinding the existing request session provides one fail-closed isolation point for the whole backend and avoids demo branches in every service or a second frontend.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Pongo staff can open Items -> Update stock CSV, upload the complete inventory CSV, and review every exact stock change before confirming.
-THEN: Commit only when the file is fully ready; compare the results count and a fresh inventory export after completion. Backup b006 remains the pre-import recovery point.
-APPROVAL RECEIVED: The user explicitly requested implementation and production deployment on 2026-08-10. Separate approval remains required for an agent-run real inventory-changing import.
+NEXT: Commit/push the exact verified release, capture a PostgreSQL backup, deploy migration 0038 and code, then verify production staff and mock-data boundaries.
+THEN: Create the requested production demo account after the user supplies a password containing at least 12 characters.
+APPROVAL STATE: The user explicitly authorized production deployment on 2026-08-10. Account email is approved. The supplied password was rejected by the existing length policy and is not recorded here.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
 --- DELIVERY RUN: 2026-08-07T18:54:03Z ---
@@ -200,3 +225,9 @@ MODE: Release Readiness and Release
 SUMMARY: Atomic full-inventory CSV stock replacement deployed and verified on Pongo production as Heroku v43.
 EVIDENCE: Commit 462823e; PostgreSQL backup b006 completed; Alembic 20260807_0037 head; web and worker up; health 200; anonymous import schema 401; deployed schema 2026-08-10.2; signed-in Items and stock import workflow verified with no console errors; no inventory changed during deployment checks.
 NEXT ACTION: Pongo staff may upload the full CSV from Items -> Update stock CSV, review the all-or-nothing preview, and confirm the exact stock replacement.
+
+--- DELIVERY RUN: 2026-08-10T20:48:25Z ---
+MODE: Build Approved Scope
+SUMMARY: Isolated read-only demo access implemented and fully verified locally with seeded fictional data and central production-data/write/integration guards; not deployed.
+EVIDENCE: Full backend 512 passed/10 skipped; full frontend 148 passed; production build passed; fresh migration up/down/up passed; demo account script passed against the disposable migrated database; state and diff checks passed. A production-only sentinel is absent from demo responses, major workspaces return 200, and writes/integrations return explicit 403 codes.
+NEXT ACTION: Obtain the desired demo email and explicit deployment authorization, then back up, deploy, create the account, and run mock-only production smoke checks.

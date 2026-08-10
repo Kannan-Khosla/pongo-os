@@ -73,7 +73,7 @@ export default function AuthGate({ children }) {
           <p className="auth-eyebrow">Pongo Inventory OS / Secure access</p>
           <h1 id="auth-heading">Warehouse intelligence, kept inside.</h1>
           <p className="auth-brand-copy">Sign in to inventory, orders, receiving, WooCommerce operations, and legal-grade reporting.</p>
-          <div className="auth-proof-grid"><span><ShieldCheck size={18} /> HttpOnly sessions</span><span><CheckCircle2 size={18} /> No role complexity</span></div>
+          <div className="auth-proof-grid"><span><ShieldCheck size={18} /> HttpOnly sessions</span><span><CheckCircle2 size={18} /> Isolated demo access</span></div>
         </section>
         <section className="auth-panel" aria-labelledby="auth-form-title">
           <div className="auth-step"><span>01</span><small>STAFF ACCESS</small></div>

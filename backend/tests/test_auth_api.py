@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.models import AuthThrottle, Base
+from app.models import AuthThrottle, Base, InventoryItem, User
 from app.services.auth import registration_allowed
 from tests.test_items_api import client  # noqa: F401
 
@@ -24,14 +24,66 @@ def test_authenticated_session_protects_api_and_logout_revokes_it(client):
     assert client.get("/api/items").status_code == 200
 
 
-def test_registration_has_no_roles_and_rejects_duplicate_email(client):
+def test_registration_creates_staff_access_and_rejects_duplicate_email(client):
     response = client.post(
         "/api/auth/register",
         json={"email": "pytest@example.com", "display_name": "Duplicate", "password": "another-secure-password"},
     )
 
     assert response.status_code == 409
-    assert "role" not in client.get("/api/auth/me").text.casefold()
+    user = client.get("/api/auth/me").json()["user"]
+    assert user["access_level"] == "staff"
+    assert user["data_scope"] == "production"
+    assert user["permissions"] == ["read", "write"]
+
+
+def test_demo_user_sees_only_mock_data_and_cannot_write_or_reach_integrations(client):
+    with Session(client.test_engine) as db:
+        db.add(InventoryItem(sku="PRIVATE-LIVE-SKU", description="Must never reach demo", in_stock=1, allocated=0, sellable=1, active=True))
+        user = db.scalar(select(User).where(User.email == "pytest@example.com"))
+        user.access_level = "demo"
+        db.commit()
+
+    me = client.get("/api/auth/me").json()["user"]
+    assert me["access_level"] == "demo"
+    assert me["data_scope"] == "mock"
+    assert me["permissions"] == ["read"]
+
+    items = client.get("/api/items", params={"page": 1, "page_size": 100}).json()["items"]
+    assert items
+    assert all(item["SKU"].startswith("DEMO-") for item in items)
+    assert "PRIVATE-LIVE-SKU" not in {item["SKU"] for item in items}
+
+    for path in (
+        "/api/dashboard",
+        "/api/business-dashboard",
+        "/api/inventory/locations",
+        "/api/locations",
+        "/api/receipts",
+        "/api/stock-movements",
+        "/api/cycle-counts",
+        "/api/orders/open",
+        "/api/orders/completed",
+        "/api/allocations",
+        "/api/picks",
+        "/api/fulfillments",
+        "/api/routes",
+        "/api/reports",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200, f"{path}: {response.text}"
+
+    blocked = client.post("/api/items", json={"SKU": "DEMO-WRITE"})
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"]["code"] == "demo_read_only"
+
+    route_plan = client.post("/api/routes/open-orders/plan", json={})
+    assert route_plan.status_code == 200, route_plan.text
+    assert route_plan.json()["selected_order_count"] > 0
+
+    integration = client.get("/api/integrations/woocommerce/status")
+    assert integration.status_code == 403
+    assert integration.json()["detail"]["code"] == "demo_external_access_blocked"
 
 
 def test_password_policy_is_enforced(client):

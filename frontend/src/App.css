@@ -510,6 +510,43 @@ textarea:focus-visible {
   flex-direction: column;
 }
 
+.demo-mode-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 8px 20px;
+  color: #17304f;
+  background: #eaf7f2;
+  border-bottom: 1px solid #b9dfd1;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.demo-mode-banner svg {
+  flex: 0 0 auto;
+  color: #087a5b;
+}
+
+.demo-mode-banner strong {
+  margin-right: 5px;
+  color: #08654d;
+}
+
+.account-access-level {
+  color: #087a5b;
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .demo-mode-banner {
+    justify-content: flex-start;
+    padding-inline: 12px;
+    font-size: 12px;
+  }
+}
+
 .top-header {
   display: flex;
   align-items: center;

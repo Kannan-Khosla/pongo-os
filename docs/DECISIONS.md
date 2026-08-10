@@ -529,3 +529,18 @@ estimate rather than a Google travel time. This is also not address validation,
 geocoding, dispatch tracking, or proof of delivery. ADR-022 and ADR-025 still
 govern saved completed-order route records and disabled paid-provider
 integrations.
+
+## ADR-037: Demo Access Uses an Isolated Mock Database
+
+Decision: authenticate demo accounts in the normal user store, then rebind the
+request session to a separately seeded in-memory database before any product
+query runs. Demo users retain the full navigation and read surfaces, while only
+explicitly non-persisting preview POSTs are allowed.
+
+Reason: one centralized boundary protects every existing and future query
+without adding demo filters throughout the application or copying the frontend.
+
+Safety: production rows and integration configuration are never available to a
+demo request. All mutations fail with `demo_read_only`; WooCommerce and Google
+integration routes fail with `demo_external_access_blocked`. Seed records use
+fictional names, `.example.test` emails, and reserved `DEMO-` identifiers.

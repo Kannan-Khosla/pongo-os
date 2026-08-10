@@ -40,7 +40,7 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
     _, token = create_session(db, user, settings)
     db.commit()
     set_session_cookie(response, settings, token)
-    return AuthResponse(authenticated=True, user=AuthUserRead.model_validate(user))
+    return AuthResponse(authenticated=True, user=AuthUserRead.from_user(user))
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -70,7 +70,7 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
     _, token = create_session(db, user, settings)
     db.commit()
     set_session_cookie(response, settings, token)
-    return AuthResponse(authenticated=True, user=AuthUserRead.model_validate(user))
+    return AuthResponse(authenticated=True, user=AuthUserRead.from_user(user))
 
 
 @router.post("/logout", status_code=204)
@@ -93,4 +93,4 @@ def me(request: Request, db: Session = Depends(get_db), settings: Settings = Dep
     user = user_for_token(db, request.cookies.get(settings.auth_cookie_name))
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required.")
-    return AuthResponse(authenticated=True, user=AuthUserRead.model_validate(user))
+    return AuthResponse(authenticated=True, user=AuthUserRead.from_user(user))

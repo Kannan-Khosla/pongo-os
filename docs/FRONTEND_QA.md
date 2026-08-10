@@ -32,6 +32,8 @@ Use this checklist before calling a Pongo Inventory OS frontend pass complete.
   webhook secret.
 - The internal new-order notice fits within the viewport at laptop and mobile
   widths and does not cause horizontal page overflow.
+- Demo sessions show the mock-data/read-only banner on desktop and mobile,
+  never poll WooCommerce, and never display production data.
 
 ## Interaction Rules
 

@@ -10,11 +10,24 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.db.session import get_db
+from app.db.session import get_db, use_demo_database
 from app.models.auth import AuthThrottle, User, UserSession
 
 REGISTRATION_THROTTLE_KEY = "registration"
 REGISTRATION_THROTTLE_LOCK_KEY = int.from_bytes(b"PONGOREG", byteorder="big")
+DEMO_SAFE_POST_PATHS = {
+    "/api/allocations/preview",
+    "/api/fulfillments/preview",
+    "/api/items/bulk/preview",
+    "/api/picks/preview",
+    "/api/receipts/bulk/preview",
+    "/api/routes/open-orders/plan",
+    "/api/routes/preview",
+    "/api/scanner/adjustments/preview",
+    "/api/scanner/cycle-count/preview",
+    "/api/scanner/receiving/scan/preview",
+    "/api/scanner/transfers/preview",
+}
 
 
 def normalize_email(value: str) -> str:
@@ -78,7 +91,15 @@ def require_authenticated_user(
     user = user_for_token(db, request.cookies.get(settings.auth_cookie_name))
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required.")
+    if user.access_level not in {"staff", "demo"}:
+        raise HTTPException(status_code=403, detail="This account has an unsupported access level.")
     request.state.user = user
+    if user.access_level == "demo":
+        if request.url.path.startswith(("/api/integrations/", "/api/reports/google-sheets")):
+            raise HTTPException(status_code=403, detail={"code": "demo_external_access_blocked", "message": "External integrations are unavailable in the isolated demo workspace."})
+        if request.method not in {"GET", "HEAD", "OPTIONS"} and not (request.method == "POST" and request.url.path in DEMO_SAFE_POST_PATHS):
+            raise HTTPException(status_code=403, detail={"code": "demo_read_only", "message": "This demo account is read-only. You can review mock data and run previews, but cannot save changes."})
+        use_demo_database(db)
     return user
 
 

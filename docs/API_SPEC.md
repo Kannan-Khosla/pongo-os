@@ -39,11 +39,16 @@ local-only route creation/management.
   step; completion never reduces stock again.
 - Route map/geocoding/optimization providers are disabled unless configured
   backend-side. Provider endpoints must never expose secrets.
+- A user with `access_level=demo` is rebound after authentication to the
+  isolated seeded demo database. Demo requests may read mock data and run
+  explicitly allowlisted non-persisting previews; all other writes return
+  `403 demo_read_only`, and external integration routes return
+  `403 demo_external_access_blocked`.
 
 ## Current API Groups
 
 - `GET /health`
-- Authentication: `/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`
+- Authentication: `/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`. Auth responses include `access_level`, `data_scope`, and `permissions`.
 - Readiness: `GET /ready`
 - Dashboard: `/api/dashboard`, `/api/dashboard/summary`, `/api/dashboard/activity`, `/api/dashboard/warnings`
 - Items and item CSV import/export: `/api/items`, `/api/items/import/*`

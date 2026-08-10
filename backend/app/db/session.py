@@ -26,6 +26,13 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def use_demo_database(db: Session) -> None:
+    from app.services.demo_data import get_demo_engine
+
+    db.close()
+    db.bind = get_demo_engine()
+
+
 def init_db(database_engine=None) -> None:
     from app.models import Base
 

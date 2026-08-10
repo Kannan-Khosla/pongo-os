@@ -50,7 +50,7 @@ Implemented locally:
 - Completed orders export
 - SKU Orders report
 - Selectable open-order delivery planning from the Pongo warehouse, balanced by estimated workload or assigned North/South/East/West/Central zones across 1–50 drivers, with shareable Google Maps direction links plus local completed-order route records
-- Cookie-based staff login and registration with production registration access-code protection; no RBAC
+- Cookie-based staff login plus an isolated read-only demo role with mock data only
 - Immutable, hash-verified report runs with interactive dashboards, CSV/PDF, Google Sheets, and audited email sharing
 - Resumable background full-catalog WooCommerce stock-sync jobs with progress, retry, resume, and cancel controls
 
@@ -259,12 +259,27 @@ Current local build now includes:
   workflows, or writing to WooCommerce.
 
 Still intentionally delayed:
-- RBAC; every authenticated staff account currently has the same access.
+- Granular staff RBAC beyond the isolated demo role.
 - Production deployment and the live WooCommerce credential/webhook contract check.
 - Purchase orders and supplier management.
 - Shipping labels, customer notifications, delivery issue logs,
   return-to-inventory workflows, embedded maps, address geocoding, and
   traffic-aware route optimization provider calls.
+
+## Demo Account
+
+Demo users can browse every normal workspace using a separate seeded mock
+database. They cannot read production records, save changes, publish reports,
+or access WooCommerce/Google integrations. Create or rotate an account after
+running migrations:
+
+```bash
+cd backend
+.venv/bin/python scripts/create_demo_user.py --email demo@example.com
+```
+
+The command prompts for a 12+ character password and refuses to convert an
+existing staff account.
 
 ## Item Import And WooCommerce Catalog Workflows
 

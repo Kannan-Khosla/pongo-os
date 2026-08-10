@@ -916,6 +916,14 @@ describe('App shell and workflows', () => {
     expect(document.querySelector('.auth-account')).not.toBeInTheDocument();
   });
 
+  it('labels demo sessions and never polls external integrations', async () => {
+    render(<App currentUser={{ display_name: 'Demo', email: 'demo@example.test', access_level: 'demo' }} />);
+
+    expect(screen.getByText(/Mock data only/)).toBeInTheDocument();
+    await waitFor(() => expect(fetch.mock.calls.length).toBeGreaterThan(0));
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/integrations/'))).toBe(false);
+  });
+
   it('loads the item master once with server pagination', async () => {
     const rows = Array.from({ length: 120 }, (_, index) => ({
       ...item,

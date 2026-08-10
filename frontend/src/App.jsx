@@ -1182,6 +1182,7 @@ function parseHashRoute() {
 }
 
 export default function App({ currentUser = null, onLogout = null }) {
+  const isDemo = currentUser?.access_level === 'demo';
   const [route, setRoute] = useState(parseHashRoute);
   const [navigationOpen, setNavigationOpen] = useState(false);
   const navigationButtonRef = useRef(null);
@@ -1385,7 +1386,7 @@ export default function App({ currentUser = null, onLogout = null }) {
         loadFulfillments();
       }
     }
-    if (route.pageId === 'settings') {
+    if (route.pageId === 'settings' && !isDemo) {
       if (route.settingsView !== 'google-sheets') loadWooStatus();
       if ((route.settingsView || 'connection') === 'sync') {
         loadWooSyncRuns();
@@ -1405,7 +1406,7 @@ export default function App({ currentUser = null, onLogout = null }) {
       loadRouteCandidates();
       loadRoutes();
     }
-  }, [route.pageId, route.inventoryView, route.inventoryPage, route.inventoryPageSize, route.inventorySearch, route.inventoryCategory, route.inventoryBrand, route.inventoryDataQuality, route.inventorySortBy, route.inventorySortDir, route.receivingView, route.ordersView, route.reportKey, route.settingsView]);
+  }, [route.pageId, route.inventoryView, route.inventoryPage, route.inventoryPageSize, route.inventorySearch, route.inventoryCategory, route.inventoryBrand, route.inventoryDataQuality, route.inventorySortBy, route.inventorySortDir, route.receivingView, route.ordersView, route.reportKey, route.settingsView, isDemo]);
 
   useEffect(() => {
     const operationalOrdersView = route.pageId === 'orders' && ['open', 'pick'].includes(route.ordersView || 'open');
@@ -1444,13 +1445,13 @@ export default function App({ currentUser = null, onLogout = null }) {
   }, [route.pageId, route.itemView]);
 
   useEffect(() => {
-    if (route.pageId !== 'settings' || route.settingsView !== 'writeback') return undefined;
+    if (isDemo || route.pageId !== 'settings' || route.settingsView !== 'writeback') return undefined;
     const intervalId = window.setInterval(
       () => loadWooStockSyncJobs(wooStockSyncJobsQueryRef.current),
       3000,
     );
     return () => window.clearInterval(intervalId);
-  }, [route.pageId, route.settingsView]);
+  }, [route.pageId, route.settingsView, isDemo]);
 
   useEffect(() => {
     const isWritebackView = route.pageId === 'settings' && route.settingsView === 'writeback';
@@ -1903,6 +1904,12 @@ export default function App({ currentUser = null, onLogout = null }) {
   }
 
   async function loadWooStatus(check = false, options = {}) {
+    if (isDemo) {
+      setWooStatus(emptyWooStatus);
+      setWooError('');
+      setWooHealthError('');
+      return;
+    }
     if (wooStatusRequestInFlight.current) {
       return;
     }
@@ -2227,7 +2234,7 @@ export default function App({ currentUser = null, onLogout = null }) {
   }
 
   async function pollWooWebhookEvents() {
-    if (webhookEventPollInFlight.current) {
+    if (isDemo || webhookEventPollInFlight.current) {
       return null;
     }
     webhookEventPollInFlight.current = true;
@@ -3164,7 +3171,7 @@ export default function App({ currentUser = null, onLogout = null }) {
   return (
     <>
       <a className="skip-link" href="#main-content">Skip to workspace</a>
-      <div className={`app-shell ${navigationOpen ? 'navigation-open' : ''}`} data-page={route.pageId}>
+      <div className={`app-shell ${navigationOpen ? 'navigation-open' : ''}`} data-page={route.pageId} data-demo={isDemo ? 'true' : undefined}>
       <Sidebar activePage={route.pageId} route={route} onNavigate={navigate} isOpen={navigationOpen} onClose={closeNavigation} />
       <div className="workspace">
         <TopHeader
@@ -3182,6 +3189,12 @@ export default function App({ currentUser = null, onLogout = null }) {
           onCloseHistory={() => setOrderNotificationHistoryOpen(false)}
           onViewOpenOrders={() => setOrderNotificationHistoryOpen(false)}
         />
+        {isDemo && (
+          <div className="demo-mode-banner" role="status">
+            <CheckCircle2 size={18} aria-hidden="true" />
+            <span><strong>Demo workspace</strong> Mock data only · Read-only · Production inventory is never shown or changed</span>
+          </div>
+        )}
         <NewOrderNotificationRegion
           notifications={activeOrderNotifications}
           onDismiss={dismissActiveOrderNotifications}
@@ -3648,6 +3661,7 @@ function TopHeader({ meta, currentUser, onLogout, notifications = [], unreadCoun
             <div className="account-identity">
               <strong>{currentUser?.display_name || 'Pongo Staff'}</strong>
               {currentUser?.email && <small>{currentUser.email}</small>}
+              {currentUser?.access_level === 'demo' && <small className="account-access-level">Demo · mock data · read-only</small>}
             </div>
             {onLogout && <button onClick={onLogout} type="button"><LogOut size={16} aria-hidden="true" /> Sign out</button>}
           </div>
