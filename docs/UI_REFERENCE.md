@@ -932,7 +932,8 @@ Dashboard tabs load on demand and cache loaded responses during the session.
 
 `Dashboard` is the default home page and contains the business snapshot:
 - KPI cards for today's orders, revenue, new customers, returning customers,
-  subscription orders, and AOV.
+  subscription orders, AOV, and a separately loaded live WooCommerce open-order
+  total. The live card shows loading or unavailable instead of a false zero.
 - Open Orders customer table.
 - Upcoming Subscriptions list or a soft missing-data empty state.
 - Today's Orders Map with city-level markers and city count cards.

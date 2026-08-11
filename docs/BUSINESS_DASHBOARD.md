@@ -18,6 +18,7 @@ Read-only endpoints:
 - `GET /api/business-dashboard`
 - `GET /api/business-dashboard/today`
 - `GET /api/business-dashboard/open-orders`
+- `GET /api/business-dashboard/woocommerce-open-orders`
 - `GET /api/business-dashboard/subscriptions`
 - `GET /api/business-dashboard/revenue-comparison`
 - `GET /api/business-dashboard/order-map`
@@ -33,8 +34,11 @@ data instead of loading every raw WooCommerce payload. Results are versioned in
 PostgreSQL and reused until an order, stock, allocation, receipt, pick,
 fulfillment, or movement changes the source version.
 When the source changes, an existing verified snapshot is returned immediately
-while the worker refreshes it. Dashboard requests never contact WooCommerce
-directly.
+while the worker refreshes it. The combined endpoint and all detailed sections
+remain local-only. The separate `woocommerce-open-orders` endpoint performs
+three backend-only, one-row WooCommerce reads for `pending`, `processing`, and
+`on-hold`, then sums the authoritative `X-WP-Total` headers. Its failure is
+isolated from the rest of the Dashboard and never falls back to a local count.
 
 ## Metric Definitions
 
@@ -53,6 +57,11 @@ previous month, for example July 1-8 versus June 1-8.
 Open orders are local order snapshots with open-style statuses such as
 `open`, `processing`, `on-hold`, `pending`, `allocated`, or picking states.
 Completed, failed, cancelled, and refunded statuses are excluded.
+
+The `WooCommerce Open Orders` KPI is deliberately separate. It is the live
+WooCommerce total for `pending`, `processing`, and `on-hold` orders, with its
+own loading and unavailable states. Demo accounts receive an isolated mock
+count and never construct a WooCommerce client.
 
 ## Subscriptions
 
@@ -81,10 +90,12 @@ Unknown cities remain unplotted and are counted in the map summary.
 
 ## Safety
 
-The Business Dashboard uses local snapshots only:
+The Business Dashboard uses local snapshots for every section except the
+explicit live WooCommerce open-order KPI:
 
 - no WooCommerce writes
 - no frontend WooCommerce calls
+- no local fallback when the live WooCommerce count is unavailable
 - no live geocoding provider calls
 - no committed map/geocode credentials
 - no inventory mutations

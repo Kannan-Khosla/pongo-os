@@ -2638,6 +2638,7 @@ Implemented read-only dashboard endpoints:
 - `GET /api/business-dashboard`
 - `GET /api/business-dashboard/today`
 - `GET /api/business-dashboard/open-orders`
+- `GET /api/business-dashboard/woocommerce-open-orders`
 - `GET /api/business-dashboard/subscriptions`
 - `GET /api/business-dashboard/revenue-comparison`
 - `GET /api/business-dashboard/order-map`
@@ -2645,9 +2646,27 @@ Implemented read-only dashboard endpoints:
 `/api/business-dashboard` combines today's metrics, open orders, subscription
 state, revenue comparison, order map/geography, and data quality warnings.
 
-The business dashboard reads local order snapshots and order lines only. It does
-not call WooCommerce, mutate orders, mutate stock, or geocode addresses through
-an external provider.
+The combined business dashboard and its detailed sections read local order
+snapshots and order lines only. They do not call WooCommerce, mutate orders,
+mutate stock, or geocode addresses through an external provider.
+
+`GET /api/business-dashboard/woocommerce-open-orders` is the isolated exception.
+The backend sends one read-only, one-row request for each live WooCommerce
+status `pending`, `processing`, and `on-hold`, and returns:
+
+```json
+{
+  "source": "woocommerce",
+  "fetched_at": "2026-08-11T19:20:03+00:00",
+  "statuses": {"on-hold": 3, "pending": 2, "processing": 7},
+  "summary": {"open_orders_count": 12}
+}
+```
+
+The endpoint returns HTTP 503 with code
+`woocommerce_open_orders_unavailable` when the remote total cannot be verified;
+it never substitutes the local snapshot total. Demo access returns
+`source: "demo"` from the isolated mock database without contacting WooCommerce.
 
 Counts, totals, customer first-order classification, units, and daily revenue
 comparison are calculated in SQL with the same status precedence and configured

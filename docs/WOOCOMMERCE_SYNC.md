@@ -767,9 +767,12 @@ does not fake metrics.
 ## Business Dashboard Safety Boundary
 
 The default Dashboard reads local WooCommerce order snapshots for today's
-business metrics, open orders, revenue comparison, and city-level order
-geography. It does not call WooCommerce live, does not write WooCommerce, and
-does not update local order or inventory state.
+business metrics, open-order details, revenue comparison, and city-level order
+geography. A separate `GET /api/business-dashboard/woocommerce-open-orders`
+endpoint reads only live `X-WP-Total` values for `pending`, `processing`, and
+`on-hold`; its failure affects only that KPI and never falls back to local data.
+Neither path writes WooCommerce or updates local order or inventory state, and
+the frontend never receives WooCommerce credentials.
 
 Subscription cards remain empty with a data quality warning until subscription
 snapshots are synced locally. Map markers use exact local coordinates only when

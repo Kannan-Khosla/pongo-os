@@ -141,7 +141,7 @@ frontend QA pass complete.
 
 ## Pages To Inspect
 
-- Dashboard
+- Dashboard, including independent live WooCommerce count success and unavailable states
 - Inventory Overview
 - Items
 - Inventory

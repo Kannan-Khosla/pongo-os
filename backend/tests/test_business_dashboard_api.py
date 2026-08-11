@@ -1,8 +1,11 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.models import User
+from app.services.woocommerce_client import WooCommerceClientError
 from tests.test_items_api import client, seed_item  # noqa: F401
 
 
@@ -141,6 +144,101 @@ def test_business_dashboard_open_orders_customer_rows(client, monkeypatch):
 
     assert body["rows"]
     assert {"customer_name", "customer_email", "order_number", "status"}.issubset(body["rows"][0].keys())
+
+
+def test_woocommerce_open_orders_uses_live_totals_for_exact_active_statuses(client, monkeypatch):
+    totals = {"processing": 7, "on-hold": 3, "pending": 2}
+
+    class FakeLiveWooClient:
+        def __init__(self, settings):
+            self.timeout_seconds = settings.woocommerce_timeout_seconds
+            self.last_response_headers = {}
+            self.calls = []
+
+        def list_orders(self, **params):
+            self.calls.append(params)
+            total = totals[params["status"]]
+            self.last_response_headers = {"X-WP-Total": str(total), "X-WP-TotalPages": str(total)}
+            return [{}]
+
+    fake = FakeLiveWooClient(SimpleNamespace(woocommerce_timeout_seconds=30))
+    monkeypatch.setattr("app.api.routes.business_dashboard.effective_woocommerce_settings", lambda db: SimpleNamespace(woocommerce_timeout_seconds=30))
+    monkeypatch.setattr("app.api.routes.business_dashboard.WooCommerceClient", lambda settings: fake)
+
+    response = client.get("/api/business-dashboard/woocommerce-open-orders")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source"] == "woocommerce"
+    assert body["statuses"] == {"on-hold": 3, "pending": 2, "processing": 7}
+    assert body["summary"] == {"open_orders_count": 12}
+    assert datetime.fromisoformat(body["fetched_at"]).tzinfo is not None
+    assert {call["status"] for call in fake.calls} == set(totals)
+    assert all(call["page"] == 1 and call["per_page"] == 1 for call in fake.calls)
+    assert fake.timeout_seconds == 5
+
+
+def test_woocommerce_open_orders_fails_closed_without_remote_totals(client, monkeypatch):
+    class MissingTotalsWooClient:
+        timeout_seconds = 30
+        last_response_headers = {}
+
+        def __init__(self, settings):
+            pass
+
+        def list_orders(self, **params):
+            self.last_response_headers = {"X-WP-Total": "4"}
+            return [{}]
+
+    monkeypatch.setattr("app.api.routes.business_dashboard.effective_woocommerce_settings", lambda db: object())
+    monkeypatch.setattr("app.api.routes.business_dashboard.WooCommerceClient", MissingTotalsWooClient)
+
+    response = client.get("/api/business-dashboard/woocommerce-open-orders")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "woocommerce_open_orders_unavailable"
+
+
+def test_woocommerce_open_orders_returns_safe_503_on_woo_failure(client, monkeypatch):
+    class FailedWooClient:
+        timeout_seconds = 30
+
+        def __init__(self, settings):
+            pass
+
+        def list_orders(self, **params):
+            raise WooCommerceClientError("secret upstream detail")
+
+    monkeypatch.setattr("app.api.routes.business_dashboard.effective_woocommerce_settings", lambda db: object())
+    monkeypatch.setattr("app.api.routes.business_dashboard.WooCommerceClient", FailedWooClient)
+
+    response = client.get("/api/business-dashboard/woocommerce-open-orders")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "woocommerce_open_orders_unavailable",
+        "message": "Live WooCommerce open-order count is temporarily unavailable.",
+    }
+
+
+def test_demo_woocommerce_open_orders_never_constructs_live_client(client, monkeypatch):
+    with Session(client.test_engine) as db:
+        user = db.scalar(select(User).where(User.email == "pytest@example.com"))
+        user.access_level = "demo"
+        db.commit()
+
+    def reject_live_access(*args, **kwargs):
+        raise AssertionError("Demo must not construct a WooCommerce client.")
+
+    monkeypatch.setattr("app.api.routes.business_dashboard.effective_woocommerce_settings", reject_live_access)
+    monkeypatch.setattr("app.api.routes.business_dashboard.WooCommerceClient", reject_live_access)
+
+    response = client.get("/api/business-dashboard/woocommerce-open-orders")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["source"] == "demo"
+    assert response.json()["statuses"] == {}
+    assert response.json()["summary"]["open_orders_count"] >= 0
 
 
 def test_business_dashboard_subscriptions_empty_state(client):

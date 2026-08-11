@@ -411,10 +411,12 @@ Overview` and add a new default `Dashboard` page for business metrics.
 Reason: Pongo needs a business-facing landing page without losing the
 operational inventory command center.
 
-Safety: The new Dashboard reads local order snapshots only. It does not call
-WooCommerce, geocoding providers, or map providers, does not mutate local
-orders or inventory, and uses explicit empty states for missing subscription
-data.
+Safety: The combined Dashboard and detailed business sections read local order
+snapshots. One isolated KPI endpoint reads only verified WooCommerce pagination
+totals for active orders; it never writes WooCommerce, never exposes credentials
+to the frontend, never substitutes local data on failure, and is blocked from
+external access for demo users. The Dashboard does not call geocoding or map
+providers, mutate local orders or inventory, or fake missing subscription data.
 
 ## ADR-033: Signed Order Webhooks With Durable Staff Events
 

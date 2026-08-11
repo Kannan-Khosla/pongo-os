@@ -350,6 +350,12 @@ function mockFetch(url, options = {}) {
     });
   }
   if (target.includes('/api/integrations/woocommerce/webhooks/events')) return json(typeof mockWebhookFeed === 'function' ? mockWebhookFeed(target) : mockWebhookFeed);
+  if (target.includes('/api/business-dashboard/woocommerce-open-orders')) return json({
+    source: 'woocommerce',
+    fetched_at: '2026-07-08T16:30:01Z',
+    statuses: { processing: 3, 'on-hold': 1, pending: 2 },
+    summary: { open_orders_count: 6 },
+  });
   if (target.includes('/api/business-dashboard')) return json({
     generated_at: '2026-07-08T16:30:00Z',
     today: { summary: { today_orders_count: 2, today_revenue: 90, today_new_customers: 1, today_returning_customers: 1, today_subscription_orders: 0, average_order_value_today: 45 }, data_quality: [] },
@@ -714,6 +720,7 @@ describe('App shell and workflows', () => {
     expect(screen.getByRole('link', { name: 'Skip to workspace' })).toHaveAttribute('href', '#main-content');
     expect(screen.getByRole('main')).toHaveAttribute('id', 'main-content');
     expect(screen.getByRole('navigation', { name: 'Module navigation' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Pongo OS dashboard' }).querySelector('img')).toHaveAttribute('src', '/pongo-logo.png');
     expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeInTheDocument();
     const warehouseContexts = screen.getAllByLabelText('Current warehouse: Main Warehouse');
     expect(warehouseContexts).toHaveLength(1);
@@ -1723,6 +1730,10 @@ describe('App shell and workflows', () => {
 
     expect(await screen.findByText("Today's Orders")).toBeInTheDocument();
     expect(screen.getByText("Today's Revenue")).toBeInTheDocument();
+    const liveWooMetric = (await screen.findByText('WooCommerce Open Orders')).closest('article');
+    expect(liveWooMetric).toHaveAttribute('aria-live', 'polite');
+    expect(liveWooMetric).toHaveTextContent('6');
+    expect(liveWooMetric).toHaveTextContent('Live WooCommerce');
     expect(screen.getByText('New Customers')).toBeInTheDocument();
     expect(screen.getByText('Returning Customers')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Open Orders' })).toBeInTheDocument();
@@ -1730,6 +1741,47 @@ describe('App shell and workflows', () => {
     expect(screen.getByRole('heading', { name: "Today's Orders Map" })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Revenue per day/i })).toBeInTheDocument();
     expect(screen.getByText('Subscription data is not synced yet.')).toBeInTheDocument();
+  });
+
+  it('keeps local Dashboard metrics available when the live WooCommerce count fails', async () => {
+    fetch.mockImplementation((url, options) => (
+      String(url).includes('/api/business-dashboard/woocommerce-open-orders')
+        ? Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}), text: () => Promise.resolve('Unavailable') })
+        : mockFetch(url, options)
+    ));
+
+    render(<App />);
+
+    expect(await screen.findByText("Today's Revenue")).toBeInTheDocument();
+    const liveWooMetric = screen.getByText('WooCommerce Open Orders').closest('article');
+    await waitFor(() => expect(liveWooMetric).toHaveTextContent('Live count unavailable'));
+    expect(liveWooMetric).toHaveTextContent('—');
+  });
+
+  it('ignores an older WooCommerce count that finishes after a refresh', async () => {
+    const pendingWooBodies = [];
+    fetch.mockImplementation((url, options) => {
+      if (!String(url).includes('/api/business-dashboard/woocommerce-open-orders')) return mockFetch(url, options);
+      return Promise.resolve({
+        ok: true,
+        json: () => new Promise((resolve) => pendingWooBodies.push(resolve)),
+        text: () => Promise.resolve(''),
+      });
+    });
+    const wooBody = (count) => ({ source: 'woocommerce', statuses: {}, summary: { open_orders_count: count } });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await waitFor(() => expect(pendingWooBodies).toHaveLength(1));
+    const refreshButton = await screen.findByRole('button', { name: /Refresh/i });
+    await waitFor(() => expect(refreshButton).toBeEnabled());
+    await user.click(refreshButton);
+    await waitFor(() => expect(pendingWooBodies).toHaveLength(2));
+
+    await act(async () => pendingWooBodies[1](wooBody(9)));
+    await waitFor(() => expect(screen.getByText('WooCommerce Open Orders').closest('article')).toHaveTextContent('9'));
+    await act(async () => pendingWooBodies[0](wooBody(2)));
+    expect(screen.getByText('WooCommerce Open Orders').closest('article')).toHaveTextContent('9');
   });
 
   it('has a refresh button for the business Dashboard', async () => {

@@ -2,13 +2,14 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-11T19:04:17Z
+LAST UPDATED: 2026-08-11T19:46:17Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Scanner, stock, overlay, and route hardening released and verified on Pongo production
-CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
+CURRENT PHASE: Pongo shell logo and isolated live WooCommerce open-order KPI authorized for production release
+CURRENT RELEASE RECOMMENDATION: READY FOR AUTHORIZED DEPLOYMENT
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
 Production is Heroku v51 at commit bfd1b90 with schema revision 20260810_0038. Product barcode scans now try the captured value and its one-leading-zero alternate without weakening exact SKU matching. Manual stock edits accept one absolute final quantity, including zero, and optional reason text while preserving allocation, idempotency, audit, FIFO, and configured WooCommerce writeback safeguards. Shared suggestion/action menus close and position correctly, neutral instructional banners are removed, Live and Completed Routes are separate subpages, and the live planner uses ten explicit zones plus a responsive all-stop overview and Google Maps navigation links.
+The current local candidate replaces the shell initial with the bundled Pongo logo and adds an independently loaded WooCommerce Open Orders KPI. The backend verifies live `pending`, `processing`, and `on-hold` totals from WooCommerce pagination headers; a remote failure marks only this card unavailable and never substitutes a local count. Demo access remains mock-only and never contacts WooCommerce. These changes are not deployed.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -44,6 +45,10 @@ REQ-DEMO-003: All persisted mutations and external integration routes fail close
 REQ-DEMO-004: Desktop and mobile UI clearly label the demo workspace and do not poll WooCommerce.
 REQ-DEMO-005: A guarded operator script creates or rotates a demo user without exposing or hard-coding a password.
 REQ-DEMO-006: Every authenticated demo page shows a top-right “Powered By: Mythodus” lockup in Newsreader Bold with the supplied logo; staff pages do not show it, and the lockup remains usable at phone widths.
+REQ-DASH-WOO-001: Every app page uses the bundled Pongo logo in the shared module rail instead of the letter P, without changing the accessible dashboard link or mobile navigation sizing.
+REQ-DASH-WOO-002: Dashboard displays a separately loaded live WooCommerce open-order total for exactly `pending`, `processing`, and `on-hold`; the frontend never calls WooCommerce or receives credentials.
+REQ-DASH-WOO-003: Missing credentials, disabled reads, timeouts, upstream errors, or unverified pagination totals mark only the live KPI unavailable and never replace it with local data.
+REQ-DASH-WOO-004: Demo requests never construct a WooCommerce client and show only an isolated mock count.
 
 === 05. SCOPE, NON-GOALS, CONSTRAINTS, AND ASSUMPTIONS ===
 IN SCOPE: phone/hardware scanner normalization across operational lookup paths; absolute audited manual stock corrections; shared search/overlay behavior; ten-zone open-order planning; missing/unassigned reporting; keyless Google Maps URL construction; responsive all-stop overview; separate completed-route records; tests and docs.
@@ -55,6 +60,8 @@ STOCK CSV NON-GOALS: changing allocated/sellable quantities, creating items/ware
 CURRENT STOCK CSV INPUT FACT: The user's inventoryexport.csv has 1,726 data rows, one warehouse, 71 named locations, 456 blank location cells, no blank SKUs or stock values, no negative stock, and no duplicate SKU/warehouse/location scopes. Extra columns are intentionally ignored.
 DEMO IN SCOPE: one demo role, isolated in-memory seeded data, centralized read/write and integration guards, visible banner/account label, demo-only Mythodus branding, migration, operator script, regression coverage, and documentation.
 DEMO NON-GOALS: multi-tenant organization isolation, granular staff roles, writable sandbox workflows, persistent per-demo customization, external OAuth/WooCommerce calls, or a public self-registration flow.
+DASHBOARD LIVE COUNT IN SCOPE: one backend-only read endpoint, three active WooCommerce statuses, a responsive KPI card, explicit loading/unavailable states, demo isolation, and regression coverage.
+DASHBOARD LIVE COUNT NON-GOALS: custom WooCommerce statuses, polling, caching, background jobs, local fallback, order-detail synchronization, or any WooCommerce write.
 
 === 06. SYSTEM, JOURNEY, AND DATA MAP ===
 Scanner journey: Items or Inventory -> hardware/rear-camera/manual code -> as-entered plus one-leading-zero barcode candidates -> exact/unique local match -> current search results; Enter then dismisses suggestions until editing resumes.
@@ -63,6 +70,7 @@ Route journey: Routes / Live Planner -> select open orders -> default start + dr
 Data boundaries: Order/customer/address snapshots travel from authenticated Pongo backend to the authenticated frontend. They are not sent to Google by the backend; Google receives addresses only when staff opens or shares a generated URL.
 Stock CSV journey: Items -> Import CSV -> Override stock levels -> upload/map columns -> review current/new/variance -> confirm -> one audited stock adjustment -> results/history. Quantity authority is the selected active inventory location; item totals remain derived by the existing location inventory service.
 Demo journey: operator creates demo user -> prospect signs in -> auth response identifies mock/read-only scope -> global header shows the Mythodus lockup on every workspace -> protected request session switches to the seeded demo database -> existing pages render fictional items, stock, orders, reports, and routes -> writes/integrations return a safe 403.
+Live Woo count journey: Dashboard -> Pongo backend requests one row for each active Woo status -> validates `X-WP-Total` headers -> sums verified totals -> renders the isolated KPI; any upstream failure returns safe 503 and leaves all local Dashboard sections intact.
 
 === 07. ARCHITECTURE AND DECISION REGISTER ===
 ADR-036 ACCEPTED: Use keyless Google Maps URLs, not a map SDK or paid routing API.
@@ -80,6 +88,7 @@ ADR-STOCKCSV-002 ACCEPTED: SKU is the item identity; Warehouse and Inventory loc
 ADR-DEMO-001 ACCEPTED: Rebind the existing request-scoped SQLAlchemy session to a separately seeded SQLite database after authenticating the demo user. This centralizes isolation across all routers without duplicating pages or adding query filters.
 ADR-DEMO-002 ACCEPTED: Keep staff access unchanged; allow demo GET/HEAD/OPTIONS plus a small explicit set of non-persisting previews, and block integrations regardless of HTTP method.
 ADR-DEMO-003 ACCEPTED: Render the Mythodus lockup once in the existing global top header when `access_level=demo`; use the supplied image asset, Newsreader 700 with a Georgia fallback, and a compact stacked label so it fits desktop and mobile without duplicating page markup.
+ADR-DASH-WOO-001 ACCEPTED: Keep the cached combined Dashboard local-only and add one separate backend-only live-count endpoint so WooCommerce latency or failure cannot blank local business metrics. Use existing client, active-status policy, pagination parser, and bundled logo; add no dependency, schema, secret, cache, or worker.
 
 === 08. ROADMAP AND ACTIVE DELIVERY PLAN ===
 1. Inspect scanner, order, route, and UI architecture. COMPLETED.
@@ -107,6 +116,10 @@ ADR-DEMO-003 ACCEPTED: Render the Mythodus lockup once in the existing global to
 23. Implement exact ten-zone routing, map/time metadata, all-stop overview, and separate completed-route page. COMPLETED.
 24. Run full backend/frontend/build/browser/documentation release gates. COMPLETED.
 25. Back up PostgreSQL, commit/push the feature branch, deploy to Heroku, and run non-destructive production smoke checks. COMPLETED.
+26. Trace the shared shell, business Dashboard, authentication boundary, and WooCommerce order client. COMPLETED.
+27. Add the isolated live WooCommerce open-order endpoint with verified totals, safe failure, and demo isolation. COMPLETED.
+28. Replace the shell initial with the bundled Pongo logo and add the responsive independently loaded KPI. COMPLETED.
+29. Update product records and run focused/full regression, build, diff, and state-validation gates. COMPLETED.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -122,6 +135,7 @@ WI-DEMO-BRAND-001 / P1 / RELEASED / Global demo-only top-right Mythodus lockup w
 WI-SCAN-STOCK-001 / P0 / RELEASED / Shared one-leading-zero barcode matching, exact SKU boundary, ambiguity protection, absolute final-stock corrections, optional audited reason, and preserved allocation safeguards; Heroku v51.
 WI-UI-OVERLAY-001 / P0 / RELEASED / Enter-dismissed suggestions, shared viewport-aware body portal menus, neutral notice cleanup, and 390 px overflow verification; Heroku v51.
 WI-ROUTE-004 / P0 / RELEASED / Ten exact zones, authoritative explicit assignments, exactly-once/unassigned contract, responsive stop overview, time totals, Google navigation, and separate completed-route subpage; Heroku v51.
+WI-DASH-WOO-001 / P0 / IMPLEMENTED NOT DEPLOYED / Shared Pongo shell logo plus isolated live WooCommerce open-order KPI with active-status totals, explicit unavailable state, and demo isolation.
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
@@ -145,6 +159,9 @@ RISK-DEMO-004 / LOW / MITIGATED: Newsreader is loaded from Google Fonts; if that
 RISK-SCAN-001 / HIGH / MITIGATED: Adding/removing one leading zero could match two catalog rows. All scanner resolvers return no item on multiple candidates; tests cover both directions and ambiguous failure.
 RISK-STOCK-001A / HIGH / MITIGATED: Treating a final quantity as a delta would corrupt physical counts. The UI sends `new_quantity`; the backend requires that absolute field, rejects `quantity_change`, accepts zero, locks stock, and preserves allocated-stock checks and audit movements.
 RISK-ROUTE-007 / MEDIUM / ACCEPTED: Route minutes and ungeocoded marker placement are deterministic operational estimates, not live traffic/geocoding. UI/API state the boundary; Google Maps calculates navigation only when staff opens a link.
+RISK-DASH-WOO-001 / MEDIUM / MITIGATED IN CODE: WooCommerce latency, outage, or overlapping refresh could stall the business home page or show an older result. The live count uses its own endpoint/card state, a five-second request timeout cap, and latest-request sequencing; local Dashboard sections load independently.
+RISK-DASH-WOO-002 / HIGH / MITIGATED IN CODE: A stale local fallback could misrepresent the live queue. The endpoint fails closed on missing/invalid totals and returns safe 503; the card shows unavailable instead of a number.
+RISK-DASH-WOO-003 / CRITICAL / MITIGATED IN CODE: A demo request could contact production WooCommerce. The route checks authenticated demo scope before constructing settings or the client and returns only the isolated mock count; regression coverage fails if live construction occurs.
 BLOCK-DEMO-001 / P0 / RESOLVED: The user supplied a compliant 12-character password; the guarded script created the production demo account without recording the password in source or lifecycle state.
 
 === 11. IMPLEMENTATION AND CHANGE LOG ===
@@ -165,6 +182,7 @@ BLOCK-DEMO-001 / P0 / RESOLVED: The user supplied a compliant 12-character passw
 2026-08-10: Added the supplied Mythodus logo and a demo-only “Powered By: Mythodus” Newsreader Bold lockup to the global top header. Added staff/demo rendering assertions and verified desktop plus 390 px layouts; no backend, database, authentication, or staff-interface behavior changed.
 2026-08-10: Committed and pushed 4dc8bcd, captured PostgreSQL backup b011, deployed Heroku v50, ran the unchanged Alembic release gate successfully, and verified health, web/worker dynos, demo Items/Routes branding, mock catalog continuity, and clean browser logs.
 2026-08-11: Implemented centralized barcode alternates across item, inventory, scanner, receiving, cycle count, and pick paths; exact absolute stock adjustment inputs with optional audit reason; shared Enter-dismissed suggestions and fixed overlay menus; ten-zone authoritative route assignments, time/map metadata, responsive stop overview, Google navigation, and separate completed-route page. No migration, dependency, credential, production data, or WooCommerce configuration change was made.
+2026-08-11: Replaced the shared module-rail initial with the bundled Pongo logo and added an isolated live WooCommerce open-order endpoint/card for `pending`, `processing`, and `on-hold`, with verified pagination totals, contained failures, and demo isolation. No migration, dependency, credential, production data, WooCommerce write, commit, push, or deployment was performed.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
 Final evidence:
@@ -191,6 +209,7 @@ Production Mythodus evidence: Heroku v50 reports commit 4dc8bcd; PostgreSQL back
 Current release-candidate evidence: full backend passed 526 tests with 10 PostgreSQL-only skips and the existing Starlette warning; full frontend passed 149 tests across seven files; the production build passed with the existing Vite chunk warning; `git diff --check` passed. Integrated disposable-database browser checks at 1440 × 900 and 390 × 844 proved no horizontal overflow on Live/Completed Routes or the stock modal, menu flip/clamp behavior, Enter-dismissed suggestions, a no-leading-zero scan finding the leading-zero barcode, and an absolute final-stock change from 0 to 5. The browser test used only fictional local data. Final independent review confirmed the scanner, absolute-stock, location-switch, route-coordinate, and mobile layout blockers were resolved.
 GitHub release-gate evidence: exact commit bfd1b90 passed run 31524500439 in 6m36s, including PostgreSQL 16 migration up/down/up/drift validation, backup/restore verification, vulnerability scans, full backend tests with PostgreSQL concurrency, frontend tests/build, and the isolated browser contract chain.
 Production scanner/stock/route evidence: Heroku v51 reports commit bfd1b90; backup b012 completed before deployment; the release command exited 0 at schema 20260810_0038; web and worker Basic dynos are up; `/health` returned 200 and anonymous auth returned 401. A read-only one-off check used an undisclosed real stored barcode and confirmed its leading-zero alternate resolved uniquely; a non-mutating schema check confirmed absolute zero is valid and legacy delta input is rejected. The live demo Routes page showed ten zones, the all-stop overview, Google links, and separate Completed Routes; at 390 px the completed page and stock modal had no horizontal overflow, the modal showed Final Stock Quantity plus optional reason, and browser diagnostics were empty. No live stock or order was changed.
+Pongo logo/live-count verification: focused backend business-dashboard coverage passed 19 tests; full backend passed 530 tests with 10 PostgreSQL-only skips and the existing Starlette warning; full frontend passed 151 tests across seven files; the focused App suite passed 119 tests; the production frontend build passed with the existing Vite chunk warning. Tests prove exact active Woo status requests, verified case-insensitive pagination totals, safe 503 behavior, demo non-access, bundled logo rendering, successful live count rendering, isolation of card failure from local Dashboard content, and rejection of an older response that finishes after a newer refresh. Independent final review found no remaining blocker. No production or external WooCommerce request was made.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
 Database migration: production is at 20260810_0038; it adds `users.access_level` with `staff` default and a `staff|demo` check. The release migration completed transactionally.
@@ -198,28 +217,38 @@ Release baseline: production is Heroku v51 at commit bfd1b90. The release change
 Recovery: Continuous Protection is enabled and completed manual backup b012 is the pre-v51 rollback boundary. Both v50 and v51 use schema 20260810_0038.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
+CURRENT DASHBOARD CHANGE STATE: Locally verified and explicitly authorized for deployment. Production remains Heroku v51 at bfd1b90 until the exact release commit passes CI; there is no schema, dependency, environment, or credential change.
 
 === 14. OPERATIONS, OBSERVABILITY, AND SUPPORT READINESS ===
 The route endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Web and worker dynos are each running at one Basic dyno. Physical iPhone/Android camera permission and real barcode decoding still require device verification by Pongo staff. Provider-backed tiles, geocoding, and live traffic remain disabled; the in-app overview uses verified stored coordinates when available and otherwise explicit zones.
 Stock CSV validation and local commit remain synchronous at current Pongo scale and use the existing import-size limits, database transaction, stock mutation lock, adjustment audit, and idempotency controls. When live WooCommerce writeback is enabled, the already-existing chunked stock-sync worker is queued after commit so remote API calls do not hold the import request open.
 Demo operations: accounts are created/rotated by `backend/scripts/create_demo_user.py`; passwords are prompted and never committed. Mock data is generated in memory on first demo request, so no cleanup job or customer-data retention policy is required.
+Live WooCommerce count operations: Dashboard makes no background poll. Each page load or manual refresh issues three one-row backend GETs with a five-second per-request timeout cap and existing retry policy. Failures are contained to the KPI and logged by the existing WooCommerce client/request logging.
 
 === 15. TECHNICAL DEBT AND DEFERRED WORK ===
 Deferred: provider-backed street tiles, road/traffic optimization, address validation/geocoding, persisted open-order dispatch plans, named drivers, per-driver acknowledgements, route completion/proof of delivery, and automated SMS/email sharing. Add only after Pongo validates the simple operational workflow and production measurements justify more infrastructure.
 Deferred for stock CSV: changing allocated/sellable quantities, creating missing master data, background jobs, and customer-facing stock rollback. Add only with explicit requirements and tested operational rules.
 Known unrelated audit debt remains in PRODUCT_AUDIT.txt.
 Deferred for demo access: persistent writable sandboxes, tenant-specific demo datasets, self-service invitations, and granular staff permissions. Add only if the read-only sales demo proves insufficient.
+Deferred for the live Dashboard count: custom WooCommerce statuses, cache/polling, background refresh, and drill-down links. Add only if Pongo changes its active-order policy or production measurements show the three small reads need optimization.
 
 === 16. CONTINUOUS IMPROVEMENT AND LEARNING ===
 Reused the existing scanner component and search flows, the operational order eligibility clause, and platform-native Web Share/clipboard capabilities. For stock CSV, the design deliberately reuses the existing import and stock-adjustment pipelines instead of adding a second stock mutation system, database schema, dependency, or background job.
 For demo access, rebinding the existing request session provides one fail-closed isolation point for the whole backend and avoids demo branches in every service or a second frontend.
+For the live WooCommerce KPI, reused the existing active-status set, client, pagination parser, authentication boundary, metric card grid, and bundled logo. The separate endpoint is the smallest boundary that prevents upstream failure from delaying or replacing cached local Dashboard data.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Pongo staff should verify physical camera decoding on one iPhone/Android and one hardware scanner during normal read-only search use.
-THEN: Retain v50 and backup b012 as rollback references; address the pre-existing readiness gaps for missing unit costs, alerting, and production stock-authority configuration separately.
-APPROVAL STATE: The user explicitly requested implementation on the main Pongo deployment and authorized deployment in this task. No credential is recorded in source control or lifecycle state.
+NEXT: Commit/push the protected feature branch and require the exact-commit GitHub release gate.
+THEN: Capture a fresh PostgreSQL backup, deploy to Heroku, verify the release command/schema, restore the worker, and perform non-destructive production checks of the logo and live WooCommerce count.
+APPROVAL STATE: The user explicitly authorized production deployment on 2026-08-11. No credential is recorded in source control or lifecycle state.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
+--- DELIVERY RUN: 2026-08-11T19:24:33Z ---
+MODE: Build Approved Scope
+SUMMARY: Shared Pongo logo and isolated live WooCommerce open-order KPI implemented and fully verified locally; not committed, pushed, or deployed.
+EVIDENCE: 19 focused backend tests, 530 full backend tests with 10 skips, 119 focused App tests, 151 full frontend tests, and the production build passed. Remote status/header failures and out-of-order refresh responses are contained; demo never constructs Woo access; local Dashboard data remains visible.
+NEXT ACTION: Review, then explicitly authorize commit/push/deployment if desired; release must use the normal CI gate and a fresh production backup.
+
 --- DELIVERY RUN: 2026-08-11T19:04:17Z ---
 MODE: Release Readiness and Release
 SUMMARY: Barcode normalization, absolute stock edits, shared mobile overlays, and ten-zone live/completed routing released and verified on Pongo production.
@@ -309,3 +338,9 @@ MODE: Release Readiness and Release
 SUMMARY: Demo-only top-right “Powered By: Mythodus” branding with the supplied logo and Newsreader Bold deployed and verified on Pongo production.
 EVIDENCE: Commit 4dc8bcd; backup b011; Heroku v50; release command exit 0 at schema 20260810_0038; web/worker up; health 200; 148 frontend tests and production build passed; local desktop/390 px plus live Items/Routes visual checks passed without browser errors.
 NEXT ACTION: None. Revalidate the global header after future authentication or shell changes.
+
+--- DELIVERY RUN: 2026-08-11T19:46:17Z ---
+MODE: Release Readiness and Release
+SUMMARY: Production deployment of the locally verified Pongo logo and isolated live WooCommerce open-order KPI explicitly authorized and prepared.
+EVIDENCE: Release scope is 14 tracked files with no schema, dependency, environment, or credential change; full backend/frontend tests, production build, diff check, and independent review passed before authorization.
+NEXT ACTION: Commit/push the exact candidate, require its GitHub release gate, capture a fresh PostgreSQL backup, deploy, and run non-destructive production checks.

@@ -245,6 +245,7 @@ const emptyDashboard = {
 const emptyBusinessDashboard = {
   generated_at: null,
   today: { summary: {}, data_quality: [] },
+  woocommerce_open_orders: { summary: { open_orders_count: null }, statuses: {}, source: null, fetched_at: null, loading: false, error: '' },
   open_orders: { summary: {}, rows: [], data_quality: [] },
   subscriptions: { summary: {}, rows: [], data_quality: [], empty_state: null },
   revenue_comparison: { summary: {}, daily_series: [], data_quality: [] },
@@ -1372,6 +1373,7 @@ export default function App({ currentUser = null, onLogout = null }) {
   const wooStockSyncTrackedJobRef = useRef(null);
   const wooOrderFetchTrackingTimeoutRef = useRef(null);
   const wooOrderFetchTrackedJobRef = useRef(null);
+  const wooOpenOrdersRequestIdRef = useRef(0);
   const pickMutationRef = useRef(null);
   const wooStockSyncMutationRef = useRef(null);
   activeRouteRef.current = route;
@@ -1917,18 +1919,45 @@ export default function App({ currentUser = null, onLogout = null }) {
       setBusinessDashboardLoading(true);
     }
     setBusinessDashboardError('');
+    void loadWooCommerceOpenOrders();
     try {
       const response = await apiFetch(`${API_BASE_URL}/api/business-dashboard`);
       if (!response.ok) {
         throw new Error(`Business Dashboard API returned ${response.status}`);
       }
-      setBusinessDashboard({ ...emptyBusinessDashboard, ...(await response.json()) });
+      const body = await response.json();
+      setBusinessDashboard((current) => ({ ...emptyBusinessDashboard, ...body, woocommerce_open_orders: current.woocommerce_open_orders }));
     } catch (error) {
       setBusinessDashboardError('Unable to load business dashboard data from the backend.');
     } finally {
       if (!silent) {
         setBusinessDashboardLoading(false);
       }
+    }
+  }
+
+  async function loadWooCommerceOpenOrders() {
+    const requestId = wooOpenOrdersRequestIdRef.current + 1;
+    wooOpenOrdersRequestIdRef.current = requestId;
+    setBusinessDashboard((current) => ({
+      ...current,
+      woocommerce_open_orders: { ...current.woocommerce_open_orders, loading: true, error: '' },
+    }));
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/api/business-dashboard/woocommerce-open-orders`);
+      if (!response.ok) throw new Error(`WooCommerce open orders API returned ${response.status}`);
+      const body = await response.json();
+      if (requestId !== wooOpenOrdersRequestIdRef.current) return;
+      setBusinessDashboard((current) => ({
+        ...current,
+        woocommerce_open_orders: { ...body, loading: false, error: '' },
+      }));
+    } catch (error) {
+      if (requestId !== wooOpenOrdersRequestIdRef.current) return;
+      setBusinessDashboard((current) => ({
+        ...current,
+        woocommerce_open_orders: { ...emptyBusinessDashboard.woocommerce_open_orders, error: 'Live count unavailable.' },
+      }));
     }
   }
 
@@ -3518,7 +3547,7 @@ function Sidebar({ activePage, route, onNavigate, isOpen, onClose }) {
       <aside className={`sidebar ${isOpen ? 'is-open' : ''}`} id="application-navigation" aria-label="Application navigation" onKeyDown={(event) => { if (event.key === 'Escape' && isOpen) { event.stopPropagation(); onClose(); } }}>
         <nav className="module-rail" aria-label="Module navigation">
           <a className="module-brand" href="#dashboard" aria-label="Pongo OS dashboard" onClick={(event) => { event.preventDefault(); onNavigate('#dashboard'); }}>
-            <span aria-hidden="true">P</span>
+            <img src="/pongo-logo.png" alt="" aria-hidden="true" />
           </a>
           <div className="module-links">
             {navigationGroups.map((group) => {
@@ -4249,6 +4278,7 @@ function PageBody({
 
 function BusinessDashboardPage({ dashboard, loading, error, onRefresh }) {
   const today = dashboard.today?.summary || {};
+  const wooOpenOrders = dashboard.woocommerce_open_orders || emptyBusinessDashboard.woocommerce_open_orders;
   const openOrders = dashboard.open_orders?.rows || [];
   const subscriptions = dashboard.subscriptions || {};
   const revenue = dashboard.revenue_comparison || {};
@@ -4270,6 +4300,13 @@ function BusinessDashboardPage({ dashboard, loading, error, onRefresh }) {
 
       <div className="business-kpi-grid">
         <BusinessMetric label="Today's Orders" value={today.today_orders_count || 0} tone="blue" />
+        <BusinessMetric
+          label="WooCommerce Open Orders"
+          value={wooOpenOrders.loading || wooOpenOrders.error ? '—' : wooOpenOrders.summary?.open_orders_count ?? '—'}
+          caption={wooOpenOrders.loading ? 'Loading live count…' : wooOpenOrders.error || (wooOpenOrders.source !== 'woocommerce' && wooOpenOrders.source !== 'demo') ? 'Live count unavailable' : wooOpenOrders.source === 'demo' ? 'Demo data' : 'Live WooCommerce'}
+          live
+          tone="green"
+        />
         <BusinessMetric label="Today's Revenue" value={formatCurrency(today.today_revenue || 0)} tone="peach" />
         <BusinessMetric label="New Customers" value={today.today_new_customers || 0} tone="orange" />
         <BusinessMetric label="Returning Customers" value={today.today_returning_customers || 0} tone="green" />
@@ -4297,11 +4334,12 @@ function BusinessDashboardPage({ dashboard, loading, error, onRefresh }) {
   );
 }
 
-function BusinessMetric({ label, value, tone }) {
+function BusinessMetric({ label, value, tone, caption, live = false }) {
   return (
-    <article className={`business-metric-card ${tone}`}>
+    <article className={`business-metric-card ${tone}`} aria-atomic={live || undefined} aria-live={live ? 'polite' : undefined}>
       <span>{label}</span>
       <strong>{value}</strong>
+      {caption && <small>{caption}</small>}
     </article>
   );
 }
