@@ -2,14 +2,14 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-11T19:46:17Z
+LAST UPDATED: 2026-08-11T20:01:20Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Pongo shell logo and isolated live WooCommerce open-order KPI authorized for production release
-CURRENT RELEASE RECOMMENDATION: READY FOR AUTHORIZED DEPLOYMENT
+CURRENT PHASE: Pongo shell logo and isolated live WooCommerce open-order KPI released and verified on production
+CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Production is Heroku v51 at commit bfd1b90 with schema revision 20260810_0038. Product barcode scans now try the captured value and its one-leading-zero alternate without weakening exact SKU matching. Manual stock edits accept one absolute final quantity, including zero, and optional reason text while preserving allocation, idempotency, audit, FIFO, and configured WooCommerce writeback safeguards. Shared suggestion/action menus close and position correctly, neutral instructional banners are removed, Live and Completed Routes are separate subpages, and the live planner uses ten explicit zones plus a responsive all-stop overview and Google Maps navigation links.
-The current local candidate replaces the shell initial with the bundled Pongo logo and adds an independently loaded WooCommerce Open Orders KPI. The backend verifies live `pending`, `processing`, and `on-hold` totals from WooCommerce pagination headers; a remote failure marks only this card unavailable and never substitutes a local count. Demo access remains mock-only and never contacts WooCommerce. These changes are not deployed.
+Production is Heroku v52 at commit 1665ef9 with schema revision 20260810_0038. Product barcode scans now try the captured value and its one-leading-zero alternate without weakening exact SKU matching. Manual stock edits accept one absolute final quantity, including zero, and optional reason text while preserving allocation, idempotency, audit, FIFO, and configured WooCommerce writeback safeguards. Shared suggestion/action menus close and position correctly, neutral instructional banners are removed, Live and Completed Routes are separate subpages, and the live planner uses ten explicit zones plus a responsive all-stop overview and Google Maps navigation links.
+The shared shell now uses the bundled Pongo logo and the Dashboard independently loads a WooCommerce Open Orders KPI. The backend verifies live `pending`, `processing`, and `on-hold` totals from WooCommerce pagination headers; a remote failure marks only this card unavailable and never substitutes a local count. Demo access remains mock-only and never contacts WooCommerce. Production verification returned 27 live open orders without changing orders or stock.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -217,7 +217,7 @@ Release baseline: production is Heroku v51 at commit bfd1b90. The release change
 Recovery: Continuous Protection is enabled and completed manual backup b012 is the pre-v51 rollback boundary. Both v50 and v51 use schema 20260810_0038.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
-CURRENT DASHBOARD CHANGE STATE: Locally verified and explicitly authorized for deployment. Production remains Heroku v51 at bfd1b90 until the exact release commit passes CI; there is no schema, dependency, environment, or credential change.
+CURRENT DASHBOARD CHANGE STATE: Released and verified on Heroku v52 at 1665ef9 after exact-commit CI and completed backup b013. Schema remains 20260810_0038; there was no dependency, environment, credential, order, or stock change.
 
 === 14. OPERATIONS, OBSERVABILITY, AND SUPPORT READINESS ===
 The route endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Web and worker dynos are each running at one Basic dyno. Physical iPhone/Android camera permission and real barcode decoding still require device verification by Pongo staff. Provider-backed tiles, geocoding, and live traffic remain disabled; the in-app overview uses verified stored coordinates when available and otherwise explicit zones.
@@ -238,9 +238,9 @@ For demo access, rebinding the existing request session provides one fail-closed
 For the live WooCommerce KPI, reused the existing active-status set, client, pagination parser, authentication boundary, metric card grid, and bundled logo. The separate endpoint is the smallest boundary that prevents upstream failure from delaying or replacing cached local Dashboard data.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Commit/push the protected feature branch and require the exact-commit GitHub release gate.
-THEN: Capture a fresh PostgreSQL backup, deploy to Heroku, verify the release command/schema, restore the worker, and perform non-destructive production checks of the logo and live WooCommerce count.
-APPROVAL STATE: The user explicitly authorized production deployment on 2026-08-11. No credential is recorded in source control or lifecycle state.
+NEXT: No release action remains. Monitor the live count during normal staff use.
+THEN: Address the pre-existing `/ready` unit-cost, alerting, and stock-authority gaps separately.
+APPROVAL STATE: Production deployment completed and verified. No credential is recorded in source control or lifecycle state.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
 --- DELIVERY RUN: 2026-08-11T19:24:33Z ---
@@ -344,3 +344,9 @@ MODE: Release Readiness and Release
 SUMMARY: Production deployment of the locally verified Pongo logo and isolated live WooCommerce open-order KPI explicitly authorized and prepared.
 EVIDENCE: Release scope is 14 tracked files with no schema, dependency, environment, or credential change; full backend/frontend tests, production build, diff check, and independent review passed before authorization.
 NEXT ACTION: Commit/push the exact candidate, require its GitHub release gate, capture a fresh PostgreSQL backup, deploy, and run non-destructive production checks.
+
+--- DELIVERY RUN: 2026-08-11T20:01:20Z ---
+MODE: Release Readiness and Release
+SUMMARY: Bundled Pongo shell logo and isolated live WooCommerce Open Orders KPI released and verified on Pongo production.
+EVIDENCE: Exact-commit GitHub run 31529678363 passed; commit 1665ef9 deployed as Heroku v52 after completed backup b013; Alembic remained at 20260810_0038; web/worker up; health and root 200; protected endpoints 401 anonymously; logo asset and visible logo/card verified; live WooCommerce read returned 27 open orders; no browser errors or unexpected application errors; no order or stock mutation.
+NEXT ACTION: Monitor during normal staff use and address the pre-existing `/ready` readiness gaps separately.
