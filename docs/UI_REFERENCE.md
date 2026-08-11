@@ -779,12 +779,18 @@ No route screenshot was present. Routes use the global Pongo admin shell and
 the same dense operational table language as Orders, Reports, and Fulfillment.
 
 Current behavior:
-- Plan every operational open order with a complete address from the default
-  Pongo warehouse starting point.
+- `Live Planner` and `Completed Routes` are separate route subpages.
+- Select the operational open orders being delivered from the default Pongo
+  warehouse starting point.
 - Choose 1–50 drivers and optionally add a return leg.
-- Keep postal areas together where possible while splitting stop counts evenly.
+- Balance deterministic estimated time or explicitly assign any of ten zones:
+  N, S, E, W, NE, NW, SE, SW, Central East, and Central West.
+- Never add an unselected zone; show uncovered orders as unassigned.
 - Review every driver assignment and every order excluded for a missing
   address.
+- Plot all assigned stops in a responsive overview with total driver minutes,
+  parallel finish estimate, stop counts, driver colors, and per-stop Google
+  Maps navigation. Ungeocoded stops are visibly placed in their direction zone.
 - Open or share mobile-safe Google Maps direction links; long routes continue
   in numbered parts.
 - Show eligible completed local orders with shipping/customer snapshots.

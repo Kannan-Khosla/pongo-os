@@ -23,6 +23,7 @@ from app.models.inventory import (
 from app.services.stock_mutation_guard import begin_stock_mutation, complete_stock_mutation
 
 STOCK_MUTATION_LOCK_KEY = int.from_bytes(b"PONGOFIF", byteorder="big")
+DEFAULT_STOCK_ADJUSTMENT_REASON = "Manual stock adjustment"
 
 
 @dataclass
@@ -752,15 +753,14 @@ def adjust_location_stock(
     quantity_change: Decimal,
     *,
     adjustment_type: str,
-    reason: str,
+    reason: str | None = None,
     reference_number: str | None = None,
     reference_id: int | None = None,
     notes: str | None = None,
     created_by: str | None = "system",
 ) -> LocationStockChange:
     quantity_change = to_decimal(quantity_change)
-    if not reason or not reason.strip():
-        raise ValueError("Stock adjustment reason is required.")
+    reason = (reason or "").strip() or DEFAULT_STOCK_ADJUSTMENT_REASON
     if adjustment_type not in {"correction", "damage", "loss", "found", "manual_increase", "manual_decrease"}:
         raise ValueError("Adjustment type is invalid.")
     assert_stock_location_active(db, row)
@@ -1042,11 +1042,12 @@ def create_committed_adjustment(
     row: InventoryItemLocation,
     quantity_change: Decimal,
     adjustment_type: str,
-    reason: str,
+    reason: str | None = None,
     notes: str | None = None,
     created_by: str | None = "system",
     idempotency_key: str | None = None,
 ) -> StockAdjustment:
+    reason = (reason or "").strip() or DEFAULT_STOCK_ADJUSTMENT_REASON
     request_payload = {
         "item_id": item.id,
         "inventory_item_location_id": row.id,
@@ -1102,13 +1103,14 @@ def create_committed_adjustment_batch(
     lines: list[dict],
     *,
     adjustment_type: str,
-    reason: str,
+    reason: str | None = None,
     notes: str | None = None,
     created_by: str | None = "system",
     idempotency_key: str | None = None,
 ) -> StockAdjustment:
     if not lines:
         raise ValueError("At least one adjustment line is required.")
+    reason = (reason or "").strip() or DEFAULT_STOCK_ADJUSTMENT_REASON
     request_payload = {
         "lines": lines,
         "adjustment_type": adjustment_type,
@@ -1144,13 +1146,12 @@ def create_committed_adjustment_batch(
             raise StaleStockQuantityError(f"Stock changed after preview for SKU {item.sku or item.id} at {row.warehouse} / {row.inventory_location}.")
         if "expected_allocated" in payload and (row.allocated or Decimal("0")) != to_decimal(payload["expected_allocated"]):
             raise StaleStockQuantityError(f"Allocation changed after preview for SKU {item.sku or item.id} at {row.warehouse} / {row.inventory_location}.")
-        if "new_quantity" in payload:
-            new_quantity = to_decimal(payload["new_quantity"])
-            if new_quantity < 0:
-                raise ValueError("Exact stock quantity cannot be negative.")
-            quantity_change = new_quantity - old_quantity
-        else:
-            quantity_change = to_decimal(payload["quantity_change"])
+        if payload.get("new_quantity") is None:
+            raise ValueError("Each adjustment line requires an absolute new_quantity.")
+        new_quantity = to_decimal(payload["new_quantity"])
+        if new_quantity < 0:
+            raise ValueError("Exact stock quantity cannot be negative.")
+        quantity_change = new_quantity - old_quantity
         change = adjust_location_stock(
             db,
             item,

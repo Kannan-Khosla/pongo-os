@@ -163,7 +163,7 @@ def test_stock_csv_rejects_negative_duplicate_and_stale_location_counts(client):
             "idempotency_key": str(uuid4()),
             "adjustment_type": "correction",
             "reason": "Changed after CSV preview",
-            "lines": [{"item_id": item["id"], "inventory_item_location_id": location["id"], "quantity_change": 1}],
+            "lines": [{"item_id": item["id"], "inventory_item_location_id": location["id"], "new_quantity": 11}],
         },
     )
     assert changed.status_code == 201, changed.text

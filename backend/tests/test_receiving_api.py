@@ -189,6 +189,15 @@ def test_receiving_by_barcode_works(client):
     assert response.status_code == 200
 
 
+def test_receiving_barcode_matches_single_leading_zero_alternate(client):
+    setup_receiving_item_and_location(client, sku="RCV-ZERO", barcode="012345678901")
+    payload = direct_payload(lines=[{"barcode": "12345678901", "inventory_location": "REC-01", "quantity_received": 1}])
+
+    response = client.post("/api/receipts/direct/commit", json=payload)
+
+    assert response.status_code == 200, response.text
+
+
 def test_sku_and_barcode_conflict_rejects_full_receipt(client):
     setup_receiving_item_and_location(client, sku="RCV-SKU", barcode="BAR-1")
     seed_item(client, sku="OTHER-SKU", Barcode="BAR-2")

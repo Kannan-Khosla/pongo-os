@@ -51,13 +51,24 @@ import {
 
 const ReportIntelligencePage = lazy(() => import('./ReportIntelligence'));
 const DEFAULT_ROUTE_START_ADDRESS = '5855 99 Street NW, Edmonton, AB';
-const ROUTE_DIRECTIONS = ['north', 'south', 'east', 'west', 'central'];
+const ROUTE_DIRECTIONS = ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW', 'Central East', 'Central West'];
+const ROUTE_ZONE_POSITIONS = {
+  N: { left: 50, top: 16 },
+  S: { left: 50, top: 84 },
+  E: { left: 84, top: 50 },
+  W: { left: 16, top: 50 },
+  NE: { left: 76, top: 24 },
+  NW: { left: 24, top: 24 },
+  SE: { left: 76, top: 76 },
+  SW: { left: 24, top: 76 },
+  'Central East': { left: 60, top: 50 },
+  'Central West': { left: 40, top: 50 },
+};
+const ROUTE_DRIVER_COLORS = ['#0f149a', '#ef5b3f', '#16835f', '#8b5cf6', '#d97706', '#0369a1', '#be123c', '#4d7c0f'];
 
 function defaultRouteDirectionAssignments(driverCount) {
   const count = Math.max(1, Math.min(50, Number(driverCount) || 1));
-  const assignments = Object.fromEntries(Array.from({ length: count }, (_, index) => [index + 1, []]));
-  ROUTE_DIRECTIONS.forEach((direction, index) => assignments[(index % count) + 1].push(direction));
-  return assignments;
+  return Object.fromEntries(Array.from({ length: count }, (_, index) => [index + 1, []]));
 }
 
 export const browserNavigation = {
@@ -371,6 +382,11 @@ const inventorySubpages = [
   { id: 'movements', label: 'Stock Movements', href: '#/inventory/movements' },
 ];
 
+const routeSubpages = [
+  { id: 'live', label: 'Live Planner', href: '#/routes/live' },
+  { id: 'completed', label: 'Completed Routes', href: '#/routes/completed' },
+];
+
 const orderSubpageMeta = {
   open: { title: 'Open Orders', kicker: 'Orders / Open' },
   allocate: { title: 'Allocate', kicker: 'Orders / Allocation' },
@@ -386,6 +402,11 @@ const inventorySubpageMeta = {
   expiring: { title: 'Expiring Stock', kicker: 'Inventory / Expiration tracking' },
   'par-level': { title: 'Par Level', kicker: 'Inventory / Reorder planning' },
   movements: { title: 'Stock Movements', kicker: 'Inventory / Audit ledger' },
+};
+
+const routeSubpageMeta = {
+  live: { title: 'Delivery Routes', kicker: 'Routes / Live planning' },
+  completed: { title: 'Completed Routes', kicker: 'Routes / Completed orders' },
 };
 
 const navItems = [
@@ -420,6 +441,7 @@ function navItemHref(item) {
   if (item.id === 'receiving') return '#/receiving/direct';
   if (item.id === 'reports') return `#/reports/inventory/${DEFAULT_REPORT_KEY}`;
   if (item.id === 'insights') return '#/insights/overview';
+  if (item.id === 'routes') return '#/routes/live';
   return `#${item.id}`;
 }
 
@@ -618,7 +640,7 @@ const pageMeta = {
   routes: {
     title: 'Routes',
     kicker: 'Route planning',
-    tabs: ['Route Date', 'Stops', 'Optimization'],
+    tabs: routeSubpages,
   },
   settings: {
     title: 'WooCommerce Connection',
@@ -670,11 +692,13 @@ function submitSearchOnEnter(event, submit) {
 
 function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect = null, onSubmit = null, label, placeholder, className = '', autoFocus = false, hideLabel = false }) {
   const listboxId = useId();
+  const inputRef = useRef(null);
   const [suggestions, setSuggestions] = useState([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [activeIndex, setActiveIndex] = useState(-1);
+  const dismissedQueryRef = useRef(null);
   const mountedRef = useRef(false);
   const searchRef = useRef(onSearch);
   searchRef.current = onSearch;
@@ -684,7 +708,9 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
       mountedRef.current = true;
       return undefined;
     }
-    const timer = window.setTimeout(() => searchRef.current(value.trim()), 250);
+    const query = value.trim();
+    if (dismissedQueryRef.current === query) return undefined;
+    const timer = window.setTimeout(() => searchRef.current(query), 250);
     return () => window.clearTimeout(timer);
   }, [value]);
 
@@ -700,6 +726,7 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
 
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
+      if (dismissedQueryRef.current === query) return;
       setLoading(true);
       setError('');
       setOpen(true);
@@ -707,10 +734,12 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
         const response = await apiFetch(`${API_BASE_URL}/api/items/search?q=${encodeURIComponent(query)}&limit=100`, { signal: controller.signal });
         if (!response.ok) throw new Error(`Item search returned ${response.status}`);
         const body = await response.json();
-        setSuggestions(body.items || []);
-        setActiveIndex(-1);
+        if (dismissedQueryRef.current !== query) {
+          setSuggestions(body.items || []);
+          setActiveIndex(-1);
+        }
       } catch (searchError) {
-        if (searchError.name !== 'AbortError') {
+        if (searchError.name !== 'AbortError' && dismissedQueryRef.current !== query) {
           setSuggestions([]);
           setError('Suggestions unavailable. Press Enter to search.');
         }
@@ -726,25 +755,38 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
   }, [value]);
 
   function submit(nextValue = value.trim()) {
+    dismissedQueryRef.current = nextValue.trim();
     setOpen(false);
-    searchRef.current(nextValue);
+    setActiveIndex(-1);
+    searchRef.current(nextValue.trim());
   }
 
   function chooseSuggestion(item) {
     const nextValue = item.sku || item.barcode || item.product_name || item.description || '';
+    dismissedQueryRef.current = nextValue.trim();
     onChange(nextValue);
     onSelect?.(item);
     submit(nextValue);
   }
 
+  function changeQuery(nextValue) {
+    dismissedQueryRef.current = null;
+    setOpen(false);
+    setActiveIndex(-1);
+    setSuggestions([]);
+    setError('');
+    onChange(nextValue);
+  }
+
   function handleKeyDown(event) {
-    if (event.key === 'ArrowDown' && suggestions.length) {
+    const queryDismissed = dismissedQueryRef.current === value.trim();
+    if (event.key === 'ArrowDown' && suggestions.length && !queryDismissed) {
       event.preventDefault();
       setOpen(true);
       setActiveIndex((current) => (current + 1) % suggestions.length);
       return;
     }
-    if (event.key === 'ArrowUp' && suggestions.length) {
+    if (event.key === 'ArrowUp' && suggestions.length && !queryDismissed) {
       event.preventDefault();
       setOpen(true);
       setActiveIndex((current) => (current <= 0 ? suggestions.length - 1 : current - 1));
@@ -779,18 +821,18 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
           aria-activedescendant={activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined}
           autoComplete="off"
           autoFocus={autoFocus}
-          onChange={(event) => onChange(event.target.value)}
-          onFocus={() => value.trim() && setOpen(true)}
+          onChange={(event) => changeQuery(event.target.value)}
+          onFocus={() => value.trim() && dismissedQueryRef.current !== value.trim() && setOpen(true)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
+          ref={inputRef}
           role="combobox"
           type="search"
           value={value}
         />
         <Search aria-hidden="true" size={18} />
       </div>
-      {open && (
-        <div className="keyword-suggestions" id={listboxId} role="listbox" aria-label="Inventory suggestions">
+      <FloatingMenu ariaLabel="Inventory suggestions" className="keyword-suggestions" id={listboxId} menuRole="listbox" onClose={() => setOpen(false)} open={open} triggerRef={inputRef}>
           {loading && <div className="keyword-suggestion-status" role="status">Finding inventory…</div>}
           {!loading && error && <div className="keyword-suggestion-status">{error}</div>}
           {!loading && !error && !suggestions.length && <div className="keyword-suggestion-status">No matching inventory items</div>}
@@ -815,8 +857,7 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
               </span>
             </button>
           ))}
-        </div>
-      )}
+      </FloatingMenu>
     </div>
   );
 }
@@ -1169,6 +1210,11 @@ function parseHashRoute() {
     const view = ['direct', 'bulk', 'history'].includes(requestedView) ? requestedView : 'direct';
     return { pageId: 'receiving', receivingView: view };
   }
+  if (path === 'routes' || path.startsWith('routes/')) {
+    const requestedView = path.split('/')[1] || 'live';
+    const view = routeSubpages.some((candidate) => candidate.id === requestedView) ? requestedView : 'live';
+    return { pageId: 'routes', routesView: view };
+  }
   if (path === 'settings' || path.startsWith('settings/')) {
     const requestedView = path.split('/')[1] || 'connection';
     const view = settingsViews.some((candidate) => candidate.id === requestedView) ? requestedView : 'connection';
@@ -1397,16 +1443,18 @@ export default function App({ currentUser = null, onLogout = null }) {
         loadWooStockSyncJobs();
       }
     }
-    if (route.pageId === 'routes') {
+    if (route.pageId === 'routes' && (route.routesView || 'live') === 'live') {
       planOpenOrderRoutes({
         start_address: DEFAULT_ROUTE_START_ADDRESS,
         driver_count: 1,
         return_to_start: false,
       });
+    }
+    if (route.pageId === 'routes' && route.routesView === 'completed') {
       loadRouteCandidates();
       loadRoutes();
     }
-  }, [route.pageId, route.inventoryView, route.inventoryPage, route.inventoryPageSize, route.inventorySearch, route.inventoryCategory, route.inventoryBrand, route.inventoryDataQuality, route.inventorySortBy, route.inventorySortDir, route.receivingView, route.ordersView, route.reportKey, route.settingsView, isDemo]);
+  }, [route.pageId, route.inventoryView, route.inventoryPage, route.inventoryPageSize, route.inventorySearch, route.inventoryCategory, route.inventoryBrand, route.inventoryDataQuality, route.inventorySortBy, route.inventorySortDir, route.receivingView, route.ordersView, route.reportKey, route.settingsView, route.routesView, isDemo]);
 
   useEffect(() => {
     const operationalOrdersView = route.pageId === 'orders' && ['open', 'pick'].includes(route.ordersView || 'open');
@@ -4155,6 +4203,7 @@ function PageBody({
   if (route.pageId === 'routes') {
     return (
       <RoutesPage
+        view={route.routesView || 'live'}
         candidatesData={routeCandidates}
         candidatesPagination={routeCandidatesPagination}
         candidatesLoading={routeCandidatesLoading}
@@ -5078,7 +5127,6 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
 
       <InventoryScannerSearch value={queryDraft} onChange={setQueryDraft} onSubmit={submitSearch} onClear={clearFilters} filters={filters} options={options} onFilterChange={updateFilter} onOpenScanner={() => setCameraScannerOpen(true)} />
 
-      <div className="csv-note">Inventory search uses local Pongo OS data. Picked-order stock writes back when the order is completed; manual stock changes write back automatically. Use Update Stock to retry changed items or Update Stock All to resend every mapped item.</div>
       {error && <div className="api-error">{error}</div>}
       {locationRowsError && <div className="api-error">{locationRowsError}</div>}
       {stockMovementsError && inventoryView === 'movements' && <div className="api-error">{stockMovementsError}</div>}
@@ -5230,7 +5278,7 @@ function BodyPortal({ children }) {
   return createPortal(<div className="app-shell app-overlay-root">{children}</div>, document.body);
 }
 
-function FloatingMenu({ open, triggerRef, onClose, className, align = 'start', closeOnAction = false, menuRole = 'menu', children }) {
+function FloatingMenu({ open, triggerRef, onClose, className, align = 'start', closeOnAction = false, menuRole = 'menu', id = undefined, ariaLabel = undefined, children }) {
   const popoverRef = useRef(null);
   const onCloseRef = useRef(onClose);
   const [position, setPosition] = useState(null);
@@ -5246,20 +5294,28 @@ function FloatingMenu({ open, triggerRef, onClose, className, align = 'start', c
       const trigger = triggerRef.current;
       const popover = popoverRef.current;
       if (!trigger || !popover) return;
+      const visualViewport = window.visualViewport;
+      const viewportLeft = visualViewport?.offsetLeft || 0;
+      const viewportTop = visualViewport?.offsetTop || 0;
+      const viewportWidth = visualViewport?.width || window.innerWidth;
+      const viewportHeight = visualViewport?.height || window.innerHeight;
       const triggerRect = trigger.getBoundingClientRect();
       const popoverRect = popover.getBoundingClientRect();
       const gutter = 10;
       const gap = 6;
-      const width = Math.min(popoverRect.width, window.innerWidth - (gutter * 2));
-      const height = Math.min(popoverRect.height, window.innerHeight - (gutter * 2));
+      const mobileWidth = viewportWidth <= 760 ? Math.max(0, viewportWidth - (gutter * 2)) : null;
+      const width = mobileWidth ?? Math.min(popoverRect.width, viewportWidth - (gutter * 2));
+      const height = Math.min(popoverRect.height, viewportHeight - (gutter * 2));
       const preferredLeft = align === 'end' ? triggerRect.right - width : triggerRect.left;
-      const left = Math.min(Math.max(gutter, preferredLeft), Math.max(gutter, window.innerWidth - width - gutter));
-      const roomBelow = window.innerHeight - triggerRect.bottom - gutter;
-      const roomAbove = triggerRect.top - gutter;
+      const minimumLeft = viewportLeft + gutter;
+      const maximumLeft = viewportLeft + viewportWidth - width - gutter;
+      const left = Math.min(Math.max(minimumLeft, preferredLeft), Math.max(minimumLeft, maximumLeft));
+      const roomBelow = viewportTop + viewportHeight - triggerRect.bottom - gutter;
+      const roomAbove = triggerRect.top - viewportTop - gutter;
       const top = roomBelow < height + gap && roomAbove > roomBelow
-        ? Math.max(gutter, triggerRect.top - height - gap)
-        : Math.min(triggerRect.bottom + gap, Math.max(gutter, window.innerHeight - height - gutter));
-      setPosition({ left, top });
+        ? Math.max(viewportTop + gutter, triggerRect.top - height - gap)
+        : Math.min(triggerRect.bottom + gap, Math.max(viewportTop + gutter, viewportTop + viewportHeight - height - gutter));
+      setPosition({ left, top, maxHeight: Math.max(0, viewportHeight - (gutter * 2)), width: mobileWidth });
     }
 
     function closeOnOutsidePointer(event) {
@@ -5275,11 +5331,15 @@ function FloatingMenu({ open, triggerRef, onClose, className, align = 'start', c
     document.addEventListener('keydown', closeOnEscape);
     window.addEventListener('resize', updatePosition);
     window.addEventListener('scroll', updatePosition, true);
+    window.visualViewport?.addEventListener('resize', updatePosition);
+    window.visualViewport?.addEventListener('scroll', updatePosition);
     return () => {
       document.removeEventListener('pointerdown', closeOnOutsidePointer);
       document.removeEventListener('keydown', closeOnEscape);
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
+      window.visualViewport?.removeEventListener('resize', updatePosition);
+      window.visualViewport?.removeEventListener('scroll', updatePosition);
     };
   }, [align, open, triggerRef]);
 
@@ -5287,10 +5347,20 @@ function FloatingMenu({ open, triggerRef, onClose, className, align = 'start', c
   return createPortal(
     <div
       className={`${className} floating-menu`}
+      aria-label={ariaLabel}
+      id={id}
       onClick={(event) => { if (closeOnAction && event.target.closest?.('button, a')) onCloseRef.current(); }}
       ref={popoverRef}
       role={menuRole}
-      style={{ left: position?.left ?? 0, top: position?.top ?? 0, visibility: position ? 'visible' : 'hidden' }}
+      style={{
+        left: position?.left ?? 0,
+        top: position?.top ?? 0,
+        maxHeight: position?.maxHeight,
+        position: 'fixed',
+        visibility: position ? 'visible' : 'hidden',
+        width: position?.width,
+        zIndex: 1200,
+      }}
     >
       {children}
     </div>,
@@ -5535,16 +5605,21 @@ function ProductInfoModal({ item, onClose, onSave }) {
 function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
   const mutationRef = useRef(null);
   const defaultRow = locationRows[0] || null;
-  const [form, setForm] = useState({ itemLocationId: defaultRow?.id || '', mode: 'new_quantity', newQuantity: defaultRow ? String(defaultRow.in_stock) : '', quantityChange: '', reason: '', notes: '' });
+  const [form, setForm] = useState({ itemLocationId: defaultRow?.id || '', newQuantity: defaultRow ? String(defaultRow.in_stock) : '', reason: '', notes: '' });
   const [error, setError] = useState('');
   const selectedRow = locationRows.find((row) => String(row.id) === String(form.itemLocationId)) || defaultRow;
   const oldQuantity = toNumber(selectedRow?.in_stock);
-  const newQuantity = form.mode === 'new_quantity' ? toNumber(form.newQuantity) : roundNumber(oldQuantity + toNumber(form.quantityChange));
+  const newQuantity = toNumber(form.newQuantity);
   const quantityChange = roundNumber(newQuantity - oldQuantity);
   const allocated = toNumber(selectedRow?.allocated);
 
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateLocation(itemLocationId) {
+    const row = locationRows.find((candidate) => String(candidate.id) === String(itemLocationId));
+    setForm((current) => ({ ...current, itemLocationId, newQuantity: row ? String(row.in_stock) : '' }));
   }
 
   async function commit() {
@@ -5553,8 +5628,8 @@ function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
       setError('Select a location row before editing stock.');
       return;
     }
-    if (!form.reason.trim()) {
-      setError('Reason is required for stock edits.');
+    if (form.newQuantity === '' || !Number.isFinite(Number(form.newQuantity)) || newQuantity < 0) {
+      setError('Enter a valid final stock quantity of zero or more.');
       return;
     }
     if (newQuantity < allocated) {
@@ -5568,10 +5643,10 @@ function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
     try {
       const payload = {
         adjustment_type: quantityChange < 0 ? 'manual_decrease' : 'manual_increase',
-        reason: form.reason,
+        reason: form.reason || null,
         notes: form.notes || null,
         created_by: 'frontend',
-        lines: [{ item_id: item.id, inventory_item_location_id: selectedRow.id, quantity_change: quantityChange, notes: form.notes || null }],
+        lines: [{ item_id: item.id, inventory_item_location_id: selectedRow.id, new_quantity: newQuantity, notes: form.notes || null }],
       };
       await onCommit(withMutationIdempotency(mutationRef, 'stock-adjustment', payload));
       resetMutationIdempotency(mutationRef);
@@ -5585,10 +5660,9 @@ function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
       <section className="import-modal" role="dialog" aria-modal="true" aria-label="Edit current stock">
         <div className="modal-header"><div><h2>Edit Current Stock</h2><p>{item.SKU || productTitle(item)}. This creates an audited stock adjustment.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close edit current stock" title="Close" type="button"><X size={20} /></button></div>
         <div className="form-grid">
-          <label className="field wide-field"><span>Location</span><select value={form.itemLocationId} onChange={(event) => update('itemLocationId', event.target.value)}>{locationRows.map((row) => <option key={row.id} value={row.id}>{row.warehouse || 'Unassigned'} / {row.inventory_location || 'Unassigned'} · {formatNumber(row.in_stock)} in stock</option>)}</select></label>
-          <label className="field"><span>Mode</span><select value={form.mode} onChange={(event) => update('mode', event.target.value)}><option value="new_quantity">New current stock</option><option value="quantity_change">Quantity change</option></select></label>
-          {form.mode === 'new_quantity' ? <label className="field"><span>New Stock Quantity</span><input type="number" step="0.001" value={form.newQuantity} onChange={(event) => update('newQuantity', event.target.value)} /></label> : <label className="field"><span>Quantity Change</span><input type="number" step="0.001" value={form.quantityChange} onChange={(event) => update('quantityChange', event.target.value)} /></label>}
-          <label className="field wide-field"><span>Reason</span><input value={form.reason} onChange={(event) => update('reason', event.target.value)} placeholder="Required" /></label>
+          <label className="field wide-field"><span>Location</span><select value={form.itemLocationId} onChange={(event) => updateLocation(event.target.value)}>{locationRows.map((row) => <option key={row.id} value={row.id}>{row.warehouse || 'Unassigned'} / {row.inventory_location || 'Unassigned'} · {formatNumber(row.in_stock)} in stock</option>)}</select></label>
+          <label className="field"><span>Final Stock Quantity</span><input min="0" type="number" step="0.001" value={form.newQuantity} onChange={(event) => update('newQuantity', event.target.value)} /></label>
+          <label className="field wide-field"><span>Reason (optional)</span><input value={form.reason} onChange={(event) => update('reason', event.target.value)} placeholder="Optional" /></label>
           <label className="field wide-field"><span>Notes</span><textarea value={form.notes} onChange={(event) => update('notes', event.target.value)} /></label>
         </div>
         <div className="summary-strip inventory-adjust-preview">
@@ -5804,7 +5878,6 @@ function LocationsList({ locations, loading, error, onLoadLocations }) {
           </button>
         </div>
       </div>
-      <div className="csv-note">Location import/export uses the required Warehouse, Location Code, and Location Name columns.</div>
       {error && <div className="api-error">{error}</div>}
       {loading && <div className="loading-strip">Loading backend locations...</div>}
       <LocationsTable locations={locations} />
@@ -8432,7 +8505,6 @@ function ExpandedReportsPanel({ activeReport }) {
         {summaryEntries.map(([key, value]) => <Metric key={key} label={titleize(key)} value={formatInsightValue(key, value)} />)}
         {Object.keys(summary).length === 0 && <Metric label="Rows" value={rows.length} />}
       </div>
-      {active === 'inventory-valuation' && <div className="data-quality-warning info"><strong>Count definition</strong><span>Inventory records count catalog items. Reported SKUs have matching location rows; valued SKUs also have a non-null unit cost. Exclusions are listed below rather than hidden.</span></div>}
       {Array.isArray(summary.exclusion_summary) && summary.exclusion_summary.length > 0 && <div className="insight-warning-list" aria-label="Valuation exclusions">{summary.exclusion_summary.map((entry, index) => <div className="insight-warning warning" key={`${entry.reason || entry.label}-${index}`}><strong>{entry.label || titleize(entry.reason)}</strong><span>{entry.message || `${formatNumber(entry.count)} record(s) excluded.`}</span></div>)}</div>}
       <div className="toolbar report-toolbar">
         {(definition.filters.includes('start_date') || definition.filters.includes('end_date')) && <div className="date-preset-panel report-date-presets"><div><span>Quick range</span><small>Completed calendar periods</small></div><div className="date-preset-buttons" aria-label="Report date presets"><button type="button" onClick={() => applyDatePreset(1)}>Last month</button><button type="button" onClick={() => applyDatePreset(2)}>Last 2 months</button><button type="button" onClick={() => applyDatePreset(3)}>Last 3 months</button><button type="button" onClick={() => applyDatePreset(12)}>Last year</button></div></div>}
@@ -8605,7 +8677,6 @@ function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadRepo
           </button>
         </div>
       </div>
-      <div className="csv-note">Received Inventory is read-only and based on direct receiving receipt lines. Purchase order receiving is not built yet.</div>
       {error && <div className="api-error">{error}</div>}
       {loading && <div className="loading-strip">Loading received inventory report...</div>}
       <ReceivedInventoryTable rows={rows} />
@@ -8790,7 +8861,6 @@ function FulfillmentReportPage({ rows, summary, loading, error, onLoadReport }) 
           <button className="action-button" onClick={() => exportFulfillmentReportCsv(activeFilters)} type="button"><Download size={17} />Export CSV</button>
         </div>
       </div>
-      <div className="csv-note">Fulfillment Report is read-only. It does not modify inventory, allocated quantities, WooCommerce, routes, shipping labels, or notifications.</div>
       {error && <div className="api-error">{error}</div>}
       {loading && <div className="loading-strip">Loading fulfillment report...</div>}
       <FulfillmentReportTable rows={rows} />
@@ -8917,7 +8987,6 @@ function SkuOrdersReportPage({ rows, summary, loading, error, onLoadReport }) {
           <button className="action-button" onClick={() => exportSkuOrdersCsv(activeFilters)} type="button"><Download size={17} />Export CSV</button>
         </div>
       </div>
-      <div className="csv-note">SKU Orders is read-only and does not modify orders, inventory, allocation, picking, fulfillment, routes, or WooCommerce.</div>
       {error && <div className="api-error">{error}</div>}
       {loading && <div className="loading-strip">Loading SKU Orders report...</div>}
       <TableShell caption={`${rows.length} SKU order row(s)`} columns={['SKU', 'Item', 'Product Title', 'Brand', 'Category', 'Location', 'Orders', 'Ordered', 'Allocated', 'Picked', 'Fulfilled', 'Unfulfilled', 'Unmatched Lines', 'First Order', 'Last Order', 'In Stock', 'Sellable', 'Woo Snapshot']}>
@@ -10001,12 +10070,8 @@ function AllocationStockModal({ line, onClose, onSaved }) {
   }
 
   async function commit() {
-    if (!reason.trim()) {
-      setError('Reason is required.');
-      return;
-    }
-    if (toNumber(newQuantity) < 0) {
-      setError('New stock cannot be negative.');
+    if (newQuantity === '' || !Number.isFinite(Number(newQuantity)) || toNumber(newQuantity) < 0) {
+      setError('Enter a valid final stock quantity of zero or more.');
       return;
     }
     setLoading(true);
@@ -10016,10 +10081,10 @@ function AllocationStockModal({ line, onClose, onSaved }) {
       if (selected) {
         const payload = {
           adjustment_type: quantityChange < 0 ? 'manual_decrease' : 'manual_increase',
-          reason,
+          reason: reason || null,
           notes: notes || null,
           created_by: 'allocation-review',
-          lines: [{ item_id: line.item_id, inventory_item_location_id: selected.id, quantity_change: quantityChange, notes: notes || null }],
+          lines: [{ item_id: line.item_id, inventory_item_location_id: selected.id, new_quantity: toNumber(newQuantity), notes: notes || null }],
         };
         result = await postJson('/api/inventory/adjustments', withMutationIdempotency(mutationRef, 'allocation-adjustment', payload));
       } else {
@@ -10052,7 +10117,7 @@ function AllocationStockModal({ line, onClose, onSaved }) {
           {locations.length ? <label className="field wide-field"><span>Location</span><select value={locationId} onChange={(event) => selectLocation(event.target.value)}>{locations.map((row) => <option key={row.id} value={row.id}>{row.warehouse} / {row.inventory_location} · {formatNumber(row.in_stock)} in stock</option>)}</select></label> : <><label className="field"><span>Warehouse</span><input value={warehouse} onChange={(event) => setWarehouse(event.target.value)} /></label><label className="field"><span>New Stock Location</span><input value={locationName} onChange={(event) => setLocationName(event.target.value)} /></label></>}
           <label className="field"><span>Current Stock</span><input value={formatNumber(currentQuantity)} disabled /></label>
           <label className="field"><span>New Stock Quantity</span><input type="number" min="0" step="0.001" value={newQuantity} onChange={(event) => setNewQuantity(event.target.value)} /></label>
-          <label className="field wide-field"><span>Reason</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+          <label className="field wide-field"><span>Reason (optional)</span><input value={reason} onChange={(event) => setReason(event.target.value)} /></label>
           <label className="field wide-field"><span>Note</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} /></label>
         </div>
         {loading && <div className="loading-strip">Loading stock levels...</div>}
@@ -10880,7 +10945,6 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
           <button className="primary-button" onClick={applyFilters} disabled={loading} type="button"><Filter size={17} />Apply</button>
         </div>
       </div>
-      <div className="csv-note">Completed Orders is read-only and does not modify inventory, WooCommerce, routes, shipping labels, or notifications.</div>
       {error && <div className="api-error">{error}</div>}
       {loading && <div className="loading-strip">Loading completed orders...</div>}
       <TableShell caption={`${ordersData.total || 0} completed order(s)`} columns={['Woo Order', 'Woo Status', 'Local Status', 'Completion', 'Customer', 'Email', 'Order Total', 'Picked', 'Completed Without Picking', 'Stock Reduced', 'Qty Ordered', 'Qty Allocated', 'Qty Picked', 'Qty Fulfilled', 'Closed']} pagination={serverTablePagination(ordersData, 'completed orders', (page) => onLoadCompletedOrders({ ...activeFilters, page, pageSize: ordersData.page_size || 20 }), (pageSize) => onLoadCompletedOrders({ ...activeFilters, page: 1, pageSize }))}>
@@ -10909,6 +10973,128 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
   );
 }
 
+function routeStopSearchUrl(address) {
+  const query = new URLSearchParams({ api: '1', query: address });
+  return `https://www.google.com/maps/search/?${query.toString()}`;
+}
+
+function hasRouteCoordinates(stop) {
+  return [stop.latitude, stop.longitude].every((value) => value != null && String(value).trim() !== '' && Number.isFinite(Number(value)));
+}
+
+function positionedRouteStops(drivers) {
+  const rows = drivers.flatMap((driver) => (driver.stops || []).map((stop) => ({ driver, stop })));
+  const located = rows.filter(({ stop }) => hasRouteCoordinates(stop));
+  const latitudes = located.map(({ stop }) => Number(stop.latitude));
+  const longitudes = located.map(({ stop }) => Number(stop.longitude));
+  const minLatitude = Math.min(...latitudes);
+  const maxLatitude = Math.max(...latitudes);
+  const minLongitude = Math.min(...longitudes);
+  const maxLongitude = Math.max(...longitudes);
+  const latitudeRange = Math.max(maxLatitude - minLatitude, 0.01);
+  const longitudeRange = Math.max(maxLongitude - minLongitude, 0.01);
+  const hasCoordinateBounds = located.length > 1;
+  const zoneCounts = {};
+
+  return rows.map(({ driver, stop }) => {
+    const hasCoordinates = hasRouteCoordinates(stop);
+    if (hasCoordinates) {
+      return {
+        driver,
+        stop,
+        approximate: false,
+        left: hasCoordinateBounds ? 8 + ((Number(stop.longitude) - minLongitude) / longitudeRange) * 84 : 54,
+        top: hasCoordinateBounds ? 8 + ((maxLatitude - Number(stop.latitude)) / latitudeRange) * 84 : 46,
+      };
+    }
+    const base = ROUTE_ZONE_POSITIONS[stop.direction] || ROUTE_ZONE_POSITIONS['Central East'];
+    const occurrence = zoneCounts[stop.direction] || 0;
+    zoneCounts[stop.direction] = occurrence + 1;
+    const angle = occurrence * 2.4;
+    const radius = Math.min(10, 2 + Math.floor(occurrence / 2) * 1.4);
+    return {
+      driver,
+      stop,
+      approximate: true,
+      left: Math.max(5, Math.min(95, base.left + Math.cos(angle) * radius)),
+      top: Math.max(5, Math.min(95, base.top + Math.sin(angle) * radius)),
+    };
+  });
+}
+
+function OpenOrderRouteMap({ plan }) {
+  const drivers = plan?.drivers || [];
+  const markers = positionedRouteStops(drivers);
+  const lines = drivers.map((driver) => {
+    const points = markers.filter((marker) => marker.driver.driver_number === driver.driver_number);
+    return { driver, points: [{ left: 50, top: 50 }, ...points] };
+  });
+
+  return (
+    <section className="route-map-card" aria-labelledby="route-map-title">
+      <div className="panel-title compact-title">
+        <div>
+          <h3 id="route-map-title">All planned stops</h3>
+          <p>{markers.length} stop{markers.length === 1 ? '' : 's'} across {drivers.length} driver route{drivers.length === 1 ? '' : 's'}. Tap any stop to open it in Google Maps.</p>
+        </div>
+        <div className="route-map-time">
+          <span>Parallel finish estimate</span>
+          <strong>{formatNumber(plan.estimated_completion_minutes || 0)} min</strong>
+        </div>
+      </div>
+      <div className="route-map-layout">
+        <div className="route-map-canvas" role="group" aria-label={`Route map with ${markers.length} planned delivery stops`}>
+          <svg aria-hidden="true" className="route-map-lines" preserveAspectRatio="none" viewBox="0 0 100 100">
+            {lines.map(({ driver, points }) => (
+              <polyline
+                fill="none"
+                key={driver.driver_number}
+                points={points.map((point) => `${point.left},${point.top}`).join(' ')}
+                stroke={ROUTE_DRIVER_COLORS[(driver.driver_number - 1) % ROUTE_DRIVER_COLORS.length]}
+                strokeDasharray="2 1.5"
+                strokeWidth="0.65"
+              />
+            ))}
+          </svg>
+          {Object.entries(ROUTE_ZONE_POSITIONS).map(([zone, position]) => (
+            <span className="route-map-zone" key={zone} style={{ left: `${position.left}%`, top: `${position.top}%` }}>{zone}</span>
+          ))}
+          <span className="route-map-warehouse" style={{ left: '50%', top: '50%' }} title={plan.start_address}><Warehouse aria-hidden="true" size={17} /></span>
+          {markers.map(({ driver, stop, left, top, approximate }) => (
+            <a
+              aria-label={`Open order ${stop.woo_order_number || stop.woo_order_id || stop.order_id} in Google Maps`}
+              className={approximate ? 'route-map-stop approximate' : 'route-map-stop'}
+              href={routeStopSearchUrl(stop.address)}
+              key={`${driver.driver_number}-${stop.order_id}`}
+              rel="noreferrer"
+              style={{ background: ROUTE_DRIVER_COLORS[(driver.driver_number - 1) % ROUTE_DRIVER_COLORS.length], left: `${left}%`, top: `${top}%` }}
+              target="_blank"
+              title={`${driver.driver_label} · Stop ${stop.stop_sequence} · ${stop.address}`}
+            >
+              {stop.stop_sequence}
+            </a>
+          ))}
+          {!markers.length && <div className="map-empty">Choose open orders and build a route to plot the stops.</div>}
+        </div>
+        <div className="route-map-legend">
+          <div className="route-map-totals">
+            <Metric label="Assigned" value={plan.assigned_order_count ?? markers.length} />
+            <Metric label="Unassigned" value={plan.unassigned_order_count || 0} />
+            <Metric label="Driver time total" value={`${formatNumber(plan.total_estimated_duration_minutes || 0)} min`} />
+          </div>
+          {drivers.map((driver) => (
+            <article key={driver.driver_number}>
+              <i style={{ background: ROUTE_DRIVER_COLORS[(driver.driver_number - 1) % ROUTE_DRIVER_COLORS.length] }} />
+              <div><strong>{driver.driver_label}</strong><span>{driver.stop_count} stop{driver.stop_count === 1 ? '' : 's'} · {driver.estimated_duration_minutes || 0} min</span></div>
+            </article>
+          ))}
+          {plan.map?.missing_coordinate_count > 0 && <small>Outlined markers use their assigned direction zone until verified coordinates are available.</small>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
   const [form, setForm] = useState({
     startAddress: DEFAULT_ROUTE_START_ADDRESS,
@@ -10933,6 +11119,7 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
       .some((value) => String(value || '').toLocaleLowerCase().includes(query));
   });
   const allVisibleSelected = filteredOrders.length > 0 && filteredOrders.every((order) => selectedOrderIdSet.has(order.order_id));
+  const hasDirectionSelection = Object.values(driverDirections).some((directions) => directions.length > 0);
 
   useEffect(() => {
     if (!plan || initializedOrdersRef.current) return;
@@ -10947,7 +11134,10 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
 
   function updateDriverCount(value) {
     updateForm('driverCount', value);
-    setDriverDirections(defaultRouteDirectionAssignments(value));
+    const count = Math.max(1, Math.min(50, Number(value) || 1));
+    setDriverDirections((current) => Object.fromEntries(
+      Array.from({ length: count }, (_, index) => [index + 1, current[index + 1] || []]),
+    ));
   }
 
   function toggleOrder(orderId) {
@@ -10981,7 +11171,7 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
       return_to_start: form.returnToStart,
       order_ids: selectedOrderIds,
       assignment_method: form.assignmentMethod,
-      order_directions: selectedOrderIds.map((orderId) => ({ order_id: orderId, direction: orderDirections[orderId] || 'central' })),
+      order_directions: selectedOrderIds.map((orderId) => ({ order_id: orderId, direction: orderDirections[orderId] || 'Central East' })),
       direction_assignments: form.assignmentMethod === 'directions'
         ? Array.from({ length: normalizedDriverCount }, (_, index) => ({ driver_number: index + 1, directions: driverDirections[index + 1] || [] }))
         : [],
@@ -11021,6 +11211,7 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
 
   const drivers = plan?.drivers || [];
   const excludedOrders = plan?.excluded_orders || [];
+  const unassignedOrders = plan?.unassigned_orders || [];
 
   return (
     <section className="wide-panel open-order-route-planner" aria-labelledby="open-order-route-planner-title">
@@ -11028,9 +11219,9 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
         <div>
           <span className="route-planner-kicker"><Route aria-hidden="true" size={16} /> Live delivery planning</span>
           <h2 id="open-order-route-planner-title">Plan selected open orders</h2>
-          <p>Choose today’s deliveries, balance estimated workload across drivers, or assign North, South, East, West, and Central zones.</p>
+          <p>Choose today’s deliveries, balance estimated workload, or assign the ten delivery zones to specific drivers.</p>
         </div>
-        <button className="primary-button route-planner-submit" disabled={loading || !form.startAddress.trim() || selectedOrderIds.length === 0} onClick={buildPlan} type="button">
+        <button className="primary-button route-planner-submit" disabled={loading || !form.startAddress.trim() || selectedOrderIds.length === 0 || (form.assignmentMethod === 'directions' && !hasDirectionSelection)} onClick={buildPlan} type="button">
           <Route aria-hidden="true" size={18} />
           {loading ? 'Planning routes…' : `Plan ${selectedOrderIds.length} selected`}
         </button>
@@ -11079,6 +11270,7 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
               </fieldset>
             );
           })}
+          {!hasDirectionSelection && <small className="route-zone-help">Choose at least one direction for a driver to build this plan.</small>}
         </div>
       )}
 
@@ -11113,10 +11305,11 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
           <div className="summary-strip route-planner-summary">
             <Metric label="Open Orders" value={plan.total_open_orders} />
             <Metric label="Selected" value={plan.selected_order_count ?? plan.routable_order_count} />
+            <Metric label="Assigned" value={plan.assigned_order_count ?? plan.routable_order_count} />
             <Metric label="Drivers" value={plan.effective_driver_count} />
-            <Metric label="Need Address" value={plan.excluded_order_count} />
+            <Metric label="Finish Estimate" value={`${formatNumber(plan.estimated_completion_minutes || 0)} min`} />
           </div>
-          <div className="route-planner-note"><MapPin aria-hidden="true" size={17} /><span>{plan.assignment_method === 'directions' ? 'Orders are grouped using your driver direction assignments.' : 'Routes are balanced using estimated area and stop workload.'} {plan.estimate_basis || 'Google Maps supplies live driving directions after a link opens.'} Long runs are separated into mobile-safe parts.</span></div>
+          <OpenOrderRouteMap plan={plan} />
           {(plan.warnings || []).map((warning) => <div className="route-planner-warning" key={warning}><TriangleAlert aria-hidden="true" size={17} /><span>{warning}</span></div>)}
 
           {drivers.length > 0 ? (
@@ -11161,6 +11354,14 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
               </div>
             </details>
           )}
+          {unassignedOrders.length > 0 && (
+            <details className="route-excluded-orders">
+              <summary>{unassignedOrders.length} selected order{unassignedOrders.length === 1 ? '' : 's'} not assigned</summary>
+              <div>
+                {unassignedOrders.map((order) => <p key={`${order.order_id}-${order.reason_code}`}><strong>Order #{order.woo_order_number || order.order_id}</strong><span>{order.direction ? `${order.direction} · ` : ''}{order.reason}</span></p>)}
+              </div>
+            </details>
+          )}
         </>
       )}
     </section>
@@ -11168,6 +11369,7 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
 }
 
 function RoutesPage({
+  view = 'live',
   openOrderPlan,
   openOrderPlanLoading,
   openOrderPlanError,
@@ -11257,12 +11459,15 @@ function RoutesPage({
 
   return (
     <section className="content-panel routes-page">
-      <OpenOrderRoutePlanner plan={openOrderPlan} loading={openOrderPlanLoading} error={openOrderPlanError} onPlan={onPlanOpenOrders} />
+      {view === 'live' ? (
+        <OpenOrderRoutePlanner plan={openOrderPlan} loading={openOrderPlanLoading} error={openOrderPlanError} onPlan={onPlanOpenOrders} />
+      ) : (
+        <>
       <div className="wide-panel">
         <div className="panel-title">
           <div>
             <h2>Completed-order route records</h2>
-            <p>Create a saved draft after an order has been completed. This historical workflow stays separate from the live open-order planner above.</p>
+            <p>Create and review saved routes for completed orders without mixing them into today’s live planner.</p>
           </div>
           <div className="button-row compact">
             <button className="muted-button" onClick={() => onLoadCandidates(candidateFilters)} disabled={candidatesLoading} type="button">
@@ -11352,7 +11557,6 @@ function RoutesPage({
             </label>
           </div>
         </div>
-        <div className="csv-note">Eligible candidates are local orders in fulfilled or partially fulfilled status. Already-routed orders are hidden unless their route is cancelled.</div>
         {candidatesError && <div className="api-error">{candidatesError}</div>}
         {error && <div className="api-error">{error}</div>}
         {(candidatesLoading || loading) && <div className="loading-strip">Working with local routes...</div>}
@@ -11409,6 +11613,8 @@ function RoutesPage({
         />
       </div>
       <RouteDetailPanel route={detail} mapPayload={mapPayload} providerMessage={providerMessage} loading={loading} onSaveMetadata={onSaveMetadata} onReorderStops={onReorderStops} onSaveStop={onSaveStop} onProviderAction={onProviderAction} />
+        </>
+      )}
     </section>
   );
 }
@@ -11584,7 +11790,6 @@ function RouteDetailPanel({ route, mapPayload, providerMessage, loading, onSaveM
         </div>
         <button className="primary-button" disabled={loading} onClick={() => onSaveMetadata(route.id, meta)} type="button"><Save size={17} />Save Metadata</button>
       </div>
-      <div className="csv-note">Routing tools are local-only. No WooCommerce updates are made.</div>
       {providerMessage && <div className="success-strip">{providerMessage}</div>}
       <div className="button-row compact">
         <button className="muted-button" onClick={() => onProviderAction(route.id, 'geocode/preview')} type="button">Geocode Preview</button>
@@ -12070,7 +12275,6 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
           <Metric label="Live Test" value={status.staging_live_test_mode ? 'On' : 'Off'} />
           <Metric label="Last Sync" value={status.last_product_sync?.status || latestRun?.status || 'None'} />
         </div>
-        <div className="csv-note">Credentials are encrypted in Pongo backend storage and are never returned to the browser after saving.</div>
         {status.configured && status.message && <div className="csv-note">{status.message}</div>}
         {preview && <WooPreviewSummary preview={preview} />}
         {commitSummary && (
@@ -12113,7 +12317,6 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
           <Metric label="Server Reconciliation" value={reconciliation.healthy ? 'Healthy' : (reconciliation.degraded ? 'Needs review' : (reconciliation.enabled ? 'Attention' : 'Off'))} />
           <Metric label="Last Server Success" value={reconciliation.last_success_at ? formatDateTime(reconciliation.last_success_at) : 'None'} />
         </div>
-        <div className="csv-note">Order sync stores local order/order line snapshots and may safely auto-allocate active local orders. It does not write WooCommerce, update product stock, create stock movements, pick, fulfill, or route orders.</div>
         {status.configured && reconciliation.enabled && !reconciliation.healthy && (
           <div className="warning-strip">
             {reconciliation.message || 'Server order reconciliation needs attention.'}
@@ -12162,7 +12365,6 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
           <Metric label="Earliest Order" value={historyCoverage.earliest_order_at ? formatDateTime(historyCoverage.earliest_order_at) : 'None'} />
           <Metric label="Latest Order" value={historyCoverage.latest_order_at ? formatDateTime(historyCoverage.latest_order_at) : 'None'} />
         </div>
-        <div className="csv-note">Read-only by design: this uses WooCommerce GET requests and never allocates, picks, completes, routes, changes stock, or writes back. Active orders remain handled by the two-minute operational sync.</div>
         {historyImportActive && (
           <div className="loading-strip" role="status">
             Importing {historyImport.progress?.current_status === 'any' ? 'all order statuses' : (historyImport.progress?.current_status || 'orders')}, page {historyImport.progress?.next_page || 1}. The worker safely resumes after restarts; you can leave this page.
@@ -12619,7 +12821,6 @@ function WooRemapPanel({ candidates, candidatePagination = emptyServerPagination
         </div>
         <button className="muted-button" onClick={onRefresh} disabled={loading} type="button"><RefreshCw size={17} />Refresh Remap</button>
       </div>
-      <div className="csv-note">This only changes local connection metadata. Manual Pongo OS fields and quantities are preserved. For full SKU/barcode/name/brand search, use Items → Fix WooCommerce connections.</div>
       {message && <div className="success-strip">{message}</div>}
       <div className="receiving-form route-form">
         <div className="receiving-header-fields route-header-fields">
@@ -12865,6 +13066,10 @@ function getHeaderMeta(route, items) {
     const meta = settingsViewMeta[route.settingsView || 'connection'] || settingsViewMeta.connection;
     return { ...meta, tabs: pageMeta.settings.tabs };
   }
+  if (route.pageId === 'routes') {
+    const meta = routeSubpageMeta[route.routesView || 'live'] || routeSubpageMeta.live;
+    return { ...meta, tabs: pageMeta.routes.tabs };
+  }
   return pageMeta[route.pageId];
 }
 
@@ -12899,6 +13104,9 @@ function isTabActive(tab, index, route) {
   }
   if (route.pageId === 'settings' && tab.href) {
     return tab.href === `#/settings/${route.settingsView || 'connection'}`;
+  }
+  if (route.pageId === 'routes' && tab.href) {
+    return tab.href === `#/routes/${route.routesView || 'live'}`;
   }
   return index === 0;
 }

@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 
-RouteDirection = Literal["north", "south", "east", "west", "central"]
+RouteDirection = Literal["N", "S", "E", "W", "NE", "NW", "SE", "SW", "Central East", "Central West"]
 
 
 class RouteCandidateRead(BaseModel):
@@ -63,6 +63,14 @@ class OpenOrderRoutePlanRequest(BaseModel):
     def validate_driver_assignments(self):
         if any(assignment.driver_number > self.driver_count for assignment in self.direction_assignments):
             raise ValueError("Direction assignments must reference one of the requested drivers.")
+        if self.order_ids is not None and len(set(self.order_ids)) != len(self.order_ids):
+            raise ValueError("Each selected order may appear only once.")
+        if len({assignment.driver_number for assignment in self.direction_assignments}) != len(self.direction_assignments):
+            raise ValueError("Each driver may have only one direction assignment.")
+        if any(len(set(assignment.directions)) != len(assignment.directions) for assignment in self.direction_assignments):
+            raise ValueError("A driver's direction assignment may not contain duplicate zones.")
+        if len({candidate.order_id for candidate in self.order_directions}) != len(self.order_directions):
+            raise ValueError("Each order may have only one direction override.")
         return self
 
 
@@ -73,7 +81,7 @@ class OpenOrderDirectionOverride(BaseModel):
 
 class DriverDirectionAssignment(BaseModel):
     driver_number: int = Field(ge=1, le=50)
-    directions: list[RouteDirection] = Field(default_factory=list, max_length=5)
+    directions: list[RouteDirection] = Field(default_factory=list, max_length=10)
 
 
 class OpenOrderRouteCandidate(BaseModel):
@@ -85,6 +93,9 @@ class OpenOrderRouteCandidate(BaseModel):
     address: str
     postal_area: str | None = None
     direction: RouteDirection
+    latitude: float | None = None
+    longitude: float | None = None
+    coordinate_source: str | None = None
 
 
 class OpenOrderRoutePlanStop(BaseModel):
@@ -94,16 +105,25 @@ class OpenOrderRoutePlanStop(BaseModel):
     woo_order_number: str | None = None
     local_status: str | None = None
     customer_name: str | None = None
+    customer_email: str | None = None
     customer_phone: str | None = None
+    order_total: float | None = None
     address: str
     postal_area: str | None = None
     direction: RouteDirection
+    latitude: float | None = None
+    longitude: float | None = None
+    coordinate_source: str | None = None
 
 
 class OpenOrderRouteExcludedOrder(BaseModel):
     order_id: int
     woo_order_number: str | None = None
     customer_name: str | None = None
+    address: str | None = None
+    postal_area: str | None = None
+    direction: RouteDirection | None = None
+    reason_code: str = "unavailable"
     reason: str
 
 
@@ -127,6 +147,13 @@ class DriverOpenOrderRoutePlan(BaseModel):
     google_maps_links: list[GoogleMapsRouteLink] = Field(default_factory=list)
 
 
+class OpenOrderRouteMapSummary(BaseModel):
+    provider: str
+    configured: bool
+    coordinate_count: int = 0
+    missing_coordinate_count: int = 0
+
+
 class OpenOrderRoutePlanResponse(BaseModel):
     start_address: str
     requested_driver_count: int
@@ -135,13 +162,20 @@ class OpenOrderRoutePlanResponse(BaseModel):
     available_order_count: int
     selected_order_count: int
     routable_order_count: int
+    assigned_order_count: int
+    unassigned_order_count: int
     excluded_order_count: int
     return_to_start: bool
     assignment_method: str
     estimate_basis: str
+    total_estimated_duration_minutes: int = 0
+    estimated_completion_minutes: int = 0
+    zones: list[RouteDirection] = Field(default_factory=list)
+    map: OpenOrderRouteMapSummary
     available_orders: list[OpenOrderRouteCandidate] = Field(default_factory=list)
     drivers: list[DriverOpenOrderRoutePlan] = Field(default_factory=list)
     excluded_orders: list[OpenOrderRouteExcludedOrder] = Field(default_factory=list)
+    unassigned_orders: list[OpenOrderRouteExcludedOrder] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -230,7 +264,13 @@ class RouteRead(BaseModel):
     route_name: str | None = None
     driver_name: str | None = None
     vehicle_name: str | None = None
+    start_address: str | None = None
+    end_address: str | None = None
     total_stops: int
+    total_distance: float | None = None
+    estimated_duration_minutes: int | None = None
+    map_provider: str | None = None
+    optimization_status: str | None = None
     created_by: str | None = None
     created_at: datetime
     finalized_at: datetime | None = None

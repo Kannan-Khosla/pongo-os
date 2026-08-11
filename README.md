@@ -49,13 +49,13 @@ Implemented locally:
 - Fulfillment/completion report
 - Completed orders export
 - SKU Orders report
-- Selectable open-order delivery planning from the Pongo warehouse, balanced by estimated workload or assigned North/South/East/West/Central zones across 1–50 drivers, with shareable Google Maps direction links plus local completed-order route records
+- Selectable open-order delivery planning from the Pongo warehouse, balanced by estimated workload or explicitly assigned N/S/E/W/NE/NW/SE/SW/Central East/Central West zones across 1–50 drivers, with a responsive all-stop overview, shareable Google Maps navigation links, and separate completed-route records
 - Cookie-based staff login plus an isolated read-only demo role with mock data only
 - Immutable, hash-verified report runs with interactive dashboards, CSV/PDF, Google Sheets, and audited email sharing
 - Resumable background full-catalog WooCommerce stock-sync jobs with progress, retry, resume, and cancel controls
 
 Not implemented yet:
-- Embedded map rendering, address geocoding, or traffic-aware route optimization provider calls
+- Provider-backed street-map tiles, address geocoding, or traffic-aware route optimization calls
 - Supplier management, purchase orders, delivery issue logs, customer notifications, and shipping labels
 
 ## Safety Boundaries
@@ -237,6 +237,10 @@ Current local build now includes:
   and adjustment. Items and every Inventory subpage also provide an on-demand
   phone-camera scanner for QR codes and product barcodes. Pick Orders uses
   manual per-line quantities and does not require barcode scanning.
+- Barcode scans try the captured value and its single-leading-zero alternate;
+  SKU identity remains exact. Manual inventory edits accept one non-negative
+  final quantity (including zero), keep allocation safeguards, and audit a
+  default reason when staff leave the optional reason blank.
 - Inventory is organized into sidebar subpages: All Inventory, Inventory by Location, Low Stock, Expiring Stock, Par Level, and Stock Movements. Transfer UI is hidden and is not part of the active frontend workflow.
 - Expanded read-only reports: inventory valuation, low stock/reorder, stock movement ledger, item activity, location utilization, margin by SKU, receiving cost, and adjustment/damage/loss.
 - Verified reporting workspace with 17 immutable, hash-audited report types,
@@ -260,10 +264,10 @@ Current local build now includes:
 
 Still intentionally delayed:
 - Granular staff RBAC beyond the isolated demo role.
-- Production deployment and the live WooCommerce credential/webhook contract check.
+- Live WooCommerce credential/webhook contract checks outside the deployed application.
 - Purchase orders and supplier management.
 - Shipping labels, customer notifications, delivery issue logs,
-  return-to-inventory workflows, embedded maps, address geocoding, and
+  return-to-inventory workflows, provider-backed street-map tiles, address geocoding, and
   traffic-aware route optimization provider calls.
 
 ## Demo Account

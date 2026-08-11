@@ -129,6 +129,15 @@ def test_cycle_count_by_barcode_works(client):
     assert response.status_code == 200
 
 
+def test_cycle_count_barcode_matches_single_leading_zero_alternate(client):
+    setup_cycle_item_and_location(client, sku="CC-ZERO", barcode="123456789012", in_stock=10)
+    payload = cycle_payload(lines=[{"barcode": "0123456789012", "counted_quantity": 9}])
+
+    response = client.post("/api/cycle-counts/commit", json=payload)
+
+    assert response.status_code == 200, response.text
+
+
 def test_cycle_count_sku_and_barcode_conflict_rejects_full_count(client):
     setup_cycle_item_and_location(client, sku="CC-SKU", barcode="BAR-1", in_stock=10)
     seed_item(client, sku="OTHER-SKU", Barcode="BAR-2")

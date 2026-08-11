@@ -397,6 +397,13 @@ write WooCommerce.
 
 Transfer and adjustment commit bodies may include `idempotency_key`.
 
+Each adjustment line must provide `new_quantity`, the absolute final location
+quantity. Delta-style `quantity_change` input is rejected. `new_quantity`
+accepts zero; `reason` is optional and blank values are normalized to
+`Manual stock adjustment` in the audit record.
+The commit still rejects negative stock and any final quantity below the
+location's allocated quantity.
+
 `GET /api/inventory/transfers` and `GET /api/inventory/adjustments` accept
 `page` (default `1`) and `page_size` (default `50`, maximum `100`). Their
 existing filters are applied before PostgreSQL calculates the exact `total`.
@@ -2328,22 +2335,25 @@ Request body:
 - `return_to_start`
 - `order_ids` (optional list of at most 5,000 local order IDs)
 - `assignment_method` (`equal_time` or `directions`)
-- `order_directions` (optional per-order North/South/East/West/Central corrections)
+- `order_directions` (optional per-order corrections using `N`, `S`, `E`, `W`,
+  `NE`, `NW`, `SE`, `SW`, `Central East`, or `Central West`)
 - `direction_assignments` (driver numbers with zero or more assigned directions)
 
 `equal_time` uses a deterministic delivery-area and stop-workload estimate to
 minimize the estimated duration spread while keeping postal areas together when
 possible. It does not claim live Google travel or traffic time. `directions`
-supports North, South, East, West, and Central; each driver may receive several
-directions and each direction may be shared by several drivers. Every selected
-order appears at most once. Orders missing a street plus city/postal code are
-returned in `excluded_orders` with an actionable reason rather than silently
-omitted.
+supports the ten exact zones above; each driver may receive several zones and
+each zone may be shared. When assignments are supplied, the backend never adds
+another zone implicitly. Every selected order appears exactly once in a driver
+plan or in `unassigned_orders` with a reason. Orders missing a street plus
+city/postal code are returned in `excluded_orders` with an actionable reason.
 
-The response includes `available_orders`, `available_order_count`,
-`selected_order_count`, `estimate_basis`, per-stop `direction`, and each
-driver's assigned `directions` and `estimated_duration_minutes`. IDs that are no
-longer eligible are safely skipped with a warning.
+The response includes `available_orders`, selected/assigned/unassigned counts,
+`estimate_basis`, `total_estimated_duration_minutes`, parallel
+`estimated_completion_minutes`, map coordinate coverage, per-stop direction,
+contact/address/total snapshots, and each driver's assigned directions and
+estimated duration. IDs that are no longer eligible are safely skipped with a
+warning.
 
 Each driver includes ordered stop snapshots and one or more shareable Google
 Maps direction URLs. Delivery links contain at most four stops so the three
@@ -2524,6 +2534,12 @@ scanner commits are local only and create stock movement/audit records through
 the existing stock services. Scanner receiving, positive stock adjustments,
 and positive cycle-count results rerun FIFO allocation; scanner previews remain
 read-only.
+
+Product scan matching evaluates the captured barcode both as entered and with
+exactly one leading zero added or removed. SKU matching remains exact; if the
+barcode variants identify more than one item, the scan fails closed instead of
+guessing. Manual adjustment reasons are optional and receive the standard
+audited default when omitted.
 
 ## Expanded Reports
 

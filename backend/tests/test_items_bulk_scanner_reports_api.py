@@ -229,6 +229,52 @@ def test_bulk_receiving_and_scanner_fail_closed_for_duplicate_barcode(client):
     assert scanner.status_code == 409
 
 
+def test_scanner_lookup_matches_barcode_zero_alternate_but_not_sku_alternate(client):
+    setup_stock_item(client, sku="ZERO-SCAN", barcode="012345678901", location="ZERO-SCAN-LOC")
+    seed_item(client, sku="0987654321098", Description="SKU only must stay exact")
+
+    matched = client.get("/api/scanner/inventory/lookup", params={"scan_input": "12345678901"})
+    sku_only = client.get("/api/scanner/inventory/lookup", params={"scan_input": "987654321098"})
+    locations = client.get("/api/inventory/locations", params={"search": "12345678901"}).json()["rows"]
+    summary = client.get("/api/inventory/summary/by-location", params={"search": "12345678901"}).json()
+    received = client.post(
+        "/api/scanner/receiving/scan/commit",
+        json={
+            "idempotency_key": "zero-barcode-receive",
+            "scan_input": "12345678901",
+            "warehouse": "Main Warehouse",
+            "inventory_location": "ZERO-SCAN-LOC",
+            "quantity": 1,
+        },
+    )
+
+    assert matched.status_code == 200
+    assert matched.json()["item"]["sku"] == "ZERO-SCAN"
+    assert sku_only.json()["matched"] is False
+    assert [row["sku"] for row in locations] == ["ZERO-SCAN"]
+    assert summary["total_items"] == 1
+    assert received.status_code == 200, received.text
+
+
+def test_scanner_lookup_fails_closed_when_zero_alternate_is_ambiguous(client):
+    seed_item(client, sku="ZERO-AMBIGUOUS", Barcode="012345678901")
+    seed_item(client, sku="PLAIN-AMBIGUOUS", Barcode="12345678901")
+
+    response = client.get("/api/scanner/inventory/lookup", params={"scan_input": "12345678901"})
+
+    assert response.status_code == 409
+    assert "multiple" in response.text.lower()
+
+
+def test_scanner_numeric_input_never_falls_back_to_database_id(client):
+    item = seed_item(client, sku="PK-FALLBACK-GUARD", Barcode="PK-FALLBACK-BAR")
+
+    response = client.get("/api/scanner/inventory/lookup", params={"scan_input": str(item["id"])})
+
+    assert response.status_code == 200
+    assert response.json()["matched"] is False
+
+
 def test_bulk_receiving_transfer_and_adjustment_idempotency(client):
     item = setup_stock_item(client, sku="IDEMP-STOCK", barcode="IDEMP-STOCK-BAR", location="IDEMP-A", in_stock=10, allocated=1)
     seed_location(client, code="IDEMP-B", name="IDEMP-B")
@@ -271,7 +317,7 @@ def test_bulk_receiving_transfer_and_adjustment_idempotency(client):
         "adjustment_type": "correction",
         "reason": "Idempotency check",
         "created_by": "pytest",
-        "lines": [{"item_id": item["id"], "inventory_item_location_id": destination["id"], "quantity_change": -1}],
+        "lines": [{"item_id": item["id"], "inventory_item_location_id": destination["id"], "new_quantity": 2}],
     }
     first_adjustment = client.post("/api/inventory/adjustments", json=adjustment_payload)
     replay_adjustment = client.post("/api/inventory/adjustments", json=adjustment_payload)
@@ -285,6 +331,71 @@ def test_bulk_receiving_transfer_and_adjustment_idempotency(client):
     rows = client.get("/api/inventory/locations", params={"item_id": item["id"]}).json()["rows"]
     assert sum(row["in_stock"] for row in rows) == 11
     assert next(row for row in rows if row["inventory_location"] == "IDEMP-B")["in_stock"] == 2
+
+
+def test_manual_stock_adjustment_sets_absolute_zero_and_defaults_reason(client):
+    item = setup_stock_item(client, sku="ABSOLUTE-STOCK", barcode="ABSOLUTE-STOCK-BAR", in_stock=10, allocated=0)
+    location = client.get("/api/inventory/locations", params={"item_id": item["id"]}).json()["rows"][0]
+
+    legacy_delta = client.post(
+        "/api/inventory/adjustments",
+        json={
+            "idempotency_key": "legacy-stock-delta",
+            "adjustment_type": "manual_decrease",
+            "lines": [{"item_id": item["id"], "inventory_item_location_id": location["id"], "quantity_change": -10}],
+        },
+    )
+    assert legacy_delta.status_code == 422
+
+    response = client.post(
+        "/api/inventory/adjustments",
+        json={
+            "idempotency_key": "absolute-stock-zero",
+            "adjustment_type": "manual_decrease",
+            "lines": [
+                {
+                    "item_id": item["id"],
+                    "inventory_item_location_id": location["id"],
+                    "new_quantity": 0,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["reason"] == "Manual stock adjustment"
+    assert response.json()["lines"][0]["old_quantity"] == 10
+    assert response.json()["lines"][0]["new_quantity"] == 0
+    assert response.json()["lines"][0]["quantity_change"] == -10
+    updated = client.get("/api/inventory/locations", params={"item_id": item["id"]}).json()["rows"][0]
+    assert updated["in_stock"] == 0
+    movement = client.get("/api/stock-movements", params={"item_id": item["id"], "movement_type": "adjustment_decrease"}).json()["movements"][0]
+    assert movement["reason"] == "Manual stock adjustment"
+    assert movement["quantity_delta"] == -10
+
+
+def test_absolute_stock_adjustment_cannot_drop_below_allocated(client):
+    item = setup_stock_item(client, sku="ALLOCATED-STOCK", barcode="ALLOCATED-STOCK-BAR", in_stock=10, allocated=3)
+    location = client.get("/api/inventory/locations", params={"item_id": item["id"]}).json()["rows"][0]
+
+    response = client.post(
+        "/api/inventory/adjustments",
+        json={
+            "idempotency_key": "absolute-stock-below-allocated",
+            "adjustment_type": "manual_decrease",
+            "lines": [
+                {
+                    "item_id": item["id"],
+                    "inventory_item_location_id": location["id"],
+                    "new_quantity": 2,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    updated = client.get("/api/inventory/locations", params={"item_id": item["id"]}).json()["rows"][0]
+    assert updated["in_stock"] == 10
 
 
 def test_scanner_lookup_receiving_cycle_transfer_adjustment(client):
@@ -314,8 +425,8 @@ def test_scanner_lookup_receiving_cycle_transfer_adjustment(client):
     assert transfer.status_code == 200
 
     no_reason = client.post("/api/scanner/adjustments/preview", json={"scan_input": "SCAN-001", "warehouse": "Main Warehouse", "inventory_location": "SCAN-02", "quantity_change": -1})
-    assert no_reason.json()["can_commit"] is False
-    adjustment = client.post("/api/scanner/adjustments/commit", json={"idempotency_key": "scanner-adjustment", "scan_input": "SCAN-001", "warehouse": "Main Warehouse", "inventory_location": "SCAN-02", "quantity_change": -1, "reason": "Damage", "adjustment_type": "damage"})
+    assert no_reason.json()["can_commit"] is True
+    adjustment = client.post("/api/scanner/adjustments/commit", json={"idempotency_key": "scanner-adjustment", "scan_input": "SCAN-001", "warehouse": "Main Warehouse", "inventory_location": "SCAN-02", "quantity_change": -1, "adjustment_type": "damage"})
     assert adjustment.status_code == 200
 
 

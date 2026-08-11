@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.receipts import Receipt, ReceiptItem
 from app.services.calculations import calculate_inventory_value
+from app.services.item_identifiers import barcode_scan_candidates
 from app.services.location_inventory import find_item_location, get_or_create_item_location, lock_inventory_stock, receive_to_location, to_decimal
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
 from app.services.receiving import receipt_to_detail
@@ -27,15 +28,28 @@ def resolve_receiving_item(db: Session, line: dict[str, Any]) -> tuple[Inventory
         if item is None:
             return None, "Item ID does not match an existing item; receiving was blocked."
         resolved[item.id] = item
-    candidates = [value for value in [line.get("sku"), line.get("barcode"), line.get("scan_input")] if value]
-    for value in candidates:
-        matches = list(db.scalars(
-            select(InventoryItem).where(
-                or_(
-                    InventoryItem.sku == str(value),
-                    InventoryItem.barcode == str(value),
-                )
+    candidates = [
+        ("sku", line.get("sku")),
+        ("barcode", line.get("barcode")),
+        ("scan", line.get("scan_input")),
+    ]
+    for candidate_type, value in candidates:
+        if not value:
+            continue
+        normalized = str(value).strip()
+        if not normalized:
+            continue
+        if candidate_type == "sku":
+            predicate = InventoryItem.sku == normalized
+        elif candidate_type == "barcode":
+            predicate = InventoryItem.barcode.in_(barcode_scan_candidates(normalized))
+        else:
+            predicate = or_(
+                InventoryItem.sku == normalized,
+                InventoryItem.barcode.in_(barcode_scan_candidates(normalized)),
             )
+        matches = list(db.scalars(
+            select(InventoryItem).where(predicate)
         ).all())
         if len(matches) > 1:
             return None, "SKU or Barcode matches multiple existing items; receiving was blocked."

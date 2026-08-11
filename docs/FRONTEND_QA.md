@@ -44,6 +44,10 @@ Use this checklist before calling a Pongo Inventory OS frontend pass complete.
 - Barcode scanners are treated as keyboard input across Pongo OS. Search and
   filter text fields that have Apply/Search/Refresh actions should submit on
   Enter so staff can scan a SKU/barcode directly into the current page.
+- Inventory suggestions close on Enter and remain closed until the query is
+  edited, even if a delayed suggestion response arrives or the input refocuses.
+- Product barcode scans must find a stored code with or without one leading
+  zero; SKU matching remains exact and ambiguous barcode variants show no item.
 - Items and every Inventory subpage provide an on-demand phone-camera scanner
   for QR, UPC, EAN, and Code 128 values. It must prefer the rear camera,
   require HTTPS outside local development, stop the camera when closed, and
@@ -61,6 +65,9 @@ Use this checklist before calling a Pongo Inventory OS frontend pass complete.
 - Items detail keeps stock-changing actions routed to receiving, adjustment,
   or cycle count workflows. Transfer UI is hidden from active frontend
   workflows.
+- Edit Current Stock has one `Final Stock Quantity` field. Zero is valid, the
+  value is an absolute replacement rather than a delta, reason is optional,
+  and the old/new/difference/allocated preview remains visible.
 - Inventory uses sidebar subpages, not top tabs: All Inventory, Inventory by
   Location, Low Stock, Expiring Stock, Par Level, and Stock Movements.
 - Orders uses Zenventory-style sidebar sub-navigation. Open Orders, Allocate,
@@ -77,6 +84,13 @@ Use this checklist before calling a Pongo Inventory OS frontend pass complete.
 - Orders sidebar subpage links update the route and active state immediately on
   one click. Each subpage loads only its own required data, and stale Open
   Orders responses must not overwrite the Pick Orders queue.
+- Shared suggestion/action menus render in the document body, remain above
+  dialogs, reposition on scroll/resize, flip above triggers when needed, and
+  stay inside the visual viewport at phone widths.
+- Routes exposes separate Live Planner and Completed Routes subpages. Direction
+  mode presents exactly ten zones, never checks West when East is chosen, and
+  blocks planning until at least one explicit zone is assigned. The live route
+  overview, stop links, summaries, and tables must not widen the page at 390 px.
 - Allocate paginates Orders by exception line and Items by complete item group.
   Item totals and affected-order drill-downs must never be split by a line-page
   boundary; its export always contains the complete applied filter.

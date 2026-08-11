@@ -17,6 +17,7 @@ from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryIt
 from app.models.orders import OrderItem
 from app.models.picks import PickLine
 from app.models.receipts import ReceiptItem
+from app.services.item_identifiers import barcode_scan_candidates
 from app.services.location_inventory import get_or_create_item_location, lock_inventory_stock, recalculate_item_location, recalculate_item_totals, to_decimal
 
 
@@ -115,7 +116,10 @@ ITEM_BULK_TEXT_LIMITS = {
 
 def item_keyword_predicates(query: str) -> list:
     return [
-        or_(*(column.ilike(f"%{keyword}%") for column in ITEM_SEARCH_COLUMNS))
+        or_(
+            *(column.ilike(f"%{keyword}%") for column in ITEM_SEARCH_COLUMNS),
+            InventoryItem.barcode.in_(barcode_scan_candidates(keyword)),
+        )
         for keyword in query.split()
     ]
 
@@ -375,22 +379,29 @@ def search_items(db: Session, *, q: str | None = None, sku: str | None = None, b
         if term:
             contains = f"%{term}%"
             prefix = f"{term}%"
+            barcode_candidates = barcode_scan_candidates(term)
             ordering.insert(
                 0,
                 case(
                     (InventoryItem.sku.ilike(prefix), 0),
-                    (InventoryItem.sku.ilike(contains), 1),
-                    (InventoryItem.barcode.ilike(prefix), 2),
-                    (InventoryItem.barcode.ilike(contains), 3),
-                    (InventoryItem.woo_name.ilike(contains), 4),
-                    (InventoryItem.description.ilike(contains), 4),
-                    else_=5,
+                    (InventoryItem.barcode.in_(barcode_candidates), 1),
+                    (InventoryItem.sku.ilike(contains), 2),
+                    (InventoryItem.barcode.ilike(prefix), 3),
+                    (InventoryItem.barcode.ilike(contains), 4),
+                    (InventoryItem.woo_name.ilike(contains), 5),
+                    (InventoryItem.description.ilike(contains), 5),
+                    else_=6,
                 ),
             )
     if sku:
         statement = statement.where(InventoryItem.sku.ilike(f"%{sku}%"))
     if barcode:
-        statement = statement.where(InventoryItem.barcode.ilike(f"%{barcode}%"))
+        statement = statement.where(
+            or_(
+                InventoryItem.barcode.ilike(f"%{barcode}%"),
+                InventoryItem.barcode.in_(barcode_scan_candidates(barcode)),
+            )
+        )
     if brand:
         statement = statement.where(InventoryItem.brand == brand)
     if category:

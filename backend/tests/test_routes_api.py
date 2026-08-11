@@ -1,11 +1,13 @@
 import csv
 from datetime import datetime, timezone
+from decimal import Decimal
 from io import StringIO
 from urllib.parse import parse_qs, urlparse
 
 from sqlalchemy.orm import Session
 
 from app.models.orders import Order
+from app.models.routes import Route, RouteStop
 from tests.test_fulfillments_api import picked_order
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
@@ -133,11 +135,11 @@ def test_open_order_route_planner_only_routes_selected_orders(client):
 
 
 def test_open_order_route_planner_assigns_direction_zones_to_requested_drivers(client):
-    north = seed_open_delivery_order(client, 1, postal_code="T5X 1A1")
+    north = seed_open_delivery_order(client, 1, postal_code="T5Z 1A1")
     south = seed_open_delivery_order(client, 2, postal_code="T6X 1A1")
-    east = seed_open_delivery_order(client, 3, postal_code="T6A 1A1")
+    east = seed_open_delivery_order(client, 3, postal_code="T6B 1A1")
     west = seed_open_delivery_order(client, 4, postal_code="T5P 1A1")
-    central = seed_open_delivery_order(client, 5, postal_code="T5J 1A1")
+    central_east = seed_open_delivery_order(client, 5, postal_code="T5J 1A1")
 
     response = client.post(
         "/api/routes/open-orders/plan",
@@ -145,8 +147,8 @@ def test_open_order_route_planner_assigns_direction_zones_to_requested_drivers(c
             "driver_count": 2,
             "assignment_method": "directions",
             "direction_assignments": [
-                {"driver_number": 1, "directions": ["north", "east"]},
-                {"driver_number": 2, "directions": ["south", "west", "central"]},
+                {"driver_number": 1, "directions": ["N", "E"]},
+                {"driver_number": 2, "directions": ["S", "W", "Central East"]},
             ],
         },
     )
@@ -155,9 +157,151 @@ def test_open_order_route_planner_assigns_direction_zones_to_requested_drivers(c
     body = response.json()
     assert body["assignment_method"] == "directions"
     assert {stop["order_id"] for stop in body["drivers"][0]["stops"]} == {north, east}
-    assert {stop["order_id"] for stop in body["drivers"][1]["stops"]} == {south, west, central}
-    assert body["drivers"][0]["directions"] == ["north", "east"]
-    assert body["drivers"][1]["directions"] == ["south", "west", "central"]
+    assert {stop["order_id"] for stop in body["drivers"][1]["stops"]} == {south, west, central_east}
+    assert body["drivers"][0]["directions"] == ["N", "E"]
+    assert body["drivers"][1]["directions"] == ["S", "W", "Central East"]
+
+
+def test_open_order_route_planner_exposes_exact_ten_zone_partition(client):
+    expected_zones = ["N", "S", "E", "W", "NE", "NW", "SE", "SW", "Central East", "Central West"]
+    postal_codes = ["T5Z 1A1", "T6X 1A1", "T6B 1A1", "T5P 1A1", "T5A 1A1", "T5X 1A1", "T6K 1A1", "T6W 1A1", "T5J 1A1", "T5K 1A1"]
+    expected_by_order = {
+        seed_open_delivery_order(client, index, postal_code=postal_code): zone
+        for index, (zone, postal_code) in enumerate(zip(expected_zones, postal_codes, strict=True), start=1)
+    }
+
+    response = client.post("/api/routes/open-orders/plan", json={"driver_count": 1})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["zones"] == expected_zones
+    assert {candidate["order_id"]: candidate["direction"] for candidate in body["available_orders"]} == expected_by_order
+
+
+def test_direction_assignment_never_auto_adds_an_unassigned_zone(client):
+    east = seed_open_delivery_order(client, 1, postal_code="T6B 1A1")
+    west = seed_open_delivery_order(client, 2, postal_code="T5P 1A1")
+
+    response = client.post(
+        "/api/routes/open-orders/plan",
+        json={
+            "driver_count": 1,
+            "order_ids": [east, west],
+            "assignment_method": "directions",
+            "direction_assignments": [{"driver_number": 1, "directions": ["E"]}],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["drivers"][0]["directions"] == ["E"]
+    assert [stop["order_id"] for stop in body["drivers"][0]["stops"]] == [east]
+    assert body["selected_order_count"] == 2
+    assert body["routable_order_count"] == 2
+    assert body["assigned_order_count"] == 1
+    assert body["unassigned_order_count"] == 1
+    assert body["unassigned_orders"] == [
+        {
+            "order_id": west,
+            "woo_order_number": "DEL-002",
+            "customer_name": "Delivery Customer 2",
+            "address": "102 Delivery Street, Edmonton, AB, T5P 1A1, CA",
+            "postal_area": "T5P",
+            "direction": "W",
+            "reason_code": "zone_not_assigned",
+            "reason": "Zone W was not assigned to a driver.",
+        }
+    ]
+    assert body["selected_order_count"] == body["assigned_order_count"] + body["unassigned_order_count"]
+
+
+def test_overlapping_zone_assignments_assign_each_order_exactly_once(client):
+    order_ids = [seed_open_delivery_order(client, index, postal_code=f"T6B 1A{index}") for index in range(1, 5)]
+
+    response = client.post(
+        "/api/routes/open-orders/plan",
+        json={
+            "driver_count": 2,
+            "order_ids": order_ids,
+            "assignment_method": "directions",
+            "direction_assignments": [
+                {"driver_number": 1, "directions": ["E"]},
+                {"driver_number": 2, "directions": ["E"]},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assigned_ids = [stop["order_id"] for driver in body["drivers"] for stop in driver["stops"]]
+    assert len(assigned_ids) == len(set(assigned_ids)) == len(order_ids)
+    assert set(assigned_ids) == set(order_ids)
+    assert body["assigned_order_count"] == len(order_ids)
+    assert body["unassigned_orders"] == []
+
+
+def test_selected_orders_are_assigned_once_or_explicitly_reported(client):
+    valid = seed_open_delivery_order(client, 1, postal_code="T6B 1A1")
+    incomplete = seed_open_delivery_order(client, 2, address=False)
+    missing = 999_999
+
+    response = client.post(
+        "/api/routes/open-orders/plan",
+        json={"driver_count": 1, "order_ids": [valid, incomplete, missing]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["selected_order_count"] == 3
+    assert body["assigned_order_count"] == 1
+    assert body["unassigned_order_count"] == 2
+    assert {row["order_id"]: row["reason_code"] for row in body["unassigned_orders"]} == {
+        incomplete: "incomplete_address",
+        missing: "not_open_or_missing",
+    }
+    assert body["selected_order_count"] == body["assigned_order_count"] + body["unassigned_order_count"]
+
+
+def test_open_order_plan_exposes_secret_free_map_and_time_data(client):
+    geocoded_order_id = seed_open_delivery_order(client, 1, postal_code="T6B 1A1")
+    seed_open_delivery_order(client, 2, postal_code="T5P 1A1")
+    with Session(client.test_engine) as db:
+        route = Route(route_number="RT-HISTORIC", status="cancelled", total_stops=1)
+        db.add(route)
+        db.flush()
+        db.add(
+            RouteStop(
+                route_id=route.id,
+                order_id=geocoded_order_id,
+                stop_sequence=1,
+                address_1="101 Delivery Street",
+                city="Edmonton",
+                state="AB",
+                zip="T6B 1A1",
+                country="CA",
+                latitude=Decimal("53.5000000"),
+                longitude=Decimal("-113.5000000"),
+            )
+        )
+        db.commit()
+
+    response = client.post("/api/routes/open-orders/plan", json={"driver_count": 2})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    durations = [driver["estimated_duration_minutes"] for driver in body["drivers"]]
+    assert body["total_estimated_duration_minutes"] == sum(durations)
+    assert body["estimated_completion_minutes"] == max(durations)
+    assert body["map"]["coordinate_count"] == 1
+    assert body["map"]["missing_coordinate_count"] == 1
+    assert set(body["map"]) == {"provider", "configured", "coordinate_count", "missing_coordinate_count"}
+    assert not ({"api_key", "key", "token", "secret"} & set(body["map"]))
+    geocoded_stop = next(
+        stop for driver in body["drivers"] for stop in driver["stops"] if stop["order_id"] == geocoded_order_id
+    )
+    assert geocoded_stop["latitude"] == 53.5
+    assert geocoded_stop["longitude"] == -113.5
+    assert geocoded_stop["coordinate_source"] == "existing_route_stop"
 
 
 def test_open_order_route_planner_segments_long_runs_for_mobile_google_maps(client):
@@ -190,7 +334,7 @@ def test_open_order_route_planner_validates_driver_count_and_handles_no_orders(c
         json={
             "driver_count": 1,
             "assignment_method": "directions",
-            "direction_assignments": [{"driver_number": 2, "directions": ["north"]}],
+            "direction_assignments": [{"driver_number": 2, "directions": ["N"]}],
         },
     )
 
@@ -326,17 +470,31 @@ def test_route_list_detail_export_finalize_cancel(client, monkeypatch):
     fulfilled = fulfilled_route_order(client, monkeypatch)
     commit = client.post("/api/routes/commit", json=route_payload([fulfilled["id"]]))
     route_id = commit.json()["route_id"]
+    with Session(client.test_engine) as db:
+        route = db.get(Route, route_id)
+        route.start_address = "5855 99 Street NW, Edmonton, AB"
+        route.end_address = "5855 99 Street NW, Edmonton, AB"
+        route.total_distance = Decimal("12.34")
+        route.estimated_duration_minutes = 27
+        route.map_provider = "google"
+        route.optimization_status = "manual"
+        db.commit()
 
     listing = client.get("/api/routes")
     detail = client.get(f"/api/routes/{route_id}")
     exported = client.get(f"/api/routes/{route_id}/export")
     finalized = client.post(f"/api/routes/{route_id}/finalize")
-    cancelled = client.post(f"/api/routes/{route_id}/cancel")
 
     assert listing.status_code == 200
     assert listing.json()["total"] == 1
     assert detail.status_code == 200
     assert len(detail.json()["stops"]) == 1
+    assert detail.json()["start_address"] == "5855 99 Street NW, Edmonton, AB"
+    assert detail.json()["end_address"] == "5855 99 Street NW, Edmonton, AB"
+    assert detail.json()["total_distance"] == 12.34
+    assert detail.json()["estimated_duration_minutes"] == 27
+    assert detail.json()["map_provider"] == "google"
+    assert detail.json()["optimization_status"] == "manual"
     assert exported.status_code == 200
     header = exported.text.splitlines()[0].split(",")
     assert header == [
@@ -362,6 +520,10 @@ def test_route_list_detail_export_finalize_cancel(client, monkeypatch):
     rows = list(csv.DictReader(StringIO(exported.text)))
     assert rows[0]["Route Number"] == commit.json()["route_number"]
     assert finalized.json()["status"] == "finalized"
+    completed_routes = client.get("/api/routes", params={"status": "finalized"}).json()
+    assert completed_routes["total"] == 1
+    assert completed_routes["routes"][0]["estimated_duration_minutes"] == 27
+    cancelled = client.post(f"/api/routes/{route_id}/cancel")
     assert cancelled.json()["status"] == "cancelled"
     cancelled_detail = client.get(f"/api/routes/{route_id}").json()
     assert len(cancelled_detail["stops"]) == 1

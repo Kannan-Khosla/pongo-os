@@ -164,6 +164,19 @@ def test_keyword_search_matches_partial_skus_and_words_across_item_fields(client
     assert [item["SKU"] for item in catalog_results] == ["70002"]
 
 
+def test_item_search_matches_single_leading_zero_barcode_alternate(client):
+    seed_item(client, sku="ZERO-BARCODE", Barcode="012345678901", Description="Leading zero barcode")
+    seed_item(client, sku="PLAIN-BARCODE", Barcode="987654321098", Description="Plain barcode")
+
+    without_zero = client.get("/api/items/search", params={"q": "12345678901"}).json()["items"]
+    with_zero = client.get("/api/items/search", params={"q": "0987654321098"}).json()["items"]
+    catalog = client.get("/api/items", params={"search": "0987654321098"}).json()["items"]
+
+    assert [item["sku"] for item in without_zero] == ["ZERO-BARCODE"]
+    assert [item["sku"] for item in with_zero] == ["PLAIN-BARCODE"]
+    assert [item["SKU"] for item in catalog] == ["PLAIN-BARCODE"]
+
+
 def test_list_items_supports_server_pagination_and_sorting(client):
     for index in range(21):
         seed_item(client, sku=f"PAGE-{index:02d}")

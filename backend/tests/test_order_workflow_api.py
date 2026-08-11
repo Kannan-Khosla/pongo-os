@@ -369,7 +369,7 @@ def test_stock_adjustment_retries_fifo_waiting_orders_and_auto_endpoint_is_idemp
             "adjustment_type": "manual_increase",
             "reason": "FIFO restock test",
             "created_by": "pytest",
-            "lines": [{"item_id": item["id"], "inventory_item_location_id": location["id"], "quantity_change": 3}],
+            "lines": [{"item_id": item["id"], "inventory_item_location_id": location["id"], "new_quantity": 3}],
         },
     )
 

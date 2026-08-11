@@ -25,6 +25,7 @@ from app.schemas.picks import (
     PickScannerLine,
     PickScannerOrder,
 )
+from app.services.item_identifiers import sku_or_barcode_matches_scan
 from app.services.location_inventory import lock_inventory_stock, reduce_pick_from_location, restore_unpick_to_location
 from app.services.order_workflow import (
     add_audit_event,
@@ -94,19 +95,16 @@ def commit_scan(db: Session, order_id: int, payload: PickScanRequest) -> PickSca
         if existing_lines:
             matched_line = db.get(OrderItem, existing_lines[0].order_line_id)
             expected_quantity = sum((line.quantity_to_pick for line in existing_lines), Decimal("0"))
-            scan_values = {
-                str(value or "").strip().casefold()
-                for value in (
-                    matched_line.sku if matched_line else None,
-                    matched_line.barcode if matched_line else None,
-                    matched_line.inventory_item.sku if matched_line and matched_line.inventory_item else None,
-                    matched_line.inventory_item.barcode if matched_line and matched_line.inventory_item else None,
-                )
-                if value
-            }
             if (
                 matched_line is None
-                or (payload.sku_or_barcode or "").strip().casefold() not in scan_values
+                or not (
+                    sku_or_barcode_matches_scan(matched_line.sku, matched_line.barcode, payload.sku_or_barcode)
+                    or sku_or_barcode_matches_scan(
+                        matched_line.inventory_item.sku if matched_line.inventory_item else None,
+                        matched_line.inventory_item.barcode if matched_line.inventory_item else None,
+                        payload.sku_or_barcode,
+                    )
+                )
                 or to_decimal(payload.quantity) != expected_quantity
             ):
                 raise IdempotencyConflict("Idempotency key was already used with a different scan request.")
@@ -604,7 +602,7 @@ def persist_rejected_pick(db: Session, mutation, response: PickCommitResponse) -
 
 
 def find_scan_line(db: Session, order_id: int, payload: PickScanRequest) -> tuple[OrderItem | None, PickScanResponse | None]:
-    query = (payload.sku_or_barcode or "").strip().casefold()
+    query = (payload.sku_or_barcode or "").strip()
     if not query:
         return None, PickScanResponse(status="rejected", errors=["Scan value is required."])
     if payload.quantity <= 0:
@@ -619,10 +617,17 @@ def find_scan_line(db: Session, order_id: int, payload: PickScanRequest) -> tupl
     matches = [
         line
         for line in order.items
-        if query in {str(line.sku or "").casefold(), str(line.barcode or "").casefold(), str(line.inventory_item.sku if line.inventory_item else "").casefold(), str(line.inventory_item.barcode if line.inventory_item else "").casefold()}
+        if sku_or_barcode_matches_scan(line.sku, line.barcode, query)
+        or sku_or_barcode_matches_scan(
+            line.inventory_item.sku if line.inventory_item else None,
+            line.inventory_item.barcode if line.inventory_item else None,
+            query,
+        )
     ]
     if not matches:
         return None, PickScanResponse(status="not_found", errors=["Scanned SKU/barcode is not in this order."])
+    if len(matches) > 1:
+        return None, PickScanResponse(status="rejected", errors=["Scan matches multiple order lines; choose the item line manually."])
     line = matches[0]
     if line.matched_status != "matched":
         return line, PickScanResponse(status="rejected", matched_line=scanner_line(line), errors=["Matched order line is not linked to a local item."])

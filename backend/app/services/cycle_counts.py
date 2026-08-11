@@ -17,6 +17,7 @@ from app.schemas.cycle_counts import (
     CycleCountRequest,
 )
 from app.services.calculations import calculate_inventory_value
+from app.services.item_identifiers import barcode_scan_candidates
 from app.services.location_inventory import cycle_count_location, find_item_location
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
 
@@ -278,8 +279,16 @@ def add_variance_totals(totals: dict[str, Decimal | int], variance_quantity: Dec
 def find_cycle_count_item(db: Session, item_id: int | None, sku: str | None, barcode: str | None) -> tuple[InventoryItem | None, list[str]]:
     errors: list[str] = []
     id_match = db.get(InventoryItem, item_id) if item_id is not None else None
-    sku_match = db.scalars(select(InventoryItem).where(InventoryItem.sku == sku)).first() if sku else None
-    barcode_match = db.scalars(select(InventoryItem).where(InventoryItem.barcode == barcode)).first() if barcode else None
+    sku_matches = list(db.scalars(select(InventoryItem).where(InventoryItem.sku == sku)).all()) if sku else []
+    barcode_matches = list(
+        db.scalars(
+            select(InventoryItem).where(InventoryItem.barcode.in_(barcode_scan_candidates(barcode)))
+        ).all()
+    ) if barcode else []
+    if len(sku_matches) > 1 or len(barcode_matches) > 1:
+        return None, ["SKU or Barcode matches multiple existing items; cycle count was blocked."]
+    sku_match = sku_matches[0] if sku_matches else None
+    barcode_match = barcode_matches[0] if barcode_matches else None
     matches = [match for match in [id_match, sku_match, barcode_match] if match is not None]
     if len({match.id for match in matches}) > 1:
         errors.append("Item identifiers match different existing items.")

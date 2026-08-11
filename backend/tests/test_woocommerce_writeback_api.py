@@ -763,7 +763,7 @@ def test_manual_stock_adjustment_writes_changed_item_to_woo(client, monkeypatch)
             "adjustment_type": "manual_increase",
             "reason": "Physical count correction",
             "created_by": "pytest",
-            "lines": [{"item_id": item["id"], "inventory_item_location_id": location["id"], "quantity_change": 2}],
+            "lines": [{"item_id": item["id"], "inventory_item_location_id": location["id"], "new_quantity": 8}],
         },
     )
 

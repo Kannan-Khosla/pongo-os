@@ -109,6 +109,19 @@ def test_pick_scanner_match_no_match_and_overpick(client, monkeypatch):
     assert movements["total"] == 1
 
 
+def test_pick_scanner_barcode_matches_single_leading_zero_alternate(client, monkeypatch):
+    order, _ = allocated_order(client, monkeypatch, sku="PICK-ZERO", barcode="012345678901", quantity=2)
+    payload = {"idempotency_key": "pick-zero-barcode", "sku_or_barcode": "12345678901", "quantity": 1}
+
+    first = client.post(f"/api/picks/orders/{order['id']}/scan/commit", json=payload)
+    replay = client.post(f"/api/picks/orders/{order['id']}/scan/commit", json=payload)
+
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "posted"
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == first.json()
+
+
 def test_sku_orders_report_rows_summary_export(client, monkeypatch):
     order, _ = allocated_order(client, monkeypatch, sku="SKU-ORDERS", barcode="SKU-ORDERS-BAR", quantity=3)
     client.post(f"/api/picks/orders/{order['id']}/scan/commit", json={"idempotency_key": "orders-scan-pick", "sku_or_barcode": "SKU-ORDERS", "quantity": 1})

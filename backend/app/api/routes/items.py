@@ -21,6 +21,7 @@ from app.services.item_import import create_payload_from_row, parse_items_csv, p
 from app.services.auth import authenticated_actor
 from app.services.item_enrichment import commit_enrichment, enrichment_csv, parse_enrichment_csv, preview_enrichment
 from app.services.item_control import build_item_activity, build_item_detail, commit_bulk_item_update, item_keyword_predicates, preview_bulk_item_update, search_items
+from app.services.item_identifiers import barcode_scan_candidates
 from app.services.item_import_workflow import field_specs_for, safe_csv_value
 from app.services.items import CANONICAL_ITEM_COLUMNS, apply_calculated_fields, apply_item_payload, item_to_csv_row
 from app.services.location_inventory import ensure_default_item_location_from_item, get_or_create_item_location, lock_inventory_stock, recalculate_item_location, recalculate_item_totals, set_default_item_location, set_opening_balance, to_decimal
@@ -81,7 +82,7 @@ def build_items_statement(
     if sku:
         statement = statement.where(InventoryItem.sku == sku)
     if barcode:
-        statement = statement.where(InventoryItem.barcode == barcode)
+        statement = statement.where(InventoryItem.barcode.in_(barcode_scan_candidates(barcode)))
     if category:
         statement = statement.where(InventoryItem.category == category)
     if warehouse:

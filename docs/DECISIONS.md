@@ -530,6 +530,30 @@ geocoding, dispatch tracking, or proof of delivery. ADR-022 and ADR-025 still
 govern saved completed-order route records and disabled paid-provider
 integrations.
 
+Amendment (2026-08-11): direction mode now uses the exact ten-zone set `N`,
+`S`, `E`, `W`, `NE`, `NW`, `SE`, `SW`, `Central East`, and `Central West`.
+Explicit driver assignments are authoritative; uncovered selected orders are
+returned as unassigned rather than silently borrowing another zone. The live
+planner and completed-order route records are separate subpages. A responsive
+in-app overview plots verified coordinates when present and otherwise marks the
+declared zone; Google Maps URLs remain the navigation authority.
+
+## ADR-038: Scan Identity and Manual Stock Corrections Fail Safe
+
+Decision: barcode-driven product lookup tries the scanned string and its
+single-leading-zero alternate while keeping SKU comparison exact. Multiple
+barcode matches return no item. Manual Inventory corrections send an absolute
+`new_quantity`, including zero; reason text is optional and the backend supplies
+the standard audit reason when blank.
+
+Reason: legacy catalog barcodes are inconsistent about one leading zero, while
+physical counts are final facts rather than increments. Centralizing both rules
+prevents every scanner and stock-edit screen from implementing its own variant.
+
+Safety: ambiguous scans never guess, final quantity cannot be negative or below
+allocated stock, every accepted change still creates adjustment and movement
+audit rows, and existing idempotency/locking/writeback behavior is unchanged.
+
 ## ADR-037: Demo Access Uses an Isolated Mock Database
 
 Decision: authenticate demo accounts in the normal user store, then rebind the

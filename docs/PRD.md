@@ -161,7 +161,7 @@ Workflow:
 2. System shows item and current stock.
 3. Staff enters counted stock.
 4. System calculates difference.
-5. Reason is required when difference is not zero.
+5. Staff may add a reason; otherwise the system records a default audited reason.
 6. Submit updates stock and creates a stock movement/audit row.
 7. WooCommerce stock update may happen later only when linked and safe.
 

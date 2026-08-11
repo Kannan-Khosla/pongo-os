@@ -26,6 +26,7 @@ from app.schemas.inventory import (
 )
 from app.services.inventory_reports import INVENTORY_BY_LOCATION_COLUMNS, get_inventory_items, item_to_inventory_by_location_row, query_inventory_summary
 from app.services.auth import authenticated_actor
+from app.services.item_identifiers import barcode_scan_candidates
 from app.services.location_inventory import create_committed_adjustment_batch, create_committed_transfer_batch, recalculate_item_location
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
 from app.services.stock_mutation_guard import IdempotencyConflict
@@ -426,6 +427,7 @@ def build_inventory_location_statement(
             or_(
                 InventoryItem.sku.ilike(pattern),
                 InventoryItem.barcode.ilike(pattern),
+                InventoryItem.barcode.in_(barcode_scan_candidates(search)),
                 InventoryItem.description.ilike(pattern),
                 InventoryItem.brand.ilike(pattern),
                 InventoryItem.category.ilike(pattern),
@@ -438,7 +440,7 @@ def build_inventory_location_statement(
     if sku:
         statement = statement.where(InventoryItem.sku == sku)
     if barcode:
-        statement = statement.where(InventoryItem.barcode == barcode)
+        statement = statement.where(InventoryItem.barcode.in_(barcode_scan_candidates(barcode)))
     if item_id is not None:
         statement = statement.where(InventoryItemLocation.inventory_item_id == item_id)
     if item_ids is not None:

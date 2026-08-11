@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.services.calculations import calculate_inventory_value, calculate_sellable, calculate_storage_volume, calculate_under_par
+from app.services.item_identifiers import barcode_matches_scan, barcode_scan_candidates
 
 INVENTORY_DATA_QUALITY_FILTERS = {
     "missing_barcode",
@@ -105,7 +106,9 @@ def item_matches_inventory_search(item: InventoryItem, search: str) -> bool:
         item.warehouse,
         item.inventory_location,
     )
-    return any(query in str(value).casefold() for value in values if value is not None)
+    return barcode_matches_scan(item.barcode, search) or any(
+        query in str(value).casefold() for value in values if value is not None
+    )
 
 
 def item_matches_data_quality(item: InventoryItem, filters: set[str]) -> bool:
@@ -151,6 +154,7 @@ def query_inventory_summary(db: Session, **filters) -> dict[str, object]:
         statement = statement.where(or_(
             InventoryItem.sku.ilike(pattern, escape="\\"),
             InventoryItem.barcode.ilike(pattern, escape="\\"),
+            InventoryItem.barcode.in_(barcode_scan_candidates(search)),
             InventoryItem.woo_name.ilike(pattern, escape="\\"),
             InventoryItem.description.ilike(pattern, escape="\\"),
             InventoryItem.category.ilike(pattern, escape="\\"),

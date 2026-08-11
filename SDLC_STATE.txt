@@ -2,13 +2,13 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-10T21:37:15Z
+LAST UPDATED: 2026-08-11T18:29:01Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Demo-only Mythodus branding deployed and verified on production
-CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
+CURRENT PHASE: Scanner, stock, overlay, and route hardening verified locally; production release authorized and pending
+CURRENT RELEASE RECOMMENDATION: READY TO RELEASE
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Production is running Heroku v50 at commit 4dc8bcd with schema revision 20260810_0038. The isolated demo account remains verified with mock-only data and blocked writes. Every demo workspace now shows a top-right “Powered By: Mythodus” lockup with the supplied logo and Newsreader Bold in the global header; staff sessions remain unchanged. The live Items and Routes workspaces rendered the lockup without browser warnings or errors.
+Production remains on Heroku v50 at commit 4dc8bcd with schema revision 20260810_0038 while the authorized release candidate is verified locally. Product barcode scans now try the captured value and its one-leading-zero alternate without weakening exact SKU matching. Manual stock edits accept one absolute final quantity, including zero, and optional reason text while preserving allocation, idempotency, audit, FIFO, and configured WooCommerce writeback safeguards. Shared suggestion/action menus close and position correctly, neutral instructional banners are removed, Live and Completed Routes are separate subpages, and the live planner uses ten explicit zones plus a responsive all-stop overview and Google Maps navigation links.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -18,11 +18,17 @@ Demo success means a prospect can sign in, browse all major workspaces with cred
 === 04. REQUIREMENTS AND ACCEPTANCE CRITERIA ===
 REQ-SCAN-001: Items and every Inventory subpage expose the existing rear-camera QR/barcode scanner with manual fallback.
 REQ-SCAN-002: A decoded or manually entered scanner value immediately executes the current page search and does not mutate stock.
+REQ-SCAN-003: Product barcode scan matching evaluates the captured code and its single-leading-zero alternate; SKU matching remains exact and ambiguous barcode matches fail closed.
+REQ-SEARCH-001: Pressing Enter commits an inventory search and keeps suggestions closed until the query changes, including after delayed responses or refocus.
+REQ-STOCK-001: Manual Inventory stock edits accept a non-negative absolute final quantity, including zero; reason is optional, allocated stock remains protected, and every change remains audited.
+REQ-OVERLAY-001: Shared suggestions and action menus render above dialogs and scrolled content, flip/clamp to the visual viewport, and introduce no phone-width page overflow.
 REQ-ROUTE-001: Planner defaults to 5855 99 Street NW, Edmonton, AB and accepts 1–50 drivers plus optional return-to-start.
 REQ-ROUTE-002: Every non-historical operational open order with a complete address is assigned to exactly one driver; incomplete addresses are explicitly listed.
 REQ-ROUTE-003: Assignments keep postal areas together where possible and balance stop counts deterministically.
 REQ-ROUTE-004: Every driver receives shareable Google Maps driving links usable on mobile; long routes are continuous numbered parts with no more than three intermediate waypoints.
 REQ-ROUTE-005: Planning is read-only and does not persist routes or mutate orders, WooCommerce, inventory, or stock audit data.
+REQ-ROUTE-006: Direction mode exposes exactly N, S, E, W, NE, NW, SE, SW, Central East, and Central West; explicit assignments are never silently expanded and every selected order is assigned once or returned unassigned with a reason.
+REQ-ROUTE-007: Live planning and completed-order route records are separate subpages. The live page plots all assigned stops in a responsive overview with stop counts, total driver time, parallel finish estimate, and per-stop/driver Google Maps navigation.
 REQ-QA-001: Focused and full backend/frontend tests, frontend build, diff checks, documentation, and available browser verification pass before deployment.
 REQ-STOCKCSV-001: The item import workspace exposes an Override stock levels outcome with a schema-owned CSV template.
 REQ-STOCKCSV-002: Each row identifies an existing item by exact SKU and a non-negative exact In stock quantity; warehouse/location optionally narrow an existing active assignment and zero is valid.
@@ -40,8 +46,8 @@ REQ-DEMO-005: A guarded operator script creates or rotates a demo user without e
 REQ-DEMO-006: Every authenticated demo page shows a top-right “Powered By: Mythodus” lockup in Newsreader Bold with the supplied logo; staff pages do not show it, and the lockup remains usable at phone widths.
 
 === 05. SCOPE, NON-GOALS, CONSTRAINTS, AND ASSUMPTIONS ===
-IN SCOPE: phone camera scanner entry points on Items/Inventory; open-order query and deterministic driver assignment; missing-address reporting; keyless Google Maps URL construction; native share/clipboard fallback; responsive UI; tests and docs.
-NON-GOALS: configuration changes, embedded map tiles, paid Google Routes API, traffic-aware optimization, server-side geocoding/address correction, route persistence, dispatch tracking, driver accounts, proof of delivery, WooCommerce writes, and stock changes.
+IN SCOPE: phone/hardware scanner normalization across operational lookup paths; absolute audited manual stock corrections; shared search/overlay behavior; ten-zone open-order planning; missing/unassigned reporting; keyless Google Maps URL construction; responsive all-stop overview; separate completed-route records; tests and docs.
+NON-GOALS: configuration changes, provider-backed street-map tiles, paid Google Routes API, traffic-aware optimization, server-side geocoding/address correction, persisted open-order plans, dispatch tracking, driver accounts, or proof of delivery.
 CONSTRAINTS: Frontend receives no map credentials. Google Maps URLs have mobile waypoint limits, so long routes must be segmented. Existing completed-order route records remain available as a separate historical workflow.
 ASSUMPTION: Operational open orders are the existing non-historical Woo processing/FooSales set and shipping address fields are the delivery authority.
 STOCK CSV IN SCOPE: CSV-only exact per-location stock overrides through the existing six-step item import workspace, validation/preview, audit movements, history, tests, and docs.
@@ -51,8 +57,9 @@ DEMO IN SCOPE: one demo role, isolated in-memory seeded data, centralized read/w
 DEMO NON-GOALS: multi-tenant organization isolation, granular staff roles, writable sandbox workflows, persistent per-demo customization, external OAuth/WooCommerce calls, or a public self-registration flow.
 
 === 06. SYSTEM, JOURNEY, AND DATA MAP ===
-Scanner journey: Items or Inventory -> Scan code -> rear camera or manual code -> existing local search -> matching item results.
-Route journey: Routes -> default warehouse/start + driver count -> POST /api/routes/open-orders/plan -> one read-only operational order query -> address validation -> postal-area sort -> balanced driver groups -> continuous Google Maps URLs -> open/share.
+Scanner journey: Items or Inventory -> hardware/rear-camera/manual code -> as-entered plus one-leading-zero barcode candidates -> exact/unique local match -> current search results; Enter then dismisses suggestions until editing resumes.
+Manual stock journey: Inventory action -> choose location -> enter final quantity -> old/new/difference/allocated preview -> optional confirmation reason -> one idempotent audited adjustment -> totals/FIFO/configured writeback follow existing services.
+Route journey: Routes / Live Planner -> select open orders -> default start + driver count -> equal-time or explicit ten-zone assignments -> POST /api/routes/open-orders/plan -> exactly-once assignment/unassigned reasons -> in-app stop overview -> continuous Google Maps URLs -> open/share. Routes / Completed Routes contains only the persisted completed-order workflow.
 Data boundaries: Order/customer/address snapshots travel from authenticated Pongo backend to the authenticated frontend. They are not sent to Google by the backend; Google receives addresses only when staff opens or shares a generated URL.
 Stock CSV journey: Items -> Import CSV -> Override stock levels -> upload/map columns -> review current/new/variance -> confirm -> one audited stock adjustment -> results/history. Quantity authority is the selected active inventory location; item totals remain derived by the existing location inventory service.
 Demo journey: operator creates demo user -> prospect signs in -> auth response identifies mock/read-only scope -> global header shows the Mythodus lockup on every workspace -> protected request session switches to the seeded demo database -> existing pages render fictional items, stock, orders, reports, and routes -> writes/integrations return a safe 403.
@@ -63,6 +70,11 @@ ADR-036A ACCEPTED: Deterministic postal-area sorting plus balanced contiguous gr
 ADR-036B ACCEPTED: Limit each mobile delivery link to four stops (three intermediate waypoints plus destination); start later parts at the previous destination.
 ADR-036C ACCEPTED: Keep this planner read-only and separate from saved completed-order route records.
 ADR-SCAN-001 ACCEPTED: Reuse MobileCodeScanner and the page's existing search pipeline instead of creating a second scanner/search backend.
+ADR-SCAN-002 ACCEPTED: Centralize the one-leading-zero barcode alternate and keep SKU matching exact; ambiguous barcode candidates fail closed.
+ADR-STOCK-001 ACCEPTED: Manual Inventory edits send `new_quantity` as the absolute final location quantity and normalize a blank reason to the standard audit reason.
+ADR-UI-001 ACCEPTED: One shared body-portal FloatingMenu owns suggestion/action positioning, visual-viewport clamping, and overlay z-order.
+ADR-ROUTE-001 ACCEPTED: Ten exact direction zones and explicit driver assignments are authoritative; uncovered selected orders are reported instead of reassigned.
+ADR-ROUTE-002 ACCEPTED: Use a credential-free plotted route overview with keyless Google Maps URLs; provider street tiles/geocoding remain disabled until securely configured and operationally justified.
 ADR-STOCKCSV-001 ACCEPTED: Reuse the item import workspace for mapping/preview/idempotency and the stock adjustment service for locks, totals, and audit movements; CSV In stock is an absolute location quantity, not a delta.
 ADR-STOCKCSV-002 ACCEPTED: SKU is the item identity; Warehouse and Inventory location narrow stock scope when present, while blank scope is resolved only when unambiguous or already matching. Allocated/Sellable remain derived operational fields.
 ADR-DEMO-001 ACCEPTED: Rebind the existing request-scoped SQLAlchemy session to a separately seeded SQLite database after authenticating the demo user. This centralizes isolation across all routers without duplicating pages or adding query filters.
@@ -90,6 +102,11 @@ ADR-DEMO-003 ACCEPTED: Render the Mythodus lockup once in the existing global to
 18. Commit, back up, deploy, migrate, and verify the authorized demo-access release. COMPLETED.
 19. Create and smoke-test the requested production demo account after receiving a compliant password. COMPLETED.
 20. Add, verify, and deploy demo-only Mythodus branding across every workspace. COMPLETED.
+21. Implement and test shared leading-zero barcode scan matching plus exact manual stock overrides. COMPLETED.
+22. Fix shared Enter-dismissed suggestions, overlay positioning, notice cleanup, and responsive behavior. COMPLETED.
+23. Implement exact ten-zone routing, map/time metadata, all-stop overview, and separate completed-route page. COMPLETED.
+24. Run full backend/frontend/build/browser/documentation release gates. COMPLETED.
+25. Back up PostgreSQL, commit/push the feature branch, deploy to Heroku, and run non-destructive production smoke checks. IN PROGRESS.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -102,6 +119,9 @@ WI-STOCKCSV-001 / P0 / RELEASED / Exact per-location stock override through item
 WI-STOCKCSV-002 / P0 / RELEASED / Full inventory export uploads directly; unchanged rows skip, safe blank locations resolve, exclusions/errors block the file, and changed rows commit in one locked audited transaction; deployed as Heroku v43.
 WI-DEMO-001 / P0 / RELEASED / Isolated read-only demo role with seeded fictional catalog, inventory, orders, operational history, route data, and guarded operator account creation; Heroku v49 at aab78e0.
 WI-DEMO-BRAND-001 / P1 / RELEASED / Global demo-only top-right Mythodus lockup with supplied logo, Newsreader Bold, staff-session exclusion, and responsive header layout; Heroku v50 at 4dc8bcd.
+WI-SCAN-STOCK-001 / P0 / VERIFIED / Shared one-leading-zero barcode matching, exact SKU boundary, ambiguity protection, absolute final-stock corrections, optional audited reason, and preserved allocation safeguards.
+WI-UI-OVERLAY-001 / P0 / VERIFIED / Enter-dismissed suggestions, shared viewport-aware body portal menus, neutral notice cleanup, and 390 px overflow verification.
+WI-ROUTE-004 / P0 / VERIFIED / Ten exact zones, authoritative explicit assignments, exactly-once/unassigned contract, responsive stop overview, time totals, Google navigation, and separate completed-route subpage.
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
@@ -121,6 +141,9 @@ RISK-DEMO-001 / CRITICAL / MITIGATED IN CODE: A demo query could expose producti
 RISK-DEMO-002 / HIGH / MITIGATED IN CODE: A demo action could mutate production or call an external service. Non-read requests fail closed outside the reviewed preview allowlist; all WooCommerce and Google Sheets routes are blocked before session rebinding.
 RISK-DEMO-003 / MEDIUM / ACCEPTED: The mock database is process-local and resets when a web process restarts. This is appropriate for a read-only demonstration; persistent writable demos remain out of scope.
 RISK-DEMO-004 / LOW / MITIGATED: Newsreader is loaded from Google Fonts; if that resource is unavailable, the lockup falls back to bold Georgia without breaking layout or navigation. The supplied logo is bundled with the application.
+RISK-SCAN-001 / HIGH / MITIGATED: Adding/removing one leading zero could match two catalog rows. All scanner resolvers return no item on multiple candidates; tests cover both directions and ambiguous failure.
+RISK-STOCK-001A / HIGH / MITIGATED: Treating a final quantity as a delta would corrupt physical counts. The UI sends `new_quantity`; the backend requires that absolute field, rejects `quantity_change`, accepts zero, locks stock, and preserves allocated-stock checks and audit movements.
+RISK-ROUTE-007 / MEDIUM / ACCEPTED: Route minutes and ungeocoded marker placement are deterministic operational estimates, not live traffic/geocoding. UI/API state the boundary; Google Maps calculates navigation only when staff opens a link.
 BLOCK-DEMO-001 / P0 / RESOLVED: The user supplied a compliant 12-character password; the guarded script created the production demo account without recording the password in source or lifecycle state.
 
 === 11. IMPLEMENTATION AND CHANGE LOG ===
@@ -140,6 +163,7 @@ BLOCK-DEMO-001 / P0 / RESOLVED: The user supplied a compliant 12-character passw
 2026-08-10: Created the authorized production demo account with the guarded operator script and completed an authenticated mock-only/read-only smoke test. The UI returned eight fictional items; POST /api/items returned 403; PostgreSQL confirmed one demo user and zero smoke-test item rows.
 2026-08-10: Added the supplied Mythodus logo and a demo-only “Powered By: Mythodus” Newsreader Bold lockup to the global top header. Added staff/demo rendering assertions and verified desktop plus 390 px layouts; no backend, database, authentication, or staff-interface behavior changed.
 2026-08-10: Committed and pushed 4dc8bcd, captured PostgreSQL backup b011, deployed Heroku v50, ran the unchanged Alembic release gate successfully, and verified health, web/worker dynos, demo Items/Routes branding, mock catalog continuity, and clean browser logs.
+2026-08-11: Implemented centralized barcode alternates across item, inventory, scanner, receiving, cycle count, and pick paths; exact absolute stock adjustment inputs with optional audit reason; shared Enter-dismissed suggestions and fixed overlay menus; ten-zone authoritative route assignments, time/map metadata, responsive stop overview, Google navigation, and separate completed-route page. No migration, dependency, credential, production data, or WooCommerce configuration change was made.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
 Final evidence:
@@ -163,21 +187,22 @@ Production demo-access evidence: Heroku v49 reports commit aab78e0; manual Postg
 Production demo-account evidence: the guarded one-off process exited successfully; login returned HTTP 200; the authenticated UI visibly identified mock-only, read-only demo scope; Items returned exactly eight fictional `DEMO-*` products rather than the production catalog; an attempted POST `/api/items` returned HTTP 403; PostgreSQL reported one demo user and zero rows for the blocked smoke-test SKU; browser warnings and errors were empty.
 Mythodus branding verification: all 148 frontend tests passed; the Vite production build passed with the existing large-chunk warning; `git diff --check` passed. The authenticated local demo rendered the supplied logo and “Powered By: Mythodus” in the global header on desktop and at 390 × 844 without crowding navigation or account controls. A staff-session regression assertion confirms the lockup is absent outside demo access.
 Production Mythodus evidence: Heroku v50 reports commit 4dc8bcd; PostgreSQL backup b011 completed before deployment; the release command exited 0 at existing schema head 20260810_0038; web and worker Basic dynos are up; `/health` returned HTTP 200. The authenticated demo Items page retained its eight fictional products, and both Items and Routes showed the global Mythodus lockup with the supplied logo and no browser warnings or errors.
+Current release-candidate evidence: full backend passed 525 tests with 10 PostgreSQL-only skips and the existing Starlette warning; full frontend passed 149 tests across seven files; the production build passed with the existing Vite chunk warning; `git diff --check` passed. Integrated disposable-database browser checks at 1440 × 900 and 390 × 844 proved no horizontal overflow on Live/Completed Routes or the stock modal, menu flip/clamp behavior, Enter-dismissed suggestions, a no-leading-zero scan finding the leading-zero barcode, and an absolute final-stock change from 0 to 5. The browser test used only fictional local data.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
 Database migration: production is at 20260810_0038; it adds `users.access_level` with `staff` default and a `staff|demo` check. The release migration completed transactionally.
-Release: production is Heroku v50 at commit 4dc8bcd. The authorized demo-only Mythodus branding is deployed and verified; there was no schema or configuration change.
-Recovery: Continuous Protection is enabled and manual predeployment backup b011 completed. Application rollback target is Heroku v49 at commit aab78e0; both versions use schema 20260810_0038.
+Release baseline: production is Heroku v50 at commit 4dc8bcd. The current authorized release candidate has no migration, dependency, or configuration change and has not yet been deployed.
+Recovery: Continuous Protection is enabled and backup b011 is the current baseline. A fresh manual backup is required immediately before this release. Both baseline and candidate use schema 20260810_0038.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
 
 === 14. OPERATIONS, OBSERVABILITY, AND SUPPORT READINESS ===
-The route endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Web and worker dynos are each running at one Basic dyno. Production UI and API smoke checks passed without browser console errors. Physical iPhone/Android camera permission and real barcode decoding still require device verification by Pongo staff.
+The route endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Web and worker dynos are each running at one Basic dyno. Physical iPhone/Android camera permission and real barcode decoding still require device verification by Pongo staff. Provider-backed tiles, geocoding, and live traffic remain disabled; the in-app overview uses verified stored coordinates when available and otherwise explicit zones.
 Stock CSV validation and local commit remain synchronous at current Pongo scale and use the existing import-size limits, database transaction, stock mutation lock, adjustment audit, and idempotency controls. When live WooCommerce writeback is enabled, the already-existing chunked stock-sync worker is queued after commit so remote API calls do not hold the import request open.
 Demo operations: accounts are created/rotated by `backend/scripts/create_demo_user.py`; passwords are prompted and never committed. Mock data is generated in memory on first demo request, so no cleanup job or customer-data retention policy is required.
 
 === 15. TECHNICAL DEBT AND DEFERRED WORK ===
-Deferred: road/traffic optimization, address validation/geocoding, embedded map preview, persisted dispatch plans, named drivers, per-driver acknowledgements, route completion/proof of delivery, and automated SMS/email sharing. Add only after Pongo validates the simple operational workflow and production measurements justify more infrastructure.
+Deferred: provider-backed street tiles, road/traffic optimization, address validation/geocoding, persisted open-order dispatch plans, named drivers, per-driver acknowledgements, route completion/proof of delivery, and automated SMS/email sharing. Add only after Pongo validates the simple operational workflow and production measurements justify more infrastructure.
 Deferred for stock CSV: changing allocated/sellable quantities, creating missing master data, background jobs, and customer-facing stock rollback. Add only with explicit requirements and tested operational rules.
 Known unrelated audit debt remains in PRODUCT_AUDIT.txt.
 Deferred for demo access: persistent writable sandboxes, tenant-specific demo datasets, self-service invitations, and granular staff permissions. Add only if the read-only sales demo proves insufficient.
@@ -187,11 +212,17 @@ Reused the existing scanner component and search flows, the operational order el
 For demo access, rebinding the existing request session provides one fail-closed isolation point for the whole backend and avoids demo branches in every service or a second frontend.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: No release action remains. Review the live demo presentation with stakeholders and rotate the demo password through the guarded script when needed.
-THEN: Re-run the demo/staff visibility regression after any future global-header or authentication change.
-APPROVAL STATE: The user explicitly authorized implementing and deploying the demo-only Mythodus branding on 2026-08-10. Deployment is complete; no password or credential is recorded in source control or lifecycle state.
+NEXT: Complete final independent diff reviews, commit and push the protected-workflow feature branch, capture a fresh production PostgreSQL backup, deploy the exact commit, run the unchanged Alembic gate, and verify health/auth/routes/inventory without mutating live stock or orders.
+THEN: Confirm the release/version/commit and retain v50 plus the fresh backup as rollback references.
+APPROVAL STATE: The user explicitly requested implementation on the main Pongo deployment and authorized deployment in this task. No credential is recorded in source control or lifecycle state.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
+--- DELIVERY RUN: 2026-08-11T18:29:01Z ---
+MODE: Release Readiness and Release
+SUMMARY: Barcode identity, absolute manual stock, shared overlay/search behavior, and ten-zone route/live-history UI hardening implemented and fully verified locally; production release authorized and pending.
+EVIDENCE: 525 backend tests passed with 10 skips; 149 frontend tests passed; production build and diff check passed; disposable local browser verification passed at desktop and 390 px without overflow or real-data mutation.
+NEXT ACTION: Complete independent review, commit/push the feature branch, create a fresh PostgreSQL backup, deploy, run the unchanged migration gate, and perform non-destructive production smoke checks.
+
 --- DELIVERY RUN: 2026-08-07T18:54:03Z ---
 MODE: Operate
 SUMMARY: One-click Google Sheets OAuth implemented, deployed, and verified on Pongo production.

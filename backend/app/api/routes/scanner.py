@@ -13,6 +13,7 @@ from app.models.scanner import ScannerEvent
 from app.services.bulk_receiving import commit_bulk_receipt, preview_bulk_receipt
 from app.services.auth import authenticated_actor
 from app.services.item_control import item_location_summary, item_summary
+from app.services.item_identifiers import barcode_scan_candidates
 from app.services.location_inventory import (
     create_committed_adjustment,
     create_committed_transfer,
@@ -55,20 +56,18 @@ def resolve_scan_item(db: Session, scan_input: str | None) -> InventoryItem | No
     exact_matches = list(
         db.scalars(
             select(InventoryItem)
-            .where(or_(InventoryItem.sku == value, InventoryItem.barcode == value))
+            .where(
+                or_(
+                    InventoryItem.sku == value,
+                    InventoryItem.barcode.in_(barcode_scan_candidates(value)),
+                )
+            )
             .order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())
         ).all()
     )
     if len(exact_matches) > 1:
         raise HTTPException(status_code=409, detail="Scan matches multiple inventory items; use a unique SKU or barcode.")
-    if exact_matches:
-        return exact_matches[0]
-    if value.isdigit() and (item := db.get(InventoryItem, int(value))) is not None:
-        return item
-    description_matches = list(db.scalars(select(InventoryItem).where(InventoryItem.description.ilike(f"%{value}%"))).all())
-    if len(description_matches) > 1:
-        raise HTTPException(status_code=409, detail="Scan matches multiple inventory items; use a unique SKU or barcode.")
-    return description_matches[0] if description_matches else None
+    return exact_matches[0] if exact_matches else None
 
 
 @router.get("/inventory/lookup")
@@ -231,8 +230,6 @@ def adjustment_scan_preview(payload: dict, db: Session = Depends(get_db)) -> dic
     virtual_location = False
     if row is None:
         virtual_location = True
-    if not payload.get("reason"):
-        errors.append("Adjustment reason is required.")
     current = (row.in_stock if row is not None else Decimal("0")) or Decimal("0")
     if payload.get("new_quantity") not in (None, ""):
         quantity_change = to_decimal(payload.get("new_quantity")) - current

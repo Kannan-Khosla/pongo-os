@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
@@ -16,6 +17,7 @@ from app.schemas.routes import (
     DriverOpenOrderRoutePlan,
     GoogleMapsRouteLink,
     OpenOrderRouteExcludedOrder,
+    OpenOrderRouteMapSummary,
     OpenOrderRouteCandidate,
     OpenOrderRoutePlanRequest,
     OpenOrderRoutePlanResponse,
@@ -43,15 +45,31 @@ ROUTE_ELIGIBLE_STATUSES = {"completed", "fulfilled", "partially_fulfilled"}
 DEFAULT_ROUTE_START_ADDRESS = "5855 99 Street NW, Edmonton, AB"
 GOOGLE_MAPS_DIRECTIONS_URL = "https://www.google.com/maps/dir/"
 GOOGLE_MAPS_MOBILE_DELIVERY_STOPS_PER_LINK = 4
-ROUTE_DIRECTIONS = ("north", "south", "east", "west", "central")
+ROUTE_DIRECTIONS = ("N", "S", "E", "W", "NE", "NW", "SE", "SW", "Central East", "Central West")
 DIRECTION_POSTAL_AREAS = {
-    "north": {"T5A", "T5B", "T5C", "T5E", "T5W", "T5X", "T5Y", "T5Z"},
-    "south": {"T6J", "T6K", "T6L", "T6N", "T6R", "T6T", "T6W", "T6X"},
-    "east": {"T6A", "T6B", "T6P", "T6S"},
-    "west": {"T5P", "T5R", "T5S", "T5T", "T5V", "T6M"},
-    "central": {"T5G", "T5H", "T5J", "T5K", "T5L", "T5M", "T5N", "T6C", "T6E", "T6G", "T6H"},
+    "N": {"T5G", "T5Z"},
+    "S": {"T6N", "T6X"},
+    "E": {"T6B", "T6P", "T6S"},
+    "W": {"T5P", "T5R", "T5S", "T5T"},
+    "NE": {"T5A", "T5B", "T5C", "T5W", "T5Y"},
+    "NW": {"T5E", "T5L", "T5V", "T5X", "T6V"},
+    "SE": {"T6K", "T6L", "T6T"},
+    "SW": {"T6J", "T6M", "T6R", "T6W"},
+    "Central East": {"T5H", "T5J", "T6A", "T6C", "T6E"},
+    "Central West": {"T5K", "T5M", "T5N", "T6G", "T6H"},
 }
-DIRECTION_DISPATCH_MINUTES = {"central": 8, "east": 15, "south": 18, "west": 20, "north": 22}
+DIRECTION_DISPATCH_MINUTES = {
+    "Central East": 8,
+    "Central West": 9,
+    "E": 15,
+    "W": 16,
+    "N": 18,
+    "S": 18,
+    "NE": 20,
+    "NW": 21,
+    "SE": 21,
+    "SW": 22,
+}
 ROUTE_CSV_COLUMNS = [
     "Route Number",
     "Route Date",
@@ -74,6 +92,17 @@ ROUTE_CSV_COLUMNS = [
 ]
 
 
+@dataclass(frozen=True)
+class OpenOrderRouteRow:
+    order: Order
+    address: str
+    postal_area: str
+    direction: str
+    latitude: float | None = None
+    longitude: float | None = None
+    coordinate_source: str | None = None
+
+
 def plan_open_order_routes(db: Session, payload: OpenOrderRoutePlanRequest) -> OpenOrderRoutePlanResponse:
     closed_local_statuses = COMPLETED_LOCAL_STATUSES | {"cancelled", "canceled", "failed", "refunded"}
     orders = list(
@@ -84,82 +113,120 @@ def plan_open_order_routes(db: Session, payload: OpenOrderRoutePlanRequest) -> O
                 ~func.coalesce(Order.completion_status, "").in_(("completed", "completed_without_picking")),
                 ~func.coalesce(Order.local_status, "").in_(tuple(closed_local_statuses)),
             )
+            .options(selectinload(Order.route_stops))
             .order_by(Order.date_created.asc().nullslast(), Order.id.asc())
         ).all()
     )
 
     direction_overrides = {candidate.order_id: candidate.direction for candidate in payload.order_directions}
-    available: list[tuple[Order, str, str, str]] = []
+    available: list[OpenOrderRouteRow] = []
     excluded: list[OpenOrderRouteExcludedOrder] = []
+    excluded_by_id: dict[int, OpenOrderRouteExcludedOrder] = {}
     for order in orders:
         address = order_shipping_address(order)
+        postal_area = order_postal_area(order)
+        direction = direction_overrides.get(order.id, order_route_direction(order))
         if not order.shipping_address_1 or not (order.shipping_city or order.shipping_zip):
-            excluded.append(
-                OpenOrderRouteExcludedOrder(
-                    order_id=order.id,
-                    woo_order_number=order.woo_order_number,
-                    customer_name=order.customer_name,
-                    reason="A street address plus city or postal code is required.",
-                )
+            candidate = OpenOrderRouteExcludedOrder(
+                order_id=order.id,
+                woo_order_number=order.woo_order_number,
+                customer_name=order.customer_name,
+                address=address or None,
+                postal_area=postal_area or None,
+                direction=direction,
+                reason_code="incomplete_address",
+                reason="A street address plus city or postal code is required.",
             )
+            excluded.append(candidate)
+            excluded_by_id[order.id] = candidate
             continue
+        latitude, longitude, coordinate_source = order_route_coordinates(order, address)
         available.append(
-            (
-                order,
-                address,
-                order_postal_area(order),
-                direction_overrides.get(order.id, order_route_direction(order)),
+            OpenOrderRouteRow(
+                order=order,
+                address=address,
+                postal_area=postal_area,
+                direction=direction,
+                latitude=latitude,
+                longitude=longitude,
+                coordinate_source=coordinate_source,
             )
         )
 
     available.sort(key=route_row_sort_key)
-    available_ids = {row[0].id for row in available}
+    available_ids = {row.order.id for row in available}
+    open_ids = {order.id for order in orders}
     selected_ids = available_ids if payload.order_ids is None else set(payload.order_ids)
-    routable = [row for row in available if row[0].id in selected_ids]
+    routable = [row for row in available if row.order.id in selected_ids]
     effective_driver_count = (
         payload.driver_count if payload.assignment_method == "directions" else min(payload.driver_count, len(routable))
     ) if routable else 0
     warnings: list[str] = []
+    unassigned_by_id: dict[int, OpenOrderRouteExcludedOrder] = {}
     if excluded:
         warnings.append(f"{len(excluded)} open order(s) were excluded because their delivery address is incomplete.")
-    missing_selected = selected_ids - available_ids
+    for order_id in selected_ids & set(excluded_by_id):
+        unassigned_by_id[order_id] = excluded_by_id[order_id]
+    missing_selected = selected_ids - open_ids
     if missing_selected:
         warnings.append(
-            f"{len(missing_selected)} selected order(s) are no longer open with a complete delivery address and were skipped."
+            f"{len(missing_selected)} selected order(s) are no longer open or no longer exist and were not assigned."
         )
+        for order_id in sorted(missing_selected):
+            unassigned_by_id[order_id] = OpenOrderRouteExcludedOrder(
+                order_id=order_id,
+                reason_code="not_open_or_missing",
+                reason="The selected order is no longer open or no longer exists.",
+            )
     if routable and payload.driver_count > len(routable):
         warnings.append(
             f"There are more drivers than selected orders, so some driver routes may be empty."
         )
 
     if payload.assignment_method == "directions":
-        driver_groups, assigned_directions = split_by_directions(
+        driver_groups, assigned_directions, direction_unassigned = split_by_directions(
             routable,
             effective_driver_count,
             payload.direction_assignments,
             payload.return_to_start,
             warnings,
         )
+        for row in direction_unassigned:
+            unassigned_by_id[row.order.id] = OpenOrderRouteExcludedOrder(
+                order_id=row.order.id,
+                woo_order_number=row.order.woo_order_number,
+                customer_name=row.order.customer_name,
+                address=row.address,
+                postal_area=row.postal_area or None,
+                direction=row.direction,
+                reason_code="zone_not_assigned",
+                reason=f"Zone {row.direction} was not assigned to a driver.",
+            )
     else:
         driver_groups = split_by_estimated_time(routable, effective_driver_count, payload.return_to_start)
-        assigned_directions = {index: {row[3] for row in rows} for index, rows in enumerate(driver_groups, start=1)}
+        assigned_directions = {index: {row.direction for row in rows} for index, rows in enumerate(driver_groups, start=1)}
 
     drivers: list[DriverOpenOrderRoutePlan] = []
     for driver_index, driver_orders in enumerate(driver_groups, start=1):
         stops = [
             OpenOrderRoutePlanStop(
                 stop_sequence=stop_sequence,
-                order_id=order.id,
-                woo_order_id=order.woo_order_id,
-                woo_order_number=order.woo_order_number,
-                local_status=order.local_status,
-                customer_name=order.customer_name,
-                customer_phone=order.shipping_phone or order.customer_phone,
-                address=address,
-                postal_area=postal_area or None,
-                direction=direction,
+                order_id=row.order.id,
+                woo_order_id=row.order.woo_order_id,
+                woo_order_number=row.order.woo_order_number,
+                local_status=row.order.local_status,
+                customer_name=row.order.customer_name,
+                customer_email=row.order.customer_email,
+                customer_phone=row.order.shipping_phone or row.order.customer_phone,
+                order_total=decimal_to_optional_float(row.order.total),
+                address=row.address,
+                postal_area=row.postal_area or None,
+                direction=row.direction,
+                latitude=row.latitude,
+                longitude=row.longitude,
+                coordinate_source=row.coordinate_source,
             )
-            for stop_sequence, (order, address, postal_area, direction) in enumerate(driver_orders, start=1)
+            for stop_sequence, row in enumerate(driver_orders, start=1)
         ]
         links = build_google_maps_route_links(
             start_address=payload.start_address.strip() or DEFAULT_ROUTE_START_ADDRESS,
@@ -183,33 +250,69 @@ def plan_open_order_routes(db: Session, payload: OpenOrderRoutePlanRequest) -> O
             )
         )
 
+    assigned_ids = [stop.order_id for driver in drivers for stop in driver.stops]
+    if len(assigned_ids) != len(set(assigned_ids)):
+        raise ValueError("Route planning assigned an order more than once.")
+    for order_id in selected_ids - set(assigned_ids) - set(unassigned_by_id):
+        unassigned_by_id[order_id] = OpenOrderRouteExcludedOrder(
+            order_id=order_id,
+            reason_code="not_assigned",
+            reason="The selected order could not be assigned to a driver.",
+        )
+    unassigned = [unassigned_by_id[order_id] for order_id in sorted(unassigned_by_id)]
+    if unassigned:
+        warnings.append(f"{len(unassigned)} selected order(s) were not assigned; review unassigned_orders for details.")
+    durations = [driver.estimated_duration_minutes for driver in drivers]
+    coordinate_count = sum(
+        1
+        for driver in drivers
+        for stop in driver.stops
+        if stop.latitude is not None and stop.longitude is not None
+    )
+    map_provider = get_settings().route_map_provider or "disabled"
+
     return OpenOrderRoutePlanResponse(
         start_address=payload.start_address.strip() or DEFAULT_ROUTE_START_ADDRESS,
         requested_driver_count=payload.driver_count,
         effective_driver_count=effective_driver_count,
         total_open_orders=len(orders),
         available_order_count=len(available),
-        selected_order_count=len(routable),
+        selected_order_count=len(selected_ids),
         routable_order_count=len(routable),
+        assigned_order_count=len(assigned_ids),
+        unassigned_order_count=len(unassigned),
         excluded_order_count=len(excluded),
         return_to_start=payload.return_to_start,
         assignment_method=payload.assignment_method,
-        estimate_basis="Delivery-area and stop-count estimate; Google Maps calculates live driving time after opening a route.",
+        estimate_basis="Delivery-zone and stop-count estimate; live traffic and geocoding are not included.",
+        total_estimated_duration_minutes=sum(durations),
+        estimated_completion_minutes=max(durations, default=0),
+        zones=list(ROUTE_DIRECTIONS),
+        map=OpenOrderRouteMapSummary(
+            provider=map_provider,
+            configured=map_provider not in {"", "disabled"},
+            coordinate_count=coordinate_count,
+            missing_coordinate_count=len(assigned_ids) - coordinate_count,
+        ),
         available_orders=[
             OpenOrderRouteCandidate(
-                order_id=order.id,
-                woo_order_id=order.woo_order_id,
-                woo_order_number=order.woo_order_number,
-                customer_name=order.customer_name,
-                customer_phone=order.shipping_phone or order.customer_phone,
-                address=address,
-                postal_area=postal_area or None,
-                direction=direction,
+                order_id=row.order.id,
+                woo_order_id=row.order.woo_order_id,
+                woo_order_number=row.order.woo_order_number,
+                customer_name=row.order.customer_name,
+                customer_phone=row.order.shipping_phone or row.order.customer_phone,
+                address=row.address,
+                postal_area=row.postal_area or None,
+                direction=row.direction,
+                latitude=row.latitude,
+                longitude=row.longitude,
+                coordinate_source=row.coordinate_source,
             )
-            for order, address, postal_area, direction in available
+            for row in available
         ],
         drivers=drivers,
         excluded_orders=excluded,
+        unassigned_orders=unassigned,
         warnings=warnings,
     )
 
@@ -247,34 +350,68 @@ def order_route_direction(order: Order) -> str:
         if postal_area in areas:
             return direction
     city = (order.shipping_city or "").casefold()
-    if any(name in city for name in ("st. albert", "st albert", "morinville")):
-        return "north"
-    if any(name in city for name in ("sherwood park", "fort saskatchewan")):
-        return "east"
-    if any(name in city for name in ("beaumont", "leduc", "nisku")):
-        return "south"
-    if any(name in city for name in ("spruce grove", "stony plain", "devon")):
-        return "west"
-    return "central"
+    if "morinville" in city:
+        return "N"
+    if any(name in city for name in ("st. albert", "st albert")):
+        return "NW"
+    if "fort saskatchewan" in city:
+        return "NE"
+    if "sherwood park" in city:
+        return "E"
+    if "beaumont" in city:
+        return "SE"
+    if any(name in city for name in ("leduc", "nisku")):
+        return "S"
+    if any(name in city for name in ("spruce grove", "stony plain")):
+        return "W"
+    if "devon" in city:
+        return "SW"
+    return "Central East"
 
 
-def route_row_sort_key(row: tuple[Order, str, str, str]) -> tuple:
-    order, _, postal_area, direction = row
-    return (
-        ROUTE_DIRECTIONS.index(direction),
-        postal_area,
-        normalize_postal_code(order.shipping_zip),
-        (order.shipping_city or "").casefold(),
-        (order.shipping_address_1 or "").casefold(),
-        order.id,
+def normalize_address(value: str | None) -> str:
+    return " ".join((value or "").casefold().split())
+
+
+def route_stop_address(stop: RouteStop) -> str:
+    return ", ".join(
+        part.strip()
+        for part in [stop.address_1, stop.address_2, stop.city, stop.state, stop.zip, stop.country]
+        if part and part.strip()
     )
 
 
-def estimated_route_minutes(rows: list[tuple[Order, str, str, str]], return_to_start: bool) -> int:
+def order_route_coordinates(order: Order, current_address: str) -> tuple[float | None, float | None, str | None]:
+    normalized_current_address = normalize_address(current_address)
+    matching_stops = [
+        stop
+        for stop in order.route_stops
+        if stop.latitude is not None
+        and stop.longitude is not None
+        and normalize_address(route_stop_address(stop)) == normalized_current_address
+    ]
+    if not matching_stops:
+        return None, None, None
+    latest_stop = max(matching_stops, key=lambda stop: stop.id)
+    return float(latest_stop.latitude), float(latest_stop.longitude), "existing_route_stop"
+
+
+def route_row_sort_key(row: OpenOrderRouteRow) -> tuple:
+    return (
+        ROUTE_DIRECTIONS.index(row.direction),
+        row.postal_area,
+        normalize_postal_code(row.order.shipping_zip),
+        (row.order.shipping_city or "").casefold(),
+        (row.order.shipping_address_1 or "").casefold(),
+        row.order.id,
+    )
+
+
+def estimated_route_minutes(rows: list[OpenOrderRouteRow], return_to_start: bool) -> int:
     if not rows:
         return 0
-    directions = {row[3] for row in rows}
-    postal_areas = {row[2] for row in rows if row[2]}
+    directions = {row.direction for row in rows}
+    postal_areas = {row.postal_area for row in rows if row.postal_area}
     dispatch = max(DIRECTION_DISPATCH_MINUTES[direction] for direction in directions)
     return (
         dispatch * (2 if return_to_start else 1)
@@ -284,13 +421,17 @@ def estimated_route_minutes(rows: list[tuple[Order, str, str, str]], return_to_s
     )
 
 
-def split_by_estimated_time(rows: list, group_count: int, return_to_start: bool) -> list[list]:
+def split_by_estimated_time(
+    rows: list[OpenOrderRouteRow],
+    group_count: int,
+    return_to_start: bool,
+) -> list[list[OpenOrderRouteRow]]:
     if group_count <= 0:
         return []
     groups = [[] for _ in range(group_count)]
     for row in sorted(
         rows,
-        key=lambda candidate: (-DIRECTION_DISPATCH_MINUTES[candidate[3]], route_row_sort_key(candidate)),
+        key=lambda candidate: (-DIRECTION_DISPATCH_MINUTES[candidate.direction], route_row_sort_key(candidate)),
     ):
         group_index = min(
             range(group_count),
@@ -301,37 +442,41 @@ def split_by_estimated_time(rows: list, group_count: int, return_to_start: bool)
 
 
 def split_by_directions(
-    rows: list,
+    rows: list[OpenOrderRouteRow],
     group_count: int,
     assignments,
     return_to_start: bool,
     warnings: list[str],
-):
+) -> tuple[list[list[OpenOrderRouteRow]], dict[int, set[str]], list[OpenOrderRouteRow]]:
+    if group_count <= 0:
+        return [], {}, list(rows)
     groups = [[] for _ in range(group_count)]
     driver_directions = {index: set() for index in range(1, group_count + 1)}
     for assignment in assignments:
         if assignment.driver_number <= group_count:
             driver_directions[assignment.driver_number].update(assignment.directions)
-    if not any(driver_directions.values()):
+    if not assignments:
         for index, direction in enumerate(ROUTE_DIRECTIONS):
             driver_directions[(index % group_count) + 1].add(direction)
 
     warned_directions = set()
+    unassigned: list[OpenOrderRouteRow] = []
     for row in sorted(rows, key=route_row_sort_key):
-        eligible = [index for index, directions in driver_directions.items() if row[3] in directions]
+        eligible = [index for index, directions in driver_directions.items() if row.direction in directions]
         if not eligible:
-            eligible = list(driver_directions)
-            if row[3] not in warned_directions:
+            unassigned.append(row)
+            if row.direction not in warned_directions:
                 warnings.append(
-                    f"{row[3].title()} was not assigned to a driver, so its orders were added to the lightest route."
+                    f"Zone {row.direction} was not assigned to a driver; its orders were left unassigned."
                 )
-                warned_directions.add(row[3])
+                warned_directions.add(row.direction)
+            continue
         driver_number = min(
             eligible,
             key=lambda index: (estimated_route_minutes([*groups[index - 1], row], return_to_start), len(groups[index - 1]), index),
         )
         groups[driver_number - 1].append(row)
-    return [sorted(group, key=route_row_sort_key) for group in groups], driver_directions
+    return [sorted(group, key=route_row_sort_key) for group in groups], driver_directions, unassigned
 
 
 def build_google_maps_route_links(
@@ -821,7 +966,17 @@ def route_to_read(route: Route) -> RouteRead:
         route_name=route.route_name,
         driver_name=route.driver_name,
         vehicle_name=route.vehicle_name,
+        start_address=route.start_address,
+        end_address=route.end_address,
         total_stops=len(route.stops) if route.stops else route.total_stops,
+        total_distance=decimal_to_optional_float(route.total_distance),
+        estimated_duration_minutes=(
+            route.estimated_duration_minutes
+            if route.estimated_duration_minutes is not None
+            else route.estimated_duration
+        ),
+        map_provider=route.map_provider,
+        optimization_status=route.optimization_status,
         created_by=route.created_by,
         created_at=route.created_at,
         finalized_at=route.finalized_at,

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class InventoryLocationSummaryRow(BaseModel):
@@ -148,16 +148,18 @@ class InventoryTransferListResponse(BaseModel):
 
 
 class StockAdjustmentLineInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     item_id: int
     inventory_item_location_id: int
-    quantity_change: float
+    new_quantity: float = Field(ge=0)
     notes: str | None = None
 
 
 class StockAdjustmentRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=120)
     adjustment_type: str
-    reason: str
+    reason: str | None = None
     notes: str | None = None
     created_by: str | None = "system"
     lines: list[StockAdjustmentLineInput] = Field(default_factory=list)

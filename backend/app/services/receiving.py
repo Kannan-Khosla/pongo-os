@@ -17,6 +17,7 @@ from app.schemas.receipts import (
     ReceiptRead,
 )
 from app.services.calculations import calculate_inventory_value
+from app.services.item_identifiers import barcode_scan_candidates
 from app.services.items import apply_calculated_fields
 from app.services.location_inventory import find_item_location, lock_inventory_stock, receive_to_location
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
@@ -263,7 +264,11 @@ def find_receiving_item(db: Session, item_id: int | None, sku: str | None, barco
     errors: list[str] = []
     id_match = db.get(InventoryItem, item_id) if item_id is not None else None
     sku_matches = list(db.scalars(select(InventoryItem).where(InventoryItem.sku == sku)).all()) if sku else []
-    barcode_matches = list(db.scalars(select(InventoryItem).where(InventoryItem.barcode == barcode)).all()) if barcode else []
+    barcode_matches = list(
+        db.scalars(
+            select(InventoryItem).where(InventoryItem.barcode.in_(barcode_scan_candidates(barcode)))
+        ).all()
+    ) if barcode else []
     if len(sku_matches) > 1 or len(barcode_matches) > 1:
         return None, ["SKU or Barcode matches multiple existing items; receiving was blocked."]
     sku_match = sku_matches[0] if sku_matches else None

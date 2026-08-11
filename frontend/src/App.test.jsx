@@ -443,25 +443,31 @@ function mockFetch(url, options = {}) {
     available_order_count: 2,
     selected_order_count: 2,
     routable_order_count: 2,
+    assigned_order_count: 2,
+    unassigned_order_count: 0,
     excluded_order_count: 0,
     return_to_start: false,
     assignment_method: 'equal_time',
     estimate_basis: 'Delivery-area and stop-count estimate.',
     warnings: [],
     excluded_orders: [],
+    unassigned_orders: [],
+    estimated_completion_minutes: 30,
+    total_estimated_duration_minutes: 30,
+    map: { provider: 'disabled', configured: false, coordinate_count: 0, missing_coordinate_count: 2 },
     available_orders: [
-      { order_id: 701, woo_order_number: '0802', customer_name: 'Avery Stone', address: '200 Delivery Way, Edmonton, AB, T5J 0N3, CA', postal_area: 'T5J', direction: 'central' },
-      { order_id: 702, woo_order_number: '0803', customer_name: 'Morgan Lee', address: '300 Delivery Way, Edmonton, AB, T5K 1A1, CA', postal_area: 'T5K', direction: 'central' },
+      { order_id: 701, woo_order_number: '0802', customer_name: 'Avery Stone', address: '200 Delivery Way, Edmonton, AB, T5J 0N3, CA', postal_area: 'T5J', direction: 'Central East' },
+      { order_id: 702, woo_order_number: '0803', customer_name: 'Morgan Lee', address: '300 Delivery Way, Edmonton, AB, T5K 1A1, CA', postal_area: 'T5K', direction: 'Central West' },
     ],
     drivers: [{
       driver_number: 1,
       driver_label: 'Driver 1',
       stop_count: 2,
       estimated_duration_minutes: 30,
-      directions: ['central'],
+      directions: ['Central East', 'Central West'],
       stops: [
-        { stop_sequence: 1, order_id: 701, woo_order_number: '0802', customer_name: 'Avery Stone', address: '200 Delivery Way, Edmonton, AB, T5J 0N3, CA', postal_area: 'T5J', direction: 'central' },
-        { stop_sequence: 2, order_id: 702, woo_order_number: '0803', customer_name: 'Morgan Lee', address: '300 Delivery Way, Edmonton, AB, T5K 1A1, CA', postal_area: 'T5K', direction: 'central' },
+        { stop_sequence: 1, order_id: 701, woo_order_number: '0802', customer_name: 'Avery Stone', address: '200 Delivery Way, Edmonton, AB, T5J 0N3, CA', postal_area: 'T5J', direction: 'Central East', latitude: null, longitude: null },
+        { stop_sequence: 2, order_id: 702, woo_order_number: '0803', customer_name: 'Morgan Lee', address: '300 Delivery Way, Edmonton, AB, T5K 1A1, CA', postal_area: 'T5K', direction: 'Central West', latitude: '', longitude: '' },
       ],
       google_maps_links: [{ part_number: 1, label: 'Stops 1–2', url: 'https://www.google.com/maps/dir/?api=1&origin=5855+99+Street&destination=300+Delivery+Way', stop_sequence_from: 1, stop_sequence_to: 2, stop_count: 2, returns_to_start: false }],
     }],
@@ -862,6 +868,15 @@ describe('App shell and workflows', () => {
     expect(screen.getByRole('option', { name: /Duck Food Puppy.*South Paw.*70002/i })).toBeInTheDocument();
     await waitFor(() => expect(window.location.hash).toContain('search=duck'));
 
+    await user.keyboard('{Enter}');
+    expect(screen.queryByRole('listbox', { name: 'Inventory suggestions' })).not.toBeInTheDocument();
+    searchInput.blur();
+    searchInput.focus();
+    await user.keyboard('{ArrowDown}');
+    expect(screen.queryByRole('listbox', { name: 'Inventory suggestions' })).not.toBeInTheDocument();
+    await user.type(searchInput, 'y');
+    expect(await screen.findByRole('listbox', { name: 'Inventory suggestions' })).toBeInTheDocument();
+
     await user.clear(searchInput);
     await user.type(searchInput, '700');
     const skuSuggestion = await screen.findByRole('option', { name: /Duck Food Puppy.*70002/i });
@@ -869,6 +884,8 @@ describe('App shell and workflows', () => {
 
     await waitFor(() => expect(window.location.hash).toContain('search=70002'));
     expect(searchInput).toHaveValue('70002');
+    expect(screen.queryByRole('listbox', { name: 'Inventory suggestions' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Inventory search uses local Pongo OS data/i)).not.toBeInTheDocument();
   });
 
   it('turns a data-quality filter into an export and re-import workflow', async () => {
@@ -1622,6 +1639,7 @@ describe('App shell and workflows', () => {
     expect(await screen.findByRole('heading', { name: 'Received Inventory Report', level: 2 })).toBeInTheDocument();
     expect(window.location.hash).toBe('#/reports/receiving/received-inventory');
     expect(screen.queryByRole('heading', { name: 'Receiving Cost', level: 2 })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Received Inventory is read-only/i)).not.toBeInTheDocument();
   });
 
   it.each([
@@ -2519,9 +2537,11 @@ describe('App shell and workflows', () => {
       const rows = candidates.slice((page - 1) * pageSize, page * pageSize);
       return json({ total_candidates: candidates.length, candidates: rows, page, page_size: pageSize, total_pages: Math.ceil(candidates.length / pageSize), returned_count: rows.length, has_previous: page > 1, has_next: page * pageSize < candidates.length });
     });
-    window.location.hash = '#routes';
+    window.location.hash = '#/routes/completed';
     render(<App />);
 
+    expect(await screen.findByRole('heading', { name: 'Completed Routes', level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Plan selected open orders' })).not.toBeInTheDocument();
     const caption = await screen.findByText('55 candidate order(s)', { selector: '.table-meta > span' });
     const table = caption.closest('.table-wrap');
     expect(within(table).getByText(/Showing 1–50 of 55 route candidates/)).toBeInTheDocument();
@@ -2537,14 +2557,18 @@ describe('App shell and workflows', () => {
 
   it('plans only selected open orders and sends direction assignments for multiple drivers', async () => {
     const user = userEvent.setup();
-    window.location.hash = '#routes';
+    window.location.hash = '#/routes/live';
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: 'Plan selected open orders' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Completed-order route records' })).not.toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Starting location' })).toHaveValue('5855 99 Street NW, Edmonton, AB');
     expect(await screen.findByRole('heading', { name: 'Driver 1' })).toBeInTheDocument();
     expect(screen.getByText('Order #0802')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open Maps' })).toHaveAttribute('href', expect.stringContaining('https://www.google.com/maps/dir/'));
+    const routeMap = screen.getByRole('group', { name: /Route map with 2 planned delivery stops/i });
+    expect(within(routeMap).getByRole('link', { name: 'Open order 0802 in Google Maps' })).toHaveClass('approximate');
+    expect(within(routeMap).getByRole('link', { name: 'Open order 0803 in Google Maps' })).toHaveClass('approximate');
 
     await user.click(screen.getByRole('checkbox', { name: 'Select order 0803' }));
     await user.click(screen.getByRole('radio', { name: /Direction zones/i }));
@@ -2552,6 +2576,11 @@ describe('App shell and workflows', () => {
     const driverCount = screen.getByRole('spinbutton', { name: 'Number of drivers' });
     await user.clear(driverCount);
     await user.type(driverCount, '2');
+    const driverOne = screen.getByRole('group', { name: 'Driver 1' });
+    const driverTwo = screen.getByRole('group', { name: 'Driver 2' });
+    await user.click(within(driverOne).getByRole('checkbox', { name: 'E' }));
+    expect(within(driverOne).getByRole('checkbox', { name: 'W' })).not.toBeChecked();
+    await user.click(within(driverTwo).getByRole('checkbox', { name: 'N' }));
     await user.click(screen.getByRole('button', { name: 'Plan 1 selected' }));
 
     await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => (
@@ -2560,7 +2589,7 @@ describe('App shell and workflows', () => {
       && JSON.parse(options.body || '{}').start_address === '5855 99 Street NW, Edmonton, AB'
       && JSON.parse(options.body || '{}').assignment_method === 'directions'
       && JSON.stringify(JSON.parse(options.body || '{}').order_ids) === '[701]'
-      && JSON.parse(options.body || '{}').direction_assignments.length === 2
+      && JSON.stringify(JSON.parse(options.body || '{}').direction_assignments) === '[{"driver_number":1,"directions":["E"]},{"driver_number":2,"directions":["N"]}]'
     ))).toBe(true));
   });
 
@@ -2844,6 +2873,35 @@ describe('App shell and workflows', () => {
     printSpy.mockRestore();
   });
 
+  it('keeps shared action menus above scrolled content and mobile-wide inside the viewport', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('innerWidth', 360);
+    vi.stubGlobal('innerHeight', 480);
+    let triggerTop = 430;
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function getTestRect() {
+      if (this.getAttribute?.('aria-label') === 'Open actions for order 0802') {
+        return { bottom: triggerTop + 38, height: 38, left: 320, right: 352, top: triggerTop, width: 32, x: 320, y: triggerTop, toJSON: () => ({}) };
+      }
+      if (this.classList?.contains('floating-menu')) {
+        return { bottom: 260, height: 260, left: 0, right: 235, top: 0, width: 235, x: 0, y: 0, toJSON: () => ({}) };
+      }
+      return { bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0, x: 0, y: 0, toJSON: () => ({}) };
+    });
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    const trigger = await screen.findByRole('button', { name: 'Open actions for order 0802' });
+    await user.click(trigger);
+    const menu = screen.getByRole('menu');
+    await waitFor(() => expect(menu).toHaveStyle({ visibility: 'visible' }));
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu).toHaveStyle({ left: '10px', maxHeight: '460px', position: 'fixed', top: '164px', width: '340px', zIndex: '1200' });
+
+    triggerTop = 20;
+    act(() => window.dispatchEvent(new Event('scroll')));
+    await waitFor(() => expect(menu).toHaveStyle({ left: '10px', top: '64px' }));
+  });
+
   it.each([
     ['Allocate', '#/orders/allocate', 'Available stock is reserved automatically'],
     ['Pick Orders', '#/orders/pick', '1 order(s) ready to pick'],
@@ -3071,6 +3129,17 @@ describe('App shell and workflows', () => {
             in_stock: 9,
             allocated: 2,
             sellable: 7,
+          }, {
+            id: 92,
+            item_id: 1,
+            sku: 'SMOKE-001',
+            barcode: 'SMOKE001',
+            description: 'Smoke Test Item',
+            warehouse: 'Main Warehouse',
+            inventory_location: 'Overflow Rack',
+            in_stock: 4,
+            allocated: 1,
+            sellable: 3,
           }],
         });
       }
@@ -3088,15 +3157,21 @@ describe('App shell and workflows', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Edit Current Stock' }));
     const dialog = await screen.findByRole('dialog', { name: 'Edit current stock' });
     expect(dialog.closest('.app-overlay-root')?.parentElement).toBe(document.body);
-    const newQuantity = within(dialog).getByRole('spinbutton', { name: 'New Stock Quantity' });
+    const newQuantity = within(dialog).getByRole('spinbutton', { name: 'Final Stock Quantity' });
+    expect(newQuantity).toHaveValue(9);
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Location' }), '92');
+    expect(newQuantity).toHaveValue(4);
     await user.clear(newQuantity);
     await user.type(newQuantity, '10');
-    await user.type(within(dialog).getByPlaceholderText('Required'), 'Physical count correction');
     await user.click(within(dialog).getByRole('button', { name: 'Commit Adjustment' }));
 
     await waitFor(() => {
       const commitCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/inventory/adjustments'));
-      expect(JSON.parse(commitCall[1].body)).toMatchObject({ idempotency_key: expect.any(String) });
+      expect(JSON.parse(commitCall[1].body)).toMatchObject({
+        idempotency_key: expect.any(String),
+        reason: null,
+        lines: [{ item_id: 1, inventory_item_location_id: 92, new_quantity: 10 }],
+      });
     });
     confirmSpy.mockRestore();
   });
