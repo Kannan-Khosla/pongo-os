@@ -2,13 +2,13 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-11T18:43:38Z
+LAST UPDATED: 2026-08-11T19:04:17Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Scanner, stock, overlay, and route hardening verified; fresh-install migration compatibility repaired and exact-commit release gate rerun pending
-CURRENT RELEASE RECOMMENDATION: READY TO RELEASE
+CURRENT PHASE: Scanner, stock, overlay, and route hardening released and verified on Pongo production
+CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Production remains on Heroku v50 at commit 4dc8bcd with schema revision 20260810_0038 while the authorized release candidate is verified locally. Product barcode scans now try the captured value and its one-leading-zero alternate without weakening exact SKU matching. Manual stock edits accept one absolute final quantity, including zero, and optional reason text while preserving allocation, idempotency, audit, FIFO, and configured WooCommerce writeback safeguards. Shared suggestion/action menus close and position correctly, neutral instructional banners are removed, Live and Completed Routes are separate subpages, and the live planner uses ten explicit zones plus a responsive all-stop overview and Google Maps navigation links.
+Production is Heroku v51 at commit bfd1b90 with schema revision 20260810_0038. Product barcode scans now try the captured value and its one-leading-zero alternate without weakening exact SKU matching. Manual stock edits accept one absolute final quantity, including zero, and optional reason text while preserving allocation, idempotency, audit, FIFO, and configured WooCommerce writeback safeguards. Shared suggestion/action menus close and position correctly, neutral instructional banners are removed, Live and Completed Routes are separate subpages, and the live planner uses ten explicit zones plus a responsive all-stop overview and Google Maps navigation links.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -106,7 +106,7 @@ ADR-DEMO-003 ACCEPTED: Render the Mythodus lockup once in the existing global to
 22. Fix shared Enter-dismissed suggestions, overlay positioning, notice cleanup, and responsive behavior. COMPLETED.
 23. Implement exact ten-zone routing, map/time metadata, all-stop overview, and separate completed-route page. COMPLETED.
 24. Run full backend/frontend/build/browser/documentation release gates. COMPLETED.
-25. Back up PostgreSQL, commit/push the feature branch, deploy to Heroku, and run non-destructive production smoke checks. IN PROGRESS.
+25. Back up PostgreSQL, commit/push the feature branch, deploy to Heroku, and run non-destructive production smoke checks. COMPLETED.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -119,9 +119,9 @@ WI-STOCKCSV-001 / P0 / RELEASED / Exact per-location stock override through item
 WI-STOCKCSV-002 / P0 / RELEASED / Full inventory export uploads directly; unchanged rows skip, safe blank locations resolve, exclusions/errors block the file, and changed rows commit in one locked audited transaction; deployed as Heroku v43.
 WI-DEMO-001 / P0 / RELEASED / Isolated read-only demo role with seeded fictional catalog, inventory, orders, operational history, route data, and guarded operator account creation; Heroku v49 at aab78e0.
 WI-DEMO-BRAND-001 / P1 / RELEASED / Global demo-only top-right Mythodus lockup with supplied logo, Newsreader Bold, staff-session exclusion, and responsive header layout; Heroku v50 at 4dc8bcd.
-WI-SCAN-STOCK-001 / P0 / VERIFIED / Shared one-leading-zero barcode matching, exact SKU boundary, ambiguity protection, absolute final-stock corrections, optional audited reason, and preserved allocation safeguards.
-WI-UI-OVERLAY-001 / P0 / VERIFIED / Enter-dismissed suggestions, shared viewport-aware body portal menus, neutral notice cleanup, and 390 px overflow verification.
-WI-ROUTE-004 / P0 / VERIFIED / Ten exact zones, authoritative explicit assignments, exactly-once/unassigned contract, responsive stop overview, time totals, Google navigation, and separate completed-route subpage.
+WI-SCAN-STOCK-001 / P0 / RELEASED / Shared one-leading-zero barcode matching, exact SKU boundary, ambiguity protection, absolute final-stock corrections, optional audited reason, and preserved allocation safeguards; Heroku v51.
+WI-UI-OVERLAY-001 / P0 / RELEASED / Enter-dismissed suggestions, shared viewport-aware body portal menus, neutral notice cleanup, and 390 px overflow verification; Heroku v51.
+WI-ROUTE-004 / P0 / RELEASED / Ten exact zones, authoritative explicit assignments, exactly-once/unassigned contract, responsive stop overview, time totals, Google navigation, and separate completed-route subpage; Heroku v51.
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
@@ -189,11 +189,13 @@ Production demo-account evidence: the guarded one-off process exited successfull
 Mythodus branding verification: all 148 frontend tests passed; the Vite production build passed with the existing large-chunk warning; `git diff --check` passed. The authenticated local demo rendered the supplied logo and “Powered By: Mythodus” in the global header on desktop and at 390 × 844 without crowding navigation or account controls. A staff-session regression assertion confirms the lockup is absent outside demo access.
 Production Mythodus evidence: Heroku v50 reports commit 4dc8bcd; PostgreSQL backup b011 completed before deployment; the release command exited 0 at existing schema head 20260810_0038; web and worker Basic dynos are up; `/health` returned HTTP 200. The authenticated demo Items page retained its eight fictional products, and both Items and Routes showed the global Mythodus lockup with the supplied logo and no browser warnings or errors.
 Current release-candidate evidence: full backend passed 526 tests with 10 PostgreSQL-only skips and the existing Starlette warning; full frontend passed 149 tests across seven files; the production build passed with the existing Vite chunk warning; `git diff --check` passed. Integrated disposable-database browser checks at 1440 × 900 and 390 × 844 proved no horizontal overflow on Live/Completed Routes or the stock modal, menu flip/clamp behavior, Enter-dismissed suggestions, a no-leading-zero scan finding the leading-zero barcode, and an absolute final-stock change from 0 to 5. The browser test used only fictional local data. Final independent review confirmed the scanner, absolute-stock, location-switch, route-coordinate, and mobile layout blockers were resolved.
+GitHub release-gate evidence: exact commit bfd1b90 passed run 31524500439 in 6m36s, including PostgreSQL 16 migration up/down/up/drift validation, backup/restore verification, vulnerability scans, full backend tests with PostgreSQL concurrency, frontend tests/build, and the isolated browser contract chain.
+Production scanner/stock/route evidence: Heroku v51 reports commit bfd1b90; backup b012 completed before deployment; the release command exited 0 at schema 20260810_0038; web and worker Basic dynos are up; `/health` returned 200 and anonymous auth returned 401. A read-only one-off check used an undisclosed real stored barcode and confirmed its leading-zero alternate resolved uniquely; a non-mutating schema check confirmed absolute zero is valid and legacy delta input is rejected. The live demo Routes page showed ten zones, the all-stop overview, Google links, and separate Completed Routes; at 390 px the completed page and stock modal had no horizontal overflow, the modal showed Final Stock Quantity plus optional reason, and browser diagnostics were empty. No live stock or order was changed.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
 Database migration: production is at 20260810_0038; it adds `users.access_level` with `staff` default and a `staff|demo` check. The release migration completed transactionally.
-Release baseline: production is Heroku v50 at commit 4dc8bcd. The current authorized release candidate changes no schema revision, dependency, or configuration; it includes a compatibility-only repair to released migration 0038 for clean database bootstrap and has not yet been deployed.
-Recovery: Continuous Protection is enabled and backup b011 is the current baseline. A fresh manual backup is required immediately before this release. Both baseline and candidate use schema 20260810_0038.
+Release baseline: production is Heroku v51 at commit bfd1b90. The release changed no schema revision, dependency, or configuration; it included a compatibility-only repair to released migration 0038 for clean database bootstrap.
+Recovery: Continuous Protection is enabled and completed manual backup b012 is the pre-v51 rollback boundary. Both v50 and v51 use schema 20260810_0038.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
 
@@ -213,11 +215,17 @@ Reused the existing scanner component and search flows, the operational order el
 For demo access, rebinding the existing request session provides one fail-closed isolation point for the whole backend and avoids demo branches in every service or a second frontend.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Commit and push the focused migration compatibility repair, require the exact-commit GitHub release gate to pass, capture a fresh production PostgreSQL backup, deploy, run the Alembic gate, and verify health/auth/routes/inventory without mutating live stock or orders.
-THEN: Confirm the release/version/commit and retain v50 plus the fresh backup as rollback references.
+NEXT: Pongo staff should verify physical camera decoding on one iPhone/Android and one hardware scanner during normal read-only search use.
+THEN: Retain v50 and backup b012 as rollback references; address the pre-existing readiness gaps for missing unit costs, alerting, and production stock-authority configuration separately.
 APPROVAL STATE: The user explicitly requested implementation on the main Pongo deployment and authorized deployment in this task. No credential is recorded in source control or lifecycle state.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
+--- DELIVERY RUN: 2026-08-11T19:04:17Z ---
+MODE: Release Readiness and Release
+SUMMARY: Barcode normalization, absolute stock edits, shared mobile overlays, and ten-zone live/completed routing released and verified on Pongo production.
+EVIDENCE: Exact-commit GitHub run 31524500439 passed; commit bfd1b90 deployed as Heroku v51 after completed backup b012; Alembic remained at 20260810_0038; web/worker up; health 200; anonymous auth 401; zero recent application errors; read-only production barcode and stock-schema checks passed; live desktop/mobile Routes and stock-modal checks passed without mutation or browser errors.
+NEXT ACTION: Verify physical camera/hardware decoding during normal staff use; separately resolve the pre-existing `/ready` unit-cost, alerting, and stock-authority gaps.
+
 --- DELIVERY RUN: 2026-08-11T18:43:38Z ---
 MODE: Release Readiness and Release
 SUMMARY: Exact-commit GitHub release gate exposed and the candidate repaired a clean-database migration 0038 duplicate-column failure before production deployment.
