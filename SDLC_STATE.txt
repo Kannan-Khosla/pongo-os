@@ -2,9 +2,9 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-11T18:29:01Z
+LAST UPDATED: 2026-08-11T18:43:38Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Scanner, stock, overlay, and route hardening verified locally; production release authorized and pending
+CURRENT PHASE: Scanner, stock, overlay, and route hardening verified; fresh-install migration compatibility repaired and exact-commit release gate rerun pending
 CURRENT RELEASE RECOMMENDATION: READY TO RELEASE
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
@@ -130,6 +130,7 @@ RISK-003 / MEDIUM / MITIGATED: Incomplete addresses could silently disappear. Pl
 RISK-004 / LOW / MITIGATED: More drivers than orders. Effective driver count is reduced and the response explains why.
 RISK-005 / MEDIUM / MITIGATED FOR RELEASE: The obsolete local SQLite file was not used for release evidence. Heroku's PostgreSQL release migration succeeded at revision 20260807_0037 and the authenticated production UI loaded real route/inventory data.
 RISK-006 / HIGH / PRE-EXISTING AND ACCEPTED FOR THIS RELEASE: Production `/ready` remains HTTP 503 because 223 active stock items lack positive unit cost, no operations alert webhook is configured, and production stock authority/writeback are not fully configured. This delivery did not alter those settings; `/health`, schema, authentication, database, webhooks, reconciliation, and worker checks passed.
+RISK-MIGRATION-001 / HIGH / MITIGATED FOR RELEASE: The legacy base migration bootstraps current ORM metadata, so a fresh database already contains the demo `access_level` field before migration 0038 runs. Migration 0038 now inspects the existing column and check constraint before adding or removing them; its focused fresh upgrade/downgrade/re-upgrade/check cycle passes, and the GitHub PostgreSQL release gate remains mandatory before deployment.
 DEPENDENCY-001: Opening a generated link requires Google Maps/web and exposes that link's addresses to Google at staff action time.
 RISK-STOCKCSV-001 / HIGH / MITIGATED: Preview performs a stale check and the adjustment service repeats the expected-quantity check under the stock lock before writing.
 RISK-STOCKCSV-002 / HIGH / MITIGATED: No direct Item.in_stock write was added; commit routes through the existing adjustment service and creates adjustment lines plus stock movements.
@@ -187,11 +188,11 @@ Production demo-access evidence: Heroku v49 reports commit aab78e0; manual Postg
 Production demo-account evidence: the guarded one-off process exited successfully; login returned HTTP 200; the authenticated UI visibly identified mock-only, read-only demo scope; Items returned exactly eight fictional `DEMO-*` products rather than the production catalog; an attempted POST `/api/items` returned HTTP 403; PostgreSQL reported one demo user and zero rows for the blocked smoke-test SKU; browser warnings and errors were empty.
 Mythodus branding verification: all 148 frontend tests passed; the Vite production build passed with the existing large-chunk warning; `git diff --check` passed. The authenticated local demo rendered the supplied logo and “Powered By: Mythodus” in the global header on desktop and at 390 × 844 without crowding navigation or account controls. A staff-session regression assertion confirms the lockup is absent outside demo access.
 Production Mythodus evidence: Heroku v50 reports commit 4dc8bcd; PostgreSQL backup b011 completed before deployment; the release command exited 0 at existing schema head 20260810_0038; web and worker Basic dynos are up; `/health` returned HTTP 200. The authenticated demo Items page retained its eight fictional products, and both Items and Routes showed the global Mythodus lockup with the supplied logo and no browser warnings or errors.
-Current release-candidate evidence: full backend passed 525 tests with 10 PostgreSQL-only skips and the existing Starlette warning; full frontend passed 149 tests across seven files; the production build passed with the existing Vite chunk warning; `git diff --check` passed. Integrated disposable-database browser checks at 1440 × 900 and 390 × 844 proved no horizontal overflow on Live/Completed Routes or the stock modal, menu flip/clamp behavior, Enter-dismissed suggestions, a no-leading-zero scan finding the leading-zero barcode, and an absolute final-stock change from 0 to 5. The browser test used only fictional local data.
+Current release-candidate evidence: full backend passed 526 tests with 10 PostgreSQL-only skips and the existing Starlette warning; full frontend passed 149 tests across seven files; the production build passed with the existing Vite chunk warning; `git diff --check` passed. Integrated disposable-database browser checks at 1440 × 900 and 390 × 844 proved no horizontal overflow on Live/Completed Routes or the stock modal, menu flip/clamp behavior, Enter-dismissed suggestions, a no-leading-zero scan finding the leading-zero barcode, and an absolute final-stock change from 0 to 5. The browser test used only fictional local data. Final independent review confirmed the scanner, absolute-stock, location-switch, route-coordinate, and mobile layout blockers were resolved.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
 Database migration: production is at 20260810_0038; it adds `users.access_level` with `staff` default and a `staff|demo` check. The release migration completed transactionally.
-Release baseline: production is Heroku v50 at commit 4dc8bcd. The current authorized release candidate has no migration, dependency, or configuration change and has not yet been deployed.
+Release baseline: production is Heroku v50 at commit 4dc8bcd. The current authorized release candidate changes no schema revision, dependency, or configuration; it includes a compatibility-only repair to released migration 0038 for clean database bootstrap and has not yet been deployed.
 Recovery: Continuous Protection is enabled and backup b011 is the current baseline. A fresh manual backup is required immediately before this release. Both baseline and candidate use schema 20260810_0038.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
@@ -212,11 +213,17 @@ Reused the existing scanner component and search flows, the operational order el
 For demo access, rebinding the existing request session provides one fail-closed isolation point for the whole backend and avoids demo branches in every service or a second frontend.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Complete final independent diff reviews, commit and push the protected-workflow feature branch, capture a fresh production PostgreSQL backup, deploy the exact commit, run the unchanged Alembic gate, and verify health/auth/routes/inventory without mutating live stock or orders.
+NEXT: Commit and push the focused migration compatibility repair, require the exact-commit GitHub release gate to pass, capture a fresh production PostgreSQL backup, deploy, run the Alembic gate, and verify health/auth/routes/inventory without mutating live stock or orders.
 THEN: Confirm the release/version/commit and retain v50 plus the fresh backup as rollback references.
 APPROVAL STATE: The user explicitly requested implementation on the main Pongo deployment and authorized deployment in this task. No credential is recorded in source control or lifecycle state.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
+--- DELIVERY RUN: 2026-08-11T18:43:38Z ---
+MODE: Release Readiness and Release
+SUMMARY: Exact-commit GitHub release gate exposed and the candidate repaired a clean-database migration 0038 duplicate-column failure before production deployment.
+EVIDENCE: GitHub run 31523918402 stopped at the PostgreSQL migration recovery check because the legacy base migration had already created `users.access_level`; migration 0038 now conditionally manages the existing column/constraint, and a fresh focused SQLite head/downgrade-0038/re-upgrade/check cycle passed.
+NEXT ACTION: Commit/push the repair and require a successful full PostgreSQL release gate before backup or deployment.
+
 --- DELIVERY RUN: 2026-08-11T18:29:01Z ---
 MODE: Release Readiness and Release
 SUMMARY: Barcode identity, absolute manual stock, shared overlay/search behavior, and ten-zone route/live-history UI hardening implemented and fully verified locally; production release authorized and pending.

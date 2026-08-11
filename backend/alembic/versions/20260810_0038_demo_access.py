@@ -29,12 +29,22 @@ USER_COLUMN_ORDER = (
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    constraints = {constraint["name"] for constraint in inspector.get_check_constraints("users")}
     with op.batch_alter_table("users", partial_reordering=[USER_COLUMN_ORDER]) as batch:
-        batch.add_column(sa.Column("access_level", sa.String(20), nullable=False, server_default="staff"))
-        batch.create_check_constraint("ck_users_access_level", "access_level IN ('staff', 'demo')")
+        if "access_level" not in columns:
+            batch.add_column(sa.Column("access_level", sa.String(20), nullable=False, server_default="staff"))
+        if "ck_users_access_level" not in constraints:
+            batch.create_check_constraint("ck_users_access_level", "access_level IN ('staff', 'demo')")
 
 
 def downgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    constraints = {constraint["name"] for constraint in inspector.get_check_constraints("users")}
     with op.batch_alter_table("users", partial_reordering=[USER_COLUMN_ORDER[:-1]]) as batch:
-        batch.drop_constraint("ck_users_access_level", type_="check")
-        batch.drop_column("access_level")
+        if "ck_users_access_level" in constraints:
+            batch.drop_constraint("ck_users_access_level", type_="check")
+        if "access_level" in columns:
+            batch.drop_column("access_level")
