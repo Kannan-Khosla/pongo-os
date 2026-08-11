@@ -353,8 +353,8 @@ function mockFetch(url, options = {}) {
   if (target.includes('/api/business-dashboard/woocommerce-open-orders')) return json({
     source: 'woocommerce',
     fetched_at: '2026-07-08T16:30:01Z',
-    statuses: { processing: 3, 'on-hold': 1, pending: 2 },
-    summary: { open_orders_count: 6 },
+    statuses: { processing: 3 },
+    summary: { open_orders_count: 3 },
   });
   if (target.includes('/api/business-dashboard')) return json({
     generated_at: '2026-07-08T16:30:00Z',
@@ -1730,9 +1730,10 @@ describe('App shell and workflows', () => {
 
     expect(await screen.findByText("Today's Orders")).toBeInTheDocument();
     expect(screen.getByText("Today's Revenue")).toBeInTheDocument();
-    const liveWooMetric = (await screen.findByText('WooCommerce Open Orders')).closest('article');
+    const liveWooMetric = (await screen.findByText('Open Orders', { selector: '.business-metric-card > span' })).closest('article');
+    expect(liveWooMetric).toBe(document.querySelector('.business-kpi-grid > article'));
     expect(liveWooMetric).toHaveAttribute('aria-live', 'polite');
-    expect(liveWooMetric).toHaveTextContent('6');
+    expect(liveWooMetric).toHaveTextContent('3');
     expect(liveWooMetric).toHaveTextContent('Live WooCommerce');
     expect(screen.getByText('New Customers')).toBeInTheDocument();
     expect(screen.getByText('Returning Customers')).toBeInTheDocument();
@@ -1753,7 +1754,7 @@ describe('App shell and workflows', () => {
     render(<App />);
 
     expect(await screen.findByText("Today's Revenue")).toBeInTheDocument();
-    const liveWooMetric = screen.getByText('WooCommerce Open Orders').closest('article');
+    const liveWooMetric = screen.getByText('Open Orders', { selector: '.business-metric-card > span' }).closest('article');
     await waitFor(() => expect(liveWooMetric).toHaveTextContent('Live count unavailable'));
     expect(liveWooMetric).toHaveTextContent('—');
   });
@@ -1779,9 +1780,9 @@ describe('App shell and workflows', () => {
     await waitFor(() => expect(pendingWooBodies).toHaveLength(2));
 
     await act(async () => pendingWooBodies[1](wooBody(9)));
-    await waitFor(() => expect(screen.getByText('WooCommerce Open Orders').closest('article')).toHaveTextContent('9'));
+    await waitFor(() => expect(screen.getByText('Open Orders', { selector: '.business-metric-card > span' }).closest('article')).toHaveTextContent('9'));
     await act(async () => pendingWooBodies[0](wooBody(2)));
-    expect(screen.getByText('WooCommerce Open Orders').closest('article')).toHaveTextContent('9');
+    expect(screen.getByText('Open Orders', { selector: '.business-metric-card > span' }).closest('article')).toHaveTextContent('9');
   });
 
   it('has a refresh button for the business Dashboard', async () => {

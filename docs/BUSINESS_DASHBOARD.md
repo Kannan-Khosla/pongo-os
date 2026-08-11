@@ -36,8 +36,8 @@ fulfillment, or movement changes the source version.
 When the source changes, an existing verified snapshot is returned immediately
 while the worker refreshes it. The combined endpoint and all detailed sections
 remain local-only. The separate `woocommerce-open-orders` endpoint performs
-three backend-only, one-row WooCommerce reads for `pending`, `processing`, and
-`on-hold`, then sums the authoritative `X-WP-Total` headers. Its failure is
+one backend-only, one-row WooCommerce read for `processing` and returns the
+authoritative `X-WP-Total` header. Its failure is
 isolated from the rest of the Dashboard and never falls back to a local count.
 
 ## Metric Definitions
@@ -58,10 +58,10 @@ Open orders are local order snapshots with open-style statuses such as
 `open`, `processing`, `on-hold`, `pending`, `allocated`, or picking states.
 Completed, failed, cancelled, and refunded statuses are excluded.
 
-The `WooCommerce Open Orders` KPI is deliberately separate. It is the live
-WooCommerce total for `pending`, `processing`, and `on-hold` orders, with its
-own loading and unavailable states. Demo accounts receive an isolated mock
-count and never construct a WooCommerce client.
+The first KPI, `Open Orders`, is deliberately separate. It is the live
+WooCommerce total for `processing` orders only, with its own loading and
+unavailable states. Demo accounts receive an isolated mock count and never
+construct a WooCommerce client.
 
 ## Subscriptions
 

@@ -2651,15 +2651,15 @@ snapshots and order lines only. They do not call WooCommerce, mutate orders,
 mutate stock, or geocode addresses through an external provider.
 
 `GET /api/business-dashboard/woocommerce-open-orders` is the isolated exception.
-The backend sends one read-only, one-row request for each live WooCommerce
-status `pending`, `processing`, and `on-hold`, and returns:
+The backend sends one read-only, one-row request for live WooCommerce status
+`processing` and returns:
 
 ```json
 {
   "source": "woocommerce",
   "fetched_at": "2026-08-11T19:20:03+00:00",
-  "statuses": {"on-hold": 3, "pending": 2, "processing": 7},
-  "summary": {"open_orders_count": 12}
+  "statuses": {"processing": 7},
+  "summary": {"open_orders_count": 7}
 }
 ```
 

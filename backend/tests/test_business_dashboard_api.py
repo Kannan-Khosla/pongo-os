@@ -146,9 +146,7 @@ def test_business_dashboard_open_orders_customer_rows(client, monkeypatch):
     assert {"customer_name", "customer_email", "order_number", "status"}.issubset(body["rows"][0].keys())
 
 
-def test_woocommerce_open_orders_uses_live_totals_for_exact_active_statuses(client, monkeypatch):
-    totals = {"processing": 7, "on-hold": 3, "pending": 2}
-
+def test_woocommerce_open_orders_uses_only_live_processing_total(client, monkeypatch):
     class FakeLiveWooClient:
         def __init__(self, settings):
             self.timeout_seconds = settings.woocommerce_timeout_seconds
@@ -157,8 +155,7 @@ def test_woocommerce_open_orders_uses_live_totals_for_exact_active_statuses(clie
 
         def list_orders(self, **params):
             self.calls.append(params)
-            total = totals[params["status"]]
-            self.last_response_headers = {"X-WP-Total": str(total), "X-WP-TotalPages": str(total)}
+            self.last_response_headers = {"X-WP-Total": "7", "X-WP-TotalPages": "7"}
             return [{}]
 
     fake = FakeLiveWooClient(SimpleNamespace(woocommerce_timeout_seconds=30))
@@ -170,11 +167,10 @@ def test_woocommerce_open_orders_uses_live_totals_for_exact_active_statuses(clie
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["source"] == "woocommerce"
-    assert body["statuses"] == {"on-hold": 3, "pending": 2, "processing": 7}
-    assert body["summary"] == {"open_orders_count": 12}
+    assert body["statuses"] == {"processing": 7}
+    assert body["summary"] == {"open_orders_count": 7}
     assert datetime.fromisoformat(body["fetched_at"]).tzinfo is not None
-    assert {call["status"] for call in fake.calls} == set(totals)
-    assert all(call["page"] == 1 and call["per_page"] == 1 for call in fake.calls)
+    assert fake.calls == [{"page": 1, "per_page": 1, "status": "processing"}]
     assert fake.timeout_seconds == 5
 
 

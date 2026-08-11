@@ -4299,14 +4299,14 @@ function BusinessDashboardPage({ dashboard, loading, error, onRefresh }) {
       {loading && <div className="loading-strip">Loading Dashboard...</div>}
 
       <div className="business-kpi-grid">
-        <BusinessMetric label="Today's Orders" value={today.today_orders_count || 0} tone="blue" />
         <BusinessMetric
-          label="WooCommerce Open Orders"
+          label="Open Orders"
           value={wooOpenOrders.loading || wooOpenOrders.error ? '—' : wooOpenOrders.summary?.open_orders_count ?? '—'}
           caption={wooOpenOrders.loading ? 'Loading live count…' : wooOpenOrders.error || (wooOpenOrders.source !== 'woocommerce' && wooOpenOrders.source !== 'demo') ? 'Live count unavailable' : wooOpenOrders.source === 'demo' ? 'Demo data' : 'Live WooCommerce'}
           live
           tone="green"
         />
+        <BusinessMetric label="Today's Orders" value={today.today_orders_count || 0} tone="blue" />
         <BusinessMetric label="Today's Revenue" value={formatCurrency(today.today_revenue || 0)} tone="peach" />
         <BusinessMetric label="New Customers" value={today.today_new_customers || 0} tone="orange" />
         <BusinessMetric label="Returning Customers" value={today.today_returning_customers || 0} tone="green" />
