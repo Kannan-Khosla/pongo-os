@@ -505,7 +505,8 @@ def complete_picked_order(db: Session, order_id: int, *, created_by: str = "syst
     required_lines = [
         line
         for line in order.items
-        if not (line.inventory_item and line.inventory_item.non_inventory)
+        if is_actionable_order_line(line)
+        and not (line.inventory_item and line.inventory_item.non_inventory)
     ]
     if not required_lines:
         raise ValueError("Picked completion requires at least one inventory line.")

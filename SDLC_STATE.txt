@@ -2,14 +2,14 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-11T20:01:20Z
-EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Pongo shell logo and isolated live WooCommerce open-order KPI released and verified on production
-CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
+LAST UPDATED: 2026-08-15T03:07:52Z
+EXECUTION MODE: Stabilize and Repair; Release Readiness and Release
+CURRENT PHASE: Picked-order completion repair verified locally and authorized for production deployment
+CURRENT RELEASE RECOMMENDATION: READY FOR AUTHORIZED DEPLOYMENT
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Production is Heroku v52 at commit 1665ef9 with schema revision 20260810_0038. Product barcode scans now try the captured value and its one-leading-zero alternate without weakening exact SKU matching. Manual stock edits accept one absolute final quantity, including zero, and optional reason text while preserving allocation, idempotency, audit, FIFO, and configured WooCommerce writeback safeguards. Shared suggestion/action menus close and position correctly, neutral instructional banners are removed, Live and Completed Routes are separate subpages, and the live planner uses ten explicit zones plus a responsive all-stop overview and Google Maps navigation links.
-The shared shell now uses the bundled Pongo logo and the Dashboard independently loads a WooCommerce Open Orders KPI. The backend verifies live `pending`, `processing`, and `on-hold` totals from WooCommerce pagination headers; a remote failure marks only this card unavailable and never substitutes a local count. Demo access remains mock-only and never contacts WooCommerce. Production verification returned 27 live open orders without changing orders or stock.
+Production is Heroku v54 at commit 103e4d6 with schema revision 20260810_0038. Active allocation, picking, and fulfillment workflows already ignore WooCommerce order lines retained only as zero-quantity history. A missed completion-path check still counted those audit-only rows and falsely rejected fully picked Woo orders 38607 and 38613; the failed action stopped before completion or any second stock reduction.
+The release candidate applies the existing shared actionable-line rule to picked completion. Real active or outstanding retired work still blocks completion, while harmless removed zero-quantity rows do not. The focused workflow suite passed 15 tests and the full backend passed 531 tests with 10 PostgreSQL-only skips. No schema, dependency, configuration, credential, stock, or production-data migration is involved.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -49,6 +49,7 @@ REQ-DASH-WOO-001: Every app page uses the bundled Pongo logo in the shared modul
 REQ-DASH-WOO-002: Dashboard displays a separately loaded live WooCommerce open-order total for exactly `pending`, `processing`, and `on-hold`; the frontend never calls WooCommerce or receives credentials.
 REQ-DASH-WOO-003: Missing credentials, disabled reads, timeouts, upstream errors, or unverified pagination totals mark only the live KPI unavailable and never replace it with local data.
 REQ-DASH-WOO-004: Demo requests never construct a WooCommerce client and show only an isolated mock count.
+REQ-ORDER-COMPLETE-001: Picked completion validates every actionable inventory line but ignores WooCommerce lines retained only as removed zero-quantity audit history; completion never reduces already-picked stock again.
 
 === 05. SCOPE, NON-GOALS, CONSTRAINTS, AND ASSUMPTIONS ===
 IN SCOPE: phone/hardware scanner normalization across operational lookup paths; absolute audited manual stock corrections; shared search/overlay behavior; ten-zone open-order planning; missing/unassigned reporting; keyless Google Maps URL construction; responsive all-stop overview; separate completed-route records; tests and docs.
@@ -62,6 +63,7 @@ DEMO IN SCOPE: one demo role, isolated in-memory seeded data, centralized read/w
 DEMO NON-GOALS: multi-tenant organization isolation, granular staff roles, writable sandbox workflows, persistent per-demo customization, external OAuth/WooCommerce calls, or a public self-registration flow.
 DASHBOARD LIVE COUNT IN SCOPE: one backend-only read endpoint, three active WooCommerce statuses, a responsive KPI card, explicit loading/unavailable states, demo isolation, and regression coverage.
 DASHBOARD LIVE COUNT NON-GOALS: custom WooCommerce statuses, polling, caching, background jobs, local fallback, order-detail synchronization, or any WooCommerce write.
+PICKED COMPLETION REPAIR IN SCOPE: the shared backend completion validator, one regression fixture matching production's retained-line shape, workflow documentation, release checks, and non-mutating production validation. No order, stock, WooCommerce, schema, frontend, or configuration change is part of the repair.
 
 === 06. SYSTEM, JOURNEY, AND DATA MAP ===
 Scanner journey: Items or Inventory -> hardware/rear-camera/manual code -> as-entered plus one-leading-zero barcode candidates -> exact/unique local match -> current search results; Enter then dismisses suggestions until editing resumes.
@@ -71,6 +73,7 @@ Data boundaries: Order/customer/address snapshots travel from authenticated Pong
 Stock CSV journey: Items -> Import CSV -> Override stock levels -> upload/map columns -> review current/new/variance -> confirm -> one audited stock adjustment -> results/history. Quantity authority is the selected active inventory location; item totals remain derived by the existing location inventory service.
 Demo journey: operator creates demo user -> prospect signs in -> auth response identifies mock/read-only scope -> global header shows the Mythodus lockup on every workspace -> protected request session switches to the seeded demo database -> existing pages render fictional items, stock, orders, reports, and routes -> writes/integrations return a safe 403.
 Live Woo count journey: Dashboard -> Pongo backend requests one row for each active Woo status -> validates `X-WP-Total` headers -> sums verified totals -> renders the isolated KPI; any upstream failure returns safe 503 and leaves all local Dashboard sections intact.
+Picked completion journey: Open Orders -> complete a server-confirmed picked order -> validate active/actionable inventory lines only -> close locally without reducing stock again -> continue through the existing guarded Woo status/stock synchronization path.
 
 === 07. ARCHITECTURE AND DECISION REGISTER ===
 ADR-036 ACCEPTED: Use keyless Google Maps URLs, not a map SDK or paid routing API.
@@ -89,6 +92,7 @@ ADR-DEMO-001 ACCEPTED: Rebind the existing request-scoped SQLAlchemy session to 
 ADR-DEMO-002 ACCEPTED: Keep staff access unchanged; allow demo GET/HEAD/OPTIONS plus a small explicit set of non-persisting previews, and block integrations regardless of HTTP method.
 ADR-DEMO-003 ACCEPTED: Render the Mythodus lockup once in the existing global top header when `access_level=demo`; use the supplied image asset, Newsreader 700 with a Georgia fallback, and a compact stacked label so it fits desktop and mobile without duplicating page markup.
 ADR-DASH-WOO-001 ACCEPTED: Keep the cached combined Dashboard local-only and add one separate backend-only live-count endpoint so WooCommerce latency or failure cannot blank local business metrics. Use existing client, active-status policy, pagination parser, and bundled logo; add no dependency, schema, secret, cache, or worker.
+ADR-ORDER-COMPLETE-001 ACCEPTED: Reuse `is_actionable_order_line` in the shared `complete_picked_order` validator. Do not add a second retired-line rule or delete historical Woo rows.
 
 === 08. ROADMAP AND ACTIVE DELIVERY PLAN ===
 1. Inspect scanner, order, route, and UI architecture. COMPLETED.
@@ -120,6 +124,10 @@ ADR-DASH-WOO-001 ACCEPTED: Keep the cached combined Dashboard local-only and add
 27. Add the isolated live WooCommerce open-order endpoint with verified totals, safe failure, and demo isolation. COMPLETED.
 28. Replace the shell initial with the bundled Pongo logo and add the responsive independently loaded KPI. COMPLETED.
 29. Update product records and run focused/full regression, build, diff, and state-validation gates. COMPLETED.
+30. Reproduce the production completion rejection and confirm the affected real lines are fully picked. COMPLETED.
+31. Apply the shared actionable-line predicate to picked completion and add regression coverage. COMPLETED.
+32. Run focused and full backend verification plus independent diff review. COMPLETED.
+33. Back up PostgreSQL, commit/push, deploy, and run non-mutating production verification. AUTHORIZED AND PENDING.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -136,6 +144,49 @@ WI-SCAN-STOCK-001 / P0 / RELEASED / Shared one-leading-zero barcode matching, ex
 WI-UI-OVERLAY-001 / P0 / RELEASED / Enter-dismissed suggestions, shared viewport-aware body portal menus, neutral notice cleanup, and 390 px overflow verification; Heroku v51.
 WI-ROUTE-004 / P0 / RELEASED / Ten exact zones, authoritative explicit assignments, exactly-once/unassigned contract, responsive stop overview, time totals, Google navigation, and separate completed-route subpage; Heroku v51.
 WI-DASH-WOO-001 / P0 / IMPLEMENTED NOT DEPLOYED / Shared Pongo shell logo plus isolated live WooCommerce open-order KPI with active-status totals, explicit unavailable state, and demo isolation.
+
+WORK ITEM: WI-001
+TITLE: Complete fully picked orders that retain harmless Woo history lines
+TYPE: DEFECT
+STATUS: VERIFIED
+PRIORITY: P0
+SOURCE: Production staff report on Woo orders 38607 and 38613
+OWNER: Backend / QA / Operations
+
+PLAIN-LANGUAGE OUTCOME:
+Fully picked orders can be completed even when WooCommerce previously edited the order and Pongo retained old zero-quantity rows for audit history.
+
+IF SKIPPED OR DONE WRONG:
+Staff cannot close valid picked orders, or an overly broad exception could allow an order with real unfinished inventory work to close.
+
+IF COMPLETED CORRECTLY:
+Only harmless removed rows are ignored. Every active line and any retired line with ordered, allocated, picked, fulfilled, stock-reduced, or exception state remains authoritative.
+
+TECHNICAL SCOPE:
+`complete_picked_order` in the shared order workflow service, its API regression fixture, workflow documentation, and release evidence. No schema or frontend change.
+
+DEPENDENCIES:
+Existing `is_actionable_order_line` and `line_is_fully_picked_and_reduced` domain rules; existing guarded completion routes.
+
+ACCEPTANCE CRITERIA:
+A fully picked order with removed zero-work rows completes; an incomplete active line still fails closed; an order with no actionable inventory line still fails closed; completion does not reduce stock a second time; both single and bulk callers inherit the rule.
+
+IMPLEMENTATION PLAN:
+Filter required completion lines through the existing actionable-line helper, augment the existing no-double-reduction test with a removed zero-quantity row, run focused/full tests, back up production, deploy, and validate without completing a real order.
+
+MIGRATION / ROLLOUT:
+No migration. One backend release; rollback is the prior Heroku release because no data shape changes.
+
+VERIFICATION:
+Focused workflow API suite, full backend suite, diff/state validation, independent review, Heroku health/dyno checks, and a read-only production query proving orders 38607/38613 have fully picked actionable lines plus harmless retired lines.
+
+EVIDENCE:
+Focused suite 15 passed. Full backend 531 passed, 10 PostgreSQL-only skipped, one existing Starlette warning. Production read-only query confirmed every actionable line for internal orders 3471/3477 is fully picked and every failing row is removed with all quantities zero. Independent read-only review found no blocker and reran all 15 workflow tests successfully; PostgreSQL concurrency remains delegated to the exact-commit release gate. Deployment not yet verified.
+
+RESIDUAL RISK:
+Pre-existing completion idempotency and Woo-status suppression audit findings remain separate and unchanged.
+
+LAST UPDATED: 2026-08-15T03:07:52Z
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
@@ -163,6 +214,7 @@ RISK-DASH-WOO-001 / MEDIUM / MITIGATED IN CODE: WooCommerce latency, outage, or 
 RISK-DASH-WOO-002 / HIGH / MITIGATED IN CODE: A stale local fallback could misrepresent the live queue. The endpoint fails closed on missing/invalid totals and returns safe 503; the card shows unavailable instead of a number.
 RISK-DASH-WOO-003 / CRITICAL / MITIGATED IN CODE: A demo request could contact production WooCommerce. The route checks authenticated demo scope before constructing settings or the client and returns only the isolated mock count; regression coverage fails if live construction occurs.
 BLOCK-DEMO-001 / P0 / RESOLVED: The user supplied a compliant 12-character password; the guarded script created the production demo account without recording the password in source or lifecycle state.
+RISK-ORDER-COMPLETE-001 / HIGH / MITIGATED IN CODE: Ignoring all removed lines could hide real reserved or processed work. The shared predicate ignores a removed line only when ordered, allocated, picked, fulfilled, and stock-reduced quantities are zero and no reconciliation exception exists.
 
 === 11. IMPLEMENTATION AND CHANGE LOG ===
 2026-08-08: Added OpenOrderRoutePlan request/response schemas, route-planning service, and POST /api/routes/open-orders/plan.
@@ -183,6 +235,7 @@ BLOCK-DEMO-001 / P0 / RESOLVED: The user supplied a compliant 12-character passw
 2026-08-10: Committed and pushed 4dc8bcd, captured PostgreSQL backup b011, deployed Heroku v50, ran the unchanged Alembic release gate successfully, and verified health, web/worker dynos, demo Items/Routes branding, mock catalog continuity, and clean browser logs.
 2026-08-11: Implemented centralized barcode alternates across item, inventory, scanner, receiving, cycle count, and pick paths; exact absolute stock adjustment inputs with optional audit reason; shared Enter-dismissed suggestions and fixed overlay menus; ten-zone authoritative route assignments, time/map metadata, responsive stop overview, Google navigation, and separate completed-route page. No migration, dependency, credential, production data, or WooCommerce configuration change was made.
 2026-08-11: Replaced the shared module-rail initial with the bundled Pongo logo and added an isolated live WooCommerce open-order endpoint/card for `pending`, `processing`, and `on-hold`, with verified pagination totals, contained failures, and demo isolation. No migration, dependency, credential, production data, WooCommerce write, commit, push, or deployment was performed.
+2026-08-14: Reproduced picked-completion failures for production orders 38607 and 38613, confirmed their active lines are fully picked, and identified removed zero-quantity history rows as the only failed validation. Updated the shared completion validator to reuse the existing actionable-line rule and added regression coverage; no production mutation was performed.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
 Final evidence:
@@ -210,14 +263,16 @@ Current release-candidate evidence: full backend passed 526 tests with 10 Postgr
 GitHub release-gate evidence: exact commit bfd1b90 passed run 31524500439 in 6m36s, including PostgreSQL 16 migration up/down/up/drift validation, backup/restore verification, vulnerability scans, full backend tests with PostgreSQL concurrency, frontend tests/build, and the isolated browser contract chain.
 Production scanner/stock/route evidence: Heroku v51 reports commit bfd1b90; backup b012 completed before deployment; the release command exited 0 at schema 20260810_0038; web and worker Basic dynos are up; `/health` returned 200 and anonymous auth returned 401. A read-only one-off check used an undisclosed real stored barcode and confirmed its leading-zero alternate resolved uniquely; a non-mutating schema check confirmed absolute zero is valid and legacy delta input is rejected. The live demo Routes page showed ten zones, the all-stop overview, Google links, and separate Completed Routes; at 390 px the completed page and stock modal had no horizontal overflow, the modal showed Final Stock Quantity plus optional reason, and browser diagnostics were empty. No live stock or order was changed.
 Pongo logo/live-count verification: focused backend business-dashboard coverage passed 19 tests; full backend passed 530 tests with 10 PostgreSQL-only skips and the existing Starlette warning; full frontend passed 151 tests across seven files; the focused App suite passed 119 tests; the production frontend build passed with the existing Vite chunk warning. Tests prove exact active Woo status requests, verified case-insensitive pagination totals, safe 503 behavior, demo non-access, bundled logo rendering, successful live count rendering, isolation of card failure from local Dashboard content, and rejection of an older response that finishes after a newer refresh. Independent final review found no remaining blocker. No production or external WooCommerce request was made.
+Picked-completion repair evidence: production read-only query mapped Pongo internal order 3471 to Woo 38607 and 3477 to Woo 38613. Both have fully picked actionable lines; their failed rows are `matched_status=removed` with all workflow quantities zero. Focused `test_order_workflow_api.py` passed 15 tests. Full backend passed 531 tests with 10 PostgreSQL-only skips and the existing Starlette warning. The regression completes a picked order with a retained removed row and asserts stock is not reduced again; existing negative tests still reject incomplete or inventory-empty completion. Independent read-only review found no blocker and reran the 15-test workflow suite successfully.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
 Database migration: production is at 20260810_0038; it adds `users.access_level` with `staff` default and a `staff|demo` check. The release migration completed transactionally.
-Release baseline: production is Heroku v51 at commit bfd1b90. The release changed no schema revision, dependency, or configuration; it included a compatibility-only repair to released migration 0038 for clean database bootstrap.
-Recovery: Continuous Protection is enabled and completed manual backup b012 is the pre-v51 rollback boundary. Both v50 and v51 use schema 20260810_0038.
+Release baseline: production is Heroku v54 at commit 103e4d6. The picked-completion candidate changes no schema revision, dependency, configuration, credential, frontend artifact, or data.
+Recovery: Continuous Protection is enabled. A fresh manual PostgreSQL backup is required immediately before this release; rollback is the prior Heroku release because the database contract is unchanged.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
 CURRENT DASHBOARD CHANGE STATE: Released and verified on Heroku v52 at 1665ef9 after exact-commit CI and completed backup b013. Schema remains 20260810_0038; there was no dependency, environment, credential, order, or stock change.
+CURRENT PICKED-COMPLETION RELEASE STATE: Locally verified and explicitly authorized for production deployment; backup, exact revision, release number, and live smoke evidence remain pending.
 
 === 14. OPERATIONS, OBSERVABILITY, AND SUPPORT READINESS ===
 The route endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Web and worker dynos are each running at one Basic dyno. Physical iPhone/Android camera permission and real barcode decoding still require device verification by Pongo staff. Provider-backed tiles, geocoding, and live traffic remain disabled; the in-app overview uses verified stored coordinates when available and otherwise explicit zones.
@@ -238,11 +293,17 @@ For demo access, rebinding the existing request session provides one fail-closed
 For the live WooCommerce KPI, reused the existing active-status set, client, pagination parser, authentication boundary, metric card grid, and bundled logo. The separate endpoint is the smallest boundary that prevents upstream failure from delaying or replacing cached local Dashboard data.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: No release action remains. Monitor the live count during normal staff use.
-THEN: Address the pre-existing `/ready` unit-cost, alerting, and stock-authority gaps separately.
-APPROVAL STATE: Production deployment completed and verified. No credential is recorded in source control or lifecycle state.
+NEXT: Complete independent diff review and state/diff validation, commit and push the exact candidate, require the release gate, capture a fresh PostgreSQL backup, deploy, and verify production without completing a real order.
+THEN: Staff may retry completion for Woo orders 38607 and 38613 after live verification.
+APPROVAL STATE: The user explicitly requested “fix it and deploy” on 2026-08-14. No credential is recorded in source control or lifecycle state.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
+--- DELIVERY RUN: 2026-08-15T03:07:52Z ---
+MODE: Stabilize and Repair; Release Readiness and Release
+SUMMARY: Fixed the false picked-completion rejection caused by harmless removed WooCommerce history rows; full local backend verification passed and production deployment is authorized but not yet executed.
+EVIDENCE: Read-only production query confirmed the exact order/line state; focused workflow suite 15 passed; full backend 531 passed with 10 PostgreSQL-only skips; no schema, dependency, configuration, stock, order, or WooCommerce data was changed.
+NEXT ACTION: Complete independent review and state/diff validation, commit/push, capture a fresh PostgreSQL backup, deploy, and verify health plus the validator read-only on production.
+
 --- DELIVERY RUN: 2026-08-11T19:24:33Z ---
 MODE: Build Approved Scope
 SUMMARY: Shared Pongo logo and isolated live WooCommerce open-order KPI implemented and fully verified locally; not committed, pushed, or deployed.

@@ -251,7 +251,7 @@ def test_allocation_exceptions_ignore_retired_woo_lines_without_outstanding_work
     assert needs_review["item_groups"][0]["exception_reason"] == "woo_quantity_below_allocated"
 
 
-def test_complete_picked_order_does_not_reduce_stock_again(client, monkeypatch):
+def test_complete_picked_order_ignores_retired_lines_without_reducing_stock_again(client, monkeypatch):
     settings = get_settings().model_copy(update={"woocommerce_writeback_dry_run": False})
     monkeypatch.setattr("app.api.routes.orders.get_settings", lambda: settings)
     monkeypatch.setattr(
@@ -262,6 +262,29 @@ def test_complete_picked_order_does_not_reduce_stock_again(client, monkeypatch):
     pick = client.post("/api/picks/commit", json={"idempotency_key": "workflow-complete-pick", "order_ids": [order["id"]], "allow_partial": True})
     assert pick.json()["status"] == "posted"
     before = client.get("/api/items", params={"sku": "COMPLETE-PICK-SKU"}).json()["items"][0]
+
+    db_override = app.dependency_overrides[get_db]()
+    db = next(db_override)
+    try:
+        current_line = db.get(Order, order["id"]).items[0]
+        db.add(OrderItem(
+            order_id=order["id"],
+            woo_order_item_id=2851,
+            inventory_item_id=current_line.inventory_item_id,
+            sku="COMPLETE-PICK-SKU",
+            barcode="COMPLETE-PICK-BAR",
+            name="Retired duplicate",
+            quantity_ordered=0,
+            quantity_allocated=0,
+            quantity_picked=0,
+            quantity_fulfilled=0,
+            quantity_stock_reduced=0,
+            matched_status="removed",
+            allocation_status="unallocated",
+        ))
+        db.commit()
+    finally:
+        db_override.close()
 
     complete = client.post(f"/api/orders/{order['id']}/complete/commit", json={"completion_mode": "complete"})
 

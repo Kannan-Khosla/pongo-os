@@ -173,7 +173,7 @@ Order updates also reconcile line quantities. Decreases release only unpicked
 excess allocation. Lines removed in WooCommerce are retained locally as retired
 history with ordered quantity zero. Retired lines with no remaining allocation,
 pick, fulfillment, stock-reduction, or reconciliation exception are audit-only
-and do not enter allocation, picking, or fulfillment queues. An unpicked product
+and do not enter allocation, picking, fulfillment, or completion validation. An unpicked product
 change releases the old reservation before FIFO allocates the replacement item.
 If WooCommerce changes
 a product or drops a quantity below what was already picked, fulfilled, or
