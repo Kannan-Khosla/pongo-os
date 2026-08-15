@@ -1339,6 +1339,10 @@ changes that release unpicked allocations.
 List line-level allocation exceptions for processing orders. By default the
 endpoint returns only lines with unresolved quantities; use
 `include_fully_allocated=true` to include 100% allocated matched lines.
+Zero-quantity WooCommerce lines retained only as retired audit history are
+excluded. A retired line remains visible when it still carries allocated,
+picked, fulfilled, or stock-reduced quantity, or an explicit reconciliation
+exception.
 
 Filters:
 

@@ -171,6 +171,86 @@ def test_allocation_exceptions_are_stably_paginated_and_exported_in_full(client)
     assert "ALLOC-PAGE-21" in export
 
 
+def test_allocation_exceptions_ignore_retired_woo_lines_without_outstanding_work(client):
+    item = seed_item(
+        client,
+        sku="RETIRED-LINE-SKU",
+        Barcode="RETIRED-LINE-BAR",
+        wooProductId=849,
+        **{"In Stock": 2, "Allocated": 1},
+    )
+    db_override = app.dependency_overrides[get_db]()
+    db = next(db_override)
+    try:
+        order = Order(
+            woo_order_id=8490,
+            woo_order_number="RETIRED-LINE-ORDER",
+            woo_status="processing",
+            local_status="open",
+            completion_status="open",
+            customer_name="Retired Line Customer",
+        )
+        db.add(order)
+        db.flush()
+        retired_line = OrderItem(
+            order_id=order.id,
+            woo_order_item_id=8491,
+            inventory_item_id=item["id"],
+            sku="RETIRED-LINE-SKU",
+            barcode="RETIRED-LINE-BAR",
+            name="Retired duplicate",
+            quantity_ordered=0,
+            quantity_allocated=0,
+            quantity_picked=0,
+            quantity_fulfilled=0,
+            quantity_stock_reduced=0,
+            matched_status="removed",
+            allocation_status="unallocated",
+        )
+        db.add_all([
+            retired_line,
+            OrderItem(
+                order_id=order.id,
+                woo_order_item_id=8492,
+                inventory_item_id=item["id"],
+                sku="RETIRED-LINE-SKU",
+                barcode="RETIRED-LINE-BAR",
+                name="Current line",
+                quantity_ordered=1,
+                quantity_allocated=1,
+                quantity_picked=0,
+                quantity_fulfilled=0,
+                quantity_stock_reduced=0,
+                matched_status="matched",
+                allocation_status="allocated",
+            ),
+        ])
+        db.commit()
+        retired_line_id = retired_line.id
+    finally:
+        db_override.close()
+
+    clean = client.get("/api/allocations/exceptions", params={"view": "items"}).json()
+    assert clean["total_lines"] == 0
+    assert clean["item_groups"] == []
+
+    db_override = app.dependency_overrides[get_db]()
+    db = next(db_override)
+    try:
+        retired_line = db.get(OrderItem, retired_line_id)
+        retired_line.quantity_allocated = 1
+        retired_line.quantity_picked = 1
+        retired_line.allocation_status = "exception"
+        retired_line.allocation_exception_reason = "woo_quantity_below_allocated"
+        db.commit()
+    finally:
+        db_override.close()
+
+    needs_review = client.get("/api/allocations/exceptions", params={"view": "items"}).json()
+    assert needs_review["total_lines"] == 1
+    assert needs_review["item_groups"][0]["exception_reason"] == "woo_quantity_below_allocated"
+
+
 def test_complete_picked_order_does_not_reduce_stock_again(client, monkeypatch):
     settings = get_settings().model_copy(update={"woocommerce_writeback_dry_run": False})
     monkeypatch.setattr("app.api.routes.orders.get_settings", lambda: settings)

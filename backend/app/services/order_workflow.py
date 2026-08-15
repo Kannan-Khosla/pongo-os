@@ -52,6 +52,35 @@ def operational_order_clause():
     )
 
 
+def actionable_order_line_clause():
+    return or_(
+        func.coalesce(OrderItem.matched_status, "") != "removed",
+        OrderItem.allocation_exception_reason.is_not(None),
+        func.coalesce(OrderItem.quantity_ordered, 0) > 0,
+        func.coalesce(OrderItem.quantity_allocated, 0) > 0,
+        func.coalesce(OrderItem.quantity_picked, 0) > 0,
+        func.coalesce(OrderItem.quantity_fulfilled, 0) > 0,
+        func.coalesce(OrderItem.quantity_stock_reduced, 0) > 0,
+    )
+
+
+def is_actionable_order_line(line: OrderItem) -> bool:
+    return (
+        line.matched_status != "removed"
+        or line.allocation_exception_reason is not None
+        or any(
+            to_decimal(quantity) > 0
+            for quantity in (
+                line.quantity_ordered,
+                line.quantity_allocated,
+                line.quantity_picked,
+                line.quantity_fulfilled,
+                line.quantity_stock_reduced,
+            )
+        )
+    )
+
+
 @dataclass
 class AllocationPlanEntry:
     order_line_id: int
@@ -119,6 +148,8 @@ def evaluate_order_allocation(db: Session, order_id: int) -> AllocationEvaluatio
     planned_by_location: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
 
     for line in sorted(order.items, key=lambda row: row.line_number or row.id):
+        if not is_actionable_order_line(line):
+            continue
         ordered = to_decimal(line.quantity_ordered)
         allocated = to_decimal(line.quantity_allocated)
         remaining = max(ordered - allocated, Decimal("0"))
@@ -637,7 +668,7 @@ def allocation_remaining_by_location(
 
 
 def sync_order_workflow_statuses(order: Order) -> None:
-    lines = list(order.items)
+    lines = [line for line in order.items if is_actionable_order_line(line)]
     matched_lines = [line for line in lines if line.matched_status == "matched" and not (line.inventory_item and line.inventory_item.non_inventory)]
     blocked = [
         line
@@ -825,7 +856,11 @@ def allocation_needs_attention(order: Order) -> bool:
 def is_pickable(order: Order) -> bool:
     if order.allocation_status not in {"allocated", "auto_allocated"}:
         return False
-    required_lines = [line for line in order.items if not (line.inventory_item and line.inventory_item.non_inventory)]
+    required_lines = [
+        line
+        for line in order.items
+        if is_actionable_order_line(line) and not (line.inventory_item and line.inventory_item.non_inventory)
+    ]
     if not required_lines:
         return False
     if any(line.matched_status != "matched" or to_decimal(line.quantity_allocated) < to_decimal(line.quantity_ordered) for line in required_lines):

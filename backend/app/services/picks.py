@@ -28,6 +28,7 @@ from app.schemas.picks import (
 from app.services.item_identifiers import sku_or_barcode_matches_scan
 from app.services.location_inventory import lock_inventory_stock, reduce_pick_from_location, restore_unpick_to_location
 from app.services.order_workflow import (
+    actionable_order_line_clause,
     add_audit_event,
     allocation_remaining_by_location,
     is_operational_order,
@@ -560,7 +561,7 @@ def selected_order_lines(db: Session, payload: PickRequest) -> list[OrderItem]:
             db.scalars(
                 select(OrderItem)
                 .join(Order)
-                .where(Order.id.in_(payload.order_ids))
+                .where(Order.id.in_(payload.order_ids), actionable_order_line_clause())
                 .options(selectinload(OrderItem.order), selectinload(OrderItem.inventory_item))
                 .order_by(OrderItem.order_id.asc(), OrderItem.line_number.asc().nullslast(), OrderItem.id.asc())
             ).all()

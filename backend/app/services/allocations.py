@@ -26,7 +26,13 @@ from app.schemas.allocations import (
     AllocationRequest,
 )
 from app.services.location_inventory import allocate_from_location, choose_allocation_location
-from app.services.order_workflow import COMPLETED_LOCAL_STATUSES, acquire_fifo_allocation_lock, operational_order_clause, sync_order_workflow_statuses
+from app.services.order_workflow import (
+    COMPLETED_LOCAL_STATUSES,
+    actionable_order_line_clause,
+    acquire_fifo_allocation_lock,
+    operational_order_clause,
+    sync_order_workflow_statuses,
+)
 
 ALLOCATABLE_ORDER_STATUSES = {"open", "partially_allocated"}
 
@@ -61,6 +67,7 @@ def list_allocation_exception_lines(
         operational_order_clause(),
         active_order,
         or_(InventoryItem.id.is_(None), InventoryItem.non_inventory.is_(False)),
+        actionable_order_line_clause(),
     ]
     if ordered_from:
         predicates.append(Order.date_created >= datetime.combine(ordered_from, time.min, tzinfo=timezone.utc))
@@ -291,6 +298,8 @@ def export_allocation_exceptions_csv(db: Session, **filters) -> str:
 def allocation_line_exception_reason(line: OrderItem, item: InventoryItem | None, unallocated: Decimal, available: Decimal) -> str:
     if line.matched_status == "conflict":
         return "conflicting_item_match"
+    if line.matched_status == "removed":
+        return line.allocation_exception_reason or "removed_order_line"
     if line.matched_status != "matched" or item is None:
         return "unmatched_item"
     if unallocated <= 0:
@@ -543,7 +552,11 @@ def selected_order_lines(db: Session, payload: AllocationRequest) -> list[OrderI
             db.scalars(
                 select(OrderItem)
                 .join(Order)
-                .where(Order.id.in_(payload.order_ids), Order.is_historical_snapshot.is_(False))
+                .where(
+                    Order.id.in_(payload.order_ids),
+                    Order.is_historical_snapshot.is_(False),
+                    actionable_order_line_clause(),
+                )
                 .options(selectinload(OrderItem.order), selectinload(OrderItem.inventory_item))
                 .order_by(OrderItem.order_id.asc(), OrderItem.line_number.asc().nullslast(), OrderItem.id.asc())
             ).all()

@@ -410,6 +410,12 @@ def test_signed_order_updated_safely_retires_removed_line_and_replay_is_idempote
     assert retired["sync_status"] == "synced"
     assert "local history was retained" in retired["sync_error"]
     assert "retained local history" in detail["workflow_notes"]
+    allocation_exceptions = client.get("/api/allocations/exceptions", params={"view": "items"}).json()
+    assert allocation_exceptions["item_groups"] == []
+    workflow = client.get(f"/api/orders/{created.json()['local_order_id']}/workflow").json()
+    assert workflow["allocation_evaluation"]["unmatched_lines"] == []
+    pick_order_ids = {row["id"] for row in client.get("/api/orders/pick").json()["orders"]}
+    assert created.json()["local_order_id"] in pick_order_ids
     second_item = client.get("/api/items", params={"sku": "SECOND-SKU"}).json()["items"][0]
     assert second_item["Allocated"] == 0
 

@@ -28,6 +28,7 @@ from app.services.order_workflow import (
     BLOCKING_ALLOCATION_EXCEPTION_REASONS,
     BLOCKING_MATCH_STATUSES,
     COMPLETED_LOCAL_STATUSES,
+    actionable_order_line_clause,
     append_note,
     auto_allocate_processing_orders_fifo,
     operational_order_clause,
@@ -905,7 +906,10 @@ def _workflow_view_clause(workflow_view: str):
         return and_(Order.is_historical_snapshot.is_(False), ~_active_order_clause())
 
     operational = and_(operational_order_clause(), _active_order_clause(normalize_operational=True))
-    required_line = or_(InventoryItem.id.is_(None), InventoryItem.non_inventory.is_(False))
+    required_line = and_(
+        actionable_order_line_clause(),
+        or_(InventoryItem.id.is_(None), InventoryItem.non_inventory.is_(False)),
+    )
     blocking_line = _order_line_exists(or_(
         OrderItem.matched_status.in_(tuple(BLOCKING_MATCH_STATUSES)),
         OrderItem.allocation_exception_reason.in_(tuple(BLOCKING_ALLOCATION_EXCEPTION_REASONS)),

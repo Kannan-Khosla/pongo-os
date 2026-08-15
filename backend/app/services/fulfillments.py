@@ -23,7 +23,7 @@ from app.schemas.fulfillments import (
     FulfillmentRequest,
 )
 from app.services.location_inventory import choose_allocated_location
-from app.services.order_workflow import add_audit_event, first_item_location
+from app.services.order_workflow import actionable_order_line_clause, add_audit_event, first_item_location
 
 FULFILLABLE_ORDER_STATUSES = {"picked", "partially_picked", "partially_fulfilled"}
 
@@ -254,7 +254,11 @@ def selected_order_lines(db: Session, payload: FulfillmentRequest) -> list[Order
             db.scalars(
                 select(OrderItem)
                 .join(Order)
-                .where(Order.id.in_(payload.order_ids), Order.is_historical_snapshot.is_(False))
+                .where(
+                    Order.id.in_(payload.order_ids),
+                    Order.is_historical_snapshot.is_(False),
+                    actionable_order_line_clause(),
+                )
                 .options(selectinload(OrderItem.order), selectinload(OrderItem.inventory_item))
                 .order_by(OrderItem.order_id.asc(), OrderItem.line_number.asc().nullslast(), OrderItem.id.asc())
             ).all()
