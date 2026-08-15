@@ -169,7 +169,9 @@ def test_saved_views_crud_and_item_search(client):
     assert deleted.json()["deleted"] is True
 
 
-def test_bulk_receiving_preview_commit_detail_export(client):
+def test_bulk_receiving_preview_commit_detail_export(client, monkeypatch):
+    transaction_date = date(2026, 1, 15)
+    monkeypatch.setattr("app.services.bulk_receiving.admin_today", lambda now=None: transaction_date)
     item = setup_stock_item(client, sku="BULK-001", barcode="BULK-BAR", in_stock=4, allocated=1)
     payload = {
         "idempotency_key": "bulk-receipt-detail",
@@ -191,6 +193,12 @@ def test_bulk_receiving_preview_commit_detail_export(client):
     body = commit.json()
     assert body["receipt_number"].startswith("RCPT-")
     assert len(body["lines"]) == 2
+    override = app.dependency_overrides[get_db]()
+    db = next(override)
+    try:
+        assert db.get(Receipt, body["id"]).received_date == transaction_date
+    finally:
+        override.close()
     refreshed = client.get(f"/api/items/{item['id']}").json()
     assert refreshed["In Stock"] == 9
     movements = client.get("/api/stock-movements", params={"sku": "BULK-001"}).json()["movements"]

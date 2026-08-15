@@ -16,6 +16,7 @@ from app.schemas.receipts import (
     ReceiptLineRead,
     ReceiptRead,
 )
+from app.services.business_dashboard import admin_today
 from app.services.calculations import calculate_inventory_value
 from app.services.item_identifiers import barcode_scan_candidates
 from app.services.items import apply_calculated_fields
@@ -173,7 +174,7 @@ def commit_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple[R
     lock_inventory_stock(db, {line.item.id for line in lines if line.item is not None})
     lines, _, warnings = validate_direct_receipt(payload, db)
     now = datetime.now(timezone.utc)
-    received_date = date.today()
+    received_date = admin_today(now)
     receipt_number = generate_direct_receipt_number(db, now)
     receipt = Receipt(
         receipt_number=receipt_number,

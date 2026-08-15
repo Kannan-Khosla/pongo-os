@@ -1,5 +1,5 @@
 import csv
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from io import StringIO
 from types import SimpleNamespace
@@ -573,6 +573,8 @@ def test_locationless_and_zero_cost_items_are_visible_with_quality_warnings(clie
 
 
 def test_received_and_delivered_reports_keep_transaction_time_cost(client, monkeypatch):
+    transaction_date = date(2026, 1, 15)
+    monkeypatch.setattr("app.services.receiving.admin_today", lambda now=None: transaction_date)
     seed_location(client, code="COST-RCV", name="COST-RCV")
     received_item = seed_item(client, sku="FROZEN-RECEIPT", **{"Inventory Location": "COST-RCV", "Default Location": "COST-RCV", "In Stock": 0, "Allocated": 0, "Unit Cost": 4})
     receipt = client.post(
@@ -587,7 +589,10 @@ def test_received_and_delivered_reports_keep_transaction_time_cost(client, monke
     assert client.patch(f"/api/items/{received_item['id']}", json={"Unit Cost": 99}).status_code == 200
     assert client.patch(f"/api/items/{delivered_item['id']}", json={"Unit Cost": 88}).status_code == 200
 
-    received = client.post("/api/reports/runs/received-inventory", json={"filters": {"sku": "FROZEN-RECEIPT"}}).json()["rows"][0]
+    received = client.post(
+        "/api/reports/runs/received-inventory",
+        json={"filters": {"sku": "FROZEN-RECEIPT", "start_date": transaction_date.isoformat(), "end_date": transaction_date.isoformat()}},
+    ).json()["rows"][0]
     delivered = client.post("/api/reports/runs/delivered-inventory", json={"filters": {"sku": "FROZEN-DELIVERY"}}).json()["rows"][0]
 
     assert received["unit_cost"] == "3.00"

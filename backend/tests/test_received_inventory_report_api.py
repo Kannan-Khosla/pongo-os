@@ -4,6 +4,7 @@ from io import StringIO
 
 import pytest
 
+from app.services.business_dashboard import admin_today
 from app.services.received_inventory_report import RECEIVED_INVENTORY_CSV_COLUMNS
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_locations_api import seed_location
@@ -118,9 +119,10 @@ def test_received_inventory_report_filters_by_receipt_number(client):
 
 def test_received_inventory_report_date_filters(client):
     setup_received_inventory(client)
-    today = date.today().isoformat()
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    receipt_date = admin_today()
+    today = receipt_date.isoformat()
+    yesterday = (receipt_date - timedelta(days=1)).isoformat()
+    tomorrow = (receipt_date + timedelta(days=1)).isoformat()
 
     assert len(report_rows(client, params={"date_from": today})) == 2
     assert len(report_rows(client, params={"date_to": today})) == 2

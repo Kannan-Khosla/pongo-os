@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.receipts import Receipt, ReceiptItem
+from app.services.business_dashboard import admin_today
 from app.services.calculations import calculate_inventory_value
 from app.services.item_identifiers import barcode_scan_candidates
 from app.services.location_inventory import find_item_location, get_or_create_item_location, lock_inventory_stock, receive_to_location, to_decimal
@@ -170,7 +171,7 @@ def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
         notes=payload.get("notes"),
         created_by=payload.get("created_by") or "system",
         received_by=payload.get("created_by") or "system",
-        received_date=date.fromisoformat(payload["receipt_date"]) if payload.get("receipt_date") else date.today(),
+        received_date=date.fromisoformat(payload["receipt_date"]) if payload.get("receipt_date") else admin_today(now),
         received_at=now,
         committed_at=now,
     )
