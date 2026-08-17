@@ -2,14 +2,14 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-17T20:55:01Z
+LAST UPDATED: 2026-08-17T21:11:21Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: One-driver selected-order Google Maps release authorized and being prepared
-CURRENT RELEASE RECOMMENDATION: READY FOR AUTHORIZED DEPLOYMENT
+CURRENT PHASE: One-driver selected-order Google Maps release deployed and verified
+CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
-Routes now has a one-click action that takes the exact checked orders, resets the plan to one equal-time driver, and surfaces the existing mobile-safe Google Maps route links immediately. The existing multi-driver and ten-zone planner remains available. This frontend-only change is verified locally, and the user explicitly authorized production deployment on 2026-08-17.
-Production is Heroku v55 at commit d25afb6 with schema revision 20260810_0038. Picked completion now ignores WooCommerce order lines retained only as zero-quantity history, so fully picked Woo orders 38607 and 38613 satisfy the live validator without reducing stock again. Real active or outstanding retired work still blocks completion.
+Routes now has a one-click action that takes the exact checked orders, resets the plan to one equal-time driver, and surfaces the existing mobile-safe Google Maps route links immediately. The existing multi-driver and ten-zone planner remains available. This frontend-only change is deployed and verified on Pongo production as Heroku v56 at commit 33ba36e.
+Production is Heroku v56 with schema revision 20260810_0038. The preceding picked-completion repair remains included: harmless zero-quantity WooCommerce history no longer blocks fully picked orders, while real active or outstanding retired work still blocks completion.
 The first candidate's exact-commit gate safely stopped before deployment because receipt defaults used the server's UTC calendar date while reports use America/Edmonton. Direct and bulk receiving now reuse the existing configured business-date helper. Exact-commit CI, backup b014, deployment, dyno/health/schema checks, read-only live order validation, and recent-error-log inspection all passed; no production order or stock was changed during verification.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
@@ -138,7 +138,7 @@ ADR-RECEIVING-DATE-001 ACCEPTED: Reuse `admin_today(now)` for receipt business d
 35. Trace the selected-order planner, one-driver assignment contract, Google Maps link limits, and credential boundary. COMPLETED.
 36. Add the one-driver selected-order action and exact-payload frontend regression. COMPLETED.
 37. Run focused/full frontend, production build, backend route contract, documentation, diff, and lifecycle-state validation. COMPLETED.
-38. Isolate the exact release files, commit/push the candidate, require the exact-commit GitHub gate, capture a fresh production backup, deploy, and verify without changing orders. IN PROGRESS.
+38. Isolate the exact release files, commit/push the candidate, require the exact-commit GitHub gate, capture a fresh production backup, deploy, and verify without changing orders. COMPLETED.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -154,7 +154,7 @@ WI-DEMO-BRAND-001 / P1 / RELEASED / Global demo-only top-right Mythodus lockup w
 WI-SCAN-STOCK-001 / P0 / RELEASED / Shared one-leading-zero barcode matching, exact SKU boundary, ambiguity protection, absolute final-stock corrections, optional audited reason, and preserved allocation safeguards; Heroku v51.
 WI-UI-OVERLAY-001 / P0 / RELEASED / Enter-dismissed suggestions, shared viewport-aware body portal menus, neutral notice cleanup, and 390 px overflow verification; Heroku v51.
 WI-ROUTE-004 / P0 / RELEASED / Ten exact zones, authoritative explicit assignments, exactly-once/unassigned contract, responsive stop overview, time totals, Google navigation, and separate completed-route subpage; Heroku v51.
-WI-ROUTE-005 / P1 / VERIFIED; RELEASE AUTHORIZED / One-click exact selected-order planning for one equal-time driver using the existing mobile-safe Google Maps routes.
+WI-ROUTE-005 / P1 / RELEASED / One-click exact selected-order planning for one equal-time driver using the existing mobile-safe Google Maps routes; Heroku v56 at 33ba36e.
 WI-DASH-WOO-001 / P0 / IMPLEMENTED NOT DEPLOYED / Shared Pongo shell logo plus isolated live WooCommerce open-order KPI with active-status totals, explicit unavailable state, and demo isolation.
 
 WORK ITEM: WI-001
@@ -203,7 +203,7 @@ LAST UPDATED: 2026-08-15T03:42:14Z
 WORK ITEM: WI-002
 TITLE: Map the checked open orders for one driver
 TYPE: FEATURE
-STATUS: VERIFIED
+STATUS: RELEASED
 PRIORITY: P1
 SOURCE: User request on 2026-08-17
 OWNER: Frontend / QA
@@ -233,15 +233,15 @@ MIGRATION / ROLLOUT:
 No migration or configuration. Frontend-only release when separately authorized; rollback is the prior application release.
 
 VERIFICATION:
-Focused App test, full frontend suite, production frontend build, focused backend route suite, diff check, and lifecycle-state validation.
+Focused App test, full frontend suite, production frontend build, focused backend route suite, exact-commit GitHub release gate, diff/state checks, PostgreSQL backup, Heroku health/dyno/schema/auth checks, authenticated production Routes preview, and browser-error inspection.
 
 EVIDENCE:
-Focused App suite passed 119 tests; full frontend passed 151 tests; production build passed with the existing Vite large-chunk advisory; focused backend Routes passed 17 tests with the existing Starlette warning.
+Focused App suite passed 119 tests; full frontend passed 151 tests; production build passed with the existing Vite large-chunk advisory; focused backend Routes passed 17 tests with the existing Starlette warning. Exact commit 33ba36e passed GitHub run 32068514429, backup b015 completed, and Heroku v56 deployed with web/worker up and schema 20260810_0038. Authenticated production verification created a read-only preview for the eight selected orders and exposed continuous Google Maps parts 1–4 and 5–8 with no browser errors; no order, stock, WooCommerce record, or persisted route changed.
 
 RESIDUAL RISK:
 Google mobile waypoint limits still require long one-driver runs to open as continuous numbered parts. A provider-backed embedded street map remains intentionally out of scope because frontend map credentials are prohibited.
 
-LAST UPDATED: 2026-08-17T20:44:07Z
+LAST UPDATED: 2026-08-17T21:10:11Z
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
@@ -249,7 +249,7 @@ RISK-002 / MEDIUM / ACCEPTED: Postal grouping is not road/traffic optimization. 
 RISK-003 / MEDIUM / MITIGATED: Incomplete addresses could silently disappear. Planner returns and displays every excluded order and reason.
 RISK-004 / LOW / MITIGATED: More drivers than orders. Effective driver count is reduced and the response explains why.
 RISK-005 / MEDIUM / MITIGATED FOR RELEASE: The obsolete local SQLite file was not used for release evidence. Heroku's PostgreSQL release migration succeeded at revision 20260807_0037 and the authenticated production UI loaded real route/inventory data.
-RISK-006 / HIGH / PRE-EXISTING AND ACCEPTED FOR THIS RELEASE: Production `/ready` remains HTTP 503 because 223 active stock items lack positive unit cost, no operations alert webhook is configured, and production stock authority/writeback are not fully configured. This delivery did not alter those settings; `/health`, schema, authentication, database, webhooks, reconciliation, and worker checks passed.
+RISK-006 / HIGH / PRE-EXISTING AND ACCEPTED FOR THIS RELEASE: Production `/ready` remains HTTP 503 because 224 active stock items lack positive unit cost and no operations alert webhook is configured. This delivery did not alter those settings; `/health`, schema, authentication, database, WooCommerce configuration, reconciliation, and worker checks passed.
 RISK-MIGRATION-001 / HIGH / MITIGATED FOR RELEASE: The legacy base migration bootstraps current ORM metadata, so a fresh database already contains the demo `access_level` field before migration 0038 runs. Migration 0038 now inspects the existing column and check constraint before adding or removing them; its focused fresh upgrade/downgrade/re-upgrade/check cycle passes, and the GitHub PostgreSQL release gate remains mandatory before deployment.
 DEPENDENCY-001: Opening a generated link requires Google Maps/web and exposes that link's addresses to Google at staff action time.
 RISK-STOCKCSV-001 / HIGH / MITIGATED: Preview performs a stale check and the adjustment service repeats the expected-quantity check under the stock lock before writing.
@@ -293,7 +293,8 @@ RISK-RECEIVING-DATE-001 / HIGH / MITIGATED IN CODE: Server UTC and Edmonton can 
 2026-08-11: Replaced the shared module-rail initial with the bundled Pongo logo and added an isolated live WooCommerce open-order endpoint/card for `pending`, `processing`, and `on-hold`, with verified pagination totals, contained failures, and demo isolation. No migration, dependency, credential, production data, WooCommerce write, commit, push, or deployment was performed.
 2026-08-14: Reproduced picked-completion failures for production orders 38607 and 38613, confirmed their active lines are fully picked, and identified removed zero-quantity history rows as the only failed validation. Updated the shared completion validator to reuse the existing actionable-line rule and added regression coverage; no production mutation was performed.
 2026-08-14: Exact-commit GitHub run 31861156321 stopped safely before deployment on a deterministic UTC/Edmonton receipt-date test failure. Reused the existing business-date helper in direct and bulk receiving and made the affected regressions timezone deterministic; no production action was performed.
-2026-08-17: Added a responsive one-driver Google Maps action that reuses the current selected-order plan, forces one equal-time driver, and preserves exact checked IDs plus the existing segmented mobile links. No backend, provider key, dependency, schema, production data, commit, push, or deployment change was made.
+2026-08-17: Added a responsive one-driver Google Maps action that reuses the current selected-order plan, forces one equal-time driver, and preserves exact checked IDs plus the existing segmented mobile links.
+2026-08-17: Exact commit 33ba36e passed GitHub run 32068514429; backup b015 completed; Heroku v56 deployed and passed non-mutating health, auth, schema, dyno, log, and authenticated Routes verification.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
 Final evidence:
@@ -311,6 +312,7 @@ Browser observation: planner layout and controls rendered locally. Data calls fa
 Stock CSV verification: focused backend import suite 15 passed; full backend 498 passed and 10 PostgreSQL-only skipped; full frontend 141 passed; production frontend build passed; `git diff --check` passed. The existing Starlette TestClient deprecation and Vite large-chunk warning remain.
 Production stock CSV evidence: Heroku v42 reports commit 64fa33c; `/health` returned 200; anonymous auth and import-schema requests returned 401; PostgreSQL is at Alembic head 20260807_0037; deployed schema version 2026-08-10.1 lists `update_stock`; signed-in UI displayed Override stock levels plus both stock template links with no console errors. No CSV was uploaded and no stock was mutated.
 One-driver selected-map evidence: focused App 119 passed; full frontend 151 passed; production frontend build passed with the existing Vite large-chunk advisory; focused backend Routes 17 passed with the existing Starlette warning; diff and lifecycle-state validation passed.
+Production one-driver map evidence: exact commit 33ba36e passed GitHub run 32068514429 in 6m09s, including 541 PostgreSQL-aware backend tests, 151 frontend tests/build, browser contracts, migrations, backup/restore, and vulnerability checks. Manual PostgreSQL backup b015 completed before Heroku v56; web and worker Basic dynos are up; `/health` and `/` returned 200; anonymous auth and route planning returned 401; Alembic remains at 20260810_0038. After a hard reload, the authenticated production Routes page showed `Map 8 selected for 1 driver`; its read-only preview assigned all eight selected orders to one driver and exposed continuous Google Maps parts 1–4 and 5–8 with no browser errors. Recent application logs contained no error/exception/traceback/critical entries. No order, stock, WooCommerce record, or persisted route changed.
 
 Full-file stock repair verification: 21 focused import tests passed; full backend 504 passed with 10 PostgreSQL-only skips; full frontend 145 passed; production build passed; both independent backend/UI re-reviews found no remaining blocker; `git diff --check` passed. The 1,500-row SQLite regression previewed in 0.236 seconds and committed all rows in 0.925 seconds through one adjustment. Existing Starlette TestClient deprecation and Vite large-chunk warnings remain.
 Production full-file repair evidence: Heroku v43 reports commit 462823e; manual PostgreSQL backup b006 completed before deployment; web and worker Basic dynos are up; `/health` returned HTTP 200; anonymous import schema returned HTTP 401; PostgreSQL is at Alembic head 20260807_0037; deployed schema 2026-08-10.2 requires SKU and In stock for `update_stock`; signed-in Items and stock-import screens rendered the direct workflow with no browser console errors. No CSV was uploaded and no inventory changed.
@@ -329,13 +331,13 @@ Production v55 evidence: exact-commit GitHub run 31862025002 passed in 5m49s wit
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
 Database migration: production is at 20260810_0038; it adds `users.access_level` with `staff` default and a `staff|demo` check. The release migration completed transactionally.
-Release baseline: production is Heroku v55 at commit d25afb6. The release changed no schema revision, dependency, configuration, credential, frontend artifact, or data.
-Recovery: Continuous Protection is enabled and manual backup b014 completed immediately before v55. Rollback is Heroku v54 because the database contract is unchanged.
+Release baseline: production is Heroku v56 at commit 33ba36e. This frontend release changed no schema revision, dependency, configuration, credential, or data.
+Recovery: Continuous Protection is enabled and manual backup b015 completed immediately before v56. Rollback is Heroku v55 because the database contract is unchanged.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
 CURRENT DASHBOARD CHANGE STATE: Released and verified on Heroku v52 at 1665ef9 after exact-commit CI and completed backup b013. Schema remains 20260810_0038; there was no dependency, environment, credential, order, or stock change.
 CURRENT PICKED-COMPLETION RELEASE STATE: Released and verified on Heroku v55 at d25afb6 after green exact-commit run 31862025002 and completed backup b014. No real order was completed during verification.
-CURRENT ONE-DRIVER MAP RELEASE STATE: Frontend-only, no migration/dependency/configuration/credential change; locally verified and explicitly authorized for production deployment on 2026-08-17. Rollback is the current Heroku v55 release because the database contract is unchanged.
+CURRENT ONE-DRIVER MAP RELEASE STATE: Released and verified on Heroku v56 at 33ba36e after green exact-commit run 32068514429 and completed backup b015. Rollback is Heroku v55 because the database contract is unchanged.
 
 === 14. OPERATIONS, OBSERVABILITY, AND SUPPORT READINESS ===
 The route endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Web and worker dynos are each running at one Basic dyno. Physical iPhone/Android camera permission and real barcode decoding still require device verification by Pongo staff. Provider-backed tiles, geocoding, and live traffic remain disabled; the in-app overview uses verified stored coordinates when available and otherwise explicit zones.
@@ -356,9 +358,9 @@ For demo access, rebinding the existing request session provides one fail-closed
 For the live WooCommerce KPI, reused the existing active-status set, client, pagination parser, authentication boundary, metric card grid, and bundled logo. The separate endpoint is the smallest boundary that prevents upstream failure from delaying or replacing cached local Dashboard data.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Commit and push only WI-ROUTE-005 files, require a green exact-commit release gate, capture a fresh production PostgreSQL backup, deploy, and run non-mutating health/auth/Routes checks.
-THEN: Monitor the one-driver Google Maps workflow during normal dispatch use. Separately resolve the pre-existing unit-cost and alert-webhook readiness blockers.
-APPROVAL STATE: The user explicitly requested “deploy” for WI-ROUTE-005 on 2026-08-17. No credential is recorded in source control or lifecycle state.
+NEXT: Monitor the one-driver Google Maps workflow during normal dispatch use. Separately resolve the pre-existing unit-cost and alert-webhook readiness blockers.
+THEN: Add provider-backed street tiles or live traffic only if staff validation proves the current credential-free workflow insufficient.
+APPROVAL STATE: The user explicitly requested “deploy” for WI-ROUTE-005 on 2026-08-17; the authorized release is complete. No credential is recorded in source control or lifecycle state.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
 --- DELIVERY RUN: 2026-08-17T20:44:07Z ---
@@ -498,3 +500,9 @@ MODE: Release Readiness and Release
 SUMMARY: Production deployment of the verified one-driver selected-order Google Maps workflow explicitly authorized and prepared.
 EVIDENCE: Exact release scope is six tracked files including SDLC state; 119 focused App tests, 151 full frontend tests, 17 focused backend route tests, production build, diff/state validation, and independent frontend review passed. No schema, dependency, configuration, credential, order, stock, or WooCommerce change.
 NEXT ACTION: Commit/push the exact candidate, require a green GitHub release gate, capture a fresh PostgreSQL backup, deploy to Pongo production, and run non-mutating verification.
+
+--- DELIVERY RUN: 2026-08-17T21:11:21Z ---
+MODE: Release Readiness and Release
+SUMMARY: One-driver selected-order Google Maps workflow released and verified on Pongo production as Heroku v56.
+EVIDENCE: Exact commit 33ba36e passed GitHub run 32068514429; backup b015 completed; web/worker are up; health/root returned 200; schema remains 20260810_0038; authenticated Routes showed Map 8 selected for 1 driver and continuous Google Maps parts 1-4 and 5-8 without browser errors; no order, stock, WooCommerce record, or persisted route changed.
+NEXT ACTION: Monitor normal dispatch use; separately resolve the pre-existing missing-unit-cost and alert-webhook readiness blockers.
