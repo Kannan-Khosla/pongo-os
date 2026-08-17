@@ -91,6 +91,9 @@ Use this checklist before calling a Pongo Inventory OS frontend pass complete.
   mode presents exactly ten zones, never checks West when East is chosen, and
   blocks planning until at least one explicit zone is assigned. The live route
   overview, stop links, summaries, and tables must not widen the page at 390 px.
+  `Map selected for 1 driver` must submit the exact checked order IDs with one
+  equal-time driver, even when the visible controls previously used more drivers
+  or direction mode.
 - Allocate paginates Orders by exception line and Items by complete item group.
   Item totals and affected-order drill-downs must never be split by a line-page
   boundary; its export always contains the complete applied filter.

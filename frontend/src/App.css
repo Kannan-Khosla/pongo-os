@@ -2245,6 +2245,11 @@ tbody tr:nth-child(even) .sticky-col {
   min-height: 46px;
 }
 
+.route-planner-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
 .route-planner-controls {
   display: grid;
   grid-template-columns: minmax(280px, 1.8fr) minmax(150px, 0.55fr) minmax(270px, 1fr);
@@ -2500,6 +2505,31 @@ tbody tr:nth-child(even) .sticky-col {
 
 .route-map-card .panel-title {
   margin: 0;
+}
+
+.route-map-google-launch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid #cfdcf5;
+  border-radius: 9px;
+  background: #f3f6ff;
+}
+
+.route-map-google-launch > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.route-map-google-launch span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.route-map-google-launch .button-row {
+  flex: 0 1 auto;
 }
 
 .route-map-time {
@@ -4971,6 +5001,10 @@ tbody tr:nth-child(even) .sticky-col {
     width: 100%;
   }
 
+  .route-planner-actions {
+    width: 100%;
+  }
+
   .route-planner-controls,
   .route-planner-summary,
   .route-strategy-options,
@@ -4980,6 +5014,16 @@ tbody tr:nth-child(even) .sticky-col {
 
   .route-map-layout {
     grid-template-columns: 1fr;
+  }
+
+  .route-map-google-launch {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .route-map-google-launch .button-row,
+  .route-map-google-launch a {
+    width: 100%;
   }
 
   .route-map-canvas {

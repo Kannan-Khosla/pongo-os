@@ -2619,6 +2619,7 @@ describe('App shell and workflows', () => {
     expect(await screen.findByRole('heading', { name: 'Driver 1' })).toBeInTheDocument();
     expect(screen.getByText('Order #0802')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open Maps' })).toHaveAttribute('href', expect.stringContaining('https://www.google.com/maps/dir/'));
+    expect(screen.getByRole('link', { name: 'Open planned route in Google Maps' })).toHaveAttribute('href', expect.stringContaining('https://www.google.com/maps/dir/'));
     const routeMap = screen.getByRole('group', { name: /Route map with 2 planned delivery stops/i });
     expect(within(routeMap).getByRole('link', { name: 'Open order 0802 in Google Maps' })).toHaveClass('approximate');
     expect(within(routeMap).getByRole('link', { name: 'Open order 0803 in Google Maps' })).toHaveClass('approximate');
@@ -2644,6 +2645,38 @@ describe('App shell and workflows', () => {
       && JSON.stringify(JSON.parse(options.body || '{}').order_ids) === '[701]'
       && JSON.stringify(JSON.parse(options.body || '{}').direction_assignments) === '[{"driver_number":1,"directions":["E"]},{"driver_number":2,"directions":["N"]}]'
     ))).toBe(true));
+
+    const startAddress = screen.getByRole('textbox', { name: 'Starting location' });
+    await user.clear(startAddress);
+    await user.type(startAddress, '123 Test Route, Edmonton, AB');
+    await user.click(screen.getByRole('checkbox', { name: /Return to starting location/i }));
+    const routeCallCount = fetch.mock.calls.filter(([url]) => String(url).includes('/api/routes/open-orders/plan')).length;
+    const currentFetch = fetch.getMockImplementation();
+    let releaseRoutePlan;
+    let holdNextRoutePlan = true;
+    fetch.mockImplementation((url, options = {}) => {
+      if (!holdNextRoutePlan || !String(url).includes('/api/routes/open-orders/plan')) return currentFetch(url, options);
+      holdNextRoutePlan = false;
+      const response = currentFetch(url, options);
+      return new Promise((resolve) => { releaseRoutePlan = () => resolve(response); });
+    });
+    await user.click(screen.getByRole('button', { name: 'Map 1 selected for 1 driver' }));
+    expect(screen.queryByRole('link', { name: 'Open planned route in Google Maps' })).not.toBeInTheDocument();
+    await act(async () => { releaseRoutePlan(); });
+    await waitFor(() => {
+      const routeCalls = fetch.mock.calls.filter(([url]) => String(url).includes('/api/routes/open-orders/plan'));
+      expect(routeCalls).toHaveLength(routeCallCount + 1);
+      expect(JSON.parse(routeCalls.at(-1)[1].body)).toMatchObject({
+        driver_count: 1,
+        assignment_method: 'equal_time',
+        order_ids: [701],
+        direction_assignments: [],
+        start_address: '123 Test Route, Edmonton, AB',
+        return_to_start: true,
+      });
+    });
+    expect(driverCount).toHaveValue(1);
+    expect(screen.getByRole('radio', { name: /Equal estimated time/i })).toBeChecked();
   });
 
   it('shows all Update All errors and wires resume and cancel actions after refresh', async () => {

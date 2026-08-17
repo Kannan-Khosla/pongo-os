@@ -782,6 +782,8 @@ Current behavior:
 - `Live Planner` and `Completed Routes` are separate route subpages.
 - Select the operational open orders being delivered from the default Pongo
   warehouse starting point.
+- Use `Map selected for 1 driver` to send the exact checked orders to one
+  equal-time driver plan without manually resetting the driver controls.
 - Choose 1–50 drivers and optionally add a return leg.
 - Balance deterministic estimated time or explicitly assign any of ten zones:
   N, S, E, W, NE, NW, SE, SW, Central East, and Central West.

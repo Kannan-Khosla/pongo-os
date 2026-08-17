@@ -11062,6 +11062,7 @@ function positionedRouteStops(drivers) {
 
 function OpenOrderRouteMap({ plan }) {
   const drivers = plan?.drivers || [];
+  const oneDriverLinks = drivers.length === 1 ? drivers[0].google_maps_links || [] : [];
   const markers = positionedRouteStops(drivers);
   const lines = drivers.map((driver) => {
     const points = markers.filter((marker) => marker.driver.driver_number === driver.driver_number);
@@ -11080,6 +11081,22 @@ function OpenOrderRouteMap({ plan }) {
           <strong>{formatNumber(plan.estimated_completion_minutes || 0)} min</strong>
         </div>
       </div>
+      {oneDriverLinks.length > 0 && (
+        <div className="route-map-google-launch">
+          <div>
+            <strong>Google Maps for Driver 1</strong>
+            <span>{oneDriverLinks.length === 1 ? `Open all ${markers.length} planned stops in Google Maps.` : `Open ${oneDriverLinks.length} continuous parts in order to cover all ${markers.length} planned stops.`}</span>
+          </div>
+          <div className="button-row compact" aria-label="Driver 1 Google Maps route">
+            {oneDriverLinks.map((link) => (
+              <a className="primary-button" href={link.url} key={`map-launch-${link.part_number}`} rel="noreferrer" target="_blank">
+                <MapPin aria-hidden="true" size={16} />
+                {oneDriverLinks.length === 1 ? 'Open planned route in Google Maps' : `Open ${link.label}`}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="route-map-layout">
         <div className="route-map-canvas" role="group" aria-label={`Route map with ${markers.length} planned delivery stops`}>
           <svg aria-hidden="true" className="route-map-lines" preserveAspectRatio="none" viewBox="0 0 100 100">
@@ -11202,18 +11219,24 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
     });
   }
 
-  function buildPlan() {
+  function buildPlan({ driverCount = normalizedDriverCount, assignmentMethod = form.assignmentMethod } = {}) {
     onPlan({
       start_address: form.startAddress.trim() || DEFAULT_ROUTE_START_ADDRESS,
-      driver_count: normalizedDriverCount,
+      driver_count: driverCount,
       return_to_start: form.returnToStart,
       order_ids: selectedOrderIds,
-      assignment_method: form.assignmentMethod,
+      assignment_method: assignmentMethod,
       order_directions: selectedOrderIds.map((orderId) => ({ order_id: orderId, direction: orderDirections[orderId] || 'Central East' })),
-      direction_assignments: form.assignmentMethod === 'directions'
-        ? Array.from({ length: normalizedDriverCount }, (_, index) => ({ driver_number: index + 1, directions: driverDirections[index + 1] || [] }))
+      direction_assignments: assignmentMethod === 'directions'
+        ? Array.from({ length: driverCount }, (_, index) => ({ driver_number: index + 1, directions: driverDirections[index + 1] || [] }))
         : [],
     });
+  }
+
+  function buildOneDriverPlan() {
+    updateDriverCount(1);
+    updateForm('assignmentMethod', 'equal_time');
+    buildPlan({ driverCount: 1, assignmentMethod: 'equal_time' });
   }
 
   async function shareLink(link, driverLabel) {
@@ -11259,10 +11282,16 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
           <h2 id="open-order-route-planner-title">Plan selected open orders</h2>
           <p>Choose today’s deliveries, balance estimated workload, or assign the ten delivery zones to specific drivers.</p>
         </div>
-        <button className="primary-button route-planner-submit" disabled={loading || !form.startAddress.trim() || selectedOrderIds.length === 0 || (form.assignmentMethod === 'directions' && !hasDirectionSelection)} onClick={buildPlan} type="button">
-          <Route aria-hidden="true" size={18} />
-          {loading ? 'Planning routes…' : `Plan ${selectedOrderIds.length} selected`}
-        </button>
+        <div className="button-row route-planner-actions">
+          <button className="primary-button route-planner-submit" disabled={loading || !form.startAddress.trim() || selectedOrderIds.length === 0} onClick={buildOneDriverPlan} type="button">
+            <MapPin aria-hidden="true" size={18} />
+            {loading ? 'Building map…' : `Map ${selectedOrderIds.length} selected for 1 driver`}
+          </button>
+          <button className="muted-button route-planner-submit" disabled={loading || !form.startAddress.trim() || selectedOrderIds.length === 0 || (form.assignmentMethod === 'directions' && !hasDirectionSelection)} onClick={buildPlan} type="button">
+            <Route aria-hidden="true" size={18} />
+            {loading ? 'Planning routes…' : `Plan ${selectedOrderIds.length} selected`}
+          </button>
+        </div>
       </div>
 
       <div className="route-planner-controls">
@@ -11338,7 +11367,7 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
       {loading && <div className="loading-strip" role="status">Building routes for the selected open orders…</div>}
       {shareMessage && <div className="api-success" role="status" aria-live="polite">{shareMessage}</div>}
 
-      {plan && (
+      {plan && !loading && (
         <>
           <div className="summary-strip route-planner-summary">
             <Metric label="Open Orders" value={plan.total_open_orders} />
