@@ -2,15 +2,15 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-18T19:49:46Z
+LAST UPDATED: 2026-08-18T20:13:18Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Subscription release authorized; exact-commit gate and production recovery checks pending
-CURRENT RELEASE RECOMMENDATION: RELEASE ONLY AFTER GREEN EXACT-COMMIT CI, VERIFIED BACKUP, AND CLEAN SCHEMA PREFLIGHT
+CURRENT PHASE: Subscription demand and stock coverage released and production-verified on Heroku v57
+CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
 Pongo now keeps a normalized, read-only snapshot of active WooCommerce subscription lines, including each official next-payment date. The Dashboard shows renewals due in 30 days with current Pongo stock and sellable quantities; Sales by SKU visibly marks subscription products and includes renewal-demand and stock-risk columns in every export format.
 Subscription refresh is atomic and backend-only: a failed or partial Woo response leaves the last complete snapshot intact. Products match exact Woo variation/product identity first and unique SKU only as a fallback; missing mappings or stock remain explicitly unknown.
-The implementation, migration, 540-test backend suite, 152-test frontend suite, production build, and fresh upgrade/downgrade/upgrade migration cycle pass locally. The user authorized production deployment on 2026-08-18; production remains Heroku v56 at schema 20260810_0038 until the exact candidate passes CI, backup verification, and schema preflight.
+Exact commit 013acf2 passed GitHub run 32178936003, restore-verified backup b016 preceded deployment, and Heroku v57 migrated production to 20260818_0039. The first worker refresh completed with 69 active subscriptions and 79 exact-mapped lines, zero skipped/errors, and the authenticated Dashboard/Insights plus read-only Sales by SKU builder showed current subscription stock and risk.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -157,7 +157,7 @@ ADR-SUB-002 ACCEPTED: Match exact variation/product identity before safe unique 
 41. Populate Dashboard/Insights and add Sales by SKU visual/export subscription evidence without removing existing metrics. COMPLETED.
 42. Add malformed/pagination/failure/date/mapping/null-stock/report/frontend regressions and validate migration up/down/up. COMPLETED.
 43. Run full backend/frontend/build/diff/state gates and hand off without commit or deployment. COMPLETED.
-44. Commit and push only the subscription candidate, require its exact green GitHub gate, verify a fresh production backup from the v56 checkout, preflight schema 0038, deploy/migrate, and verify read-only subscription behavior. IN PROGRESS.
+44. Commit and push only the subscription candidate, require its exact green GitHub gate, verify a fresh production backup from the v56 checkout, preflight schema 0038, deploy/migrate, and verify read-only subscription behavior. COMPLETED.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -175,7 +175,7 @@ WI-UI-OVERLAY-001 / P0 / RELEASED / Enter-dismissed suggestions, shared viewport
 WI-ROUTE-004 / P0 / RELEASED / Ten exact zones, authoritative explicit assignments, exactly-once/unassigned contract, responsive stop overview, time totals, Google navigation, and separate completed-route subpage; Heroku v51.
 WI-ROUTE-005 / P1 / RELEASED / One-click exact selected-order planning for one equal-time driver using the existing mobile-safe Google Maps routes; Heroku v56 at 33ba36e.
 WI-DASH-WOO-001 / P0 / IMPLEMENTED NOT DEPLOYED / Shared Pongo shell logo plus isolated live WooCommerce open-order KPI with active-status totals, explicit unavailable state, and demo isolation.
-WI-SUB-001 / P0 / IMPLEMENTED NOT DEPLOYED / Atomic read-only active-subscription snapshot, upcoming renewal stock/risk Dashboard, populated subscription Insights, and Sales by SKU highlighting/export evidence.
+WI-SUB-001 / P0 / RELEASED / Atomic read-only active-subscription snapshot, upcoming renewal stock/risk Dashboard, populated subscription Insights, and Sales by SKU highlighting/export evidence; Heroku v57 at 013acf2.
 
 WORK ITEM: WI-001
 TITLE: Complete fully picked orders that retain harmless Woo history lines
@@ -266,7 +266,7 @@ LAST UPDATED: 2026-08-17T21:10:11Z
 WORK ITEM: WI-003
 TITLE: Show active subscription demand and stock coverage
 TYPE: FEATURE
-STATUS: VERIFIED
+STATUS: RELEASED
 PRIORITY: P0
 SOURCE: User request and supplied Woo subscription-product SQL on 2026-08-18
 OWNER: Backend / Frontend / QA
@@ -293,18 +293,18 @@ IMPLEMENTATION PLAN:
 Reuse the client/worker/report primitives, add the minimum normalized snapshot, join it to Pongo stock once in a shared builder, expose it through existing pages, and run focused plus full migration/backend/frontend/build gates.
 
 MIGRATION / ROLLOUT:
-Migration 20260818_0039 creates `woo_subscription_line_snapshots`. No configuration or new secret is required. Production remains at 0038 until the backed-up release. Recovery restores the verified 0038 backup and v56 together; do not improvise a production downgrade.
+Migration 20260818_0039 created `woo_subscription_line_snapshots` transactionally on production. No configuration or new secret was required. Recovery restores verified backup b016 and Heroku v56 together; do not improvise a production downgrade.
 
 VERIFICATION:
-Focused pagination/failure/date/mapping/cache/report/UI tests; full backend/frontend suites; Vite production build; Alembic fresh upgrade plus 0039 downgrade/re-upgrade; diff/state validation; independent backend/frontend/product reviews.
+Focused pagination/failure/date/mapping/cache/report/UI tests; full backend/frontend suites; Vite production build; Alembic fresh upgrade plus 0039 downgrade/re-upgrade; exact-commit GitHub release gate; restore-verified backup; production schema, worker snapshot, authenticated UI, report builder, process, health, and log checks.
 
 EVIDENCE:
-Full backend passed 540 tests with 10 PostgreSQL-only skips and the existing Starlette warning; full frontend passed 152 tests; Vite production build passed with the existing chunk advisory; migration fresh upgrade/downgrade/re-upgrade, diff check, compile check, lifecycle validation, and independent backend/frontend/product review passed. No live WooCommerce, WordPress database, production database, stock, order, or subscription mutation occurred.
+Full backend passed 540 tests with 10 PostgreSQL-only skips; full frontend passed 152 tests; Vite build and migration cycle passed. Exact commit 013acf2 passed GitHub run 32178936003; backup b016 restored cleanly against v56/0038; Heroku v57 migrated to 0039. The first read-only Woo refresh completed 69 subscriptions/79 lines with zero skipped/errors and every line exact-mapped; Dashboard, Insights, and Sales by SKU stock/risk checks passed with clean browser/app logs. No WooCommerce, order, inventory, or stock write occurred.
 
 RESIDUAL RISK:
 Availability depends on the WooCommerce Subscriptions REST extension and worker health. Version 1 counts only Woo's next official renewal, not repeated future cycles or revenue forecasts.
 
-LAST UPDATED: 2026-08-18T19:07:20Z
+LAST UPDATED: 2026-08-18T20:12:11Z
 
 === 10. RISK, DEPENDENCY, AND BLOCKER REGISTER ===
 RISK-001 / MEDIUM / MITIGATED: Google mobile browser links accept fewer waypoints. Each part uses at most three intermediate waypoints and continues from the prior destination.
@@ -339,7 +339,7 @@ RISK-SUB-002 / HIGH / MITIGATED IN CODE: A variation, duplicate SKU, inactive it
 RISK-SUB-003 / HIGH / MITIGATED IN CODE: Empty-success or failed refreshes could leave Dashboard/Insights caches showing obsolete status. Every terminal subscription refresh explicitly bumps the metric version, including zero-row success and failure.
 RISK-SUB-004 / MEDIUM / MITIGATED IN CODE: Exact full Woo pages could request a nonexistent extra page. Refresh stops at verified `X-WP-TotalPages`, with safe length fallback when headers are unavailable.
 RISK-SUB-005 / MEDIUM / MITIGATED IN CODE: If the worker is fully down, cached Dashboard/Insights payloads still receive a request-time freshness overlay from the last successful timestamp and show stale after 30 minutes.
-RISK-SUB-006 / HIGH / RELEASE STOP CONDITION: Migration 0039 intentionally tolerates a table created by the legacy metadata bootstrap. Production preflight must prove schema 0038 and `woo_subscription_line_snapshots` absent; any pre-existing table stops release for explicit reconciliation.
+RISK-SUB-006 / HIGH / MITIGATED FOR RELEASE: Production preflight proved schema 0038 and `woo_subscription_line_snapshots` absent before migration 0039; post-migration verification confirmed the expected table, 15 columns, constraints, and 11 indexes.
 RISK-SUB-007 / HIGH / MITIGATED IN CODE: A hard-coded readiness revision would make a correctly migrated release report HTTP 503. `/ready` now derives the single expected revision from the Alembic graph through the same helper used by backup verification; readiness and backup regressions pass.
 DEPENDENCY-SUB-001: WooCommerce must expose the authenticated `/wp-json/wc/v3/subscriptions` endpoint and official next-payment fields to the existing read-only API key.
 
@@ -367,6 +367,7 @@ DEPENDENCY-SUB-001: WooCommerce must expose the authenticated `/wp-json/wc/v3/su
 2026-08-17: Added a responsive one-driver Google Maps action that reuses the current selected-order plan, forces one equal-time driver, and preserves exact checked IDs plus the existing segmented mobile links.
 2026-08-17: Exact commit 33ba36e passed GitHub run 32068514429; backup b015 completed; Heroku v56 deployed and passed non-mutating health, auth, schema, dyno, log, and authenticated Routes verification.
 2026-08-18: Added strict read-only active Woo subscription pagination and atomic normalized snapshots, safe exact variation/product mapping, Edmonton next-payment handling, last-good freshness warnings, explicit cache invalidation, Dashboard renewal stock/risk, populated subscription Insights, and Sales by SKU highlight/export fields. Added migration 20260818_0039, focused/full regressions, and architecture/API/reporting documentation; no deployment or live external access.
+2026-08-18: Exact commit 013acf2 passed GitHub run 32178936003; restore-verified backup b016 preceded Heroku v57 and migration 20260818_0039. Production worker, snapshot consistency, authenticated Dashboard/Insights, read-only Sales by SKU builder, processes, schema, health, and logs passed without a WooCommerce, order, inventory, or stock write.
 
 === 12. TEST, QUALITY, SECURITY, AND PERFORMANCE EVIDENCE ===
 Final evidence:
@@ -401,18 +402,18 @@ Picked-completion repair evidence: production read-only query mapped Pongo inter
 Receipt business-date repair evidence: GitHub run 31861156321 exposed server-local `date.today()` disagreeing with America/Edmonton report bounds. Four focused regressions passed with `TZ=UTC`; the complete backend suite then passed 531 tests with 10 PostgreSQL-only skips and the existing Starlette warning under `TZ=UTC`. A disposable PostgreSQL concurrency receipt test also passed, and `git diff --check` is clean.
 Production v55 evidence: exact-commit GitHub run 31862025002 passed in 5m49s with 541 backend tests including PostgreSQL concurrency, 151 frontend tests/build, 2 browser contracts, migration/recovery, backup/restore, and vulnerability checks. Manual PostgreSQL backup b014 completed before deployment. Heroku v55 reports d25afb6; web and worker Basic dynos are up; `/health` returned 200; schema is 20260810_0038. `/ready` retains only the pre-existing 224 missing positive unit costs and missing alert webhook blockers. A read-only live check returned `all_required_ready=true` for Woo orders 38607 and 38613 while ignoring only removed zero-work rows, and recent application logs contained no error/exception/traceback/critical entries. No order, stock, or WooCommerce record was mutated.
 Subscription feature evidence: focused backend subscription/report/dashboard/Insights/cache checks and focused frontend App/report checks pass. The final full backend passed 540 tests with 10 PostgreSQL-only skips and the existing Starlette warning; full frontend passed 152 tests; Vite production build passed with the existing large-chunk advisory. A fresh SQLite migration reached 0039, downgraded to 0038, and re-upgraded to 0039. Final blocker repairs cover exact full-page pagination, malformed records and lines, failed/empty cache invalidation, request-time stale overlays, Edmonton local dates, conflicting/inactive mappings, exact unmapped report identity, null unknown stock and unavailable totals, incomplete renewal schedule risk, composite multi-line UI keys, and the preserved Subscription Orders KPI. Independent backend, frontend, and product reviews found no remaining blocker.
+Production subscription evidence: exact commit 013acf2 passed GitHub run 32178936003 in 5m44s, including PostgreSQL migration/recovery, backup/restore, backend/frontend/browser contracts, builds, and vulnerability checks. Manual backup b016 restored successfully with the v56/0038 verifier; clean preflight proved schema 0038 and the new table absent. Heroku v57 migrated transactionally to 20260818_0039; postflight confirmed 15 columns, expected constraints, and 11 indexes. Web/worker are up; health/root returned 200; migrations, Woo credentials/reconciliation/worker/write guards are ready; only the pre-existing 224 missing costs and alert-webhook checks remain not ready. The first refresh completed 69 active subscriptions and 79 snapshot lines with zero skipped/errors, zero duplicates/stale rows, and 79 exact inventory matches. Authenticated Dashboard and both subscription Insights rendered current stock/risk with no browser errors; the read-only Sales by SKU builder returned subscription columns, 85 highlighted sales rows, and Covered/At risk values. Recent application logs contained no error/exception/traceback/critical entries. No WooCommerce, order, inventory, or stock write occurred.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
-Database migration: production is at 20260810_0038; it adds `users.access_level` with `staff` default and a `staff|demo` check. The release migration completed transactionally.
-Candidate migration: 20260818_0039 adds the normalized `woo_subscription_line_snapshots` table. Fresh upgrade and 0039 downgrade/re-upgrade pass locally. It has not run on production.
-Release baseline: production is Heroku v56 at commit 33ba36e. This frontend release changed no schema revision, dependency, configuration, credential, or data.
-Recovery: Continuous Protection is enabled and manual backup b015 completed immediately before v56. Rollback is Heroku v55 because the database contract is unchanged.
+Database migration: production is at 20260818_0039. It adds normalized `woo_subscription_line_snapshots`; release and postflight schema verification completed transactionally.
+Release baseline: production is Heroku v57 at commit 013acf2. No dependency, configuration, credential, WooCommerce, order, inventory, or stock change accompanied the migration.
+Recovery: Continuous Protection is enabled and manual backup b016 was restore-verified against v56/0038 before release. Recovery restores b016 and Heroku v56 together; do not use the destructive 0039 downgrade on production.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
 CURRENT DASHBOARD CHANGE STATE: Released and verified on Heroku v52 at 1665ef9 after exact-commit CI and completed backup b013. Schema remains 20260810_0038; there was no dependency, environment, credential, order, or stock change.
 CURRENT PICKED-COMPLETION RELEASE STATE: Released and verified on Heroku v55 at d25afb6 after green exact-commit run 31862025002 and completed backup b014. No real order was completed during verification.
 CURRENT ONE-DRIVER MAP RELEASE STATE: Released and verified on Heroku v56 at 33ba36e after green exact-commit run 32068514429 and completed backup b015. Rollback is Heroku v55 because the database contract is unchanged.
-CURRENT SUBSCRIPTION FEATURE STATE: Verified locally and authorized for production deployment. Release still requires the exact green commit, a fresh backup restored with the v56/0038 verifier, worker pause, clean 0038/table-absent preflight, migration to 0039, and authenticated read-only Dashboard/Insights/Sales by SKU smoke checks. Recovery restores the verified 0038 backup and v56 together.
+CURRENT SUBSCRIPTION FEATURE STATE: Released and verified on Heroku v57 at 013acf2 after green exact-commit run 32178936003, restore-verified backup b016, clean preflight, migration 0039, successful worker snapshot, authenticated Dashboard/Insights, and read-only Sales by SKU verification.
 
 === 14. OPERATIONS, OBSERVABILITY, AND SUPPORT READINESS ===
 The route endpoint is synchronous and read-only with one order query; no job queue is required for current Pongo scale. Web and worker dynos are each running at one Basic dyno. Physical iPhone/Android camera permission and real barcode decoding still require device verification by Pongo staff. Provider-backed tiles, geocoding, and live traffic remain disabled; the in-app overview uses verified stored coordinates when available and otherwise explicit zones.
@@ -436,9 +437,9 @@ For the live WooCommerce KPI, reused the existing active-status set, client, pag
 For subscription demand, reused the existing encrypted Woo client, pagination metadata, worker, metric cache/versioning, InventoryItem mapping, Dashboard/Insights routes, and immutable report/export pipeline. One normalized table replaces direct WordPress SQL and avoids a second credential, frontend integration, or forecasting system.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Commit and push only the exact subscription candidate, then require the green GitHub release gate for that SHA.
-THEN: Pause the worker, capture and restore-verify a fresh backup, require clean schema preflight, deploy/migrate to 0039, restore the worker, and verify subscription sync plus Dashboard/Insights/Sales by SKU without a Woo write.
-APPROVAL STATE: The user explicitly authorized production deployment on 2026-08-18. Unrelated audit/output/showcase files and all WooCommerce writes remain outside this release.
+NEXT: Monitor normal Dashboard, Insights, and Sales by SKU use; treat subscription risk as current only while the worker and last-synced indicator remain healthy.
+THEN: Separately resolve the pre-existing missing-unit-cost and operations alert-webhook readiness blockers.
+APPROVAL STATE: Production deployment completed on 2026-08-18. No further approval is pending; unrelated audit/output/showcase files and all WooCommerce writes remain outside this release.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
 --- DELIVERY RUN: 2026-08-17T20:44:07Z ---
@@ -596,3 +597,9 @@ MODE: Release Readiness and Release
 SUMMARY: Production deployment of the verified subscription demand, stock coverage, and Sales by SKU highlighting release is explicitly authorized and prepared.
 EVIDENCE: Local backend 540 passed with 10 skips; frontend 152 passed; build and migration cycle passed. A pre-deploy audit found and fixed the stale readiness revision by deriving the current Alembic head; focused readiness/backup checks passed 8/8. No production action yet.
 NEXT ACTION: Commit and push the exact candidate, require its green GitHub gate, then verify a fresh v56 backup and clean 0038 preflight before deployment.
+
+--- DELIVERY RUN: 2026-08-18T20:13:18Z ---
+MODE: Release Readiness and Release
+SUMMARY: Subscription demand, upcoming renewal stock coverage, Insights, and Sales by SKU highlighting released and verified on Pongo production as Heroku v57.
+EVIDENCE: Exact commit 013acf2 passed GitHub run 32178936003; backup b016 restored successfully; clean 0038/table-absent preflight preceded migration 0039; web/worker are up; first sync completed 69 subscriptions and 79 exact-mapped lines with zero skipped/errors; authenticated Dashboard/Insights and read-only Sales by SKU builder passed with clean browser/application logs; no WooCommerce, order, inventory, or stock write occurred.
+NEXT ACTION: Monitor normal staff use and separately resolve the pre-existing missing-unit-cost and operations alert-webhook readiness blockers.
