@@ -849,10 +849,11 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
                       </thead>
                       <tbody>
                         {run.rows.length ? run.rows.map((row, rowIndex) => (
-                          <tr key={`${run.run_id}-${previewPagination.page}-${rowIndex}`}>
+                          <tr className={row.is_subscription_product ? 'ri-subscription-row' : ''} key={`${run.run_id}-${previewPagination.page}-${rowIndex}`}>
                             {run.columns.map((column) => (
                               <td className={['currency', 'quantity', 'number', 'integer', 'percent'].includes(column.type) ? 'numeric' : ''} key={column.key}>
                                 {formatCell(row[column.key], column.type)}
+                                {column.key === 'name' && row.is_subscription_product && <span className="ri-subscription-badge">Subscription</span>}
                               </td>
                             ))}
                           </tr>

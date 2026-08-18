@@ -227,7 +227,7 @@ ROUTE_OPTIMIZATION_PROVIDER=disabled
 
 Current local build now includes:
 - Pongo-branded frontend design tokens using primary blue `#0f149a`, soft peach surfaces, consistent button states, contained table scrolling, and no-horizontal-body-overflow safeguards.
-- A default `Dashboard` home page for business metrics, customer/order activity, subscription empty states, revenue comparison, city-level order geography, and a first-position live WooCommerce `processing` order count. See `docs/BUSINESS_DASHBOARD.md`.
+- A default `Dashboard` home page for business metrics, customer/order activity, upcoming subscription renewals with Pongo stock risk, revenue comparison, city-level order geography, and a first-position live WooCommerce `processing` order count. See `docs/BUSINESS_DASHBOARD.md`.
 - The former operational dashboard is now `Inventory Overview`.
 - Frontend Vitest/Testing Library coverage for design-system primitives, app shell navigation, Items, Scanner mode switching, and Reports single-panel switching.
 - Production-grade Items and Inventory controls: rich filters, image-aware table rows, column visibility, saved item views, shared safe bulk editing for non-unique metadata/tags/locations/costs, debounced keyword search with live item/SKU suggestions, and an Item Detail Control Center.
@@ -247,7 +247,7 @@ Current local build now includes:
   interactive charts, CSV/PDF downloads, Google Sheets publishing, and direct
   email delivery. Calculation and accounting boundaries are documented in
   `docs/REPORTING.md`.
-- Pongo Insights: a separate read-only BI page with tabbed dashboards for executive overview, revenue, customers, segmentation, SKU demand, subscriptions empty states, forecasting, coupons, payment health, geography, affinity, and reorder forecast. See `docs/INSIGHTS.md`.
+- Pongo Insights: a separate read-only BI page with tabbed dashboards for executive overview, revenue, customers, segmentation, SKU demand, active subscription products and stock risk, forecasting, coupons, payment health, geography, affinity, and reorder forecast. See `docs/INSIGHTS.md`.
 - Zenventory-style Orders workflow: Woo order sync runs FIFO for processing and FooSales POS
   auto-allocation, Open Orders is review/completion, Allocate shows unresolved
   Orders/Items shortages, fully allocated orders enter Pick Orders, and Order

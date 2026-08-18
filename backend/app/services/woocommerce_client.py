@@ -128,6 +128,17 @@ class WooCommerceClient:
             params["modified_before"] = modified_before
         return self._get("/wp-json/wc/v3/orders", params)
 
+    def list_subscriptions(
+        self,
+        page: int = 1,
+        per_page: int | None = None,
+        status: str = "active",
+    ) -> list[dict[str, Any]]:
+        return self._get(
+            "/wp-json/wc/v3/subscriptions",
+            {"page": page, "per_page": min(per_page or self.page_size, 100), "status": status},
+        )
+
     def fetch_all_orders(
         self,
         statuses: list[str] | None = None,

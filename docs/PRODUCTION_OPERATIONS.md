@@ -20,7 +20,7 @@ cookie is never sent over plaintext transport.
 
 1. Put workers into maintenance mode and stop background jobs.
 2. Create a custom PostgreSQL backup: `make backup-postgres BACKUP=/secure/path/pongo-before-release.dump`.
-3. Verify the backup against a disposable database whose name ends in `_restore_verify`: `RESTORE_VERIFY_DATABASE_URL=... make verify-postgres-backup BACKUP=/secure/path/pongo-before-release.dump`.
+3. Verify the backup against a disposable database whose name ends in `_restore_verify`: `RESTORE_VERIFY_DATABASE_URL=... make verify-postgres-backup BACKUP=/secure/path/pongo-before-release.dump`. For a schema release, run this verifier from the checkout matching the source database revision (the currently deployed release), because the candidate checkout correctly expects its newer head.
 4. Run `alembic upgrade head`, then `/ready` and the release smoke tests. The backup verifier derives the expected revision from the single Alembic head in the release checkout, requires the restored database to contain exactly that one revision, and verifies every table declared by the current ORM model graph. It therefore stays current as migrations are added and fails closed on ambiguous revisions or an incomplete application schema.
 5. If a migration fails, stop the release and restore the verified pre-release backup. Do not improvise a production downgrade; migration downgrades are validated for development recovery, while the database backup is the production rollback boundary.
 

@@ -1672,13 +1672,15 @@ Receipt items now include:
 Bulk receiving uses `receipt_type = bulk` and `status = committed`.
 Direct receiving remains compatible with existing direct receipt behavior.
 
-## Pongo Insights Schema Impact
+## WooCommerce subscription snapshots
 
-Pongo Insights adds no new tables or columns in the current implementation.
-It reads existing local `orders`, `order_items`, and `inventory_items` records
-and returns empty states or data quality warnings when optional WooCommerce
-snapshot fields such as refunds, coupon lines, subscriptions, or address fields
-are not available.
+Migration `20260818_0039_subscription_snapshots` adds
+`woo_subscription_line_snapshots`. One row represents one line in an active
+WooCommerce subscription and stores its remote subscription/line identity,
+official next-payment time, customer display fields, product/variation IDs,
+SKU, renewal quantity, and snapshot time. The remote subscription/line pair is
+unique. A successful refresh atomically replaces the table; failed refreshes
+leave the last complete snapshot unchanged.
 
 ## Verified reporting tables
 

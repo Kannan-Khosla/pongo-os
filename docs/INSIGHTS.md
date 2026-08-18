@@ -38,6 +38,7 @@ forecasting, and drill-down detail:
 - `order_items`
 - `inventory_items`
 - local WooCommerce order snapshot fields already stored on orders and lines
+- `woo_subscription_line_snapshots`, refreshed read-only from WooCommerce
 
 Every Insights request reads the verified local WooCommerce snapshot. The
 two-minute worker reconciliation, webhooks, and full-history import keep that
@@ -64,6 +65,9 @@ Implemented first-pass metrics include:
 - customer counts, repeat rate, lifetime value, dormancy, and reorder candidates
 - RFM-style customer segments
 - SKU units, revenue, estimated cost, estimated margin, current stock, and demand
+- active subscription lines/products, official upcoming renewal quantities,
+  current Pongo stock, and 30-day stockout risk; unavailable totals remain null,
+  and incomplete renewal schedules are never reported as covered
 - deterministic inventory forecast from recent local order demand
 - coupon performance when local coupon lines exist in stored Woo payloads
 - payment method success/failure grouping and duplicate failed-to-success pattern detection
@@ -89,8 +93,10 @@ missing. Current warnings include `limited_order_history`,
 `missing_coupon_data`, `missing_subscription_data`, and
 `missing_shipping_postal_code`.
 
-Subscriptions and subscription products return clean empty states until local
-WooCommerce Subscriptions snapshots are added.
+Subscriptions and subscription products use the latest complete local
+WooCommerce Subscriptions snapshot. They return clean empty states until the
+first successful refresh and retain the last good snapshot after a remote
+failure.
 
 Coupon, payment, shipping, address, customer, and refund fields are used only
 when present in synced local WooCommerce payloads. Missing fields produce data

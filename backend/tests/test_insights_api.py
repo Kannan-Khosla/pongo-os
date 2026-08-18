@@ -420,11 +420,11 @@ def test_insights_subscription_products_empty_state(client):
 
     assert body["empty_state"] == "No subscription data synced yet"
     assert body["rows"] == []
-    assert body["summary"] == {
-        "data_available": False,
-        "products_on_subscription_count": None,
-        "stockout_risk_for_subscription_products": None,
-    }
+    assert body["summary"]["data_available"] is False
+    assert body["summary"]["products_on_subscription_count"] is None
+    assert body["summary"]["units_per_renewal"] is None
+    assert body["summary"]["stockout_risk_for_subscription_products"] is None
+    assert body["summary"]["last_synced_at"] is None
 
 
 def test_insights_inventory_forecasting_calculates_days_left(client, monkeypatch):

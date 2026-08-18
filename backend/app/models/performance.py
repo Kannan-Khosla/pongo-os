@@ -22,6 +22,7 @@ METRIC_SOURCE_TABLES = {
     "receipt_items",
     "receipts",
     "stock_movements",
+    "woo_subscription_line_snapshots",
 }
 
 # Sync bookkeeping changes do not alter any dashboard calculation. Ignoring

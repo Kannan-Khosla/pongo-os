@@ -43,6 +43,7 @@ from app.core.config import get_settings
 from app.models.inventory import InventoryItem
 from app.models.orders import Order, OrderItem
 from app.schemas.insights import InsightResponse
+from app.services.woocommerce_subscriptions import build_subscription_data
 
 
 SUCCESS_STATUSES = {
@@ -1629,12 +1630,68 @@ def overview(ctx: SqlInsightContext) -> InsightResponse:
     )
 
 
-def subscriptions(_ctx: SqlInsightContext) -> InsightResponse:
-    return response("subscriptions", summary={"data_available": False, "active_subscriptions": None, "subscription_revenue": None, "monthly_recurring_revenue": None, "failed_renewals": None, "upcoming_renewals_7_days": None, "upcoming_renewals_30_days": None}, rows=[], warnings=warning("missing_subscription_data", "info", "No WooCommerce Subscriptions snapshots are synced locally yet."), empty_state="No subscription data synced yet")
+def subscriptions(ctx: SqlInsightContext) -> InsightResponse:
+    data = build_subscription_data(ctx.db)
+    email = clean(ctx.params.get("customer_email")).casefold()
+    sku = clean(ctx.params.get("sku")).casefold()
+    rows = [
+        row
+        for row in data["subscription_rows"]
+        if (not email or email in str(row.get("email") or "").casefold())
+        and (not sku or sku in str(row.get("sku") or "").casefold())
+    ]
+    rows = rows[ctx.offset : ctx.offset + ctx.limit]
+    summary = data["summary"]
+    return response(
+        "subscriptions",
+        summary={
+            "data_available": data["available"],
+            "active_subscriptions": summary["active_subscriptions_count"],
+            "subscription_revenue": None,
+            "monthly_recurring_revenue": None,
+            "failed_renewals": None,
+            "upcoming_renewals_7_days": summary["upcoming_7_days_count"],
+            "upcoming_renewals_30_days": summary["upcoming_30_days_count"],
+            "upcoming_30_day_units": summary["upcoming_30_day_units"],
+            "last_synced_at": summary["last_synced_at"],
+        },
+        rows=rows,
+        warnings=data["warnings"],
+        empty_state=None if rows else "No active subscriptions match this scope." if data["available"] else "No subscription data synced yet",
+    )
 
 
-def subscription_products(_ctx: SqlInsightContext) -> InsightResponse:
-    return response("subscription-products", summary={"data_available": False, "products_on_subscription_count": None, "stockout_risk_for_subscription_products": None}, rows=[], warnings=warning("missing_subscription_data", "info", "No subscription product demand data is available locally yet."), empty_state="No subscription data synced yet")
+def subscription_products(ctx: SqlInsightContext) -> InsightResponse:
+    data = build_subscription_data(ctx.db)
+    sku = clean(ctx.params.get("sku")).casefold()
+    brand = clean(ctx.params.get("brand")).casefold()
+    category = clean(ctx.params.get("category")).casefold()
+    rows = [
+        row
+        for row in data["product_rows"]
+        if (not sku or sku in str(row.get("sku") or "").casefold())
+        and (not brand or brand == str(row.get("brand") or "").casefold())
+        and (not category or category == str(row.get("category") or "").casefold())
+    ]
+    total = len(rows)
+    units = sum((Decimal(str(row["total_units_per_renewal"])) for row in rows), Decimal("0"))
+    at_risk = sum(1 for row in rows if row["stockout_risk"] == "At risk")
+    rows = rows[ctx.offset : ctx.offset + ctx.limit]
+    return response(
+        "subscription-products",
+        summary={
+            "data_available": data["available"],
+            "products_on_subscription_count": total if data["available"] else None,
+            "active_subscription_products": total if data["available"] else None,
+            "units_per_renewal": (float(units) if units % 1 else int(units)) if data["available"] else None,
+            "stockout_risk_for_subscription_products": at_risk if data["available"] else None,
+            "at_risk_products": at_risk if data["available"] else None,
+            "last_synced_at": data["summary"]["last_synced_at"],
+        },
+        rows=rows,
+        warnings=data["warnings"],
+        empty_state=None if rows else "No subscription products match this scope." if data["available"] else "No subscription data synced yet",
+    )
 
 
 def response(dashboard: str, summary=None, metrics=None, trends=None, rows=None, tables=None, warnings=None, empty_state=None) -> InsightResponse:

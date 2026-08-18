@@ -15,6 +15,7 @@ from app.services.woocommerce_order_reconciliation import (
     process_next_order_sync_job,
 )
 from app.services.woocommerce_stock_sync_jobs import ensure_daily_full_stock_sync_job, process_next_stock_sync_job
+from app.services.woocommerce_subscriptions import process_subscription_sync_if_due
 
 POLL_SECONDS = 5
 logger = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ def run_cycle() -> bool:
     # sit behind a large PDF/CSV run in the queue.
     stock_job = process_next_stock_sync_job(settings)
     if stock_job is not None:
+        return True
+    if process_subscription_sync_if_due(settings):
         return True
     report_job = process_next_report_job()
     if report_job is not None:

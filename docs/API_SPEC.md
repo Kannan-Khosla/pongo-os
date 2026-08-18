@@ -2630,11 +2630,12 @@ and `forecast_status`. Demand, velocity, days-left, and reorder quantities are
 summary fields expose available and insufficient-history counts plus an overall
 forecast status.
 
-Subscription dashboards expose `data_available: false` and nullable KPI values
-until local subscription snapshots exist. Status and payment revenue
-breakdowns use the same post-discount product-line net sales definition as the
-canonical Net Sales KPI, excluding shipping and tax. Product filters scope the
-contributing lines of mixed-product orders instead of leaking unrelated lines.
+Subscription dashboards use the latest complete active WooCommerce
+subscription snapshot. Subscription rows expose the official next-payment
+date, renewal quantity, Pongo in-stock/sellable quantities, mapping status, and
+30-day stock risk. Product rows aggregate active subscriptions and units per
+renewal. Until the first successful snapshot, `data_available` is false and KPI
+values remain nullable; a failed refresh keeps the last good snapshot.
 
 ## Business Dashboard
 
@@ -2677,8 +2678,8 @@ comparison are calculated in SQL with the same status precedence and configured
 admin-timezone day boundaries as the API fields. Order-map detail is limited to
 the requested day. The open-order card returns at most 200 newest rows while
 `summary.open_orders_count` remains the exact full filtered count. Subscription
-detail reads only payloads containing subscription data; other raw WooCommerce
-payloads are not loaded for dashboard requests.
+detail reads only the local normalized subscription snapshot; raw WooCommerce
+order payloads are not loaded for dashboard requests.
 
 ## Woo Mapping And Item Enrichment
 

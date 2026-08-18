@@ -17,8 +17,10 @@ from app.services.woocommerce_order_reconciliation import order_worker_is_recent
 from app.services.woocommerce_webhooks import webhook_is_configured
 from app.services.woocommerce_stock_sync_jobs import stock_sync_worker_health, unresolved_stock_sync_job_count
 from app.services.order_workflow import operational_order_clause
+from scripts.postgres_backup_restore import current_alembic_head
 
 router = APIRouter(tags=["health"])
+EXPECTED_SCHEMA_REVISION = current_alembic_head()
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -38,7 +40,7 @@ def readiness_check(db: Session = Depends(get_db)) -> ReadinessResponse | JSONRe
     except Exception:
         db.rollback()
         revision = None
-    checks.append(ReadinessCheck(name="migrations", ready=revision == "20260810_0038", message=f"Schema revision: {revision or 'missing'}; expected 20260810_0038."))
+    checks.append(ReadinessCheck(name="migrations", ready=revision == EXPECTED_SCHEMA_REVISION, message=f"Schema revision: {revision or 'missing'}; expected {EXPECTED_SCHEMA_REVISION}."))
 
     user_count = int(db.scalar(select(func.count(User.id)).where(User.active.is_(True))) or 0)
     checks.append(ReadinessCheck(name="login", ready=not settings.auth_required or user_count > 0, count=user_count, message="At least one login exists." if user_count else "Create the first production login."))

@@ -67,6 +67,13 @@ Missing cost, incomplete history, unavailable delivery timestamps, unallocated
 refund detail, and similar limitations are disclosed instead of being silently
 treated as zero.
 
+Sales by SKU visibly marks rows that match the latest complete active
+WooCommerce subscription snapshot. Its preview, CSV, PDF, Google Sheet, and
+email artifacts include subscription status, active-subscription count, units
+due within 30 days, and Pongo sellable-stock risk. Unknown inventory remains
+blank/unknown rather than becoming zero; a missing or past-due next-renewal date
+is labeled `Schedule incomplete` instead of `Covered`.
+
 Date-based reports provide instant last month, last two months, last three
 months, last year, and calendar-year-to-date presets while preserving custom
 date entry. Received Inventory also exposes the same presets directly on its

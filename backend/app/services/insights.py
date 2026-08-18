@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.schemas.insights import InsightResponse
 from app.services.insights_sql import build_insight
 from app.services.metric_cache import cached_metric_payload
+from app.services.woocommerce_subscriptions import overlay_subscription_freshness
 
 
 EXPORT_COLUMNS = {
@@ -35,6 +36,8 @@ def get_cached_insight(
         lambda: build_insight(db, dashboard, params).model_dump(mode="json"),
         force_refresh=force_refresh,
     )
+    if dashboard in {"subscriptions", "subscription-products"}:
+        payload = overlay_subscription_freshness(db, payload)
     return InsightResponse.model_validate(payload)
 
 

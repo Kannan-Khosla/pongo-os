@@ -4,7 +4,6 @@ import calendar
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from collections.abc import Iterator
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -14,6 +13,7 @@ from sqlalchemy.orm import Session, load_only, selectinload
 from app.core.config import get_settings
 from app.models.orders import Order, OrderItem
 from app.services.metric_cache import cached_metric_payload
+from app.services.woocommerce_subscriptions import build_subscription_data, overlay_subscription_freshness
 
 
 OPEN_STATUSES = {"open", "processing", "on-hold", "pending", "allocated", "partially_allocated", "picked", "partially_picked"}
@@ -71,7 +71,6 @@ BUSINESS_LINE_COLUMNS = (
     OrderItem.total_price,
 )
 BUSINESS_OPEN_ORDER_ROW_LIMIT = 200
-BUSINESS_SUBSCRIPTION_SOURCE_BATCH_SIZE = 200
 
 
 def build_business_dashboard(db: Session, target_date: date | None = None) -> dict[str, Any]:
@@ -130,13 +129,27 @@ def get_cached_business_metric(
         "revenue-comparison": lambda: build_revenue_comparison(db, effective_date, mode or "month_to_date"),
         "order-map": lambda: build_order_map(db, effective_date),
     }
-    return cached_metric_payload(
+    payload = cached_metric_payload(
         db,
         f"business-dashboard:{section}",
         params,
         builders[section],
         force_refresh=force_refresh,
     )
+    if section != "dashboard":
+        return payload
+    subscriptions = overlay_subscription_freshness(db, payload["subscriptions"])
+    return {
+        **payload,
+        "subscriptions": subscriptions,
+        "data_quality": merge_warnings(
+            payload["today"]["data_quality"],
+            payload["open_orders"]["data_quality"],
+            subscriptions["data_quality"],
+            payload["revenue_comparison"]["data_quality"],
+            payload["order_map"]["data_quality"],
+        ),
+    }
 
 
 def build_today(db: Session, target_date: date | None = None, *, orders: list[Order] | None = None) -> dict[str, Any]:
@@ -184,41 +197,19 @@ def build_open_orders(db: Session, *, orders: list[Order] | None = None) -> dict
     return {"summary": {"open_orders_count": len(rows)}, "rows": [order_row(order) for order in rows], "data_quality": warnings}
 
 
-def build_subscriptions(db: Session, target_date: date | None = None, *, orders: list[Order] | None = None) -> dict[str, Any]:
-    if orders is None:
-        orders = load_subscription_source_orders(db)
-    rows = []
-    for order in orders:
-        payload = order.raw_woo_payload or {}
-        subscription_rows = payload.get("subscriptions") or payload.get("subscription_items") or []
-        if isinstance(subscription_rows, dict):
-            subscription_rows = [subscription_rows]
-        for row in subscription_rows:
-            rows.append(
-                {
-                    "subscription_id": row.get("id") or row.get("subscription_id"),
-                    "product_name": row.get("product_name") or row.get("name"),
-                    "customer_name": order.customer_name or full_name(order),
-                    "customer_email": normalized_email(order.customer_email),
-                    "next_payment_date": row.get("next_payment_date") or row.get("next_payment"),
-                    "quantity_due": row.get("quantity") or row.get("quantity_due") or 1,
-                    "status": row.get("status"),
-                    "order_number": order.woo_order_number or order.order_number,
-                    "sku": row.get("sku"),
-                }
-            )
-    available = bool(rows)
-    warnings = [] if available else warning("missing_subscription_data", "info", "Subscription data is not synced yet. This section will populate after subscription sync is connected.")
+def build_subscriptions(db: Session, target_date: date | None = None) -> dict[str, Any]:
+    data = build_subscription_data(db, target_date)
+    rows = [row for row in data["subscription_rows"] if row["due_within_30_days"]]
     return {
-        "summary": {
-            "upcoming_7_days_count": count_due_within(rows, target_date or admin_today(), 7),
-            "upcoming_30_days_count": count_due_within(rows, target_date or admin_today(), 30),
-            "active_subscriptions_count": sum(1 for row in rows if str(row.get("status") or "").lower() == "active"),
-            "subscription_data_available": available,
-        },
+        "summary": data["summary"],
         "rows": rows,
-        "data_quality": warnings,
-        "empty_state": None if available else "Subscription data is not synced yet.",
+        "products": data["product_rows"],
+        "data_quality": data["warnings"],
+        "empty_state": (
+            "Subscription data is not synced yet."
+            if not data["available"]
+            else None if rows else "No active subscription renewals are due in the next 30 days."
+        ),
     }
 
 
@@ -501,24 +492,6 @@ def build_revenue_comparison_from_sql(db: Session, target_date: date, mode: str)
     }
 
 
-def load_subscription_source_orders(db: Session) -> Iterator[Order]:
-    last_id = 0
-    while True:
-        batch = list(
-            db.scalars(
-            select(Order)
-            .where(eligible_order_condition(), subscription_order_condition(), Order.id > last_id)
-            .options(load_only(*BUSINESS_ORDER_COLUMNS, Order.raw_woo_payload))
-            .order_by(Order.id.asc())
-                .limit(BUSINESS_SUBSCRIPTION_SOURCE_BATCH_SIZE)
-            ).all()
-        )
-        if not batch:
-            return
-        yield from batch
-        last_id = batch[-1].id
-
-
 def load_orders_for_day(
     db: Session,
     target_date: date,
@@ -670,16 +643,6 @@ def is_subscription_order(order: Order) -> bool:
 
 def any_subscription_data(orders: list[Order]) -> bool:
     return any(is_subscription_order(order) for order in orders)
-
-
-def count_due_within(rows: list[dict[str, Any]], target_date: date, days: int) -> int:
-    end = target_date + timedelta(days=days)
-    count = 0
-    for row in rows:
-        due = parse_date(row.get("next_payment_date"))
-        if due and target_date <= due <= end:
-            count += 1
-    return count
 
 
 def revenue_for_day(orders: list[Order], day: date) -> Decimal:

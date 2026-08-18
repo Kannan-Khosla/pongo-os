@@ -755,10 +755,12 @@ Current behavior:
 
 ## Pongo Insights Safety Boundary
 
-Pongo Insights reads local WooCommerce order snapshots, local order lines, and
-local inventory item fields. It does not call WooCommerce from the frontend or
-backend, and it does not write WooCommerce products, orders, statuses, stock, or
-subscription records.
+Pongo Insights reads local WooCommerce order snapshots, local order lines,
+local inventory fields, and the latest complete active-subscription snapshot.
+The backend worker refreshes that subscription snapshot through the read-only
+WooCommerce Subscriptions REST endpoint every 15 minutes. Insights never makes
+a live WooCommerce request, and neither the frontend nor Insights writes
+WooCommerce products, orders, statuses, stock, or subscription records.
 
 If subscription, refund, coupon, payment, or address fields are not present in
 local snapshots, Insights returns empty states or `data_quality` warnings. It
@@ -774,8 +776,9 @@ endpoint reads only live `X-WP-Total` values for `pending`, `processing`, and
 Neither path writes WooCommerce or updates local order or inventory state, and
 the frontend never receives WooCommerce credentials.
 
-Subscription cards remain empty with a data quality warning until subscription
-snapshots are synced locally. Map markers use exact local coordinates only when
+Subscription cards show Woo's official next-payment date and current Pongo
+stock after the first successful snapshot; failed refreshes preserve the last
+complete snapshot. Map markers use exact local coordinates only when
 already stored; otherwise supported cities use approximate city-level markers.
 
 ## Import Mappings Identity And Ownership

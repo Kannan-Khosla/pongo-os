@@ -4280,6 +4280,11 @@ tbody tr:nth-child(even) .sticky-col {
   font-style: normal;
 }
 
+.subscription-card em.is-risk {
+  color: var(--danger);
+  font-weight: 900;
+}
+
 .soft-empty-state {
   padding: 18px;
   border: 1px dashed #f0c9ad;

@@ -281,7 +281,6 @@ def test_business_dashboard_sql_paths_match_legacy_metric_semantics(client, monk
         build_open_orders,
         build_order_map,
         build_revenue_comparison,
-        build_subscriptions,
         build_today,
         eligible_order_condition,
     )
@@ -316,7 +315,6 @@ def test_business_dashboard_sql_paths_match_legacy_metric_semantics(client, monk
 
         assert build_today(db, target) == build_today(db, target, orders=legacy_orders)
         assert build_open_orders(db) == build_open_orders(db, orders=legacy_orders)
-        assert build_subscriptions(db, target) == build_subscriptions(db, target, orders=legacy_orders)
         assert build_revenue_comparison(db, target) == build_revenue_comparison(db, target, orders=legacy_orders)
         assert build_order_map(db, target) == build_order_map(db, target, orders=legacy_orders)
 

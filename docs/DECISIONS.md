@@ -556,6 +556,24 @@ Safety: ambiguous scans never guess, final quantity cannot be negative or below
 allocated stock, every accepted change still creates adjustment and movement
 audit rows, and existing idempotency/locking/writeback behavior is unchanged.
 
+## ADR-039: Subscription Demand Uses an Atomic Read-Only REST Snapshot
+
+Decision: the backend worker reads active WooCommerce subscriptions every 15
+minutes through WooCommerce REST and atomically replaces one normalized local
+line snapshot only after every page succeeds. Dashboard, Insights, and Sales by
+SKU join that snapshot to exact variation/product IDs, then a unique SKU
+fallback, and compare official next-renewal quantities with current Pongo
+sellable stock.
+
+Reason: the supplied WordPress SQL is useful for manual validation but cannot
+provide official upcoming renewal dates and would couple Pongo to Woo's private
+database schema. A local snapshot keeps report and page reads fast and stable.
+
+Safety: this integration is read-only, stores no Woo credentials in the
+frontend, makes no direct WordPress/MySQL connection, never falls back from a
+variation to parent stock, reports unmapped stock as unknown, and preserves the
+last complete snapshot after any failed or partial refresh.
+
 ## ADR-037: Demo Access Uses an Isolated Mock Database
 
 Decision: authenticate demo accounts in the normal user store, then rebind the

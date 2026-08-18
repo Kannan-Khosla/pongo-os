@@ -26,10 +26,11 @@ from app.models.orders import Order, OrderItem
 from app.models.receipts import Receipt, ReceiptItem
 from app.models.reporting import ReportDelivery, ReportRun
 from app.services.insights import build_insight
+from app.services.woocommerce_subscriptions import build_subscription_data
 
 REPORT_TIMEZONE = "America/Edmonton"
 REPORT_TZ = ZoneInfo(REPORT_TIMEZONE)
-DEFINITION_VERSION = 2
+DEFINITION_VERSION = 3
 FAILED_ORDER_STATUSES = {"failed", "cancelled", "canceled", "refunded", "trash"}
 TERMINAL_ORDER_STATUSES = FAILED_ORDER_STATUSES | {"completed", "closed", "fulfilled"}
 SALES_RECOGNIZED_WOO_STATUSES = {"processing", "completed"}
@@ -1648,6 +1649,20 @@ def forecast_insights(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def build_sales_by_sku(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
     inventory, inventory_warnings = inventory_by_item(db, filters)
     inventory_by_id = {item["item_id"]: item for item in inventory}
+    subscription_data = build_subscription_data(db)
+    subscriptions_by_item = {
+        row["item_id"]: row
+        for row in subscription_data["product_rows"]
+        if row["item_id"] is not None
+    }
+    subscriptions_by_remote: dict[tuple[int, int | None], list[dict[str, Any]]] = defaultdict(list)
+    subscription_skus: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for subscription in subscription_data["product_rows"]:
+        subscriptions_by_remote[
+            (subscription["woo_product_id"], subscription["woo_variation_id"])
+        ].append(subscription)
+        if subscription["sku"]:
+            subscription_skus[subscription["sku"].strip().casefold()].append(subscription)
     groups: dict[Any, dict[str, Any]] = {}
     partial_refund_total = Decimal("0")
     for order in scoped_orders(db, filters):
@@ -1660,7 +1675,15 @@ def build_sales_by_sku(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
                 continue
             item = line.inventory_item
             normalized_sku = (line.sku or "").strip().casefold()
-            key = line.inventory_item_id or (f"sku:{normalized_sku}" if normalized_sku else f"line:{line.id}")
+            key = (
+                f"item:{line.inventory_item_id}"
+                if line.inventory_item_id
+                else f"woo:{line.woo_product_id}:{line.woo_variation_id or 0}"
+                if line.woo_product_id
+                else f"sku:{normalized_sku}"
+                if normalized_sku
+                else f"line:{line.id}"
+            )
             row = groups.setdefault(
                 key,
                 {
@@ -1669,17 +1692,44 @@ def build_sales_by_sku(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
                     "name": line.name or line.description or (item.woo_name if item else ""),
                     "brand": (item.brand if item else None) or line.brand or "",
                     "category": item.category if item else "",
+                    "woo_identities": set(),
                     "orders": set(),
                     "quantity_sold": Decimal("0"),
                     "net_sales": Decimal("0"),
                 },
             )
+            if line.woo_product_id:
+                row["woo_identities"].add((line.woo_product_id, line.woo_variation_id or None))
             row["orders"].add(order.id)
             row["quantity_sold"] += line_quantity(line)
             row["net_sales"] += D(line.line_total or line.total_price)
     rows = []
     for row in groups.values():
-        current = inventory_by_id.get(row["item_id"])
+        exact_matches = {
+            subscription["item_id"] or (
+                subscription["woo_product_id"],
+                subscription["woo_variation_id"],
+                subscription["sku"],
+            ): subscription
+            for identity in row["woo_identities"]
+            for subscription in subscriptions_by_remote.get(identity, [])
+        }
+        subscription = next(iter(exact_matches.values())) if len(exact_matches) == 1 else None
+        if subscription is None and row["item_id"] is not None and not row["woo_identities"]:
+            subscription = subscriptions_by_item.get(row["item_id"])
+        if subscription is None and row["item_id"] is None and not row["woo_identities"]:
+            sku_matches = [
+                candidate
+                for candidate in subscription_skus.get(str(row["sku"] or "").strip().casefold(), [])
+                if candidate["match_status"] in {"mapped", "sku_fallback"}
+            ]
+            subscription = sku_matches[0] if len(sku_matches) == 1 else None
+        current = inventory_by_id.get(row["item_id"] or (subscription or {}).get("item_id"))
+        subscription_status = (
+            "Unknown"
+            if not subscription_data["available"]
+            else "Active" if subscription else "Not active"
+        )
         rows.append(
             {
                 "sku": row["sku"],
@@ -1690,13 +1740,30 @@ def build_sales_by_sku(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
                 "quantity_sold": qty(row["quantity_sold"]),
                 "net_sales": money(row["net_sales"]),
                 "average_unit_price": money(row["net_sales"] / row["quantity_sold"] if row["quantity_sold"] else 0),
-                "current_in_stock": qty(current["in_stock"] if current else 0),
-                "current_allocated": qty(current["allocated"] if current else 0),
-                "current_sellable": qty(current["sellable"] if current else 0),
+                "current_in_stock": qty(current["in_stock"]) if current else None,
+                "current_allocated": qty(current["allocated"]) if current else None,
+                "current_sellable": qty(current["sellable"]) if current else None,
+                "is_subscription_product": bool(subscription),
+                "subscription_status": subscription_status,
+                "active_subscriptions": subscription["active_subscriptions"] if subscription else 0 if subscription_data["available"] else None,
+                "upcoming_30_day_units": (
+                    qty(subscription["upcoming_30_day_units"])
+                    if subscription
+                    else qty(0) if subscription_data["available"] else None
+                ),
+                "subscription_stockout_risk": subscription["stockout_risk"] if subscription else "Not applicable" if subscription_data["available"] else "Unknown",
             }
         )
     rows.sort(key=lambda row: D(row["quantity_sold"]), reverse=True)
     warnings = list(inventory_warnings)
+    warnings.extend(
+        quality_warning(
+            warning["code"],
+            warning["code"].replace("_", " ").title(),
+            warning["message"],
+        )
+        for warning in subscription_data["warnings"]
+    )
     if partial_refund_total:
         warnings.append(
             quality_warning(
@@ -1718,6 +1785,10 @@ def build_sales_by_sku(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
             column("name", "Item"),
             column("brand", "Brand"),
             column("category", "Category"),
+            column("subscription_status", "Subscription"),
+            column("active_subscriptions", "Active subscriptions", "integer"),
+            column("upcoming_30_day_units", "Units due in 30 days", "quantity"),
+            column("subscription_stockout_risk", "Subscription stock"),
             column("order_count", "Orders", "integer"),
             column("quantity_sold", "Quantity sold", "quantity"),
             column("net_sales", "Net merchandise sales", "currency"),
@@ -1733,6 +1804,8 @@ def build_sales_by_sku(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
             "WooCommerce sales include only processing and completed orders. Manual orders include processing, completed or fulfilled statuses.",
             "Net merchandise sales uses order-line totals and excludes shipping and tax.",
             "Current stock columns are a report-generation-time snapshot, not the historical stock at sale time.",
+            "Subscription highlights use the latest complete active WooCommerce subscription snapshot available when this immutable report was generated.",
+            "Subscription stock risk compares official next-renewal units due within 30 days with current Pongo sellable stock.",
         ],
     }
 

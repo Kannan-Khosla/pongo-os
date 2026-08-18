@@ -592,6 +592,29 @@
   background: #f8f8fb;
 }
 
+.ri-table-card tbody tr.ri-subscription-row td,
+.ri-table-card tbody tr.ri-subscription-row:nth-child(even) td {
+  background: #fff4ea;
+}
+
+.ri-table-card tbody tr.ri-subscription-row td:first-child {
+  border-left: 3px solid var(--ri-orange);
+}
+
+.ri-subscription-badge {
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 3px 7px;
+  border: 1px solid #f4a07f;
+  border-radius: 999px;
+  background: #fff;
+  color: #9d2f0f;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
 .ri-table-card td.numeric {
   font-variant-numeric: tabular-nums;
   text-align: right;

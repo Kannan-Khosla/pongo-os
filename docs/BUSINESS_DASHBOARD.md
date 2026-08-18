@@ -29,8 +29,8 @@ daily comparisons with aggregate queries; the API no longer loads the complete
 order and line history into application memory. The map query is limited to the
 selected business day, and the open-order card returns at most the 200 newest
 rows while its displayed total remains the exact full open-order count.
-Subscription processing selects only local payloads containing subscription
-data instead of loading every raw WooCommerce payload. Results are versioned in
+Subscription processing reads the latest complete local active-subscription
+snapshot. Results are versioned in
 PostgreSQL and reused until an order, stock, allocation, receipt, pick,
 fulfillment, or movement changes the source version.
 When the source changes, an existing verified snapshot is returned immediately
@@ -65,9 +65,16 @@ construct a WooCommerce client.
 
 ## Subscriptions
 
-If local subscription snapshots are not available, the Dashboard returns an
-empty subscription section and a data quality warning. It does not fake
-subscription products, renewal dates, or subscription counts.
+The worker refreshes active subscriptions from the read-only WooCommerce
+Subscriptions REST endpoint every 15 minutes. Each line stores Woo product and
+variation identity, SKU, quantity, and Woo's official next-payment date; a
+failed or partial fetch leaves the last complete snapshot intact.
+
+The Dashboard shows renewals due in the next 30 days with current Pongo
+`In Stock` and `Sellable` quantities. A product is `At risk` when units due in
+the next 30 days exceed current sellable stock. Unmapped or unavailable stock
+is reported as unknown, never zero. If no successful snapshot exists, the
+section remains empty with a data-quality warning.
 
 ## Geography And Map Behavior
 
@@ -94,6 +101,7 @@ The Business Dashboard uses local snapshots for every section except the
 explicit live WooCommerce open-order KPI:
 
 - no WooCommerce writes
+- no direct WordPress/MySQL connection
 - no frontend WooCommerce calls
 - no local fallback when the live WooCommerce count is unavailable
 - no live geocoding provider calls

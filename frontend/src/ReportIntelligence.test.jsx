@@ -258,4 +258,32 @@ describe('Report Intelligence performance flow', () => {
     expect(screen.getByText('Showing 101–125 of 125 records')).toBeInTheDocument();
     expect(fetch.mock.calls.some(([url]) => String(url).includes('row_page=3&row_page_size=50'))).toBe(true);
   });
+
+  it('visibly highlights subscription products in the sales report', async () => {
+    const salesReport = { ...report, key: 'sales-by-sku', title: 'Sales by SKU' };
+    const salesRun = {
+      ...run,
+      columns: [
+        { key: 'name', label: 'Item', type: 'text' },
+        { key: 'subscription_status', label: 'Subscription', type: 'text' },
+      ],
+      rows: [
+        { name: 'Renewal Food', subscription_status: 'Active', is_subscription_product: true },
+        { name: 'Regular Food', subscription_status: 'Not active', is_subscription_product: false },
+      ],
+    };
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      const target = String(url);
+      if (target.endsWith('/api/reports')) return response({ reports: [salesReport] });
+      if (target.includes('/api/reports/jobs/latest/')) return response(salesRun);
+      return response({});
+    }));
+
+    render(<ReportIntelligencePage apiBaseUrl="" reportKey={salesReport.key} />);
+
+    expect(await screen.findByText('Renewal Food')).toBeInTheDocument();
+    expect(screen.getByText('Subscription', { selector: '.ri-subscription-badge' })).toBeInTheDocument();
+    expect(screen.getByText('Renewal Food').closest('tr')).toHaveClass('ri-subscription-row');
+    expect(screen.getByText('Regular Food').closest('tr')).not.toHaveClass('ri-subscription-row');
+  });
 });

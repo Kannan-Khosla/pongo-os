@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -75,6 +76,39 @@ class WooCommerceSyncError(Base):
 
     __table_args__ = (
         UniqueConstraint("sync_run_id", "fingerprint", name="uq_woocommerce_sync_errors_run_fingerprint"),
+    )
+
+
+class WooSubscriptionLineSnapshot(Base):
+    __tablename__ = "woo_subscription_line_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    woo_subscription_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    woo_line_item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    next_payment_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    customer_name: Mapped[str | None] = mapped_column(String(240))
+    customer_email: Mapped[str | None] = mapped_column(String(240), index=True)
+    subscription_total: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str | None] = mapped_column(String(12))
+    woo_product_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    woo_variation_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    sku: Mapped[str | None] = mapped_column(String(120), index=True)
+    product_name: Mapped[str | None] = mapped_column(String(500))
+    quantity_per_renewal: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "woo_subscription_id",
+            "woo_line_item_id",
+            name="uq_woo_subscription_line_snapshot_remote_line",
+        ),
+        Index(
+            "ix_woo_subscription_line_snapshot_product_variation",
+            "woo_product_id",
+            "woo_variation_id",
+        ),
     )
 
 

@@ -360,10 +360,18 @@ function mockFetch(url, options = {}) {
     generated_at: '2026-07-08T16:30:00Z',
     today: { summary: { today_orders_count: 2, today_revenue: 90, today_new_customers: 1, today_returning_customers: 1, today_subscription_orders: 0, average_order_value_today: 45 }, data_quality: [] },
     open_orders: { summary: { open_orders_count: 1 }, rows: [{ order_number: '0802', woo_order_id: 802, customer_name: 'Avery Stone', customer_email: 'avery@example.invalid', status: 'open', placed_on: '2026-07-08T10:00:00Z', order_total: 60, city: 'Edmonton' }], data_quality: [] },
-    subscriptions: { summary: { subscription_data_available: false, upcoming_7_days_count: 0, upcoming_30_days_count: 0 }, rows: [], empty_state: 'Subscription data is not synced yet.', data_quality: [{ code: 'missing_subscription_data', severity: 'info', message: 'Subscription data is not synced yet. This section will populate after subscription sync is connected.' }] },
+    subscriptions: {
+      summary: { subscription_data_available: true, upcoming_7_days_count: 1, upcoming_30_days_count: 1, last_synced_at: '2026-07-08T16:25:00Z' },
+      rows: [
+        { subscription_id: 901, line_item_id: 1, product_name: 'Subscription Dog Food', sku: 'SUB-DOG', customer_name: 'Avery Stone', next_payment_date: '2026-07-10', quantity_due: 3, current_in_stock: 4, current_sellable: 2, stockout_risk: 'At risk' },
+        { subscription_id: 901, line_item_id: 2, product_name: 'Subscription Cat Food', sku: 'SUB-CAT', customer_name: 'Avery Stone', next_payment_date: '2026-07-10', quantity_due: 1, current_in_stock: 8, current_sellable: 8, stockout_risk: 'Covered' },
+      ],
+      empty_state: null,
+      data_quality: [],
+    },
     revenue_comparison: { summary: { current_period_label: 'July 1-8', previous_period_label: 'June 1-8', current_period_revenue: 90, previous_period_revenue: 120, delta_percent: -25 }, daily_series: [{ day_index: 1, current_revenue: 20, previous_revenue: 40 }, { day_index: 2, current_revenue: 70, previous_revenue: 80 }], data_quality: [] },
     order_map: { summary: { total_orders_today: 2, total_orders_plotted: 2, total_orders_unplotted: 0 }, city_breakdown: [{ city: 'Edmonton', order_count: 1, revenue: 60, customer_count: 1 }, { city: 'Sherwood Park', order_count: 1, revenue: 30, customer_count: 1 }], markers: [{ marker_label: '0802', latitude: 53.5461, longitude: -113.4938, approximate: true }, { marker_label: '0803', latitude: 53.5412, longitude: -113.2957, approximate: true }], data_quality: [{ code: 'approximate_coordinates', severity: 'info', message: 'Map uses city-level approximate markers until address geocoding is configured.' }] },
-    data_quality: [{ code: 'missing_subscription_data', severity: 'info', message: 'Subscription data is not synced yet. This section will populate after subscription sync is connected.' }],
+    data_quality: [],
   });
   if (target.includes('/api/insights/subscriptions')) return json({ dashboard: 'subscriptions', summary: { data_available: false, active_subscriptions: null, subscription_revenue: null, monthly_recurring_revenue: null }, rows: [], data_quality: [{ code: 'missing_subscription_data', severity: 'info', message: 'No WooCommerce Subscriptions snapshots are synced locally yet.' }], empty_state: 'No subscription data synced yet' });
   if (target.includes('/api/insights/customer-metrics')) return json({ dashboard: 'customer-metrics', summary: { total_customers: 2, returning_customers: 1 }, rows: [{ customer_name: 'Avery Stone', email: 'avery@example.invalid', order_count: 2, lifetime_spend: 90, last_order_date: '2026-06-20T12:00:00Z' }], data_quality: [] });
@@ -1737,11 +1745,16 @@ describe('App shell and workflows', () => {
     expect(liveWooMetric).toHaveTextContent('Live WooCommerce');
     expect(screen.getByText('New Customers')).toBeInTheDocument();
     expect(screen.getByText('Returning Customers')).toBeInTheDocument();
+    expect(screen.getByText('Subscription Orders')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Open Orders' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Upcoming Subscriptions' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: "Today's Orders Map" })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Revenue per day/i })).toBeInTheDocument();
-    expect(screen.getByText('Subscription data is not synced yet.')).toBeInTheDocument();
+    expect(screen.getByText('Subscription Dog Food')).toBeInTheDocument();
+    expect(screen.getByText('Subscription Cat Food')).toBeInTheDocument();
+    expect(screen.getByText(/SUB-DOG · Avery Stone/)).toBeInTheDocument();
+    expect(screen.getByText('In stock 4 · Sellable 2')).toBeInTheDocument();
+    expect(screen.getByText('At risk')).toBeInTheDocument();
   });
 
   it('keeps local Dashboard metrics available when the live WooCommerce count fails', async () => {

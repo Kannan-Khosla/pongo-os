@@ -1,5 +1,5 @@
 import csv
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
 from types import SimpleNamespace
@@ -15,6 +15,7 @@ from app.main import app
 from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.orders import Order, OrderItem
 from app.models.reporting import GoogleReportsConfiguration, ReportDelivery, ReportRun
+from app.models.woocommerce import WooCommerceSyncRun, WooSubscriptionLineSnapshot
 from tests.test_fulfillments_api import picked_order
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_locations_api import seed_location
@@ -379,6 +380,7 @@ def test_sales_report_excludes_cancelled_orders_and_joins_current_stock(client):
         Description="Sales item",
         Brand="Pongo",
         Category="Food",
+        wooProductId=777,
         **{"In Stock": 8, "Allocated": 2, "Unit Cost": 3},
     )
     override, db = database_session()
@@ -401,6 +403,7 @@ def test_sales_report_excludes_cancelled_orders_and_joins_current_stock(client):
                 OrderItem(
                     order_id=successful.id,
                     inventory_item_id=item.id,
+                    woo_product_id=777,
                     sku=item.sku,
                     quantity_ordered=Decimal("3"),
                     line_total=Decimal("15"),
@@ -408,11 +411,36 @@ def test_sales_report_excludes_cancelled_orders_and_joins_current_stock(client):
                 OrderItem(
                     order_id=cancelled.id,
                     inventory_item_id=item.id,
+                    woo_product_id=777,
                     sku=item.sku,
                     quantity_ordered=Decimal("9"),
                     line_total=Decimal("45"),
                 ),
             ]
+        )
+        synced_at = datetime.now(timezone.utc)
+        db.add(
+            WooCommerceSyncRun(
+                sync_type="subscriptions",
+                status="completed",
+                started_at=synced_at,
+                completed_at=synced_at,
+                total_remote_records=1,
+                created_count=1,
+            )
+        )
+        db.add(
+            WooSubscriptionLineSnapshot(
+                woo_subscription_id=7001,
+                woo_line_item_id=1,
+                status="active",
+                next_payment_at=synced_at + timedelta(days=5),
+                woo_product_id=777,
+                sku=item.sku,
+                product_name=item.description,
+                quantity_per_renewal=7,
+                synced_at=synced_at,
+            )
         )
         db.commit()
     finally:
@@ -429,6 +457,80 @@ def test_sales_report_excludes_cancelled_orders_and_joins_current_stock(client):
     assert row["net_sales"] == "15.00"
     assert row["current_in_stock"] == "8.000"
     assert row["current_allocated"] == "2.000"
+    assert row["subscription_status"] == "Active"
+    assert row["is_subscription_product"] is True
+    assert row["active_subscriptions"] == 1
+    assert row["upcoming_30_day_units"] == "7.000"
+    assert row["subscription_stockout_risk"] == "At risk"
+    assert "Subscription" in {column["label"] for column in response.json()["columns"]}
+    exported = list(
+        csv.DictReader(
+            StringIO(client.get(f"/api/reports/runs/{response.json()['run_id']}/csv").content.decode("utf-8-sig"))
+        )
+    )
+    assert exported[0]["subscription_status"] == "Active"
+    assert exported[0]["upcoming_30_day_units"] == "7.000"
+
+
+def test_sales_report_marks_exact_unmapped_subscription_without_faking_stock(client):
+    synced_at = datetime.now(timezone.utc)
+    override, db = database_session()
+    try:
+        order = Order(
+            order_number="UNMAPPED-SUB-SALE",
+            woo_status="processing",
+            local_status="processing",
+            placed_on=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        )
+        db.add(order)
+        db.flush()
+        db.add(
+            OrderItem(
+                order_id=order.id,
+                woo_product_id=888,
+                name="Remote subscription item",
+                quantity_ordered=1,
+                line_total=5,
+            )
+        )
+        db.add(
+            WooCommerceSyncRun(
+                sync_type="subscriptions",
+                status="completed",
+                started_at=synced_at,
+                completed_at=synced_at,
+                total_remote_records=1,
+                created_count=1,
+            )
+        )
+        db.add(
+            WooSubscriptionLineSnapshot(
+                woo_subscription_id=7888,
+                woo_line_item_id=1,
+                status="active",
+                next_payment_at=synced_at + timedelta(days=5),
+                woo_product_id=888,
+                product_name="Remote subscription item",
+                quantity_per_renewal=2,
+                synced_at=synced_at,
+            )
+        )
+        db.commit()
+    finally:
+        override.close()
+
+    response = client.post(
+        "/api/reports/runs/sales-by-sku",
+        json={"filters": {"start_date": "2026-07-01", "end_date": "2026-07-31"}},
+    )
+
+    assert response.status_code == 200
+    row = response.json()["rows"][0]
+    assert row["subscription_status"] == "Active"
+    assert row["is_subscription_product"] is True
+    assert row["current_in_stock"] is None
+    assert row["current_sellable"] is None
+    assert row["subscription_stockout_risk"] == "Stock unavailable"
 
 
 def test_sales_report_excludes_pending_woo_orders_and_keeps_blank_sku_lines_separate(client):
@@ -478,7 +580,10 @@ def test_operational_reports_do_not_treat_historical_snapshots_as_open_demand(cl
 
     unallocated = client.post("/api/reports/runs/unallocated-order-items", json={"filters": {}}).json()
     incomplete = client.post("/api/reports/runs/incomplete-orders", json={"filters": {}}).json()
-    summary = client.post("/api/reports/runs/order-summary", json={"filters": {}}).json()
+    summary = client.post(
+        "/api/reports/runs/order-summary",
+        json={"filters": {"start_date": "2026-07-01", "end_date": "2026-07-31"}},
+    ).json()
 
     assert unallocated["rows"] == []
     assert incomplete["rows"] == []

@@ -4367,16 +4367,25 @@ function BusinessOpenOrdersCard({ rows }) {
 
 function BusinessSubscriptionsCard({ subscriptions }) {
   const rows = subscriptions.rows || [];
+  const lastSyncedAt = subscriptions.summary?.last_synced_at;
   return (
     <div className="business-card">
-      <div className="panel-title"><div><h2>Upcoming Subscriptions</h2><p>Renewals from local subscription snapshots.</p></div></div>
+      <div className="panel-title">
+        <div><h2>Upcoming Subscriptions</h2><p>Upcoming WooCommerce renewals with current Pongo stock.</p></div>
+        {lastSyncedAt && <span className="status-pill">Synced {formatDateTime(lastSyncedAt)}</span>}
+      </div>
       <div className="subscription-list">
         {rows.slice(0, 8).map((row, index) => (
-          <article className="subscription-card" key={`${row.subscription_id || row.order_number || index}`}>
+          <article className="subscription-card" key={`${row.subscription_id || row.order_number || 'subscription'}-${row.line_item_id || index}`}>
             <strong>{row.product_name || row.sku || 'Subscription item'}</strong>
-            <span>{row.customer_name || row.customer_email || 'Customer'}</span>
-            <small>{row.quantity_due || 1} due {row.next_payment_date || 'date unavailable'}</small>
-            {row.status && <em>{StatusText(row.status)}</em>}
+            <span>{row.sku || 'SKU unavailable'} · {row.customer_name || row.customer_email || 'Customer'}</span>
+            <small>{row.quantity_due ?? 1} due {row.next_payment_date || 'date unavailable'}</small>
+            <small>
+              {row.current_in_stock == null
+                ? 'Stock unavailable'
+                : `In stock ${row.current_in_stock} · Sellable ${row.current_sellable ?? 'unknown'}`}
+            </small>
+            <em className={row.stockout_risk === 'At risk' ? 'is-risk' : ''}>{row.stockout_risk || StatusText(row.status)}</em>
           </article>
         ))}
         {!rows.length && <div className="soft-empty-state">{subscriptions.empty_state || 'Subscription data is not synced yet.'}</div>}
