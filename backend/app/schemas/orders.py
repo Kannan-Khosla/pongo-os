@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -9,9 +10,18 @@ class OpenOrderLineRead(BaseModel):
     woo_product_id: int | None = None
     woo_variation_id: int | None = None
     item_id: int | None = None
+    substituted_from_item_id: int | None = None
+    substituted_from_sku: str | None = None
+    substituted_from_name: str | None = None
+    substitution_reason: str | None = None
+    substituted_by: str | None = None
+    substituted_at: datetime | None = None
     sku: str | None = None
     barcode: str | None = None
     name: str | None = None
+    effective_sku: str | None = None
+    effective_barcode: str | None = None
+    effective_name: str | None = None
     quantity_ordered: float
     quantity_allocated: float
     quantity_picked: float
@@ -208,3 +218,65 @@ class OrderCompletionResponse(BaseModel):
     woo_sync_status: str | None = None
     woo_writeback_queue_id: int | None = None
     woo_sync_error: str | None = None
+
+
+class WooOrderStatusActionRequest(BaseModel):
+    target_status: Literal["completed", "cancelled"]
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=1, max_length=1000)
+    completion_mode: Literal["complete", "complete_picked", "complete_without_picking"] = "complete"
+
+
+class WooOrderStatusActionResponse(BaseModel):
+    status: str
+    target_status: str
+    woo_order_id: int
+    local_order_id: int
+    local_status: str | None = None
+    released_quantity: float = 0
+    message: str
+    woo_sync_status: str | None = None
+    woo_writeback_queue_id: int | None = None
+    woo_sync_error: str | None = None
+
+
+class WooOrderReconcileRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class WooOrderReconcileResponse(BaseModel):
+    status: Literal["reconciled"]
+    woo_order_id: int
+    local_order_id: int
+    order: OpenOrderDetail
+
+
+class OrderSubstitutionRequest(BaseModel):
+    replacement_inventory_item_id: int = Field(gt=0)
+    reason: str = Field(min_length=1, max_length=1000)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class OrderSubstitutionResponse(BaseModel):
+    status: str
+    order_id: int
+    order_line_id: int
+    substituted_from_item_id: int
+    replacement_inventory_item_id: int
+    released_quantity: float = 0
+    allocation_status: str | None = None
+    pick_status: str | None = None
+    message: str
+
+
+class CompletedOrderPickRecoveryRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class CompletedOrderPickRecoveryResponse(BaseModel):
+    status: str
+    order_id: int
+    allocation_status: str | None = None
+    pick_status: str | None = None
+    message: str

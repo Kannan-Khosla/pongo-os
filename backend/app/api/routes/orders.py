@@ -1,24 +1,49 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.session import get_db
-from app.models.orders import OrderItem
-from app.schemas.orders import BulkOrderActionRequest, BulkOrderActionResponse, BulkUnpickRequest, CompletedOrderListResponse, OpenOrderDetail, OpenOrderListResponse, OrderCompletionRequest, OrderCompletionResponse, OrderWorkflowPreviewResponse
+from app.schemas.orders import (
+    BulkOrderActionRequest,
+    BulkOrderActionResponse,
+    BulkUnpickRequest,
+    CompletedOrderListResponse,
+    CompletedOrderPickRecoveryRequest,
+    CompletedOrderPickRecoveryResponse,
+    OpenOrderDetail,
+    OpenOrderListResponse,
+    OrderCompletionRequest,
+    OrderCompletionResponse,
+    OrderSubstitutionRequest,
+    OrderSubstitutionResponse,
+    OrderWorkflowPreviewResponse,
+    WooOrderStatusActionRequest,
+    WooOrderStatusActionResponse,
+    WooOrderReconcileRequest,
+    WooOrderReconcileResponse,
+)
 from app.services.allocations import allocation_to_read, list_allocations_page
 from app.services.auth import authenticated_actor
 from app.services.completed_orders import CompletedOrderFilters, export_completed_orders_csv, list_completed_orders
 from app.services.fulfillments import fulfillment_to_read, list_fulfillments_page
+from app.services.order_actions import (
+    OrderActionConflict,
+    change_live_woo_order_status,
+    prepare_completed_order_for_picking,
+    reconcile_live_woo_order,
+    stock_sync_error,
+    substitute_order_line,
+    sync_completed_picked_stock,
+)
 from app.services.order_workflow import auto_allocate_order_if_possible, complete_order_without_stock_reduction, complete_picked_order, determine_order_workflow_flags, evaluate_order_allocation
 from app.services.picks import list_picks_page, pick_to_read, unpick_orders
 from app.services.stock_mutation_guard import IdempotencyConflict
 from app.services.woocommerce_orders import export_open_orders_csv, get_open_order_detail, list_open_orders
-from app.services.woocommerce_client import WooCommerceClient
+from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.woocommerce_access import effective_woocommerce_settings
-from app.services.woocommerce_writeback import sync_completed_order_status, sync_inventory_stock
+from app.services.woocommerce_writeback import sync_completed_order_status
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -312,13 +337,26 @@ def preview_order_completion(order_id: int, payload: OrderCompletionRequest, db:
 @router.post("/{order_id}/complete/commit", response_model=OrderCompletionResponse)
 def commit_order_completion(order_id: int, payload: OrderCompletionRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> OrderCompletionResponse:
     try:
+        detail = get_open_order_detail(db, order_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Order not found")
+        was_recovery = detail.completion_status == "picking_recovery" or (
+            detail.completed_without_picking and detail.woo_status == "completed"
+        )
+        recovery_completion_replay = was_recovery and detail.completion_status == "completed"
         completion_mode = payload.completion_mode
         if completion_mode == "complete":
-            detail = get_open_order_detail(db, order_id)
-            if detail is None:
-                raise HTTPException(status_code=404, detail="Order not found")
             completion_mode = "complete_picked" if detail.pick_status == "picked" else "complete_without_picking"
-        if completion_mode == "complete_picked":
+        if was_recovery and completion_mode != "complete_picked":
+            raise ValueError("A recovery order must be fully picked before it can be completed.")
+        if recovery_completion_replay:
+            result = {
+                "status": "completed",
+                "order_id": order_id,
+                "released_quantity": 0,
+                "message": "Recovery picking completion was already applied.",
+            }
+        elif completion_mode == "complete_picked":
             result = complete_picked_order(db, order_id, created_by=actor)
         elif completion_mode == "complete_without_picking":
             result = complete_order_without_stock_reduction(db, order_id, payload.reason or "Completed from Open Orders.", created_by=actor)
@@ -328,33 +366,139 @@ def commit_order_completion(order_id: int, payload: OrderCompletionRequest, db: 
         raise HTTPException(status_code=400, detail=str(error)) from error
     settings = effective_woocommerce_settings(db, get_settings())
     woo_client = WooCommerceClient(settings)
-    stock_sync = sync_completed_picked_stock(db, settings, woo_client, order_id, actor) if completion_mode == "complete_picked" else None
+    stock_sync = (
+        sync_completed_picked_stock(db, settings, woo_client, order_id, actor)
+        if completion_mode == "complete_picked" and not recovery_completion_replay
+        else None
+    )
     writeback = None
     writeback_error = None
-    try:
-        writeback = sync_completed_order_status(db, settings, woo_client, order_id, actor)
-    except ValueError as error:
-        writeback_error = str(error)
+    queue_woo_status_update = bool(payload.queue_woo_status_update and not was_recovery)
+    if queue_woo_status_update:
+        try:
+            writeback = sync_completed_order_status(db, settings, woo_client, order_id, actor)
+        except ValueError as error:
+            writeback_error = str(error)
     return OrderCompletionResponse(
         **result,
-        queue_woo_status_update=True,
-        woo_sync_status=writeback.status if writeback else "failed",
+        queue_woo_status_update=queue_woo_status_update,
+        woo_sync_status=writeback.status if writeback else ("failed" if queue_woo_status_update else "not_requested"),
         woo_writeback_queue_id=writeback.id if writeback else None,
         woo_sync_error=(writeback.error_message if writeback else writeback_error) or stock_sync_error(stock_sync),
     )
 
 
-def sync_completed_picked_stock(db: Session, settings, woo_client: WooCommerceClient, order_id: int, requested_by: str):
-    item_ids = {item_id for item_id in db.scalars(select(OrderItem.inventory_item_id).where(OrderItem.order_id == order_id)).all() if item_id}
-    return sync_inventory_stock(db, settings, woo_client, item_ids=item_ids, requested_by=requested_by)
+@router.post("/woocommerce/{woo_order_id}/status", response_model=WooOrderStatusActionResponse)
+def update_live_woo_order_status(
+    woo_order_id: int,
+    payload: WooOrderStatusActionRequest,
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> WooOrderStatusActionResponse:
+    assert_matching_idempotency_keys(payload.idempotency_key, idempotency_key_header)
+    settings = effective_woocommerce_settings(db, get_settings())
+    try:
+        return change_live_woo_order_status(
+            db,
+            settings,
+            WooCommerceClient(settings),
+            woo_order_id,
+            payload,
+            actor=actor,
+        )
+    except (OrderActionConflict, IdempotencyConflict) as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except WooCommerceClientError as error:
+        db.rollback()
+        raise HTTPException(status_code=503, detail=error.message) from error
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
-def stock_sync_error(sync) -> str | None:
-    if sync and sync.failed_count:
-        return f"{sync.failed_count} completed-order stock update(s) failed to reach WooCommerce. Review the writeback queue."
-    if sync and sync.dry_run_count:
-        return "WooCommerce stock writeback ran in dry-run mode; remote stock was not changed."
-    return None
+@router.post("/woocommerce/{woo_order_id}/reconcile", response_model=WooOrderReconcileResponse)
+def reconcile_live_woo_order_detail(
+    woo_order_id: int,
+    payload: WooOrderReconcileRequest,
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> WooOrderReconcileResponse:
+    assert_matching_idempotency_keys(payload.idempotency_key, idempotency_key_header)
+    settings = effective_woocommerce_settings(db, get_settings())
+    try:
+        return reconcile_live_woo_order(
+            db,
+            WooCommerceClient(settings),
+            woo_order_id,
+            payload,
+            actor=actor,
+        )
+    except (OrderActionConflict, IdempotencyConflict) as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except WooCommerceClientError as error:
+        db.rollback()
+        raise HTTPException(status_code=503, detail=error.message) from error
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/{order_id}/lines/{order_line_id}/substitute", response_model=OrderSubstitutionResponse)
+def substitute_open_order_line(
+    order_id: int,
+    order_line_id: int,
+    payload: OrderSubstitutionRequest,
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> OrderSubstitutionResponse:
+    assert_matching_idempotency_keys(payload.idempotency_key, idempotency_key_header)
+    try:
+        return substitute_order_line(db, order_id, order_line_id, payload, actor=actor)
+    except (OrderActionConflict, IdempotencyConflict) as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/{order_id}/prepare-picking", response_model=CompletedOrderPickRecoveryResponse)
+def prepare_completed_order_pick_recovery(
+    order_id: int,
+    payload: CompletedOrderPickRecoveryRequest,
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> CompletedOrderPickRecoveryResponse:
+    assert_matching_idempotency_keys(payload.idempotency_key, idempotency_key_header)
+    settings = effective_woocommerce_settings(db, get_settings())
+    try:
+        return prepare_completed_order_for_picking(
+            db,
+            WooCommerceClient(settings),
+            order_id,
+            payload,
+            actor=actor,
+        )
+    except (OrderActionConflict, IdempotencyConflict) as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except WooCommerceClientError as error:
+        db.rollback()
+        raise HTTPException(status_code=503, detail=error.message) from error
+
+
+def assert_matching_idempotency_keys(body_key: str, header_key: str | None) -> None:
+    if header_key is not None and header_key.strip() != body_key.strip():
+        raise HTTPException(status_code=409, detail="Body and Idempotency-Key header values must match.")
 
 
 @router.get("/{order_id}", response_model=OpenOrderDetail)

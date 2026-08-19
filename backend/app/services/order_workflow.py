@@ -35,18 +35,24 @@ def is_pos_order(order: Order) -> bool:
 
 def is_operational_order(order: Order) -> bool:
     return not order.is_historical_snapshot and is_active_order(order) and (
-        order.woo_status == "processing" or (order.woo_status == "completed" and is_pos_order(order))
+        order.woo_status == "processing"
+        or (order.woo_status == "completed" and is_pos_order(order))
+        or (order.woo_status == "completed" and order.completion_status == "picking_recovery")
     )
 
 
 def operational_order_clause():
     return and_(
         Order.is_historical_snapshot.is_(False),
+        func.coalesce(Order.completion_status, "") != "cancellation_pending",
         or_(
             Order.woo_status == "processing",
             and_(
                 Order.woo_status == "completed",
-                func.lower(func.coalesce(Order.payment_method, "")).like(f"{POS_PAYMENT_METHOD_PREFIX}%"),
+                or_(
+                    func.lower(func.coalesce(Order.payment_method, "")).like(f"{POS_PAYMENT_METHOD_PREFIX}%"),
+                    Order.completion_status == "picking_recovery",
+                ),
             ),
         ),
     )
@@ -319,9 +325,9 @@ def auto_allocate_order_if_possible(db: Session, order_id: int, source: str = "a
                 order_line_id=order_line.id,
                 item_id=item.id,
                 inventory_item_location_id=row.id,
-                sku=order_line.sku or item.sku,
-                barcode=order_line.barcode or item.barcode,
-                description=order_line.name or order_line.description or item.description,
+                sku=operational_line_identity(order_line)[0],
+                barcode=operational_line_identity(order_line)[1],
+                description=operational_line_identity(order_line)[2],
                 warehouse=row.warehouse,
                 inventory_location=row.inventory_location,
                 quantity_ordered=to_decimal(order_line.quantity_ordered),
@@ -477,9 +483,19 @@ def complete_order_without_stock_reduction(db: Session, order_id: int, reason: s
     order = lock_order_completion_scope(db, order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
+    if order.completion_status == "cancellation_pending":
+        raise ValueError("Order completion is blocked because cancellation is already pending.")
     reason = (reason or "").strip()
     if not reason:
         raise ValueError("A reason is required when completing without picking.")
+    if any(
+        to_decimal(value) > 0
+        for line in order.items
+        for value in (line.quantity_picked, line.quantity_fulfilled, line.quantity_stock_reduced)
+    ):
+        raise ValueError(
+            "Completion without picking is blocked because the order now has picked, fulfilled, or stock-reduced quantities."
+        )
     now = datetime.now(timezone.utc)
     released_quantity = release_unpicked_allocations(db, order, f"Order completed without picking. Stock was not reduced. {reason}", "complete_without_picking", created_by=created_by)
     order.local_status = "completed"
@@ -502,6 +518,8 @@ def complete_picked_order(db: Session, order_id: int, *, created_by: str = "syst
     order = lock_order_completion_scope(db, order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
+    if order.completion_status == "cancellation_pending":
+        raise ValueError("Order completion is blocked because cancellation is already pending.")
     required_lines = [
         line
         for line in order.items
@@ -669,6 +687,11 @@ def allocation_remaining_by_location(
 
 
 def sync_order_workflow_statuses(order: Order) -> None:
+    if order.completion_status == "cancellation_pending":
+        order.local_status = "cancellation_pending"
+        order.allocation_status = order.allocation_status or "unallocated"
+        order.pick_status = "not_ready"
+        return
     lines = [line for line in order.items if is_actionable_order_line(line)]
     matched_lines = [line for line in lines if line.matched_status == "matched" and not (line.inventory_item and line.inventory_item.non_inventory)]
     blocked = [
@@ -682,7 +705,11 @@ def sync_order_workflow_statuses(order: Order) -> None:
     all_picked = bool(matched_lines) and all(line_is_fully_picked_and_reduced(line) for line in matched_lines)
 
     locally_completed = order.completion_status in {"completed", "completed_without_picking"}
-    woo_operational = order.woo_status == "processing" or (order.woo_status == "completed" and is_pos_order(order))
+    woo_operational = (
+        order.woo_status == "processing"
+        or (order.woo_status == "completed" and is_pos_order(order))
+        or (order.woo_status == "completed" and order.completion_status == "picking_recovery")
+    )
     if order.woo_status and not woo_operational and not locally_completed:
         order.local_status = order.woo_status
         order.completion_status = order.woo_status
@@ -839,7 +866,7 @@ def line_is_fully_picked_and_reduced(line: OrderItem) -> bool:
 
 
 def is_active_order(order: Order) -> bool:
-    if order.completion_status in {"completed", "completed_without_picking"}:
+    if order.completion_status in {"completed", "completed_without_picking", "cancellation_pending"}:
         return False
     return order.local_status not in COMPLETED_LOCAL_STATUSES and order.local_status not in {"cancelled", "canceled", "failed", "refunded"}
 
@@ -869,6 +896,17 @@ def is_pickable(order: Order) -> bool:
     if order.pick_status not in {"ready_to_pick", "partially_picked"}:
         return False
     return any(to_decimal(line.quantity_allocated) > to_decimal(line.quantity_picked) for line in required_lines)
+
+
+def operational_line_identity(line: OrderItem) -> tuple[str | None, str | None, str | None]:
+    item = line.inventory_item
+    if line.substituted_from_inventory_item_id is not None and item is not None:
+        return item.sku, item.barcode, item.description
+    return (
+        line.sku or (item.sku if item else None),
+        line.barcode or (item.barcode if item else None),
+        line.name or line.description or (item.description if item else None),
+    )
 
 
 def allocation_exception_reason(evaluation: AllocationEvaluation) -> str:

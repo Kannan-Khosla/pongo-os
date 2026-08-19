@@ -771,6 +771,10 @@ Fields:
 - woo_product_id
 - woo_variation_id
 - inventory_item_id
+- substituted_from_inventory_item_id
+- substitution_reason
+- substituted_by
+- substituted_at
 - line_number
 - sku
 - barcode
@@ -810,7 +814,10 @@ Fields:
 
 Relationships:
 - Belongs to `orders`.
-- Optionally belongs to `inventory_items`.
+- Optionally belongs to the effective operational `inventory_items` row through
+  `inventory_item_id`.
+- An active local substitution optionally belongs to the original Woo-mapped
+  inventory item through `substituted_from_inventory_item_id`.
 
 Read-only order sync rules:
 - Matching uses Woo product/variation IDs, exact SKU, and exact Barcode.
@@ -823,6 +830,12 @@ Read-only order sync rules:
 - `sellable_snapshot = inventory_items.in_stock - inventory_items.allocated`
   at sync time.
 - `shortage_quantity = max(quantity_ordered - sellable_snapshot, 0)`.
+- A substitution leaves Woo IDs plus the stored Woo SKU/name snapshots intact,
+  changes only the effective `inventory_item_id`, and records original item,
+  reason, actor, and timestamp. Allocation, scanning, picking, and local stock
+  reduction use the effective item. A Woo resync preserves the substitution
+  only while the original product/variation identity and ordered quantity are
+  unchanged; an incompatible remote change marks the line for review.
 - Order sync can auto-allocate active orders by increasing local Allocated and
   creating allocation/audit rows. It does not update `inventory_items.in_stock`
   or create stock movements.
@@ -1734,6 +1747,7 @@ Fields:
 - preview_json
 - response_json
 - error_message
+- idempotency_key
 - created_at
 - approved_at
 - sent_at
@@ -1747,12 +1761,17 @@ Allowed operation types:
 Safety:
 - live sends require staging live-test mode, dry-run off, approval, exact host
   match, and allowlisted operation/path/payload guards
-- production writeback is not enabled
+- production order-status writeback is restricted to exact `completed` or
+  `cancelled` targets and still requires the configured writeback guards
 - DELETE is not supported
 - arbitrary endpoint writes are not supported
 - customer, coupon, refund, and product metadata writes are not supported
 - credentials remain backend-only and are stored encrypted in the singleton
   `woocommerce_configuration` row
+- `(operation_type, idempotency_key)` is unique when an idempotency key is
+  present. Existing and unrelated queue rows may retain a null key.
+- Order-status queue previews retain the operator reason. A retry with the same
+  key must match the original Woo order, target status, and reason.
 
 ## Woo Mapping Enrichment Additions
 

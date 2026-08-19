@@ -130,7 +130,8 @@ Allowed operation types:
 Payload allowlists:
 
 - Stock: `stock_quantity`, `stock_status`, `manage_stock`
-- Order status: `status`
+- Order status: `status`, with production targets restricted to exact
+  `completed` or `cancelled`
 
 Disallowed:
 
@@ -142,7 +143,8 @@ Disallowed:
 - refund writes
 - product metadata writes
 - product edits beyond stock
-- production WooCommerce writeback
+- production writes outside the explicit Pongo stock-authority policy or the
+  exact completed/cancelled order-status allowlist
 
 ## Product Sync Behavior
 
@@ -635,7 +637,9 @@ Completion is a local Pongo OS workflow after picking or as an explicit
 complete-without-picking exception. Fulfillment remains for compatibility and
 history. These paths use local `orders`, `order_items`, `fulfillments`,
 `fulfillment_lines`, and `inventory_audit_events` only in the normal picked
-path because stock was already reduced during picking.
+path because stock was already reduced during picking. An explicitly requested
+completion/cancellation status action then uses the guarded backend writeback
+queue; Woo credentials never reach the frontend.
 
 Completion/fulfillment compatibility:
 - completing a picked order marks it completed/closed and does not reduce stock
@@ -646,8 +650,11 @@ Completion/fulfillment compatibility:
   records and returns a warning that stock was already reduced during picking;
 - fulfillment on an unpicked order is blocked instead of silently reducing
   stock through the old path;
-- does not call WooCommerce;
-- does not update WooCommerce order status, products, or stock;
+- direct local preview never calls WooCommerce;
+- an approved status action may write only Woo `completed` or `cancelled`;
+- picked completion absolutely synchronizes each effective stock target, plus
+  the stored original target for a substituted line, without rewriting Woo
+  line items;
 - does not route, create shipping labels, create purchase orders, manage
   suppliers, or notify customers.
 
@@ -770,11 +777,14 @@ does not fake metrics.
 
 The default Dashboard reads local WooCommerce order snapshots for today's
 business metrics, open-order details, revenue comparison, and city-level order
-geography. A separate `GET /api/business-dashboard/woocommerce-open-orders`
-endpoint reads only live `X-WP-Total` values for `pending`, `processing`, and
-`on-hold`; its failure affects only that KPI and never falls back to local data.
-Neither path writes WooCommerce or updates local order or inventory state, and
-the frontend never receives WooCommerce credentials.
+geography. A separate paged
+`GET /api/business-dashboard/woocommerce-open-orders` endpoint reads only live
+Woo `processing` rows and their exact `X-WP-Total`/`X-WP-TotalPages` values. It
+returns a bounded sanitized row shape and only joins an existing local order
+ID; it never creates or reconciles an order. Missing totals, malformed rows, a
+non-processing row, or a remote failure returns HTTP 503 and never falls back
+to local data. Neither Dashboard GET writes WooCommerce or updates local order
+or inventory state, and the frontend never receives WooCommerce credentials.
 
 Subscription cards show Woo's official next-payment date and current Pongo
 stock after the first successful snapshot; failed refreshes preserve the last

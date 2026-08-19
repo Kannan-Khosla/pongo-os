@@ -33,6 +33,7 @@ from app.services.order_workflow import (
     allocation_remaining_by_location,
     is_operational_order,
     is_pickable as workflow_order_is_pickable,
+    operational_line_identity,
     sync_order_workflow_statuses,
 )
 from app.services.stock_mutation_guard import IdempotencyConflict, begin_stock_mutation, complete_stock_mutation
@@ -98,14 +99,7 @@ def commit_scan(db: Session, order_id: int, payload: PickScanRequest) -> PickSca
             expected_quantity = sum((line.quantity_to_pick for line in existing_lines), Decimal("0"))
             if (
                 matched_line is None
-                or not (
-                    sku_or_barcode_matches_scan(matched_line.sku, matched_line.barcode, payload.sku_or_barcode)
-                    or sku_or_barcode_matches_scan(
-                        matched_line.inventory_item.sku if matched_line.inventory_item else None,
-                        matched_line.inventory_item.barcode if matched_line.inventory_item else None,
-                        payload.sku_or_barcode,
-                    )
-                )
+                or not scan_matches_line(matched_line, payload.sku_or_barcode)
                 or to_decimal(payload.quantity) != expected_quantity
             ):
                 raise IdempotencyConflict("Idempotency key was already used with a different scan request.")
@@ -242,9 +236,9 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
                     order_line_id=order_line.id,
                     item_id=item.id,
                     inventory_item_location_id=location_row.id,
-                    sku=order_line.sku or item.sku,
-                    barcode=order_line.barcode or item.barcode,
-                    description=order_line.name or order_line.description or item.description,
+                    sku=operational_line_identity(order_line)[0],
+                    barcode=operational_line_identity(order_line)[1],
+                    description=operational_line_identity(order_line)[2],
                     warehouse=location_row.warehouse,
                     inventory_location=location_row.inventory_location,
                     quantity_ordered=order_line.quantity_ordered or Decimal("0"),
@@ -571,6 +565,7 @@ def selected_order_lines(db: Session, payload: PickRequest) -> list[OrderItem]:
 
 def lock_pick_scope(db: Session, payload: PickRequest) -> None:
     lines = selected_order_lines(db, payload)
+    expected_item_ids = {line.id: line.inventory_item_id for line in lines}
     lock_inventory_stock(
         db,
         {line.inventory_item_id for line in lines if line.inventory_item_id is not None},
@@ -586,13 +581,15 @@ def lock_pick_scope(db: Session, payload: PickRequest) -> None:
             .execution_options(populate_existing=True)
         ).all()
     if line_ids:
-        db.scalars(
+        locked_lines = list(db.scalars(
             select(OrderItem)
             .where(OrderItem.id.in_(line_ids))
             .order_by(OrderItem.order_id, OrderItem.id)
             .with_for_update()
             .execution_options(populate_existing=True)
-        ).all()
+        ).all())
+        if any(line.inventory_item_id != expected_item_ids.get(line.id) for line in locked_lines):
+            raise ValueError("Order line inventory mapping changed while the pick was starting; refresh and retry.")
 
 
 def persist_rejected_pick(db: Session, mutation, response: PickCommitResponse) -> PickCommitResponse:
@@ -615,16 +612,7 @@ def find_scan_line(db: Session, order_id: int, payload: PickScanRequest) -> tupl
     ).one_or_none()
     if order is None:
         return None, None
-    matches = [
-        line
-        for line in order.items
-        if sku_or_barcode_matches_scan(line.sku, line.barcode, query)
-        or sku_or_barcode_matches_scan(
-            line.inventory_item.sku if line.inventory_item else None,
-            line.inventory_item.barcode if line.inventory_item else None,
-            query,
-        )
-    ]
+    matches = [line for line in order.items if scan_matches_line(line, query)]
     if not matches:
         return None, PickScanResponse(status="not_found", errors=["Scanned SKU/barcode is not in this order."])
     if len(matches) > 1:
@@ -640,6 +628,11 @@ def find_scan_line(db: Session, order_id: int, payload: PickScanRequest) -> tupl
     if to_decimal(payload.quantity) > total_allocated_location_remaining(db, line):
         return line, PickScanResponse(status="rejected", matched_line=scanner_line(line), errors=["Scanned quantity exceeds remaining allocated location stock."])
     return line, None
+
+
+def scan_matches_line(line: OrderItem, query: str) -> bool:
+    sku, barcode, _ = operational_line_identity(line)
+    return sku_or_barcode_matches_scan(sku, barcode, query)
 
 
 def scanner_line(line: OrderItem) -> PickScannerLine:
@@ -671,9 +664,9 @@ def scanner_line(line: OrderItem) -> PickScannerLine:
         order_line_id=line.id,
         item_id=line.inventory_item_id,
         inventory_item_location_id=item_location_id,
-        sku=line.sku or (item.sku if item else None),
-        barcode=line.barcode or (item.barcode if item else None),
-        description=line.name or line.description or (item.description if item else None),
+        sku=operational_line_identity(line)[0],
+        barcode=operational_line_identity(line)[1],
+        description=operational_line_identity(line)[2],
         ordered_quantity=decimal_to_float(line.quantity_ordered),
         allocated_quantity=decimal_to_float(allocated),
         picked_quantity=decimal_to_float(picked),
@@ -757,9 +750,9 @@ def build_preview_line(line: OrderItem, requested_quantity: Decimal | None = Non
         order_line_id=line.id,
         item_id=item.id if item else None,
         inventory_item_location_id=item_location_id,
-        sku=line.sku or (item.sku if item else None),
-        barcode=line.barcode or (item.barcode if item else None),
-        description=line.name or line.description or (item.description if item else None),
+        sku=operational_line_identity(line)[0],
+        barcode=operational_line_identity(line)[1],
+        description=operational_line_identity(line)[2],
         warehouse=warehouse,
         inventory_location=inventory_location,
         quantity_ordered=decimal_to_float(ordered),

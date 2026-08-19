@@ -95,6 +95,10 @@ class OrderItem(TimestampMixin, Base):
     woo_product_id: Mapped[int | None] = mapped_column(Integer, index=True)
     woo_variation_id: Mapped[int | None] = mapped_column(Integer, index=True)
     inventory_item_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_items.id"), index=True)
+    substituted_from_inventory_item_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_items.id"), index=True)
+    substitution_reason: Mapped[str | None] = mapped_column(Text)
+    substituted_by: Mapped[str | None] = mapped_column(String(120))
+    substituted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     line_number: Mapped[int | None] = mapped_column(Integer)
     sku: Mapped[str | None] = mapped_column(String(120), index=True)
     barcode: Mapped[str | None] = mapped_column(String(120), index=True)
@@ -131,4 +135,11 @@ class OrderItem(TimestampMixin, Base):
     status: Mapped[str | None] = mapped_column(String(80), index=True)
 
     order: Mapped[Order] = relationship(back_populates="items")
-    inventory_item: Mapped["InventoryItem | None"] = relationship(back_populates="order_items")
+    inventory_item: Mapped["InventoryItem | None"] = relationship(
+        back_populates="order_items",
+        foreign_keys=[inventory_item_id],
+    )
+    substituted_from_item: Mapped["InventoryItem | None"] = relationship(
+        foreign_keys=[substituted_from_inventory_item_id],
+        lazy="selectin",
+    )

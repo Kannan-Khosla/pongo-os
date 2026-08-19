@@ -302,7 +302,14 @@ def commit_remote_order_records(
                         line.allocation_status = "unallocated"
                         line.pick_status = "not_ready"
                         line.status = record.local_status
-                elif not snapshot_only and not is_operational_record(record):
+                elif (
+                    not snapshot_only
+                    and not is_operational_record(record)
+                    and not (
+                        order.completion_status == "picking_recovery"
+                        and record.woo_status == "completed"
+                    )
+                ):
                     released_quantity = release_unpicked_allocations(
                         db,
                         order,
@@ -315,7 +322,12 @@ def commit_remote_order_records(
                             f"Woo reconciliation: released {released_quantity} unpicked units after status changed to {record.woo_status}.",
                         )
                     order.local_status = record.local_status
-                    if not preserve_local_workflow:
+                    if order.completion_status == "cancellation_pending":
+                        # A processing snapshot must not clear the local guard while
+                        # Woo cancellation is in flight. Once Woo reaches a terminal
+                        # status, however, that remote source of truth resolves it.
+                        order.completion_status = record.local_status
+                    elif not preserve_local_workflow:
                         order.completion_status = record.local_status
                 if not snapshot_only:
                     sync_order_workflow_statuses(order)
@@ -414,7 +426,12 @@ def acquire_order_import_transaction_lock(db: Session) -> None:
 
 
 def is_locally_terminal_order(order: Order) -> bool:
-    return bool(order.completed_at or order.closed_at or order.completed_without_picking)
+    return bool(
+        order.completed_at
+        or order.closed_at
+        or order.completed_without_picking
+        or order.completion_status == "cancellation_pending"
+    )
 
 
 def is_operational_record(record: NormalizedWooOrder) -> bool:
@@ -695,8 +712,15 @@ def upsert_order_lines(
         previous_stock_reduced = local_line.quantity_stock_reduced or Decimal("0")
         protected_quantity = max(previous_picked, previous_fulfilled, previous_stock_reduced)
         incoming_item_id = preview_line.item_id if preview_line else None
-        mapping_changed = (
-            local_line.inventory_item_id is not None
+        active_substitution = local_line.substituted_from_inventory_item_id is not None
+        prior_woo_identity = (local_line.woo_product_id, local_line.woo_variation_id)
+        incoming_woo_identity = (record_line.woo_product_id, record_line.woo_variation_id)
+        substituted_woo_identity_changed = active_substitution and prior_woo_identity != incoming_woo_identity
+        substituted_quantity_changed = active_substitution and previous_ordered != record_line.quantity_ordered
+        substitution_requires_review = substituted_woo_identity_changed or substituted_quantity_changed
+        mapping_changed = substitution_requires_review or (
+            not active_substitution
+            and local_line.inventory_item_id is not None
             and incoming_item_id is not None
             and local_line.inventory_item_id != incoming_item_id
         )
@@ -716,7 +740,12 @@ def upsert_order_lines(
                 "woocommerce_line_change",
             )
             if released > 0:
-                if mapping_changed:
+                if substituted_quantity_changed:
+                    reconciliation_notes.append(
+                        f"Line {record_line.woo_line_item_id} quantity changed after local substitution; "
+                        f"released {released} unpicked units and requires review."
+                    )
+                elif mapping_changed:
                     reconciliation_notes.append(
                         f"Line {record_line.woo_line_item_id} changed inventory item from "
                         f"{local_line.inventory_item_id} to {incoming_item_id}; released {released} unpicked units."
@@ -732,17 +761,26 @@ def upsert_order_lines(
                 f"{record_line.quantity_ordered}; FIFO allocation will reconcile any additional requirement."
             )
         if mapping_changed and released == 0:
-            reconciliation_notes.append(
-                f"Line {record_line.woo_line_item_id} changed inventory item from "
-                f"{local_line.inventory_item_id} to {incoming_item_id}; no unpicked allocation was released."
-            )
+            if substituted_quantity_changed:
+                reconciliation_notes.append(
+                    f"Line {record_line.woo_line_item_id} quantity changed after local substitution; "
+                    "no unpicked allocation was released and review is required."
+                )
+            else:
+                reconciliation_notes.append(
+                    f"Line {record_line.woo_line_item_id} changed inventory item from "
+                    f"{local_line.inventory_item_id} to {incoming_item_id}; no unpicked allocation was released."
+                )
         local_line.woo_product_id = record_line.woo_product_id
         local_line.woo_variation_id = record_line.woo_variation_id
-        mapping_change_requires_review = mapping_changed and (
-            protected_quantity > 0 or (local_line.quantity_allocated or Decimal("0")) > protected_quantity
+        mapping_change_requires_review = substitution_requires_review or (
+            mapping_changed
+            and (protected_quantity > 0 or (local_line.quantity_allocated or Decimal("0")) > protected_quantity)
         )
         local_line.inventory_item_id = (
-            local_line.inventory_item_id if mapping_change_requires_review else incoming_item_id
+            local_line.inventory_item_id
+            if active_substitution or mapping_change_requires_review
+            else incoming_item_id
         )
         local_line.line_number = index
         local_line.sku = record_line.sku
@@ -770,18 +808,59 @@ def upsert_order_lines(
         local_line.line_total = record_line.line_total
         local_line.line_tax = record_line.line_tax
         local_line.total_price = record_line.line_total
-        local_line.matched_status = preview_line.matched_status if preview_line else "unknown"
-        local_line.availability_status = "allocated" if existing_allocated >= record_line.quantity_ordered else (preview_line.availability_status if preview_line else "unknown")
-        local_line.allocation_status = "allocated" if existing_allocated >= record_line.quantity_ordered else (preview_line.availability_status if preview_line else "unknown")
+        effective_item = db.get(InventoryItem, local_line.inventory_item_id) if local_line.inventory_item_id else None
+        effective_matched_status = (
+            "matched"
+            if active_substitution and not substitution_requires_review and effective_item is not None
+            else (preview_line.matched_status if preview_line else "unknown")
+        )
+        effective_availability_status = (
+            "available"
+            if active_substitution and not substitution_requires_review and effective_item is not None
+            and (effective_item.sellable or Decimal("0")) >= max(record_line.quantity_ordered - existing_allocated, Decimal("0"))
+            else (
+                "partial"
+                if active_substitution and not substitution_requires_review and effective_item is not None
+                and (effective_item.sellable or Decimal("0")) > 0
+                else (preview_line.availability_status if preview_line else "unknown")
+            )
+        )
+        local_line.matched_status = effective_matched_status
+        local_line.availability_status = "allocated" if existing_allocated >= record_line.quantity_ordered else effective_availability_status
+        local_line.allocation_status = "allocated" if existing_allocated >= record_line.quantity_ordered else effective_availability_status
         local_line.pick_status = "picked" if existing_allocated > 0 and existing_picked >= existing_allocated else ("partially_picked" if existing_picked > 0 else "not_ready")
-        local_line.sellable_snapshot = Decimal(str(preview_line.sellable_snapshot)) if preview_line else Decimal("0")
+        local_line.sellable_snapshot = (
+            effective_item.sellable or Decimal("0")
+            if active_substitution and not substitution_requires_review and effective_item is not None
+            else (Decimal(str(preview_line.sellable_snapshot)) if preview_line else Decimal("0"))
+        )
         remaining_after_allocation = max(record_line.quantity_ordered - existing_allocated, Decimal("0"))
         local_line.shortage_quantity = max(remaining_after_allocation - local_line.sellable_snapshot, Decimal("0")) if preview_line else remaining_after_allocation
-        local_line.sync_status = "synced" if preview_line and preview_line.matched_status == "matched" else "needs_review"
-        local_line.sync_error = " ".join((preview_line.errors or preview_line.warnings) if preview_line else ["Preview line missing."])
+        local_line.sync_status = (
+            "substituted"
+            if active_substitution and not substitution_requires_review
+            else ("synced" if preview_line and preview_line.matched_status == "matched" else "needs_review")
+        )
+        local_line.sync_error = (
+            None
+            if active_substitution and not substitution_requires_review
+            else " ".join((preview_line.errors or preview_line.warnings) if preview_line else ["Preview line missing."])
+        )
         if quantity_below_processed or allocation_still_exceeds_order or mapping_change_requires_review:
             if mapping_change_requires_review:
-                if protected_quantity > 0:
+                if substituted_quantity_changed:
+                    message = (
+                        f"WooCommerce changed line {record_line.woo_line_item_id} quantity from {previous_ordered} "
+                        f"to {record_line.quantity_ordered} after a local product substitution; the substitution "
+                        "was preserved but picking is blocked pending review."
+                    )
+                elif substituted_woo_identity_changed:
+                    message = (
+                        f"WooCommerce changed line {record_line.woo_line_item_id} product or variation after a "
+                        "local product substitution; the effective replacement was preserved but picking is "
+                        "blocked pending review."
+                    )
+                elif protected_quantity > 0:
                     message = (
                         f"WooCommerce changed line {record_line.woo_line_item_id} to another inventory item after "
                         f"{protected_quantity} units were picked, fulfilled, or stock-reduced; the original item "
@@ -1071,7 +1150,10 @@ def get_open_order_detail(db: Session, order_id: int) -> OpenOrderDetail | None:
     order = db.scalars(
         select(Order)
         .where(Order.id == order_id, Order.is_historical_snapshot.is_(False))
-        .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
+        .options(
+            selectinload(Order.items).selectinload(OrderItem.inventory_item),
+            selectinload(Order.items).selectinload(OrderItem.substituted_from_item),
+        )
     ).one_or_none()
     if order is None:
         return None
@@ -1211,9 +1293,18 @@ def line_to_read(line: OrderItem) -> OpenOrderLineRead:
         woo_product_id=line.woo_product_id,
         woo_variation_id=line.woo_variation_id,
         item_id=line.inventory_item_id,
+        substituted_from_item_id=line.substituted_from_inventory_item_id,
+        substituted_from_sku=(line.substituted_from_item.sku if line.substituted_from_item else None),
+        substituted_from_name=(line.substituted_from_item.description if line.substituted_from_item else None),
+        substitution_reason=line.substitution_reason,
+        substituted_by=line.substituted_by,
+        substituted_at=line.substituted_at,
         sku=line.sku or (line.inventory_item.sku if line.inventory_item else None),
         barcode=line.barcode or (line.inventory_item.barcode if line.inventory_item else None),
         name=line.name or line.description or (line.inventory_item.description if line.inventory_item else None),
+        effective_sku=(line.inventory_item.sku if line.inventory_item else None),
+        effective_barcode=(line.inventory_item.barcode if line.inventory_item else None),
+        effective_name=(line.inventory_item.description if line.inventory_item else None),
         quantity_ordered=decimal_to_float(quantity_ordered) or 0,
         quantity_allocated=decimal_to_float(quantity_allocated) or 0,
         quantity_picked=decimal_to_float(quantity_picked) or 0,

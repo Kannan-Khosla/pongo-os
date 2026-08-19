@@ -212,7 +212,7 @@ def test_woocommerce_client_allows_explicit_production_order_completion(monkeypa
     assert calls == [("PUT", "/wp-json/wc/v3/orders/851", {"status": "completed"})]
 
 
-def test_woocommerce_client_blocks_non_completion_status_in_production():
+def test_woocommerce_client_allows_only_completion_or_cancellation_status_in_production():
     client = WooCommerceClient(
         staging_settings(
             woocommerce_base_url="https://shop.pongo.ca/",
@@ -222,12 +222,23 @@ def test_woocommerce_client_blocks_non_completion_status_in_production():
         )
     )
 
+    client.assert_woo_write_allowed(
+        "update_order_status",
+        "PUT",
+        "/wp-json/wc/v3/orders/851",
+        {"status": "cancelled"},
+    )
     try:
-        client.guarded_write("update_order_status", "PUT", "/wp-json/wc/v3/orders/851", {"status": "cancelled"})
+        client.assert_woo_write_allowed(
+            "update_order_status",
+            "PUT",
+            "/wp-json/wc/v3/orders/851",
+            {"status": "pending"},
+        )
     except WooCommerceClientError as error:
-        assert "only set status to completed" in error.message
+        assert "completed or cancelled" in error.message
     else:
-        raise AssertionError("Production order writeback must be completion-only")
+        raise AssertionError("Production pending status writeback should be blocked.")
 
 
 def test_woocommerce_client_blocks_write_in_read_only_mode():

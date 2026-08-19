@@ -6837,3 +6837,294 @@ button[title="Pagination is not available yet"] {
     justify-self: stretch;
   }
 }
+
+/* Live order editing, substitutions, and completed-order recovery */
+.business-live-orders-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #f1b4aa;
+  border-radius: 8px;
+  background: #fff4f2;
+  color: #8d2f22;
+  font-weight: 800;
+}
+
+.business-open-orders-table .data-table {
+  min-width: 680px;
+}
+
+.clickable-order-row {
+  cursor: pointer;
+}
+
+.clickable-order-row:hover {
+  background: var(--pongo-blue-soft);
+}
+
+.table-row-link {
+  border: 0;
+  padding: 3px 2px;
+  background: transparent;
+  color: var(--pongo-blue);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 900;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.table-row-link:focus-visible,
+.order-line-substitute-button:focus-visible {
+  border-radius: 4px;
+  outline: 3px solid rgba(15, 20, 154, 0.28);
+  outline-offset: 2px;
+}
+
+.order-detail-dialog {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.order-detail-dialog-footer {
+  flex-wrap: wrap;
+}
+
+.order-line-substitution {
+  display: block;
+  margin-top: 4px;
+  color: #7554a8;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: normal;
+}
+
+.order-substitution-panel {
+  display: grid;
+  gap: 14px;
+  margin: 18px 0 20px;
+  padding: 18px;
+  border: 1px solid #cbd3ef;
+  border-radius: 10px;
+  background: #f7f8ff;
+}
+
+.order-substitution-panel .panel-title {
+  margin: 0;
+}
+
+.order-substitution-panel h3 {
+  margin: 0;
+  color: var(--ink);
+}
+
+.order-substitution-panel p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+.order-substitution-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.75fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.order-substitution-fields textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.replacement-item-preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(2, minmax(100px, 0.25fr));
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #ccd6c9;
+  border-radius: 8px;
+  background: #f6fbf4;
+}
+
+.replacement-item-preview > div {
+  display: grid;
+  gap: 2px;
+}
+
+.replacement-item-preview span,
+.replacement-item-preview small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.completed-orders-table .data-table {
+  min-width: 1450px;
+}
+
+.completed-actions-cell {
+  width: 58px;
+}
+
+@media (max-width: 900px) {
+  .business-live-orders-error {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .business-live-orders-error .muted-button {
+    width: 100%;
+  }
+
+  .order-substitution-fields,
+  .replacement-item-preview {
+    grid-template-columns: 1fr;
+  }
+
+  .order-detail-dialog-footer > button {
+    min-height: 44px;
+    flex: 1 1 170px;
+    justify-content: center;
+  }
+
+  .completed-orders-table .table-scroll {
+    overflow: visible;
+  }
+
+  .completed-orders-table .data-table {
+    display: block;
+    min-width: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .completed-orders-table .data-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .completed-orders-table .data-table tbody {
+    display: grid;
+    gap: 12px;
+  }
+
+  .completed-orders-table .data-table tbody tr:not(.completed-orders-empty) {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 9px 12px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--pongo-blue);
+    border-radius: 10px;
+    background: var(--white);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .completed-orders-table .data-table td {
+    width: auto;
+    min-width: 0;
+    height: auto;
+    overflow: visible;
+    border: 0;
+    padding: 0;
+    text-align: left;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .completed-orders-table .completed-actions-cell {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .completed-orders-table .completed-order-number {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+    color: var(--pongo-blue);
+    font-size: 16px;
+    font-weight: 900;
+  }
+
+  .completed-orders-table td[data-label]:not(.completed-order-number) {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(120px, 0.45fr) minmax(0, 1fr);
+    gap: 12px;
+    font-size: 13px;
+  }
+
+  .completed-orders-table td[data-label]:not(.completed-order-number)::before {
+    color: var(--text-muted);
+    content: attr(data-label);
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .completed-orders-table .completed-secondary-cell {
+    display: none !important;
+  }
+
+  .completed-orders-table .completed-orders-empty,
+  .completed-orders-table .completed-orders-empty td {
+    display: block;
+  }
+}
+
+@media (max-width: 600px) {
+  .business-open-orders-table .table-scroll {
+    overflow: visible;
+  }
+
+  .business-open-orders-table .data-table {
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+  }
+
+  .business-open-orders-table .data-table th:nth-child(3),
+  .business-open-orders-table .data-table td:nth-child(3),
+  .business-open-orders-table .data-table th:nth-child(5),
+  .business-open-orders-table .data-table td:nth-child(5),
+  .business-open-orders-table .data-table th:nth-child(6),
+  .business-open-orders-table .data-table td:nth-child(6) {
+    display: none;
+  }
+
+  .business-open-orders-table .data-table th,
+  .business-open-orders-table .data-table td {
+    padding-inline: 8px;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .business-open-orders-table .data-table th:first-child,
+  .business-open-orders-table .data-table td:first-child,
+  .business-open-orders-table .data-table th:nth-child(4),
+  .business-open-orders-table .data-table td:nth-child(4) {
+    width: 25%;
+  }
+}
+
+@media (max-width: 480px) {
+  .order-substitution-panel {
+    margin-inline: -10px;
+    padding: 14px;
+  }
+
+  .order-detail-dialog-footer > button {
+    width: 100%;
+    flex-basis: 100%;
+  }
+
+  .completed-orders-table td[data-label]:not(.completed-order-number) {
+    grid-template-columns: minmax(105px, 0.48fr) minmax(0, 1fr);
+  }
+}

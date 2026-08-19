@@ -36,9 +36,11 @@ fulfillment, or movement changes the source version.
 When the source changes, an existing verified snapshot is returned immediately
 while the worker refreshes it. The combined endpoint and all detailed sections
 remain local-only. The separate `woocommerce-open-orders` endpoint performs
-one backend-only, one-row WooCommerce read for `processing` and returns the
-authoritative `X-WP-Total` header. Its failure is
-isolated from the rest of the Dashboard and never falls back to a local count.
+one backend-only, paged WooCommerce read for `processing` (up to 100 rows) and
+returns sanitized order rows plus authoritative `X-WP-Total` and
+`X-WP-TotalPages` values. It joins nullable existing local order IDs without
+creating snapshots. Its failure is isolated from the rest of the Dashboard and
+never falls back to a local count.
 
 ## Metric Definitions
 
@@ -59,9 +61,11 @@ Open orders are local order snapshots with open-style statuses such as
 Completed, failed, cancelled, and refunded statuses are excluded.
 
 The first KPI, `Open Orders`, is deliberately separate. It is the live
-WooCommerce total for `processing` orders only, with its own loading and
-unavailable states. Demo accounts receive an isolated mock count and never
-construct a WooCommerce client.
+WooCommerce total and sanitized list for `processing` orders only, with its own
+loading and unavailable states. More than 100 orders are disclosed through
+`total_pages`; callers can request subsequent pages. Demo accounts receive an
+isolated mock list/count derived from the same mock rows and never construct a
+WooCommerce client.
 
 ## Subscriptions
 
@@ -110,3 +114,8 @@ explicit live WooCommerce open-order KPI:
 - no order mutations
 - no customer notifications
 - no fake data
+
+The live Dashboard GET remains read-only. Opening a remote-only row is an
+explicit `POST /api/orders/woocommerce/{woo_order_id}/reconcile`; changing a
+status is a separate reasoned and idempotent status-action POST documented in
+`API_SPEC.md` and `ORDER_WORKFLOW.md`.

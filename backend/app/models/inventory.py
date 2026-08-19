@@ -114,7 +114,10 @@ class InventoryItem(TimestampMixin, Base):
     locations: Mapped[list["InventoryItemLocation"]] = relationship(back_populates="inventory_item", cascade="all, delete-orphan")
     stock_movements: Mapped[list["StockMovement"]] = relationship(back_populates="inventory_item")
     receipt_items: Mapped[list["ReceiptItem"]] = relationship(back_populates="inventory_item")
-    order_items: Mapped[list["OrderItem"]] = relationship(back_populates="inventory_item")
+    order_items: Mapped[list["OrderItem"]] = relationship(
+        back_populates="inventory_item",
+        foreign_keys="OrderItem.inventory_item_id",
+    )
 
     __table_args__ = (
         CheckConstraint("in_stock >= 0", name="ck_inventory_items_in_stock_nonnegative"),

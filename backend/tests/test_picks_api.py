@@ -178,10 +178,8 @@ def test_pick_waits_until_completion_to_write_reduced_stock_to_woo(client, monke
     )
 
     assert completed.status_code == 200
-    assert calls == [
-        ("update_product_stock", "/wp-json/wc/v3/products/101", 3.0, None),
-        ("update_order_status", "/wp-json/wc/v3/orders/501", None, "completed"),
-    ]
+    assert calls == [("update_product_stock", "/wp-json/wc/v3/products/101", 3.0, None)]
+    assert completed.json()["woo_sync_status"] == "not_requested"
 
 
 def test_pick_preview_skips_fully_picked_line(client, monkeypatch):

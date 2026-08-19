@@ -2,6 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App, {
+  OrderInvoice,
   browserNavigation,
   formatCurrency,
   formatDateTime,
@@ -134,6 +135,17 @@ const mockOrderDetail = {
   }],
 };
 
+const mockRemoteOrderDetail = {
+  ...mockOrderDetail,
+  id: 702,
+  woo_order_id: 803,
+  woo_order_number: '0803',
+  customer_name: 'Remote Morgan',
+  customer_email: 'remote-morgan@example.invalid',
+  total: 84.5,
+  lines: [{ ...mockOrderDetail.lines[0], id: 9002 }],
+};
+
 const mockAllocationException = {
   order_id: 702,
   order_line_id: 9002,
@@ -180,6 +192,7 @@ let mockItemsFeed;
 let mockItemFacets;
 let mockOpenOrdersFeed;
 let mockPickOrdersFeed;
+let mockCompletedOrdersFeed;
 let mockAllocationExceptionsFeed;
 let mockInsightOverview;
 
@@ -353,6 +366,32 @@ function mockFetch(url, options = {}) {
   if (target.includes('/api/business-dashboard/woocommerce-open-orders')) return json({
     source: 'woocommerce',
     fetched_at: '2026-07-08T16:30:01Z',
+    total: 3,
+    page: 1,
+    page_size: 100,
+    total_pages: 1,
+    orders: [
+      {
+        woo_order_id: 802,
+        local_order_id: 701,
+        number: '0802',
+        customer_name: 'Live Avery',
+        customer_email: 'live-avery@example.invalid',
+        status: 'processing',
+        date_created: '2026-07-08T10:00:00Z',
+        total: 60,
+      },
+      {
+        woo_order_id: 803,
+        local_order_id: null,
+        number: '0803',
+        customer_name: 'Remote Morgan',
+        customer_email: 'remote-morgan@example.invalid',
+        status: 'processing',
+        date_created: '2026-07-08T11:00:00Z',
+        total: 84.5,
+      },
+    ],
     statuses: { processing: 3 },
     summary: { open_orders_count: 3 },
   });
@@ -403,11 +442,17 @@ function mockFetch(url, options = {}) {
   if (target.includes('/api/orders/701/complete/commit')) return json({ status: 'completed_without_picking', message: 'Order completed without picking. Stock was not reduced.', woo_sync_status: 'sent', woo_writeback_queue_id: 41 });
   if (target.includes('/api/orders/bulk/complete')) return json({ status: 'completed', requested_count: 1, succeeded_count: 1, failed_count: 0, results: [{ order_id: 701, status: 'completed', message: 'Completed.', woo_sync_status: 'sent', woo_writeback_queue_id: 41 }], errors: [] });
   if (target.includes('/api/orders/bulk/unpick')) return json({ status: 'completed', requested_count: 1, succeeded_count: 1, failed_count: 0, total_quantity_restored: 1, results: [], errors: [] });
+  if (target.includes('/api/orders/woocommerce/802/reconcile')) return json({ status: 'reconciled', woo_order_id: 802, local_order_id: 701, order: mockOrderDetail });
+  if (target.includes('/api/orders/woocommerce/803/reconcile')) return json({ status: 'reconciled', woo_order_id: 803, local_order_id: 702, order: mockRemoteOrderDetail });
+  if (target.includes('/api/orders/woocommerce/802/status')) return json({ status: 'completed', target_status: 'completed', woo_order_id: 802, local_order_id: 701, local_status: 'completed_without_picking', woo_sync_status: 'sent', released_quantity: 0, message: 'Order 0802 was marked processed without picking.' });
+  if (target.includes('/api/orders/woocommerce/803/status')) return json({ status: 'completed', target_status: 'completed', woo_order_id: 803, local_order_id: 702, local_status: 'completed_without_picking', woo_sync_status: 'sent', released_quantity: 0, message: 'Order 0803 was marked processed without picking.' });
+  if (target.includes('/api/orders/701/lines/9001/substitute')) return json({ status: 'completed', message: 'SMOKE-001 was substituted.' });
+  if (target.includes('/api/orders/701/prepare-picking')) return json({ status: 'ready_to_pick', message: 'Order 0802 is ready in Pick Orders.' });
   if (target.match(/\/api\/orders\/701$/)) return json(mockOrderDetail);
   if (target.includes('/api/orders/allocate')) return json({ orders: [], total: 0 });
   if (target.includes('/api/orders/pick')) return json(typeof mockPickOrdersFeed === 'function' ? mockPickOrdersFeed(target) : mockPickOrdersFeed);
   if (target.includes('/api/orders/open')) return json(typeof mockOpenOrdersFeed === 'function' ? mockOpenOrdersFeed(target) : mockOpenOrdersFeed);
-  if (target.includes('/api/orders/completed')) return json({ orders: [], total: 0 });
+  if (target.includes('/api/orders/completed')) return json(typeof mockCompletedOrdersFeed === 'function' ? mockCompletedOrdersFeed(target) : mockCompletedOrdersFeed);
   if (target.includes('/api/allocations/exceptions/export')) return csvResponse('Order Number,SKU\n0803,SMOKE-001\n');
   if (target.includes('/api/allocations/exceptions')) return json(typeof mockAllocationExceptionsFeed === 'function' ? mockAllocationExceptionsFeed(target) : mockAllocationExceptionsFeed);
   if (target.includes('/api/allocations/auto/commit')) return json({
@@ -664,6 +709,7 @@ describe('App shell and workflows', () => {
     mockItemFacets = { categories: ['Test Category'], brands: ['Smoke Brand'] };
     mockOpenOrdersFeed = pagedOrdersFeed([mockOrder]);
     mockPickOrdersFeed = pagedOrdersFeed([mockOrder]);
+    mockCompletedOrdersFeed = pagedOrdersFeed([]);
     mockAllocationExceptionsFeed = pagedAllocationExceptionsFeed([mockAllocationException]);
     mockInsightOverview = {
       dashboard: 'overview',
@@ -1757,6 +1803,133 @@ describe('App shell and workflows', () => {
     expect(screen.getByText('At risk')).toBeInTheDocument();
   });
 
+  it('shows only the live WooCommerce processing rows and truthfully reports a partial live page', async () => {
+    render(<App />);
+
+    const heading = await screen.findByRole('heading', { name: 'Open Orders', level: 2 });
+    const card = heading.closest('.business-card');
+    expect(within(card).getByText('Live Avery')).toBeInTheDocument();
+    expect(within(card).getByText('Remote Morgan')).toBeInTheDocument();
+    expect(within(card).queryByText('Avery Stone')).not.toBeInTheDocument();
+    expect(within(card).getByText('Showing 2 of 3 open orders')).toBeInTheDocument();
+    expect(card.querySelector('.business-open-orders-table')).toBeInTheDocument();
+    expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/business-dashboard/woocommerce-open-orders'
+        && request.searchParams.get('page') === '1'
+        && request.searchParams.get('page_size') === '100';
+    })).toBe(true);
+  });
+
+  it('opens a remote-only live order and explicitly confirms stock-safe processing before Woo writeback', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: 'Open live WooCommerce order 0803' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Live WooCommerce Order' });
+    expect(within(dialog).getAllByText('Remote Morgan')).toHaveLength(2);
+    expect(within(dialog).getByText('Smoke Test Item')).toBeInTheDocument();
+    expect(fetch.mock.calls.some(([url, options = {}]) => {
+      if (!String(url).endsWith('/api/orders/woocommerce/803/reconcile')) return false;
+      const body = JSON.parse(options.body);
+      return options.method === 'POST'
+        && Boolean(body.idempotency_key)
+        && options.headers['Idempotency-Key'] === body.idempotency_key;
+    })).toBe(true);
+    expect(within(dialog).getByRole('button', { name: 'Cancel order' })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Mark processed' }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/complete the order without reducing stock.*Send to Pick Orders/i));
+    await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => {
+      if (!String(url).endsWith('/api/orders/woocommerce/803/status')) return false;
+      const body = JSON.parse(options.body);
+      return options.method === 'POST'
+        && body.target_status === 'completed'
+        && body.completion_mode === 'complete_without_picking'
+        && body.queue_woo_status_update === true
+        && Boolean(body.idempotency_key)
+        && options.headers['Idempotency-Key'] === body.idempotency_key;
+    })).toBe(true));
+    expect(await within(dialog).findByText('Order 0803 was marked processed without picking.')).toBeInTheDocument();
+    confirmSpy.mockRestore();
+  });
+
+  it('keeps live status mutations disabled when a Woo order cannot be reconciled into full local detail', async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).endsWith('/api/orders/woocommerce/803/reconcile')) {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.resolve({ detail: 'WooCommerce detail fetch failed.' }),
+          text: () => Promise.resolve('WooCommerce detail fetch failed.'),
+        });
+      }
+      return mockFetch(url, options);
+    });
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: 'Open live WooCommerce order 0803' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Live WooCommerce Order' });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Status changes stay disabled until the order is loaded safely.');
+    expect(within(dialog).queryByRole('button', { name: 'Mark processed' })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Cancel order' })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Retry order details' })).toBeInTheDocument();
+  });
+
+  it('preserves the status idempotency key and exposes retry until WooCommerce confirms the writeback', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    let statusAttempts = 0;
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).endsWith('/api/orders/woocommerce/803/status')) {
+        statusAttempts += 1;
+        return statusAttempts === 1
+          ? json({
+            status: 'writeback_pending',
+            target_status: 'completed',
+            woo_order_id: 803,
+            local_order_id: 702,
+            local_status: 'completed_without_picking',
+            woo_sync_status: 'failed',
+            woo_sync_error: 'WooCommerce timed out before confirming the status.',
+            message: 'Local workflow was saved, but WooCommerce is still processing.',
+          })
+          : json({
+            status: 'completed',
+            target_status: 'completed',
+            woo_order_id: 803,
+            local_order_id: 702,
+            local_status: 'completed_without_picking',
+            woo_sync_status: 'sent',
+            woo_sync_error: null,
+            message: 'Order 0803 was marked processed without picking.',
+          });
+      }
+      return mockFetch(url, options);
+    });
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: 'Open live WooCommerce order 0803' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Live WooCommerce Order' });
+    await user.click(await within(dialog).findByRole('button', { name: 'Mark processed' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('WooCommerce timed out');
+    expect(within(dialog).queryByText('Local workflow was saved, but WooCommerce is still processing.')).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Mark processed' })).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Retry WooCommerce update' }));
+    expect(await within(dialog).findByText('Order 0803 was marked processed without picking.')).toBeInTheDocument();
+    const statusCalls = fetch.mock.calls.filter(([url]) => String(url).endsWith('/api/orders/woocommerce/803/status'));
+    expect(statusCalls).toHaveLength(2);
+    const firstBody = JSON.parse(statusCalls[0][1].body);
+    const retryBody = JSON.parse(statusCalls[1][1].body);
+    expect(retryBody.idempotency_key).toBe(firstBody.idempotency_key);
+    expect(statusCalls[0][1].headers['Idempotency-Key']).toBe(firstBody.idempotency_key);
+    expect(statusCalls[1][1].headers['Idempotency-Key']).toBe(firstBody.idempotency_key);
+    confirmSpy.mockRestore();
+  });
+
   it('keeps local Dashboard metrics available when the live WooCommerce count fails', async () => {
     fetch.mockImplementation((url, options) => (
       String(url).includes('/api/business-dashboard/woocommerce-open-orders')
@@ -1768,7 +1941,7 @@ describe('App shell and workflows', () => {
 
     expect(await screen.findByText("Today's Revenue")).toBeInTheDocument();
     const liveWooMetric = screen.getByText('Open Orders', { selector: '.business-metric-card > span' }).closest('article');
-    await waitFor(() => expect(liveWooMetric).toHaveTextContent('Live count unavailable'));
+    await waitFor(() => expect(liveWooMetric).toHaveTextContent('Live orders unavailable'));
     expect(liveWooMetric).toHaveTextContent('—');
   });
 
@@ -2959,7 +3132,7 @@ describe('App shell and workflows', () => {
     expect(within(invoice).getByText('Shipping details')).toBeInTheDocument();
     expect(within(invoice).getByText('200 Delivery Way')).toBeInTheDocument();
     expect(within(invoice).getByText('Cash on delivery')).toBeInTheDocument();
-    expect(within(invoice).getByText('Completed')).toBeInTheDocument();
+    expect(within(invoice).getByText('Processing')).toBeInTheDocument();
     expect(within(invoice).getByText('Leave at the receiving desk.')).toBeInTheDocument();
     expect(within(invoice).queryByText(/Woo reconciliation/)).not.toBeInTheDocument();
     expect(within(invoice).queryByText(/WooCommerce|CAD|Local order ID|Printed/)).not.toBeInTheDocument();
@@ -2970,6 +3143,153 @@ describe('App shell and workflows', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Print order' }));
     await waitFor(() => expect(printSpy).toHaveBeenCalled());
     printSpy.mockRestore();
+  });
+
+  it('substitutes an unpicked Open Order line with a searched inventory item and an audited reason', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mockItemsFeed = {
+      items: [{ id: 2, sku: 'REPLACE-002', barcode: 'REPLACE002', product_name: 'Replacement Treat', brand: 'Pongo', category: 'Treats', sellable: 5, in_stock: 6 }],
+      page: 1,
+      page_size: 100,
+      total: 1,
+      total_pages: 1,
+      returned_count: 1,
+    };
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Open Orders', level: 1 });
+    await user.click(screen.getByRole('button', { name: 'Open actions for order 0802' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Edit order' }));
+    const dialog = await screen.findByRole('dialog', { name: 'View Customer Order' });
+    await user.click(within(dialog).getByRole('button', { name: 'Substitute' }));
+    await user.type(within(dialog).getByRole('combobox', { name: 'Replacement inventory item' }), 'REPLACE');
+    await user.click(await screen.findByRole('option', { name: /Replacement Treat/i }));
+    await user.type(within(dialog).getByRole('textbox', { name: /Reason/i }), 'Customer approved an equivalent treat.');
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm substitution' }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/WooCommerce order line will remain unchanged/i));
+    await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => {
+      if (!String(url).endsWith('/api/orders/701/lines/9001/substitute')) return false;
+      const body = JSON.parse(options.body);
+      return options.method === 'POST'
+        && body.replacement_inventory_item_id === 2
+        && body.reason === 'Customer approved an equivalent treat.'
+        && Boolean(body.idempotency_key)
+        && options.headers['Idempotency-Key'] === body.idempotency_key;
+    })).toBe(true));
+    expect(await within(dialog).findByText('SMOKE-001 was substituted.')).toBeInTheDocument();
+    confirmSpy.mockRestore();
+  });
+
+  it('shows replacement identity operationally while labelling the original Woo line', async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).match(/\/api\/orders\/701$/)) {
+        return json({
+          ...mockOrderDetail,
+          lines: [{
+            ...mockOrderDetail.lines[0],
+            sku: 'ORIGINAL-001',
+            name: 'Original Customer Product',
+            effective_sku: 'REPLACE-002',
+            effective_name: 'Replacement Warehouse Product',
+            substituted_from_item_id: 1,
+          }],
+        });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Open Orders', level: 1 });
+    await user.click(screen.getByRole('button', { name: 'Open actions for order 0802' }));
+    await user.click(screen.getByRole('menuitem', { name: 'View order' }));
+    const dialog = await screen.findByRole('dialog', { name: 'View Customer Order' });
+    const operationalRow = within(dialog).getByText('REPLACE-002').closest('tr');
+    expect(within(operationalRow).getByText('From ORIGINAL-001')).toBeInTheDocument();
+    expect(operationalRow).toHaveTextContent('Replacement Warehouse Product');
+    expect(operationalRow).toHaveTextContent('Original Customer Product → Replacement Warehouse Product');
+  });
+
+  it('lets staff view, reprint, and send eligible completed-without-picking orders to Pick Orders', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
+    mockCompletedOrdersFeed = pagedOrdersFeed([{
+      ...mockOrder,
+      woo_status: 'completed',
+      local_status: 'completed',
+      completion_status: 'completed_without_picking',
+      completed_without_picking: true,
+      total_quantity_picked: 0,
+      line_count: 1,
+      closed_at: '2026-07-08T12:00:00Z',
+    }]);
+    window.location.hash = '#/orders/completed';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Completed Orders', level: 1 });
+    await user.type(screen.getByRole('textbox', { name: 'Customer Email' }), 'avery@example.invalid');
+    await user.click(screen.getByRole('button', { name: 'Apply' }));
+
+    const openActions = () => screen.getByRole('button', { name: 'Open completed order actions for 0802' });
+    await user.click(openActions());
+    await user.click(screen.getByRole('menuitem', { name: 'View order' }));
+    expect(await screen.findByRole('dialog', { name: 'Completed Customer Order' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+
+    await user.click(openActions());
+    await user.click(screen.getByRole('menuitem', { name: 'Reprint invoice' }));
+    await waitFor(() => expect(printSpy).toHaveBeenCalled());
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+
+    await user.click(openActions());
+    await user.click(screen.getByRole('menuitem', { name: 'Send to Pick Orders' }));
+    await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => {
+      if (!String(url).endsWith('/api/orders/701/prepare-picking')) return false;
+      const body = JSON.parse(options.body);
+      return options.method === 'POST'
+        && body.reason === 'Prepared for late picking from Completed Orders.'
+        && Boolean(body.idempotency_key)
+        && options.headers['Idempotency-Key'] === body.idempotency_key;
+    })).toBe(true));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/WooCommerce will remain completed/i));
+    expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/orders/completed'
+        && request.searchParams.get('customer_email') === 'avery@example.invalid'
+        && request.searchParams.get('page') === '1';
+    })).toBe(true);
+    await waitFor(() => expect(window.location.hash).toBe('#/orders/pick'));
+    confirmSpy.mockRestore();
+    printSpy.mockRestore();
+  });
+
+  it('keeps the original WooCommerce product on the customer invoice after an operational substitution', () => {
+    const substitutedOrder = {
+      ...mockOrderDetail,
+      woo_status: 'completed',
+      lines: [{
+        ...mockOrderDetail.lines[0],
+        sku: 'ORIGINAL-001',
+        name: 'Original Customer Product',
+        barcode: 'ORIGINAL001',
+        effective_sku: 'REPLACE-002',
+        effective_name: 'Replacement Warehouse Product',
+        substituted_from_item_id: 1,
+      }],
+    };
+    render(<OrderInvoice order={substitutedOrder} />);
+
+    const invoice = screen.getByLabelText('Invoice for order 0802');
+    expect(within(invoice).getByText('Completed')).toBeInTheDocument();
+    expect(within(invoice).getByText('ORIGINAL-001')).toBeInTheDocument();
+    expect(within(invoice).getByText('Original Customer Product')).toBeInTheDocument();
+    expect(within(invoice).queryByText('REPLACE-002')).not.toBeInTheDocument();
+    expect(within(invoice).queryByText('Replacement Warehouse Product')).not.toBeInTheDocument();
   });
 
   it('keeps shared action menus above scrolled content and mobile-wide inside the viewport', async () => {

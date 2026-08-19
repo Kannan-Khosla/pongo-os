@@ -27,8 +27,12 @@ route queues.
 
 WooCommerce remains the storefront. Completing a Pongo OS order also marks the
 linked WooCommerce order `completed` through the guarded backend writeback
-queue. Allocation and picking remain local-only, and WooCommerce stock is not
-written by this workflow.
+queue when the caller requests that writeback. Allocation remains local-only.
+After a picked completion, Pongo performs an absolute Woo stock synchronization
+for the effective picked inventory item. For a substituted line it synchronizes
+both the effective replacement and the stored original item once, because Woo
+may already have reduced the original commercial line. Woo order line items are
+never rewritten by this workflow.
 
 ## Order Ingestion And Staff Notice
 
@@ -161,6 +165,23 @@ FooSales completes Woo orders at the till before Pongo's warehouse workflow.
 Other pending, on-hold, cancelled, failed, refunded, completed, and
 non-processing snapshots remain reporting history and cannot reserve stock.
 
+The Dashboard live-order action is intentionally narrower than general sync:
+it first fetches the exact Woo order and accepts only a current `processing`
+record, then permits only `completed` or `cancelled`. Every action requires a
+reason and idempotency key. Completion mode is inferred and revalidated under
+the order lock: a pristine order may complete without picking, a fully picked
+order completes as picked, and partial processing is rejected. Cancellation is
+revalidated under the same order/inventory lock scope and is blocked after any
+pick, fulfillment, or stock reduction.
+
+Cancellation commits a local `cancellation_pending` guard before the external
+request. The guard removes the order from allocation/pick eligibility and a
+routine processing-order sync cannot clear it. A confirmed terminal Woo
+snapshot resolves the guard. A local completed state and a cancellation guard
+are opposing terminal transitions: whichever commits first blocks the other.
+Same-key retry is permitted; a different key cannot take over an in-flight
+cancellation.
+
 When a previously allocated order is synchronized to a non-processing status,
 Pongo OS releases its remaining unpicked allocation with deallocation audit
 events, preserves any quantity already picked, and reruns FIFO allocation so
@@ -182,6 +203,42 @@ picking with a reconciliation exception. Every decision is
 written to the order workflow notes and affected releases create inventory
 audit events. Each order is reconciled inside a database savepoint so a failed
 line update cannot partially change that order.
+
+## Local Product Substitution
+
+A processing order line may be substituted before any part of that line is
+picked, fulfilled, or stock-reduced. The replacement must be an active,
+inventory-tracked item with a valid Woo stock mapping. The mutation requires a
+reason and idempotency key, releases the old unpicked reservation, switches the
+effective operational inventory item, reruns auto-allocation, and writes audit
+events for both item identities.
+
+The original Woo product/variation IDs and commercial SKU/name snapshots remain
+unchanged for customer-facing detail and invoices. Allocation, scanner lookup,
+picking, and local stock mutation accept only the effective replacement
+identity. Scanning the original barcode after substitution cannot decrement the
+replacement. No Woo order-line update is sent.
+
+An ordinary Woo resync preserves an active substitution when the remote
+product, variation, and ordered quantity still match the recorded original.
+Changing any of those source fields marks the line `needs_review`, releases its
+unpicked allocation, and blocks further picking rather than silently discarding
+either identity.
+
+## Completed-Without-Picking Recovery
+
+Only a pristine `completed_without_picking` order can enter recovery picking.
+Preparing recovery fetches the exact live Woo order and requires it still to be
+`completed`; it also requires zero picked, fulfilled, and stock-reduced
+quantity and no historical pick line. The action is reasoned, idempotent,
+audited, reopens only the local allocation/pick workflow, and never changes Woo
+status.
+
+While recovery is active, a later Woo `cancelled`, `refunded`, or other
+non-completed snapshot terminates recovery and releases unpicked allocation.
+Final recovery completion reduces/synchronizes stock once and remains
+idempotent on retry; it does not resend Woo `completed`, because Woo was already
+completed before recovery began.
 
 ## Picking
 

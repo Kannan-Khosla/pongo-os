@@ -144,6 +144,7 @@ class WooWritebackQueue(Base):
     woo_product_id: Mapped[int | None] = mapped_column(Integer, index=True)
     woo_variation_id: Mapped[int | None] = mapped_column(Integer, index=True)
     woo_order_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(120))
     payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(String(40), default="pending", index=True, nullable=False)
     environment: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
@@ -158,6 +159,10 @@ class WooWritebackQueue(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("operation_type", "idempotency_key", name="uq_woo_writeback_operation_idempotency"),
+    )
 
 
 class WooStockSyncJob(Base):

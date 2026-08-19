@@ -256,8 +256,8 @@ class WooCommerceClient:
             raise WooCommerceClientError("WooCommerce order status write path is not allowlisted.")
         if validate_payload:
             validate_payload_fields(operation_type, payload)
-            if production_write and operation_type == "update_order_status" and payload.get("status") != "completed":
-                raise WooCommerceClientError("Production WooCommerce order writeback may only set status to completed.")
+            if production_write and operation_type == "update_order_status" and payload.get("status") not in {"completed", "cancelled"}:
+                raise WooCommerceClientError("Production WooCommerce order writeback may only set status to completed or cancelled.")
 
     def _get(self, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
         data = self._request("GET", path, params=params)

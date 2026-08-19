@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any, Callable
 
 from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -216,18 +217,24 @@ def stock_sync_response(
     )
 
 
-def sync_completed_order_status(
+def sync_order_status(
     db: Session,
     settings: Settings,
     client: WooCommerceClient,
     order_id: int,
+    target_status: str,
     requested_by: str | None = None,
+    idempotency_key: str | None = None,
+    action_reason: str | None = None,
 ) -> WooWritebackQueue:
+    target_status = target_status.strip().casefold()
+    if target_status not in {"completed", "cancelled"}:
+        raise ValueError("Order status action must target completed or cancelled.")
     preview = preview_order_status_writeback(
         db,
         settings,
         client,
-        WooWritebackOrderStatusPreviewRequest(order_id=order_id, proposed_status="completed", fetch_live=False),
+        WooWritebackOrderStatusPreviewRequest(order_id=order_id, proposed_status=target_status, fetch_live=False),
     )
     if preview is None:
         raise ValueError("Local order was not found for WooCommerce completion writeback.")
@@ -242,8 +249,9 @@ def sync_completed_order_status(
             entity_id=preview.entity_id,
             woo_entity_id=preview.woo_entity_id,
             woo_order_id=preview.woo_order_id,
+            idempotency_key=idempotency_key,
             payload_json=preview.payload_json,
-            preview_json=preview.preview_json,
+            preview_json={**preview.preview_json, "action_reason": action_reason} if action_reason else preview.preview_json,
             requested_by=requested_by or "order-completion",
         ),
     )
@@ -252,6 +260,27 @@ def sync_completed_order_status(
     if sent is None:
         raise ValueError("WooCommerce completion writeback queue item disappeared before send.")
     return sent
+
+
+def sync_completed_order_status(
+    db: Session,
+    settings: Settings,
+    client: WooCommerceClient,
+    order_id: int,
+    requested_by: str | None = None,
+    idempotency_key: str | None = None,
+    action_reason: str | None = None,
+) -> WooWritebackQueue:
+    return sync_order_status(
+        db,
+        settings,
+        client,
+        order_id,
+        "completed",
+        requested_by=requested_by,
+        idempotency_key=idempotency_key,
+        action_reason=action_reason,
+    )
 
 
 def preview_stock_writeback(db: Session, settings: Settings, client: WooCommerceClient, payload: WooWritebackStockPreviewRequest) -> WooWritebackPreviewResponse | None:
@@ -370,6 +399,15 @@ def preview_order_status_writeback(db: Session, settings: Settings, client: WooC
 
 def create_queue_item(db: Session, settings: Settings, payload: WooWritebackQueueCreateRequest) -> WooWritebackQueue:
     validate_queue_payload(payload)
+    if payload.idempotency_key:
+        existing = db.scalars(
+            select(WooWritebackQueue).where(
+                WooWritebackQueue.operation_type == payload.operation_type,
+                WooWritebackQueue.idempotency_key == payload.idempotency_key,
+            )
+        ).one_or_none()
+        if existing is not None:
+            return validate_idempotent_queue_item(existing, payload)
     row = WooWritebackQueue(
         operation_type=payload.operation_type,
         entity_type=payload.entity_type,
@@ -378,6 +416,7 @@ def create_queue_item(db: Session, settings: Settings, payload: WooWritebackQueu
         woo_product_id=payload.woo_product_id,
         woo_variation_id=payload.woo_variation_id,
         woo_order_id=payload.woo_order_id,
+        idempotency_key=payload.idempotency_key,
         payload_json=payload.payload_json,
         status="pending",
         environment=settings.woocommerce_environment,
@@ -388,9 +427,39 @@ def create_queue_item(db: Session, settings: Settings, payload: WooWritebackQueu
     )
     if row.operation_type == "update_order_status":
         validate_queue_mapping(db, row)
-    db.add(row)
+    if payload.idempotency_key:
+        try:
+            with db.begin_nested():
+                db.add(row)
+                db.flush()
+        except IntegrityError:
+            existing = db.scalars(
+                select(WooWritebackQueue).where(
+                    WooWritebackQueue.operation_type == payload.operation_type,
+                    WooWritebackQueue.idempotency_key == payload.idempotency_key,
+                )
+            ).one()
+            return validate_idempotent_queue_item(existing, payload)
+    else:
+        db.add(row)
     db.commit()
     db.refresh(row)
+    return row
+
+
+def validate_idempotent_queue_item(
+    row: WooWritebackQueue,
+    payload: WooWritebackQueueCreateRequest,
+) -> WooWritebackQueue:
+    if (
+        row.entity_type != payload.entity_type
+        or row.entity_id != payload.entity_id
+        or row.woo_entity_id != payload.woo_entity_id
+        or row.woo_order_id != payload.woo_order_id
+        or row.payload_json != payload.payload_json
+        or (row.preview_json or {}).get("action_reason") != (payload.preview_json or {}).get("action_reason")
+    ):
+        raise ValueError("Idempotency key was already used for a different WooCommerce writeback.")
     return row
 
 
@@ -672,6 +741,7 @@ def queue_to_read(row: WooWritebackQueue) -> WooWritebackQueueRead:
         woo_product_id=row.woo_product_id,
         woo_variation_id=row.woo_variation_id,
         woo_order_id=row.woo_order_id,
+        idempotency_key=row.idempotency_key,
         payload_json=row.payload_json,
         status=row.status,
         environment=row.environment,

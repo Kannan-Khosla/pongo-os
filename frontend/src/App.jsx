@@ -245,7 +245,7 @@ const emptyDashboard = {
 const emptyBusinessDashboard = {
   generated_at: null,
   today: { summary: {}, data_quality: [] },
-  woocommerce_open_orders: { summary: { open_orders_count: null }, statuses: {}, source: null, fetched_at: null, loading: false, error: '' },
+  woocommerce_open_orders: { orders: [], total: null, summary: { open_orders_count: null }, statuses: {}, source: null, fetched_at: null, loading: false, error: '' },
   open_orders: { summary: {}, rows: [], data_quality: [] },
   subscriptions: { summary: {}, rows: [], data_quality: [], empty_state: null },
   revenue_comparison: { summary: {}, daily_series: [], data_quality: [] },
@@ -364,6 +364,109 @@ export function withMutationIdempotency(ref, operation, payload) {
 
 export function resetMutationIdempotency(ref) {
   ref.current = null;
+}
+
+function normalizeWooStatus(value) {
+  return String(value || '').trim().toLowerCase().replace(/^wc-/, '');
+}
+
+function normalizeLiveWooOpenOrder(order = {}) {
+  return {
+    ...order,
+    woo_order_id: order.woo_order_id ?? order.id ?? null,
+    local_order_id: order.local_order_id ?? null,
+    woo_order_number: String(order.number ?? order.woo_order_number ?? order.order_number ?? order.woo_order_id ?? order.id ?? ''),
+    customer_name: order.customer_name || order.customer || [order.billing?.first_name, order.billing?.last_name].filter(Boolean).join(' ') || 'Unknown customer',
+    customer_email: order.email || order.customer_email || order.billing?.email || '',
+    woo_status: normalizeWooStatus(order.status || order.woo_status),
+    date_created: order.date_created || order.placed_on || order.date || null,
+    total: order.total ?? order.order_total ?? null,
+  };
+}
+
+function normalizeLiveWooOpenOrders(body = {}) {
+  const orders = (Array.isArray(body.orders) ? body.orders : [])
+    .map(normalizeLiveWooOpenOrder)
+    .filter((order) => order.woo_status === 'processing');
+  const exactTotal = Number(body.total ?? body.count ?? body.summary?.open_orders_count ?? orders.length);
+  const total = Number.isFinite(exactTotal) ? exactTotal : orders.length;
+  return {
+    ...body,
+    orders,
+    total,
+    summary: { ...(body.summary || {}), open_orders_count: total },
+    loading: false,
+    error: '',
+  };
+}
+
+async function fetchOrderDetailRequest(orderId) {
+  const response = await apiFetch(`${API_BASE_URL}/api/orders/${orderId}`);
+  if (!response.ok) {
+    let detail = '';
+    try {
+      detail = apiErrorDetail(await response.json());
+    } catch {
+      detail = await safeResponseText(response);
+    }
+    throw new Error(detail || `Order detail API returned ${response.status}`);
+  }
+  return response.json();
+}
+
+async function postOrderMutation(path, payload, { idempotencyRef, operation, includeKeyInBody = true }) {
+  const mutation = withMutationIdempotency(idempotencyRef, operation, payload);
+  const idempotencyKey = mutation.idempotency_key;
+  const response = await apiFetch(`${API_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+    },
+    body: JSON.stringify(includeKeyInBody ? mutation : payload),
+  });
+  if (!response.ok) {
+    let detail = '';
+    try {
+      detail = apiErrorDetail(await response.json());
+    } catch {
+      detail = await safeResponseText(response);
+    }
+    throw new Error(detail || `API returned ${response.status}`);
+  }
+  return response.json();
+}
+
+function updateLiveWooOrderStatus(wooOrderId, targetStatus, payload, idempotencyRef) {
+  return postOrderMutation(`/api/orders/woocommerce/${wooOrderId}/status`, { target_status: targetStatus, ...payload }, {
+    idempotencyRef,
+    operation: `woo-order-${wooOrderId}-${targetStatus}`,
+    includeKeyInBody: true,
+  });
+}
+
+function reconcileLiveWooOrder(wooOrderId, idempotencyRef) {
+  return postOrderMutation(`/api/orders/woocommerce/${wooOrderId}/reconcile`, {}, {
+    idempotencyRef,
+    operation: `woo-order-${wooOrderId}-reconcile`,
+    includeKeyInBody: true,
+  });
+}
+
+function substituteOrderLine(orderId, lineId, payload, idempotencyRef) {
+  return postOrderMutation(`/api/orders/${orderId}/lines/${lineId}/substitute`, payload, {
+    idempotencyRef,
+    operation: `order-${orderId}-line-${lineId}-substitute`,
+    includeKeyInBody: true,
+  });
+}
+
+function prepareCompletedOrderForPicking(orderId, payload, idempotencyRef) {
+  return postOrderMutation(`/api/orders/${orderId}/prepare-picking`, payload, {
+    idempotencyRef,
+    operation: `order-${orderId}-prepare-picking`,
+    includeKeyInBody: true,
+  });
 }
 
 const orderSubpages = [
@@ -1944,20 +2047,23 @@ export default function App({ currentUser = null, onLogout = null }) {
       woocommerce_open_orders: { ...current.woocommerce_open_orders, loading: true, error: '' },
     }));
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/business-dashboard/woocommerce-open-orders`);
+      const response = await apiFetch(`${API_BASE_URL}/api/business-dashboard/woocommerce-open-orders?page=1&page_size=100`);
       if (!response.ok) throw new Error(`WooCommerce open orders API returned ${response.status}`);
       const body = await response.json();
       if (requestId !== wooOpenOrdersRequestIdRef.current) return;
+      const normalized = normalizeLiveWooOpenOrders(body);
       setBusinessDashboard((current) => ({
         ...current,
-        woocommerce_open_orders: { ...body, loading: false, error: '' },
+        woocommerce_open_orders: normalized,
       }));
+      return normalized;
     } catch (error) {
       if (requestId !== wooOpenOrdersRequestIdRef.current) return;
       setBusinessDashboard((current) => ({
         ...current,
-        woocommerce_open_orders: { ...emptyBusinessDashboard.woocommerce_open_orders, error: 'Live count unavailable.' },
+        woocommerce_open_orders: { ...emptyBusinessDashboard.woocommerce_open_orders, error: 'Live WooCommerce open orders are temporarily unavailable.' },
       }));
+      return null;
     }
   }
 
@@ -2478,11 +2584,7 @@ export default function App({ currentUser = null, onLogout = null }) {
       return null;
     }
     try {
-      const response = await apiFetch(`${API_BASE_URL}/api/orders/${orderId}`);
-      if (!response.ok) {
-        throw new Error(`Order detail API returned ${response.status}`);
-      }
-      const body = await response.json();
+      const body = await fetchOrderDetailRequest(orderId);
       setOpenOrderDetail(body);
       return body;
     } catch (error) {
@@ -3334,6 +3436,7 @@ export default function App({ currentUser = null, onLogout = null }) {
             businessDashboardLoading={businessDashboardLoading}
             businessDashboardError={businessDashboardError}
             onLoadBusinessDashboard={loadBusinessDashboard}
+            onLoadWooCommerceOpenOrders={loadWooCommerceOpenOrders}
             cycleCounts={cycleCounts}
             cycleCountsPagination={cycleCountsPagination}
             cycleCountsLoading={cycleCountsLoading}
@@ -3897,6 +4000,7 @@ function PageBody({
   businessDashboardLoading,
   businessDashboardError,
   onLoadBusinessDashboard,
+  onLoadWooCommerceOpenOrders,
   cycleCounts,
   cycleCountsPagination,
   cycleCountsLoading,
@@ -4266,7 +4370,7 @@ function PageBody({
   }
 
   if (route.pageId === 'dashboard') {
-    return <BusinessDashboardPage dashboard={businessDashboard} loading={businessDashboardLoading} error={businessDashboardError} onRefresh={onLoadBusinessDashboard} />;
+    return <BusinessDashboardPage dashboard={businessDashboard} loading={businessDashboardLoading} error={businessDashboardError} onRefresh={onLoadBusinessDashboard} onRefreshLiveOrders={onLoadWooCommerceOpenOrders} />;
   }
 
   if (route.pageId === 'inventory-overview') {
@@ -4276,14 +4380,95 @@ function PageBody({
   return <StandardPage icon={pageIcon(route.pageId)} title={pageMeta[route.pageId].title} description="Main Warehouse workspace." columns={['Area', 'Status', 'Type', 'Notes']} />;
 }
 
-function BusinessDashboardPage({ dashboard, loading, error, onRefresh }) {
+function BusinessDashboardPage({ dashboard, loading, error, onRefresh, onRefreshLiveOrders }) {
   const today = dashboard.today?.summary || {};
   const wooOpenOrders = dashboard.woocommerce_open_orders || emptyBusinessDashboard.woocommerce_open_orders;
-  const openOrders = dashboard.open_orders?.rows || [];
   const subscriptions = dashboard.subscriptions || {};
   const revenue = dashboard.revenue_comparison || {};
   const orderMap = dashboard.order_map || {};
   const warnings = dashboard.data_quality || [];
+  const [selectedLiveOrder, setSelectedLiveOrder] = useState(null);
+  const [liveOrderReady, setLiveOrderReady] = useState(false);
+  const [liveOrderLoading, setLiveOrderLoading] = useState(false);
+  const [liveOrderMutation, setLiveOrderMutation] = useState({ pending: '', error: '', message: '', retryTarget: '' });
+  const liveOrderReconcileRef = useRef(null);
+  const liveOrderMutationRef = useRef(null);
+
+  async function loadLiveOrderDetail(row) {
+    const summary = normalizeLiveWooOpenOrder(row);
+    setSelectedLiveOrder((current) => current?.woo_order_id === summary.woo_order_id ? current : summary);
+    setLiveOrderReady(false);
+    setLiveOrderLoading(true);
+    setLiveOrderMutation((current) => ({ ...current, error: '' }));
+    try {
+      const result = await reconcileLiveWooOrder(summary.woo_order_id, liveOrderReconcileRef);
+      const detail = result.order || (result.local_order_id ? await fetchOrderDetailRequest(result.local_order_id) : null);
+      if (!detail) throw new Error('Pongo did not return reconciled order details.');
+      resetMutationIdempotency(liveOrderReconcileRef);
+      setSelectedLiveOrder(detail);
+      setLiveOrderReady(true);
+    } catch (detailError) {
+      setLiveOrderMutation((current) => ({
+        ...current,
+        error: `${detailError.message || 'Order details are unavailable.'} Status changes stay disabled until the order is loaded safely.`,
+      }));
+    } finally {
+      setLiveOrderLoading(false);
+    }
+  }
+
+  async function openLiveOrder(row) {
+    const summary = normalizeLiveWooOpenOrder(row);
+    setSelectedLiveOrder(summary);
+    setLiveOrderMutation({ pending: '', error: '', message: '', retryTarget: '' });
+    await loadLiveOrderDetail(summary);
+  }
+
+  async function changeLiveOrderStatus(targetStatus) {
+    if (!selectedLiveOrder?.woo_order_id || liveOrderMutation.pending || !liveOrderReady) return;
+    const orderNumber = selectedLiveOrder.woo_order_number || selectedLiveOrder.woo_order_id;
+    const fullyPicked = selectedLiveOrder.pick_status === 'picked'
+      || (Number(selectedLiveOrder.total_quantity_ordered || 0) > 0
+        && Number(selectedLiveOrder.total_quantity_picked || 0) >= Number(selectedLiveOrder.total_quantity_ordered || 0));
+    const confirmation = targetStatus === 'completed'
+      ? fullyPicked
+        ? `Mark order ${orderNumber} processed? Stock was already reduced during picking. This will mark the order completed in Pongo OS and WooCommerce.`
+        : `Mark order ${orderNumber} processed without picking? This will complete the order without reducing stock. You can later use Send to Pick Orders from Completed Orders.`
+      : `Cancel order ${orderNumber} in Pongo OS and WooCommerce?`;
+    if (!window.confirm(confirmation)) return;
+    setLiveOrderMutation({ pending: targetStatus, error: '', message: '', retryTarget: '' });
+    try {
+      const result = await updateLiveWooOrderStatus(selectedLiveOrder.woo_order_id, targetStatus, {
+        reason: targetStatus === 'completed'
+          ? 'Marked processed from the live WooCommerce Dashboard.'
+          : 'Cancelled from the live WooCommerce Dashboard.',
+        completion_mode: targetStatus === 'completed'
+          ? (fullyPicked ? 'complete_picked' : 'complete_without_picking')
+          : undefined,
+        queue_woo_status_update: true,
+      }, liveOrderMutationRef);
+      const writebackSent = normalizeWooStatus(result.woo_sync_status) === 'sent';
+      if (writebackSent) {
+        resetMutationIdempotency(liveOrderMutationRef);
+        setLiveOrderMutation({
+          pending: '',
+          error: result.woo_sync_error || '',
+          message: result.message || `Order ${orderNumber} was ${targetStatus === 'completed' ? 'marked processed' : 'cancelled'}.`,
+          retryTarget: '',
+        });
+      } else {
+        setLiveOrderMutation({
+          pending: '',
+          error: result.woo_sync_error || result.message || `WooCommerce writeback is ${result.woo_sync_status || 'not confirmed'}.`,
+          message: '',
+          retryTarget: targetStatus,
+        });
+      }
+      await onRefreshLiveOrders();
+    } catch (mutationError) {
+      setLiveOrderMutation({ pending: '', error: mutationError.message || 'Unable to update this order.', message: '', retryTarget: targetStatus });
+    }
+  }
 
   return (
     <section className="content-panel business-dashboard-page">
@@ -4302,7 +4487,7 @@ function BusinessDashboardPage({ dashboard, loading, error, onRefresh }) {
         <BusinessMetric
           label="Open Orders"
           value={wooOpenOrders.loading || wooOpenOrders.error ? '—' : wooOpenOrders.summary?.open_orders_count ?? '—'}
-          caption={wooOpenOrders.loading ? 'Loading live count…' : wooOpenOrders.error || (wooOpenOrders.source !== 'woocommerce' && wooOpenOrders.source !== 'demo') ? 'Live count unavailable' : wooOpenOrders.source === 'demo' ? 'Demo data' : 'Live WooCommerce'}
+          caption={wooOpenOrders.loading ? 'Loading live orders…' : wooOpenOrders.error || (wooOpenOrders.source !== 'woocommerce' && wooOpenOrders.source !== 'demo') ? 'Live orders unavailable' : wooOpenOrders.source === 'demo' ? 'Demo data' : 'Live WooCommerce · Processing only'}
           live
           tone="green"
         />
@@ -4315,7 +4500,7 @@ function BusinessDashboardPage({ dashboard, loading, error, onRefresh }) {
       </div>
 
       <div className="business-two-column">
-        <BusinessOpenOrdersCard rows={openOrders} />
+        <BusinessOpenOrdersCard feed={wooOpenOrders} onOpen={openLiveOrder} onRetry={onRefreshLiveOrders} />
         <BusinessSubscriptionsCard subscriptions={subscriptions} />
       </div>
 
@@ -4329,6 +4514,26 @@ function BusinessDashboardPage({ dashboard, loading, error, onRefresh }) {
             {warnings.map((warning) => <div className={`business-warning ${warning.severity || 'info'}`} key={warning.code}><strong>{titleize(warning.code)}</strong><span>{warning.message}</span></div>)}
           </div>
         </div>
+      )}
+      {selectedLiveOrder && (
+        <OpenOrderDetailPanel
+          order={selectedLiveOrder}
+          onClose={() => { setSelectedLiveOrder(null); setLiveOrderReady(false); setLiveOrderMutation({ pending: '', error: '', message: '', retryTarget: '' }); }}
+          showPrint={false}
+          statusActions={{
+            loading: liveOrderLoading,
+            ready: liveOrderReady,
+            pending: liveOrderMutation.pending,
+            error: liveOrderMutation.error,
+            message: liveOrderMutation.message,
+            retryTarget: liveOrderMutation.retryTarget,
+            onRetryDetails: () => loadLiveOrderDetail(selectedLiveOrder),
+            onRetry: () => changeLiveOrderStatus(liveOrderMutation.retryTarget),
+            onMarkProcessed: () => changeLiveOrderStatus('completed'),
+            onCancel: () => changeLiveOrderStatus('cancelled'),
+          }}
+          title="Live WooCommerce Order"
+        />
       )}
     </section>
   );
@@ -4344,23 +4549,40 @@ function BusinessMetric({ label, value, tone, caption, live = false }) {
   );
 }
 
-function BusinessOpenOrdersCard({ rows }) {
+function BusinessOpenOrdersCard({ feed, onOpen, onRetry }) {
+  const rows = feed.orders || [];
+  const total = feed.summary?.open_orders_count ?? feed.total ?? 0;
+  const liveUnavailable = Boolean(feed.error);
+  const caption = Number(total) > rows.length ? `Showing ${rows.length} of ${total} open orders` : `${total} open order(s)`;
   return (
     <div className="business-card">
-      <div className="panel-title"><div><h2>Open Orders</h2><p>Customers with locally open WooCommerce snapshots.</p></div></div>
-      <TableShell caption={`${rows.length} open order(s)`} columns={['Order', 'Customer', 'Email', 'Status', 'Date', 'Total']}>
-        {rows.slice(0, 12).map((order) => (
-          <tr key={`${order.woo_order_id || order.order_number}`}>
-            <td className="mono">{order.order_number || order.woo_order_id}</td>
+      <div className="panel-title">
+        <div>
+          <h2>Open Orders</h2>
+          <p>Live WooCommerce processing orders only.</p>
+          {feed.fetched_at && !liveUnavailable && <small>Live WooCommerce · refreshed {formatDateTime(feed.fetched_at)}</small>}
+        </div>
+      </div>
+      {liveUnavailable && (
+        <div className="business-live-orders-error" role="alert">
+          <span>{feed.error}</span>
+          <button className="muted-button" disabled={feed.loading} onClick={onRetry} type="button"><RefreshCw size={16} />Retry</button>
+        </div>
+      )}
+      {feed.loading && <div className="loading-strip" role="status">Loading live WooCommerce orders…</div>}
+      {!liveUnavailable && <TableShell caption={caption} className="business-open-orders-table" columns={['Order', 'Customer', 'Email', 'Status', 'Date', 'Total']} showActionBand={false}>
+        {rows.map((order) => (
+          <tr className="clickable-order-row" key={`${order.woo_order_id}`} onClick={() => onOpen(order)}>
+            <td className="mono"><button aria-label={`Open live WooCommerce order ${order.woo_order_number || order.woo_order_id}`} className="table-row-link" onClick={(event) => { event.stopPropagation(); onOpen(order); }} type="button">{order.woo_order_number || order.woo_order_id}</button></td>
             <td>{order.customer_name || 'Unknown customer'}</td>
             <td>{order.customer_email || ''}</td>
-            <td>{StatusText(order.status)}</td>
-            <td>{formatDateTime(order.placed_on)}</td>
-            <td>{formatCurrency(order.order_total)}</td>
+            <td>{StatusText(order.woo_status)}</td>
+            <td>{formatDateTime(order.date_created)}</td>
+            <td>{formatCurrency(order.total)}</td>
           </tr>
         ))}
-        {!rows.length && <tr><td colSpan={6}><div className="empty-table-row">No open orders found in local snapshots.</div></td></tr>}
-      </TableShell>
+        {!rows.length && !feed.loading && <tr><td colSpan={6}><div className="empty-table-row">No processing orders are currently open in WooCommerce.</div></td></tr>}
+      </TableShell>}
     </div>
   );
 }
@@ -9125,6 +9347,7 @@ function OrdersPage({
   const [bulkActionError, setBulkActionError] = useState('');
   const [bulkPrintOrders, setBulkPrintOrders] = useState([]);
   const unpickMutationRef = useRef(null);
+  const substitutionMutationRef = useRef(null);
   const orders = ordersData.orders || [];
   const ordersPageCount = Math.max(1, Number(ordersData.total_pages || 1));
   const pagedOpenOrders = orders;
@@ -9199,6 +9422,20 @@ function OrdersPage({
 
   async function editOpenOrder(orderId) {
     await viewOpenOrder(orderId);
+  }
+
+  async function substituteOpenOrderLine(line, replacementItem, reason) {
+    if (!detail?.id || !line?.id || !replacementItem?.id) throw new Error('The order line or replacement item is unavailable.');
+    const result = await substituteOrderLine(detail.id, line.id, {
+      replacement_inventory_item_id: Number(replacementItem.id),
+      reason,
+    }, substitutionMutationRef);
+    resetMutationIdempotency(substitutionMutationRef);
+    await Promise.all([
+      onLoadOpenOrderDetail(detail.id),
+      onLoadOpenOrders({ ...appliedOrderFilters, page: ordersPageNumber, pageSize: ordersPageSize }, { ordersView: 'open', preserveDetail: true }),
+    ]);
+    return result;
   }
 
   async function printOpenOrder(orderId) {
@@ -9450,7 +9687,7 @@ function OrdersPage({
         )}
       />
       <OrdersPager count={ordersData.total || 0} page={ordersPageNumber} pageCount={ordersPageCount} pageSize={ordersPageSize} onPageChange={changeOpenOrdersPage} onPageSizeChange={changeOpenOrdersPageSize} />
-      {orderDialogOpen && <OpenOrderDetailPanel order={detail} onClose={() => { setOrderDialogOpen(false); onLoadOpenOrderDetail(null); }} onPrint={() => printVisibleRoot('single-order-printing')} />}
+      {orderDialogOpen && <OpenOrderDetailPanel order={detail} onClose={() => { setOrderDialogOpen(false); onLoadOpenOrderDetail(null); }} onPrint={() => printVisibleRoot('single-order-printing')} onSubstitute={substituteOpenOrderLine} />}
       <BulkPrintSheet orders={bulkPrintOrders} />
     </section>
   );
@@ -10298,6 +10535,7 @@ export function OrderInvoice({ order, className = '' }) {
   if (!order) return null;
   const orderNumber = order.woo_order_number || order.woo_order_id || order.id;
   const paymentMethod = order.payment_method_title || order.payment_method || 'Not provided';
+  const invoiceStatus = titleize(normalizeWooStatus(order.woo_status || order.status || order.local_status || order.completion_status) || 'unknown');
   return (
     <article className={`order-invoice ${className}`.trim()} aria-label={`Invoice for order ${orderNumber}`}>
       <header className="invoice-masthead">
@@ -10312,7 +10550,7 @@ export function OrderInvoice({ order, className = '' }) {
 
       <section className="invoice-reference-grid" aria-label="Order and payment details">
         <div><span>Order date</span><strong>{formatDateTime(order.date_created)}</strong></div>
-        <div><span>Order status</span><strong>Completed</strong></div>
+        <div><span>Order status</span><strong>{invoiceStatus}</strong></div>
         <div><span>Payment</span><strong>{paymentMethod}</strong></div>
         <div><span>Ship via</span><strong>{order.shipping_via || 'Not provided'}</strong></div>
       </section>
@@ -10339,16 +10577,20 @@ export function OrderInvoice({ order, className = '' }) {
           <tr><th>SKU / barcode</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Tax</th><th>Line total</th></tr>
         </thead>
         <tbody>
-          {(order.lines || []).map((line) => (
-            <tr key={line.id}>
-              <td><strong>{line.sku || '—'}</strong><span>{line.barcode || ''}</span></td>
-              <td><strong>{decodeHtmlEntities(line.name || 'Unnamed product')}</strong></td>
+          {(order.lines || []).map((line) => {
+            const substitution = line.substitution || {};
+            const invoiceSku = line.sku || substitution.original_sku || line.substituted_from_sku;
+            const invoiceName = line.name || substitution.original_name || line.substituted_from_name;
+            const invoiceBarcode = line.barcode || substitution.original_barcode || line.substituted_from_barcode;
+            return <tr key={line.id}>
+              <td><strong>{invoiceSku || '—'}</strong><span>{invoiceBarcode || ''}</span></td>
+              <td><strong>{decodeHtmlEntities(invoiceName || 'Unnamed product')}</strong></td>
               <td>{formatNumber(line.quantity_ordered)}</td>
               <td>{formatCurrency(line.unit_price)}</td>
               <td>{formatCurrency(line.line_tax)}</td>
               <td>{formatCurrency(line.line_total)}</td>
-            </tr>
-          ))}
+            </tr>;
+          })}
           {!order.lines?.length && <tr><td colSpan="6">No line items were returned for this order.</td></tr>}
         </tbody>
       </table>
@@ -10490,15 +10732,128 @@ function OrderActionsMenu({ order, disabled, onView, onEdit, onPrint, onComplete
   );
 }
 
-function OpenOrderDetailPanel({ order, onClose, onPrint }) {
+function orderLineSubstitution(line = {}) {
+  const substitution = line.substitution || {};
+  const effectiveSku = line.effective_sku || substitution.replacement_sku || line.replacement_sku || '';
+  const effectiveName = line.effective_name || substitution.replacement_name || line.replacement_name || '';
+  const substituted = Boolean(
+    line.is_substituted
+    || line.substituted
+    || line.substituted_from_item_id
+    || substitution.original_item_id
+    || substitution.replacement_item_id,
+  );
+  if (!substituted) return null;
+  return {
+    originalSku: line.sku || substitution.original_sku || line.substituted_from_sku || line.original_sku || '',
+    originalName: line.name || substitution.original_name || line.substituted_from_name || line.original_name || '',
+    effectiveSku: effectiveSku || line.sku || '',
+    effectiveName: effectiveName || line.name || '',
+  };
+}
+
+function inventorySearchItemLabel(item = {}) {
+  const candidate = item || {};
+  return candidate.product_name || candidate.description || candidate.Description || 'Untitled inventory item';
+}
+
+function inventorySearchItemSku(item = {}) {
+  const candidate = item || {};
+  return candidate.sku || candidate.SKU || '';
+}
+
+function OpenOrderDetailPanel({ order, onClose, onPrint, onSubstitute = null, showPrint = true, statusActions = null, title = 'View Customer Order' }) {
+  const dialogRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  const [substitutionLine, setSubstitutionLine] = useState(null);
+  const [replacementQuery, setReplacementQuery] = useState('');
+  const [replacementItem, setReplacementItem] = useState(null);
+  const [substitutionReason, setSubstitutionReason] = useState('');
+  const [substitutionBusy, setSubstitutionBusy] = useState(false);
+  const [substitutionError, setSubstitutionError] = useState('');
+  const [substitutionMessage, setSubstitutionMessage] = useState('');
+  onCloseRef.current = onClose;
+
   useEffect(() => {
-    if (!order) return undefined;
-    function closeOnEscape(event) {
-      if (event.key === 'Escape') onClose();
+    const previousFocus = document.activeElement;
+    window.requestAnimationFrame(() => dialogRef.current?.focus());
+    function handleDialogKeys(event) {
+      if (event.key === 'Escape') {
+        if (event.target?.getAttribute?.('role') === 'combobox' && event.target.getAttribute('aria-expanded') === 'true') return;
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     }
-    document.addEventListener('keydown', closeOnEscape);
-    return () => document.removeEventListener('keydown', closeOnEscape);
-  }, [order, onClose]);
+    document.addEventListener('keydown', handleDialogKeys);
+    return () => {
+      document.removeEventListener('keydown', handleDialogKeys);
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    setSubstitutionLine(null);
+    setReplacementQuery('');
+    setReplacementItem(null);
+    setSubstitutionReason('');
+    setSubstitutionError('');
+    setSubstitutionMessage('');
+  }, [order?.id]);
+
+  function beginSubstitution(line) {
+    setSubstitutionLine(line);
+    setReplacementQuery('');
+    setReplacementItem(null);
+    setSubstitutionReason('');
+    setSubstitutionError('');
+    setSubstitutionMessage('');
+  }
+
+  async function commitSubstitution() {
+    const replacementId = replacementItem?.id;
+    const reason = substitutionReason.trim();
+    if (!replacementId) {
+      setSubstitutionError('Choose the replacement inventory item.');
+      return;
+    }
+    if (!reason) {
+      setSubstitutionError('Enter a reason for this substitution.');
+      return;
+    }
+    if (Number(replacementId) === Number(substitutionLine?.inventory_item_id || substitutionLine?.item_id)) {
+      setSubstitutionError('Choose a different inventory item from the current product.');
+      return;
+    }
+    const originalLabel = substitutionLine?.sku || substitutionLine?.name || 'this item';
+    const replacementLabel = inventorySearchItemSku(replacementItem) || inventorySearchItemLabel(replacementItem);
+    if (!window.confirm(`Replace ${originalLabel} with ${replacementLabel}? The WooCommerce order line will remain unchanged; Pongo will use the replacement item for inventory.`)) return;
+    setSubstitutionBusy(true);
+    setSubstitutionError('');
+    try {
+      const result = await onSubstitute(substitutionLine, replacementItem, reason);
+      setSubstitutionMessage(result?.message || `${originalLabel} was substituted with ${replacementLabel}.`);
+      setSubstitutionLine(null);
+      setReplacementQuery('');
+      setReplacementItem(null);
+      setSubstitutionReason('');
+    } catch (error) {
+      setSubstitutionError(error.message || 'Unable to substitute this product.');
+    } finally {
+      setSubstitutionBusy(false);
+    }
+  }
 
   if (!order) return null;
   const shipping = order.shipping_summary || {};
@@ -10507,14 +10862,20 @@ function OpenOrderDetailPanel({ order, onClose, onPrint }) {
     shipping.address_2,
     [shipping.city || order.shipping_city, shipping.state || order.shipping_state, shipping.postcode || order.shipping_zip].filter(Boolean).join(' '),
   ].filter(Boolean);
+  const hasStatusResult = Boolean(statusActions?.message);
   return (
     <BodyPortal><div className="order-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section aria-labelledby="open-order-detail-title" aria-modal="true" className="order-detail-dialog print-order-panel" id="open-order-detail" role="dialog" tabIndex={-1}>
+      <section aria-labelledby="open-order-detail-title" aria-modal="true" className="order-detail-dialog print-order-panel" id="open-order-detail" ref={dialogRef} role="dialog" tabIndex={-1}>
         <header className="order-detail-dialog-header">
-          <h2 id="open-order-detail-title">View Customer Order</h2>
+          <h2 id="open-order-detail-title">{title}</h2>
           <button aria-label="Close customer order" className="icon-button" onClick={onClose} type="button"><X size={20} /></button>
         </header>
         <div className="order-detail-dialog-body">
+          {statusActions?.loading && <div className="loading-strip" role="status">Loading local order details…</div>}
+          {statusActions?.error && <div className="api-error" role="alert">{statusActions.error}</div>}
+          {statusActions?.message && <div className="success-strip" role="status">{statusActions.message}</div>}
+          {substitutionError && <div className="api-error" role="alert">{substitutionError}</div>}
+          {substitutionMessage && <div className="success-strip" role="status">{substitutionMessage}</div>}
           <div className="order-detail-summary">
             <div className="order-address-card">
               <strong>Ship/Bill To</strong>
@@ -10529,34 +10890,83 @@ function OpenOrderDetailPanel({ order, onClose, onPrint }) {
               <div><dt>Order Reference</dt><dd>{order.woo_order_number || order.woo_order_id}</dd></div>
               <div><dt>Customer</dt><dd>{order.customer_name || '—'}</dd></div>
               <div><dt>Customer Email</dt><dd>{order.customer_email || '—'}</dd></div>
+              <div><dt>Status</dt><dd>{StatusText(order.woo_status || order.status || order.local_status)}</dd></div>
               <div><dt>Ship From</dt><dd>{order.ship_from || 'Main Warehouse'}</dd></div>
             </dl>
           </div>
           <div className="order-detail-lines-scroll">
             <table className="order-detail-lines-table">
-              <thead><tr><th>SKU</th><th>Product Title</th><th>UOM</th><th>Quantity</th><th>Picked</th><th>Shipped</th><th>Total</th></tr></thead>
+              <thead><tr><th>SKU</th><th>Product Title</th><th>UOM</th><th>Quantity</th><th>Picked</th><th>Shipped</th><th>Total</th>{onSubstitute && <th>Action</th>}</tr></thead>
               <tbody>
-                {(order.lines || []).map((line) => (
-                  <tr key={line.id}>
-                    <td className="mono">{line.sku || '—'}</td>
-                    <td>{line.name || 'Unnamed product'}</td>
+                {(order.lines || []).map((line) => {
+                  const substitution = orderLineSubstitution(line);
+                  const displayedSku = substitution?.effectiveSku || line.sku;
+                  const displayedName = substitution?.effectiveName || line.name;
+                  const substitutionLocked = Number(line.quantity_picked || 0) > 0 || Number(line.quantity_fulfilled || 0) > 0 || Number(line.quantity_stock_reduced || 0) > 0;
+                  return <tr key={line.id}>
+                    <td className="mono">
+                      {displayedSku || '—'}
+                      {substitution && <small className="order-line-substitution">From {substitution.originalSku || 'original SKU'}</small>}
+                    </td>
+                    <td>
+                      {displayedName || 'Unnamed product'}
+                      {substitution && <small className="order-line-substitution">{substitution.originalName || substitution.originalSku || 'Original item'} → {displayedName || displayedSku}</small>}
+                    </td>
                     <td>Each</td>
                     <td>{formatNumber(line.quantity_ordered)}</td>
                     <td>{formatNumber(line.quantity_picked)}</td>
                     <td>{formatNumber(line.quantity_fulfilled)}</td>
                     <td>{formatCurrency(line.line_total)}</td>
-                  </tr>
-                ))}
+                    {onSubstitute && <td><button className="link-button order-line-substitute-button" disabled={substitutionBusy || substitutionLocked} onClick={() => beginSubstitution(line)} title={substitutionLocked ? 'Picked or fulfilled lines cannot be substituted.' : undefined} type="button">Substitute</button></td>}
+                  </tr>;
+                })}
+                {!order.lines?.length && <tr><td colSpan={onSubstitute ? 8 : 7}><div className="empty-table-row">No product lines are available for this order.</div></td></tr>}
               </tbody>
             </table>
           </div>
+          {substitutionLine && (
+            <section aria-labelledby="substitute-order-line-title" className="order-substitution-panel">
+              <div className="panel-title">
+                <div>
+                  <h3 id="substitute-order-line-title">Substitute {substitutionLine.sku || substitutionLine.name || 'order item'}</h3>
+                  <p>The WooCommerce order line stays unchanged. Pongo will allocate and deduct the selected replacement product.</p>
+                </div>
+                <button aria-label="Cancel product substitution" className="icon-button" disabled={substitutionBusy} onClick={() => setSubstitutionLine(null)} type="button"><X size={18} /></button>
+              </div>
+              <div className="order-substitution-fields">
+                <InventoryKeywordSearch
+                  label="Replacement inventory item"
+                  onChange={(value) => { setReplacementQuery(value); if (value !== inventorySearchItemSku(replacementItem)) setReplacementItem(null); }}
+                  onSelect={setReplacementItem}
+                  placeholder="Search replacement SKU, barcode, or title"
+                  value={replacementQuery}
+                />
+                <label className="field"><span>Reason <b aria-hidden="true">*</b></span><textarea onChange={(event) => setSubstitutionReason(event.target.value)} placeholder="Why is this product being substituted?" required rows="3" value={substitutionReason} /></label>
+              </div>
+              {replacementItem && (
+                <div className="replacement-item-preview" role="status">
+                  <div><span>Replacement</span><strong>{inventorySearchItemLabel(replacementItem)}</strong><small>{inventorySearchItemSku(replacementItem) ? `SKU ${inventorySearchItemSku(replacementItem)}` : 'SKU unavailable'}</small></div>
+                  <div><span>Sellable</span><strong>{formatNumber(replacementItem.sellable ?? replacementItem.Sellable)}</strong></div>
+                  <div><span>In stock</span><strong>{formatNumber(replacementItem.in_stock ?? replacementItem['In Stock'])}</strong></div>
+                </div>
+              )}
+              <div className="button-row">
+                <button className="primary-button" disabled={substitutionBusy || !replacementItem || !substitutionReason.trim()} onClick={commitSubstitution} type="button">{substitutionBusy ? 'Saving substitution…' : 'Confirm substitution'}</button>
+                <button className="muted-button" disabled={substitutionBusy} onClick={() => setSubstitutionLine(null)} type="button">Cancel</button>
+              </div>
+            </section>
+          )}
         </div>
         <footer className="order-detail-dialog-footer">
-          <button className="primary-button" onClick={onPrint} type="button"><Printer size={17} />Print</button>
+          {statusActions && !statusActions.ready && !statusActions.loading && <button className="primary-button" onClick={statusActions.onRetryDetails} type="button"><RefreshCw size={17} />Retry order details</button>}
+          {statusActions?.ready && statusActions.retryTarget && !hasStatusResult && <button className="primary-button" disabled={Boolean(statusActions.pending)} onClick={statusActions.onRetry} type="button"><RefreshCw size={17} />{statusActions.pending ? 'Retrying WooCommerce…' : 'Retry WooCommerce update'}</button>}
+          {statusActions?.ready && !statusActions.retryTarget && !hasStatusResult && <button className="primary-button" disabled={Boolean(statusActions.pending)} onClick={statusActions.onMarkProcessed} type="button"><CheckCircle2 size={17} />{statusActions.pending === 'completed' ? 'Marking processed…' : 'Mark processed'}</button>}
+          {statusActions?.ready && !statusActions.retryTarget && !hasStatusResult && <button className="muted-button danger-button" disabled={Boolean(statusActions.pending)} onClick={statusActions.onCancel} type="button">{statusActions.pending === 'cancelled' ? 'Cancelling…' : 'Cancel order'}</button>}
+          {showPrint && <button className="primary-button" onClick={onPrint} type="button"><Printer size={17} />Print</button>}
           <button className="muted-button" onClick={onClose} type="button">Close</button>
         </footer>
       </section>
-      {typeof document !== 'undefined' && createPortal(
+      {showPrint && typeof document !== 'undefined' && createPortal(
         <OrderInvoice className="order-invoice-print" order={order} />,
         document.body,
       )}
@@ -10929,9 +11339,46 @@ function FulfillmentDetailPanel({ fulfillment }) {
   );
 }
 
+function canPrepareCompletedOrderForPicking(order) {
+  return Boolean(
+    order.completed_without_picking
+    && Number(order.total_quantity_ordered || 0) > Number(order.total_quantity_picked || 0)
+    && Number(order.line_count || 0) > 0,
+  );
+}
+
+function CompletedOrderActionsMenu({ order, busy, onView, onPrint, onPreparePicking }) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef(null);
+  const orderNumber = order.woo_order_number || order.woo_order_id;
+  const actions = [
+    { label: 'View order', icon: Search, onClick: onView },
+    { label: 'Reprint invoice', icon: Printer, onClick: onPrint },
+    canPrepareCompletedOrderForPicking(order) ? { label: 'Send to Pick Orders', icon: ClipboardCheck, onClick: onPreparePicking } : null,
+  ].filter(Boolean);
+  return (
+    <div className="order-actions-menu">
+      <button aria-expanded={open} aria-haspopup="menu" aria-label={`Open completed order actions for ${orderNumber}`} className="order-actions-trigger" disabled={busy} onClick={() => setOpen((current) => !current)} ref={triggerRef} type="button"><ClipboardList size={20} /></button>
+      <FloatingMenu align="start" className="order-actions-popover" onClose={() => setOpen(false)} open={open} triggerRef={triggerRef}>
+        {actions.map((action) => {
+          const Icon = action.icon;
+          return <button key={action.label} onClick={() => { setOpen(false); action.onClick(); }} role="menuitem" type="button"><Icon size={16} />{action.label}</button>;
+        })}
+      </FloatingMenu>
+    </div>
+  );
+}
+
 function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrders }) {
   const [filters, setFilters] = useState(emptyCompletedOrderFilters);
   const [activeFilters, setActiveFilters] = useState(emptyCompletedOrderFilters);
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [actionOrderId, setActionOrderId] = useState(null);
+  const [actionError, setActionError] = useState('');
+  const [actionMessage, setActionMessage] = useState('');
+  const [printAfterLoad, setPrintAfterLoad] = useState(false);
+  const preparePickingMutationRef = useRef(null);
   const orders = ordersData.orders || [];
   const totals = orders.reduce(
     (acc, order) => ({
@@ -10941,6 +11388,12 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
     }),
     { quantityFulfilled: 0, remaining: 0, value: 0 },
   );
+
+  useEffect(() => {
+    if (!printAfterLoad || !selectedOrder) return;
+    setPrintAfterLoad(false);
+    window.requestAnimationFrame(() => printVisibleRoot('single-order-printing'));
+  }, [printAfterLoad, selectedOrder]);
 
   function updateFilter(name, value) {
     setFilters((current) => ({ ...current, [name]: value }));
@@ -10958,12 +11411,49 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
     onLoadCompletedOrders({ ...cleared, page: 1, pageSize: ordersData.page_size || 20 });
   }
 
+  async function openCompletedOrder(order, print = false) {
+    setDetailLoading(true);
+    setActionError('');
+    setActionMessage('');
+    setActionOrderId(order.id);
+    try {
+      setSelectedOrder(await fetchOrderDetailRequest(order.id));
+      setPrintAfterLoad(print);
+    } catch (detailError) {
+      setActionError(detailError.message || 'Unable to load this completed order.');
+    } finally {
+      setDetailLoading(false);
+      setActionOrderId(null);
+    }
+  }
+
+  async function prepareForPicking(order) {
+    const orderNumber = order.woo_order_number || order.woo_order_id;
+    if (!window.confirm(`Send completed order ${orderNumber} to Pick Orders? WooCommerce will remain completed while Pongo prepares its unpicked inventory lines.`)) return;
+    setActionOrderId(order.id);
+    setActionError('');
+    setActionMessage('');
+    try {
+      const result = await prepareCompletedOrderForPicking(order.id, {
+        reason: 'Prepared for late picking from Completed Orders.',
+      }, preparePickingMutationRef);
+      resetMutationIdempotency(preparePickingMutationRef);
+      setActionMessage(result.message || `Order ${orderNumber} is ready in Pick Orders.`);
+      await onLoadCompletedOrders({ ...activeFilters, page: ordersData.page || 1, pageSize: ordersData.page_size || 20 });
+      window.location.hash = '#/orders/pick';
+    } catch (prepareError) {
+      setActionError(prepareError.message || 'Unable to prepare this order for picking.');
+    } finally {
+      setActionOrderId(null);
+    }
+  }
+
   return (
     <div className="wide-panel">
       <div className="panel-title">
         <div>
           <h2>Completed Orders</h2>
-          <p>Read-only view of fulfilled and partially fulfilled local orders.</p>
+          <p>Search, review, reprint, or prepare eligible completed orders for late picking.</p>
         </div>
         <div className="button-row compact">
           <button className="muted-button" onClick={() => onLoadCompletedOrders({ ...activeFilters, page: ordersData.page || 1, pageSize: ordersData.page_size || 20 })} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
@@ -10992,30 +11482,34 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
           <button className="primary-button" onClick={applyFilters} disabled={loading} type="button"><Filter size={17} />Apply</button>
         </div>
       </div>
-      {error && <div className="api-error">{error}</div>}
-      {loading && <div className="loading-strip">Loading completed orders...</div>}
-      <TableShell caption={`${ordersData.total || 0} completed order(s)`} columns={['Woo Order', 'Woo Status', 'Local Status', 'Completion', 'Customer', 'Email', 'Order Total', 'Picked', 'Completed Without Picking', 'Stock Reduced', 'Qty Ordered', 'Qty Allocated', 'Qty Picked', 'Qty Fulfilled', 'Closed']} pagination={serverTablePagination(ordersData, 'completed orders', (page) => onLoadCompletedOrders({ ...activeFilters, page, pageSize: ordersData.page_size || 20 }), (pageSize) => onLoadCompletedOrders({ ...activeFilters, page: 1, pageSize }))}>
+      {error && <div className="api-error" role="alert">{error}</div>}
+      {actionError && <div className="api-error" role="alert">{actionError}</div>}
+      {actionMessage && <div className="success-strip" role="status">{actionMessage}</div>}
+      {(loading || detailLoading) && <div className="loading-strip" role="status">{detailLoading ? 'Loading completed order details…' : 'Loading completed orders...'}</div>}
+      <TableShell caption={`${ordersData.total || 0} completed order(s)`} className="completed-orders-table" columns={['Actions', 'Woo Order', 'Woo Status', 'Local Status', 'Completion', 'Customer', 'Email', 'Order Total', 'Picked', 'Completed Without Picking', 'Stock Reduced', 'Qty Ordered', 'Qty Allocated', 'Qty Picked', 'Qty Fulfilled', 'Closed']} pagination={serverTablePagination(ordersData, 'completed orders', (page) => onLoadCompletedOrders({ ...activeFilters, page, pageSize: ordersData.page_size || 20 }), (pageSize) => onLoadCompletedOrders({ ...activeFilters, page: 1, pageSize }))}>
         {orders.map((order) => (
           <tr key={order.id}>
-            <td className="mono">{order.woo_order_number || order.woo_order_id}</td>
-            <td>{StatusText(order.woo_status)}</td>
-            <td>{StatusText(order.local_status)}</td>
-            <td>{StatusText(order.completion_status)}</td>
-            <td>{order.customer_name}</td>
-            <td>{order.customer_email}</td>
-            <td>{formatCurrency(order.total)}</td>
-            <td>{order.total_quantity_picked > 0 ? 'Yes' : 'No'}</td>
-            <td>{order.completed_without_picking ? 'Yes' : 'No'}</td>
-            <td>{formatNumber(order.total_quantity_stock_reduced)}</td>
-            <td>{formatNumber(order.total_quantity_ordered)}</td>
-            <td>{formatNumber(order.total_quantity_allocated)}</td>
-            <td>{formatNumber(order.total_quantity_picked)}</td>
-            <td>{formatNumber(order.total_quantity_fulfilled)}</td>
-            <td>{formatDateTime(order.closed_at || order.completed_at || order.date_modified || order.date_created)}</td>
+            <td className="completed-actions-cell"><CompletedOrderActionsMenu busy={loading || actionOrderId === order.id} onPreparePicking={() => prepareForPicking(order)} onPrint={() => openCompletedOrder(order, true)} onView={() => openCompletedOrder(order)} order={order} /></td>
+            <td className="mono completed-order-number" data-label="Woo Order">{order.woo_order_number || order.woo_order_id}</td>
+            <td data-label="Woo Status">{StatusText(order.woo_status)}</td>
+            <td data-label="Local Status">{StatusText(order.local_status)}</td>
+            <td data-label="Completion">{StatusText(order.completion_status)}</td>
+            <td data-label="Customer">{order.customer_name}</td>
+            <td className="completed-secondary-cell" data-label="Email">{order.customer_email}</td>
+            <td data-label="Order Total">{formatCurrency(order.total)}</td>
+            <td data-label="Picked">{order.total_quantity_picked > 0 ? 'Yes' : 'No'}</td>
+            <td data-label="Completed Without Picking">{order.completed_without_picking ? 'Yes' : 'No'}</td>
+            <td className="completed-secondary-cell" data-label="Stock Reduced">{formatNumber(order.total_quantity_stock_reduced)}</td>
+            <td className="completed-secondary-cell" data-label="Qty Ordered">{formatNumber(order.total_quantity_ordered)}</td>
+            <td className="completed-secondary-cell" data-label="Qty Allocated">{formatNumber(order.total_quantity_allocated)}</td>
+            <td className="completed-secondary-cell" data-label="Qty Picked">{formatNumber(order.total_quantity_picked)}</td>
+            <td className="completed-secondary-cell" data-label="Qty Fulfilled">{formatNumber(order.total_quantity_fulfilled)}</td>
+            <td data-label="Closed">{formatDateTime(order.closed_at || order.completed_at || order.date_modified || order.date_created)}</td>
           </tr>
         ))}
-        {orders.length === 0 && <tr><td colSpan={15}><div className="empty-table-row">No completed orders match the current filters.</div></td></tr>}
+        {orders.length === 0 && <tr className="completed-orders-empty"><td colSpan={16}><div className="empty-table-row">No completed orders match the current filters.</div></td></tr>}
       </TableShell>
+      {selectedOrder && <OpenOrderDetailPanel onClose={() => setSelectedOrder(null)} onPrint={() => printVisibleRoot('single-order-printing')} order={selectedOrder} title="Completed Customer Order" />}
     </div>
   );
 }

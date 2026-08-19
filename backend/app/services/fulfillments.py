@@ -23,7 +23,7 @@ from app.schemas.fulfillments import (
     FulfillmentRequest,
 )
 from app.services.location_inventory import choose_allocated_location
-from app.services.order_workflow import actionable_order_line_clause, add_audit_event, first_item_location
+from app.services.order_workflow import actionable_order_line_clause, add_audit_event, first_item_location, operational_line_identity
 
 FULFILLABLE_ORDER_STATUSES = {"picked", "partially_picked", "partially_fulfilled"}
 
@@ -101,9 +101,9 @@ def commit_fulfillment(db: Session, payload: FulfillmentRequest) -> FulfillmentC
                 order_line_id=order_line.id,
                 item_id=item.id,
                 inventory_item_location_id=location_row.id if location_row else None,
-                sku=order_line.sku or item.sku,
-                barcode=order_line.barcode or item.barcode,
-                description=order_line.name or order_line.description or item.description,
+                sku=operational_line_identity(order_line)[0],
+                barcode=operational_line_identity(order_line)[1],
+                description=operational_line_identity(order_line)[2],
                 warehouse=location_row.warehouse if location_row else item.warehouse,
                 inventory_location=location_row.inventory_location if location_row else item.inventory_location,
                 quantity_ordered=order_line.quantity_ordered or Decimal("0"),
@@ -370,9 +370,9 @@ def build_preview_line(line: OrderItem, requested_quantity: Decimal | None = Non
         order_line_id=line.id,
         item_id=item.id if item else None,
         inventory_item_location_id=item_location_id,
-        sku=line.sku or (item.sku if item else None),
-        barcode=line.barcode or (item.barcode if item else None),
-        description=line.name or line.description or (item.description if item else None),
+        sku=operational_line_identity(line)[0],
+        barcode=operational_line_identity(line)[1],
+        description=operational_line_identity(line)[2],
         quantity_ordered=decimal_to_float(ordered),
         quantity_allocated=decimal_to_float(allocated),
         quantity_picked=decimal_to_float(picked),

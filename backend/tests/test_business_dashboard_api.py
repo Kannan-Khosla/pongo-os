@@ -155,8 +155,8 @@ def test_woocommerce_open_orders_uses_only_live_processing_total(client, monkeyp
 
         def list_orders(self, **params):
             self.calls.append(params)
-            self.last_response_headers = {"X-WP-Total": "7", "X-WP-TotalPages": "7"}
-            return [{}]
+            self.last_response_headers = {"X-WP-Total": "7", "X-WP-TotalPages": "1"}
+            return [woo_order(901, "live@example.invalid", "10.00", "2026-07-08T12:00:00")]
 
     fake = FakeLiveWooClient(SimpleNamespace(woocommerce_timeout_seconds=30))
     monkeypatch.setattr("app.api.routes.business_dashboard.effective_woocommerce_settings", lambda db: SimpleNamespace(woocommerce_timeout_seconds=30))
@@ -169,8 +169,12 @@ def test_woocommerce_open_orders_uses_only_live_processing_total(client, monkeyp
     assert body["source"] == "woocommerce"
     assert body["statuses"] == {"processing": 7}
     assert body["summary"] == {"open_orders_count": 7}
+    assert body["total"] == 7
+    assert body["total_pages"] == 1
+    assert body["orders"][0]["woo_order_id"] == 901
+    assert body["orders"][0]["customer_email"] == "live@example.invalid"
     assert datetime.fromisoformat(body["fetched_at"]).tzinfo is not None
-    assert fake.calls == [{"page": 1, "per_page": 1, "status": "processing"}]
+    assert fake.calls == [{"page": 1, "per_page": 100, "status": "processing"}]
     assert fake.timeout_seconds == 5
 
 
@@ -215,6 +219,26 @@ def test_woocommerce_open_orders_returns_safe_503_on_woo_failure(client, monkeyp
         "code": "woocommerce_open_orders_unavailable",
         "message": "Live WooCommerce open-order count is temporarily unavailable.",
     }
+
+
+def test_woocommerce_open_orders_fails_closed_on_malformed_live_row(client, monkeypatch):
+    class MalformedWooClient:
+        timeout_seconds = 30
+        last_response_headers = {}
+
+        def __init__(self, settings):
+            pass
+
+        def list_orders(self, **params):
+            self.last_response_headers = {"X-WP-Total": "1", "X-WP-TotalPages": "1"}
+            return [None]
+
+    monkeypatch.setattr("app.api.routes.business_dashboard.effective_woocommerce_settings", lambda db: object())
+    monkeypatch.setattr("app.api.routes.business_dashboard.WooCommerceClient", MalformedWooClient)
+
+    response = client.get("/api/business-dashboard/woocommerce-open-orders")
+
+    assert response.status_code == 503
 
 
 def test_demo_woocommerce_open_orders_never_constructs_live_client(client, monkeypatch):

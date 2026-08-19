@@ -2655,23 +2655,91 @@ The combined business dashboard and its detailed sections read local order
 snapshots and order lines only. They do not call WooCommerce, mutate orders,
 mutate stock, or geocode addresses through an external provider.
 
-`GET /api/business-dashboard/woocommerce-open-orders` is the isolated exception.
-The backend sends one read-only, one-row request for live WooCommerce status
-`processing` and returns:
+`GET /api/business-dashboard/woocommerce-open-orders?page=1&page_size=100` is
+the isolated exception. The backend sends one read-only WooCommerce list
+request for status `processing` (`page_size` is capped at 100), joins an
+existing local order ID without creating a snapshot, and returns:
 
 ```json
 {
   "source": "woocommerce",
   "fetched_at": "2026-08-11T19:20:03+00:00",
   "statuses": {"processing": 7},
-  "summary": {"open_orders_count": 7}
+  "summary": {"open_orders_count": 7},
+  "total": 7,
+  "page": 1,
+  "page_size": 100,
+  "total_pages": 1,
+  "orders": [
+    {
+      "woo_order_id": 38682,
+      "local_order_id": null,
+      "order_number": "38682",
+      "status": "processing",
+      "customer_name": "Avery Stone",
+      "customer_email": "avery@example.invalid",
+      "currency": "CAD",
+      "total": "61.07",
+      "date_created": "2026-08-19T15:38:00",
+      "date_modified": "2026-08-19T15:40:00",
+      "line_count": 2
+    }
+  ]
 }
 ```
 
 The endpoint returns HTTP 503 with code
-`woocommerce_open_orders_unavailable` when the remote total cannot be verified;
-it never substitutes the local snapshot total. Demo access returns
-`source: "demo"` from the isolated mock database without contacting WooCommerce.
+`woocommerce_open_orders_unavailable` when the rows or exact remote pagination
+totals cannot be verified; it never substitutes the local snapshot total and
+never mutates local order, allocation, stock, or audit state. Demo access
+returns `source: "demo"` from the isolated mock database without contacting
+WooCommerce, normalizes the mock rows to `processing`, and derives its total
+from those same returned mock rows.
+
+### Live Woo Order Operations
+
+All order-operation mutations require a nonblank `idempotency_key` in the JSON
+body. An optional `Idempotency-Key` header may repeat it; a mismatch returns
+HTTP 409.
+
+- `POST /api/orders/woocommerce/{woo_order_id}/reconcile` with
+  `{"idempotency_key":"..."}` fetches that exact live Woo order, requires it
+  to remain `processing`, reconciles it into the local operational store, and
+  returns `{"status":"reconciled","woo_order_id":501,"local_order_id":12,
+  "order":<OpenOrderDetail>}`. It does not change Woo status or stock.
+- `POST /api/orders/woocommerce/{woo_order_id}/status` accepts
+  `target_status` (`completed` or `cancelled`), `completion_mode` (`complete`,
+  `complete_picked`, or `complete_without_picking`), `reason`, and
+  `idempotency_key`. The backend re-fetches the exact Woo order and requires
+  live status `processing`. It infers and revalidates the safe completion path
+  under the order lock; partial picking blocks completion. Cancellation blocks
+  any picked, fulfilled, or stock-reduced quantity, creates a durable local
+  cancellation guard, releases allocations only after Woo confirms
+  cancellation, and cannot race an accepted local completion. The response
+  includes `local_order_id`, `local_status`, `released_quantity`,
+  `woo_sync_status`, `woo_writeback_queue_id`, and `woo_sync_error`.
+- `POST /api/orders/{order_id}/lines/{order_line_id}/substitute` accepts
+  `replacement_inventory_item_id`, `reason`, and `idempotency_key`. It releases
+  the old unpicked allocation, selects the effective replacement, and reruns
+  allocation. Woo line items are never changed. `OpenOrderLineRead` retains the
+  commercial Woo identity in `sku`, `barcode`, and `name`, exposes the
+  operational identity in `item_id`, `effective_sku`, `effective_barcode`, and
+  `effective_name`, and exposes the audit identity in `substituted_from_item_id`,
+  `substituted_from_sku`, `substituted_from_name`, `substitution_reason`,
+  `substituted_by`, and `substituted_at`.
+- `POST /api/orders/{order_id}/prepare-picking` accepts `reason` and
+  `idempotency_key`. It is restricted to a pristine local
+  `completed_without_picking` order whose exact live Woo order still reports
+  `completed`, has no prior pick history, and has no picked, fulfilled, or
+  stock-reduced quantity. It opens only the recovery picking workflow and does
+  not change Woo status.
+
+Status-action retries must reuse the same idempotency key, order, target, and
+reason. A failed or timed-out Woo write may be retried with that key. If Woo
+already accepted a timed-out request, the retry reconciles the live target
+status and marks the matching queue row sent. Different completion and
+cancellation intents are mutually exclusive once either local transition has
+won.
 
 Counts, totals, customer first-order classification, units, and daily revenue
 comparison are calculated in SQL with the same status precedence and configured

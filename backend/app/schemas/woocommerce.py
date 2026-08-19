@@ -395,6 +395,7 @@ class WooWritebackQueueCreateRequest(BaseModel):
     woo_product_id: int | None = None
     woo_variation_id: int | None = None
     woo_order_id: int | None = None
+    idempotency_key: str | None = Field(default=None, max_length=120)
     payload_json: dict
     preview_json: dict
     requested_by: str | None = None
@@ -409,6 +410,7 @@ class WooWritebackQueueRead(BaseModel):
     woo_product_id: int | None = None
     woo_variation_id: int | None = None
     woo_order_id: int | None = None
+    idempotency_key: str | None = None
     payload_json: dict
     status: str
     environment: str
