@@ -36,18 +36,47 @@ WRITEBACK_COLUMNS_BEFORE = (
 WRITEBACK_COLUMNS_AFTER = (*WRITEBACK_COLUMNS_BEFORE[:8], "idempotency_key", *WRITEBACK_COLUMNS_BEFORE[8:])
 
 
+def column_names(table: str) -> set[str]:
+    return {column["name"] for column in sa.inspect(op.get_bind()).get_columns(table)}
+
+
+def matching_foreign_keys(table: str, column: str) -> list[str | None]:
+    return [
+        foreign_key.get("name")
+        for foreign_key in sa.inspect(op.get_bind()).get_foreign_keys(table)
+        if foreign_key.get("constrained_columns") == [column]
+        and foreign_key.get("referred_table") == "inventory_items"
+        and foreign_key.get("referred_columns") == ["id"]
+    ]
+
+
+def matching_unique_constraints(table: str, columns: set[str]) -> list[str | None]:
+    return [
+        constraint.get("name")
+        for constraint in sa.inspect(op.get_bind()).get_unique_constraints(table)
+        if set(constraint.get("column_names") or []) == columns
+    ]
+
+
 def upgrade() -> None:
+    existing_order_columns = column_names("order_items")
+    existing_original_item_fks = matching_foreign_keys("order_items", "substituted_from_inventory_item_id")
     with op.batch_alter_table("order_items", partial_reordering=[ORDER_ITEM_COLUMNS_AFTER]) as batch:
-        batch.add_column(sa.Column("substituted_from_inventory_item_id", sa.Integer()))
-        batch.add_column(sa.Column("substitution_reason", sa.Text()))
-        batch.add_column(sa.Column("substituted_by", sa.String(120)))
-        batch.add_column(sa.Column("substituted_at", sa.DateTime(timezone=True)))
-        batch.create_foreign_key(
-            "fk_order_items_substituted_from_inventory_item",
-            "inventory_items",
-            ["substituted_from_inventory_item_id"],
-            ["id"],
-        )
+        for column in (
+            sa.Column("substituted_from_inventory_item_id", sa.Integer()),
+            sa.Column("substitution_reason", sa.Text()),
+            sa.Column("substituted_by", sa.String(120)),
+            sa.Column("substituted_at", sa.DateTime(timezone=True)),
+        ):
+            if column.name not in existing_order_columns:
+                batch.add_column(column)
+        if not existing_original_item_fks:
+            batch.create_foreign_key(
+                "fk_order_items_substituted_from_inventory_item",
+                "inventory_items",
+                ["substituted_from_inventory_item_id"],
+                ["id"],
+            )
     indexes = {index["name"] for index in sa.inspect(op.get_bind()).get_indexes("order_items")}
     if "ix_order_items_substituted_from_inventory_item_id" not in indexes:
         op.create_index(
@@ -56,28 +85,48 @@ def upgrade() -> None:
             ["substituted_from_inventory_item_id"],
         )
 
+    existing_writeback_columns = column_names("woo_writeback_queue")
+    existing_writeback_uniques = matching_unique_constraints(
+        "woo_writeback_queue",
+        {"operation_type", "idempotency_key"},
+    )
     with op.batch_alter_table("woo_writeback_queue", partial_reordering=[WRITEBACK_COLUMNS_AFTER]) as batch:
-        batch.add_column(sa.Column("idempotency_key", sa.String(120)))
-        batch.create_unique_constraint(
-            "uq_woo_writeback_operation_idempotency",
-            ["operation_type", "idempotency_key"],
-        )
+        if "idempotency_key" not in existing_writeback_columns:
+            batch.add_column(sa.Column("idempotency_key", sa.String(120)))
+        if not existing_writeback_uniques:
+            batch.create_unique_constraint(
+                "uq_woo_writeback_operation_idempotency",
+                ["operation_type", "idempotency_key"],
+            )
 
 
 def downgrade() -> None:
+    existing_writeback_uniques = matching_unique_constraints(
+        "woo_writeback_queue",
+        {"operation_type", "idempotency_key"},
+    )
+    existing_writeback_columns = column_names("woo_writeback_queue")
     with op.batch_alter_table("woo_writeback_queue", partial_reordering=[WRITEBACK_COLUMNS_BEFORE]) as batch:
-        batch.drop_constraint("uq_woo_writeback_operation_idempotency", type_="unique")
-        batch.drop_column("idempotency_key")
+        for constraint_name in existing_writeback_uniques:
+            if constraint_name:
+                batch.drop_constraint(constraint_name, type_="unique")
+        if "idempotency_key" in existing_writeback_columns:
+            batch.drop_column("idempotency_key")
 
     indexes = {index["name"] for index in sa.inspect(op.get_bind()).get_indexes("order_items")}
     if "ix_order_items_substituted_from_inventory_item_id" in indexes:
         op.drop_index("ix_order_items_substituted_from_inventory_item_id", table_name="order_items")
+    existing_original_item_fks = matching_foreign_keys("order_items", "substituted_from_inventory_item_id")
+    existing_order_columns = column_names("order_items")
     with op.batch_alter_table("order_items", partial_reordering=[ORDER_ITEM_COLUMNS_BEFORE]) as batch:
-        batch.drop_constraint(
-            "fk_order_items_substituted_from_inventory_item",
-            type_="foreignkey",
-        )
-        batch.drop_column("substituted_at")
-        batch.drop_column("substituted_by")
-        batch.drop_column("substitution_reason")
-        batch.drop_column("substituted_from_inventory_item_id")
+        for constraint_name in existing_original_item_fks:
+            if constraint_name:
+                batch.drop_constraint(constraint_name, type_="foreignkey")
+        for column_name in (
+            "substituted_at",
+            "substituted_by",
+            "substitution_reason",
+            "substituted_from_inventory_item_id",
+        ):
+            if column_name in existing_order_columns:
+                batch.drop_column(column_name)

@@ -475,7 +475,7 @@ For subscription demand, reused the existing encrypted Woo client, pagination me
 For order operations, reused the existing Woo client, single-order reconciler, guarded writeback queue, stock-mutation idempotency ledger, allocation/pick/audit services, completed search, invoice, and responsive dialog. Migration 0040 adds only the original-item substitution metadata and queue idempotency needed to make those existing paths safe; no second order engine, job system, provider, or dependency was added.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Commit only the intended order-operations candidate, push the feature branch, and require the exact SHA to pass the PostgreSQL 16 release gate.
+NEXT: Commit the migration repair, push the feature branch, and require the new exact SHA to pass the full PostgreSQL 16 release gate.
 THEN: Capture and restore-verify a fresh production backup, preflight schema 20260818_0039, deploy migration 20260819_0040, and run authenticated fail-closed smoke checks without changing a real order or stock record.
 APPROVAL STATE: The user explicitly authorized production deployment on 2026-08-19. This authorizes the candidate commit/push, exact-SHA CI, backup, migration, Heroku release, and non-destructive verification; it does not authorize changing a real order, substituting a real product, or mutating live stock as a smoke test. Preserve unrelated PRODUCT_AUDIT/output/showcase changes.
 
@@ -653,3 +653,9 @@ MODE: Release Readiness and Release
 SUMMARY: Production deployment of the verified live order status, substitution, completed-order reprint, and recovery patch is explicitly authorized and prepared.
 EVIDENCE: Backend 559 passed/10 skipped; order actions 18 passed; frontend 160 passed; Vite build, compileall, exact migration cycle/check, diff/security review, and independent QA passed. Candidate head is 0040; production remains v57/0039.
 NEXT ACTION: Commit and push only the intended candidate, require its exact green PostgreSQL release gate, then capture/verify a fresh backup before deploying to Heroku.
+
+--- DELIVERY RUN: 2026-08-19T17:58:38Z ---
+MODE: Stabilize and Repair; Release Readiness and Release
+SUMMARY: Exact-SHA PostgreSQL CI stopped order-operations candidate a3b9dd3 before production because the legacy base migration creates current ORM columns on a fresh database and migration 0040 attempted to add them again.
+EVIDENCE: GitHub run 32284342512 failed only at the first PostgreSQL migration upgrade with DuplicateColumn; all later gates were skipped and Heroku remained untouched. Migration 0040 now inspects existing columns, foreign keys, indexes, and unique constraints before adding them; its local 0039-0040-0039-0040/check cycle passes.
+NEXT ACTION: Commit and push the migration repair as a new immutable SHA, then require the entire PostgreSQL 16 release gate to pass from the beginning before any production backup or deployment.
