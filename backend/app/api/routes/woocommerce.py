@@ -24,6 +24,7 @@ from app.schemas.woocommerce import (
     WooCommerceConfigurationRequest,
     WooCommerceConfigurationResponse,
     WooCommerceProductCommitResponse,
+    WooCommerceNewProductImportResponse,
     WooCommerceProductPreviewResponse,
     WooCommerceStatusResponse,
     WooCommerceSyncErrorRead,
@@ -59,7 +60,7 @@ from app.services.woocommerce_order_reconciliation import (
     reconciliation_health,
 )
 from app.services.woocommerce_remap import commit_remap, deactivate_mapping, list_mappings, list_remap_candidates, mapping_to_read, preview_remap
-from app.services.woocommerce_sync import commit_product_sync, preview_product_sync
+from app.services.woocommerce_sync import commit_product_sync, import_new_products, preview_product_sync
 from app.services.woocommerce_webhooks import (
     WooCommerceWebhookError,
     is_woocommerce_webhook_ping,
@@ -204,6 +205,20 @@ def commit_woocommerce_products(payload: WooCommerceSyncRequest | None = None, d
         unmatched_local_skus=summary.unmatched_local_skus,
         unchanged_count=summary.unchanged_count,
     )
+
+
+@router.post("/products/import-new", response_model=WooCommerceNewProductImportResponse)
+def import_new_woocommerce_products(
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> WooCommerceNewProductImportResponse:
+    try:
+        return import_new_products(db, create_woocommerce_client(), actor)
+    except WooCommerceClientError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="WooCommerce is temporarily unavailable. No products were changed. Try again.",
+        ) from error
 
 
 @router.post("/orders/preview", response_model=WooCommerceOrderPreviewResponse)

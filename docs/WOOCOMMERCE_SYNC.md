@@ -152,6 +152,7 @@ Implemented endpoints:
 - `GET /api/integrations/woocommerce/status`
 - `POST /api/integrations/woocommerce/products/preview`
 - `POST /api/integrations/woocommerce/products/commit`
+- `POST /api/integrations/woocommerce/products/import-new`
 - `GET /api/integrations/woocommerce/sync-runs`
 - `GET /api/integrations/woocommerce/sync-runs/{id}`
 
@@ -172,7 +173,7 @@ the candidate metadata. Counts, filters, and page boundaries are calculated in
 SQL, while mappings and suggestion rows are bulk-loaded for only the requested
 page.
 
-The settings UI calls preview/commit in pages of Woo parent products. Each
+The repair UI calls preview/commit in pages of Woo parent products. Each
 backend batch fetches:
 - simple products;
 - variable products;
@@ -308,6 +309,14 @@ items missing from WooCommerce are not deleted or deactivated.
 
 ## Preview and Commit
 
+The primary Items workflow calls `products/import-new`. The first successful
+call performs one catalog reconciliation; later calls use the last successful
+cursor with a five-minute overlap. Known Woo IDs are discarded before local
+work, and variable products fetch only variation IDs not already mapped. The
+scan completes before any local rows are written, so an upstream error leaves
+the catalog unchanged. New rows may start without SKU/barcode and are marked
+`needs_setup` until both identifiers are saved.
+
 Preview:
 - Fetches WooCommerce products/variations.
 - Returns create/update/skip/conflict/error rows.
@@ -321,6 +330,11 @@ Commit:
 - Stores sync run history and row-level sync errors.
 - Skips blank-SKU records and conflicts.
 - Never writes WooCommerce products, orders, or stock.
+
+Edits to a linked item's SKU (before stock activity), barcode, description,
+regular price, or sale price are sent through the guarded Woo metadata
+allowlist when Read & write access is enabled. A remote failure does not roll
+back the local edit; the item is marked `pending_writeback` with the error.
 
 ## Remap Behavior
 

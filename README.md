@@ -302,11 +302,14 @@ Invalid quantities, allocation conflicts, or stale stock block every matched
 change. Allocated and Sellable remain system-managed. Starting inventory
 remains limited to pre-operational stock.
 
-WooCommerce catalog sync is separate under Items → More. It previews and imports
-every Woo simple product and purchasable variation through the backend-only
-integration. A variable parent is reference metadata, not a stock item.
-Repeated syncs refresh Woo-owned fields without overwriting operational stock or
-history.
+Items → **Import new products** is the normal WooCommerce workflow. One click
+reconciles missing simple products and purchasable variations, links them, and
+opens each imported item for setup. SKU and barcode are required; description,
+brand, cost, location, and audited opening stock are optional. Later clicks use
+a modification cursor and only inspect changed Woo products. The **Latest Woo
+import** Items filter shows the exact products created by the newest import run
+that added products. The full preview
+and mapping workflow remains under Items → More for repairs.
 
 See [`docs/ITEM_IMPORTS.md`](docs/ITEM_IMPORTS.md) for templates, validation,
 concurrency, rollback, API, configuration, and the QA runbook. Legacy canonical

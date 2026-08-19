@@ -20,9 +20,12 @@ The four outcomes are deliberately separate:
 | Override stock levels | Matches by exact SKU, sums location rows into one exact total per SKU, skips matching totals and unknown SKUs, and applies every matched change through one audited adjustment. | CSV locations never reassign stock; invalid quantities, allocation conflicts, and stale stock block every matched change. Allocated and sellable stay system-managed. |
 | Set starting inventory | For an existing, zero-stock item with no stock movement history, creates one audited opening-balance movement at an active location. | Any item with operational stock or stock history; allocated always starts at zero. |
 
-WooCommerce catalog sync and connection repair remain separate actions under
-Items → More. A variable product parent is not an inventory item; purchasable
-variations remain separate items.
+WooCommerce products do not require CSV. Items → **Import new products** scans
+for missing Woo simple products and purchasable variations, imports them in one
+step, then opens a short setup form. SKU and barcode are required; description,
+brand, prices, unit cost, warehouse/location, and opening stock are optional.
+Opening stock uses the audited opening-balance workflow. Full catalog mapping
+and connection repair remain under Items → More.
 
 ## Backend-owned schema and templates
 

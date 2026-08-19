@@ -5507,6 +5507,26 @@ tbody tr:nth-child(even) .sticky-col {
   gap: 16px;
 }
 
+.woo-import-setup-banner {
+  display: grid;
+  gap: 4px;
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px solid #b9c8ef;
+  border-radius: 8px;
+  background: #f1f5ff;
+  color: #163b9e;
+}
+
+.woo-import-setup-banner span {
+  color: #526177;
+  font-size: 13px;
+}
+
+.operation-grid-wide {
+  grid-column: 1 / -1;
+}
+
 .item-overview-grid,
 .scanner-layout {
   display: grid;
@@ -5839,6 +5859,16 @@ tbody tr:nth-child(even) .sticky-col {
   border-color: #163b9e;
   color: #163b9e;
   background: #eef3ff;
+}
+
+.items-import-new-button {
+  border-color: #163b9e;
+  color: #fff;
+  background: #163b9e;
+}
+
+.items-import-new-button:hover:not(:disabled) {
+  background: #102d78;
 }
 
 .items-command-menu {

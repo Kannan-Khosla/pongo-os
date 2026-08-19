@@ -6298,6 +6298,10 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
   const [detailId, setDetailId] = useState(null);
   const [detailData, setDetailData] = useState(null);
   const [detailTab, setDetailTab] = useState('overview');
+  const [importingNew, setImportingNew] = useState(false);
+  const [importError, setImportError] = useState('');
+  const [setupItemIds, setSetupItemIds] = useState([]);
+  const [setupIndex, setSetupIndex] = useState(0);
   const [savedViews, setSavedViews] = useState([]);
   const [selectedViewId, setSelectedViewId] = useState('');
   const [viewName, setViewName] = useState('');
@@ -6311,6 +6315,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     brand: '',
     status: 'active',
     stockStatus: '',
+    latestWooImport: false,
     dataQuality: '',
     includeNonInventory: true,
   });
@@ -6373,6 +6378,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
       brand: '',
       status: 'active',
       stockStatus: '',
+      latestWooImport: false,
       dataQuality: '',
       includeNonInventory: true,
     });
@@ -6434,16 +6440,51 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     }
   }
 
-  async function openDetail(itemId) {
+  async function openDetail(itemId, nextTab = 'overview') {
     setDetailId(itemId);
     setDetailData(null);
-    setDetailTab('overview');
+    setDetailTab(nextTab);
     try {
       const response = await apiFetch(`${API_BASE_URL}/api/items/${itemId}/detail`);
       if (!response.ok) throw new Error(`Detail API returned ${response.status}`);
       setDetailData(await response.json());
     } catch {
       setMessage('Unable to load item detail.');
+    }
+  }
+
+  async function importNewProducts() {
+    setImportingNew(true);
+    setImportError('');
+    setMessage('');
+    try {
+      const result = await postJson('/api/integrations/woocommerce/products/import-new', {});
+      setMessage(result.message);
+      await onRefreshItemFacets();
+      await onLoadItems({ ...filters, page, pageSize });
+      const itemIds = result.setup_item_ids || [];
+      setSetupItemIds(itemIds);
+      setSetupIndex(0);
+      if (itemIds.length) await openDetail(itemIds[0], 'edit');
+    } catch (apiError) {
+      setImportError(apiError.message || 'Unable to import new WooCommerce products.');
+    } finally {
+      setImportingNew(false);
+    }
+  }
+
+  async function finishImportedItemSetup() {
+    await onRefreshItemFacets();
+    await onLoadItems({ ...filters, page, pageSize });
+    const nextIndex = setupIndex + 1;
+    if (nextIndex < setupItemIds.length) {
+      setSetupIndex(nextIndex);
+      await openDetail(setupItemIds[nextIndex], 'edit');
+    } else {
+      setSetupItemIds([]);
+      setSetupIndex(0);
+      setMessage('New WooCommerce products are imported and ready in Pongo.');
+      await openDetail(detailId, 'overview');
     }
   }
 
@@ -6481,7 +6522,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     await onLoadItems({ ...filters, page, pageSize });
   }
 
-  const filtersChanged = Boolean(filters.search || filters.category || filters.brand || filters.stockStatus || filters.dataQuality || filters.status !== 'active' || !filters.includeNonInventory);
+  const filtersChanged = Boolean(filters.search || filters.category || filters.brand || filters.stockStatus || filters.latestWooImport || filters.dataQuality || filters.status !== 'active' || !filters.includeNonInventory);
   const topQualityIssues = (dataQuality?.issues || []).filter((issue) => issue.count > 0).sort((left, right) => right.count - left.count).slice(0, 5);
   const selectedQualityIssue = (dataQuality?.issues || []).find((issue) => issue.key === filters.dataQuality);
   const csvRepairableQualityIssue = ['missing_title', 'missing_barcode', 'missing_brand', 'missing_category', 'missing_cost'].includes(selectedQualityIssue?.key) ? selectedQualityIssue : null;
@@ -6496,6 +6537,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
           </div>
           <div className="button-row items-actions">
             <a className="primary-button" href="#/items/new"><Plus size={17} /> Add item</a>
+            <button aria-busy={importingNew} className="action-button items-import-new-button" disabled={importingNew} onClick={importNewProducts} type="button"><PackagePlus size={17} /> {importingNew ? 'Checking WooCommerce…' : 'Import new products'}</button>
             <a className="action-button items-import-button" href="#/items/import"><Upload size={17} /> Import items</a>
             <a className="action-button" href="#/items/import?outcome=update_stock"><RefreshCw size={17} /> Update stock CSV</a>
             <ItemsCommandMenu label="Export">
@@ -6522,6 +6564,10 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
           <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
           <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
           <FilterSelect label="Stock Status" value={filters.stockStatus} options={['in_stock', 'out_of_stock', 'under_par', 'negative_sellable']} onChange={(value) => updateFilter('stockStatus', value)} />
+          <label className="check-field" title="Show products created by the most recent WooCommerce import that added new items.">
+            <input checked={filters.latestWooImport} onChange={(event) => updateFilter('latestWooImport', event.target.checked)} type="checkbox" />
+            Latest Woo import
+          </label>
           <div className="field status-field">
             <span>Show</span>
             <div className="radio-row">
@@ -6587,11 +6633,12 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
         </details>
       </div>
       {error && <div className="api-error">{error}</div>}
+      {importError && <div className="api-error">{importError}</div>}
       {message && <div className="api-success">{message}</div>}
       {loading && <div className="loading-strip">Loading backend items...</div>}
       <ItemsTable items={displayedItems} loading={loading} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: displayedItems.length, noun: 'items', onPageChange: changeItemsPage, onPageSizeChange: changeItemsPageSize }} visibleColumns={visibleColumns} selectedIds={selectedIds} onToggleSelected={toggleSelected} onToggleAll={toggleAllDisplayed} onOpenDetail={openDetail} />
       {mappingOpen && <ImportMappingsModal onClose={() => setMappingOpen(false)} onImported={async () => { await onRefreshItemFacets(); await onLoadItems({ ...filters, page, pageSize }); }} />}
-      {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onRefresh={() => openDetail(detailId)} onRefreshItemFacets={onRefreshItemFacets} />}
+      {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => { setDetailId(null); setSetupItemIds([]); setSetupIndex(0); }} onRefresh={() => openDetail(detailId, detailTab)} onRefreshItemFacets={onRefreshItemFacets} onSetupSaved={setupItemIds.length ? finishImportedItemSetup : null} setupProgress={setupItemIds.length ? { current: setupIndex + 1, total: setupItemIds.length } : null} />}
       {bulkOpen && <BulkEditModal selectedIds={selectedIds} onCommitted={finishBulkEdit} onClose={() => setBulkOpen(false)} />}
       {remapOpen && <LocalRemapSearchModal onClose={() => setRemapOpen(false)} />}
       <MobileCodeScanner open={cameraScannerOpen} onClose={() => setCameraScannerOpen(false)} onDetected={searchScannedCode} />
@@ -7117,7 +7164,7 @@ function ItemsTable({ items, loading = false, pagination, visibleColumns, select
   );
 }
 
-function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh, onRefreshItemFacets }) {
+function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh, onRefreshItemFacets, onSetupSaved, setupProgress }) {
   const item = detail?.item;
   const tabs = ['overview', 'stock', 'activity', 'history', 'edit'];
   return (
@@ -7133,6 +7180,7 @@ function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh, onRefreshIt
         {!detail && <div className="loading-strip">Loading item detail...</div>}
         {detail && (
           <>
+            {setupProgress && <div className="woo-import-setup-banner"><strong>Set up imported product {setupProgress.current} of {setupProgress.total}</strong><span>SKU and barcode are required. Location, opening stock, cost, brand, and description are optional.</span></div>}
             <div className="tab-row">
               {tabs.map((name) => <button className={tab === name ? 'tab-button active' : 'tab-button'} key={name} onClick={() => setTab(name)} type="button">{name}</button>)}
             </div>
@@ -7140,7 +7188,7 @@ function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh, onRefreshIt
             {tab === 'stock' && <ItemStockByLocation rows={detail.stock_by_location || []} item={item} />}
             {tab === 'activity' && <ItemActivityTimeline rows={detail.recent_activity || []} />}
             {tab === 'history' && <ItemHistoryPanel itemId={item.id} />}
-            {tab === 'edit' && <ItemMetadataPanel item={item} onSaved={onRefresh} onRefreshItemFacets={onRefreshItemFacets} />}
+            {tab === 'edit' && <ItemMetadataPanel item={item} key={item.id} onSaved={onSetupSaved || onRefresh} onRefreshItemFacets={onRefreshItemFacets} setupProgress={setupProgress} />}
           </>
         )}
       </aside>
@@ -7204,30 +7252,74 @@ function ItemHistoryPanel({ itemId }) {
   );
 }
 
-function ItemMetadataPanel({ item, onSaved, onRefreshItemFacets }) {
-  const [form, setForm] = useState({ category: item.category || '', brand: item.brand || '', manufacturer: item.manufacturer || '', unit_cost: item.unit_cost || '', sales_price: item.sales_price || '', par_level: '', active: item.active });
+function ItemMetadataPanel({ item, onSaved, onRefreshItemFacets, setupProgress }) {
+  const [form, setForm] = useState({ sku: item.sku || '', barcode: item.barcode || '', description: item.description || '', category: item.category || '', brand: item.brand || '', manufacturer: item.manufacturer || '', unit_cost: item.unit_cost ?? '', sales_price: item.sales_price ?? '', warehouse: item.warehouse || '', inventory_location: item.inventory_location || '', opening_stock: '', active: item.active });
   const [message, setMessage] = useState('');
-  async function saveMetadata() {
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  async function saveMetadata(event) {
+    event.preventDefault();
+    if (setupProgress && (!form.sku.trim() || !form.barcode.trim())) {
+      setError('SKU and barcode are required.');
+      return;
+    }
+    if (form.opening_stock !== '' && (!form.warehouse.trim() || !form.inventory_location.trim())) {
+      setError('Choose a warehouse and location before adding opening stock.');
+      return;
+    }
     const payload = {
+      SKU: form.sku.trim(),
+      Barcode: form.barcode.trim(),
+      Description: form.description,
       Category: form.category,
       Brand: form.brand,
       Manufacturer: form.manufacturer,
-      'Unit Cost': form.unit_cost,
-      'Sales Price': form.sales_price,
+      'Unit Cost': form.unit_cost === '' ? null : Number(form.unit_cost),
+      'Sales Price': form.sales_price === '' ? null : Number(form.sales_price),
+      Warehouse: form.warehouse,
+      'Inventory Location': form.inventory_location,
+      'Default Location': form.inventory_location,
       active: Boolean(form.active),
     };
-    await patchJson(`/api/items/${item.id}`, payload);
-    await onRefreshItemFacets();
-    setMessage('Metadata saved. Stock quantities remain controlled by receiving, counts, and adjustment workflows.');
-    onSaved();
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const saved = await patchJson(`/api/items/${item.id}`, payload);
+      if (form.opening_stock !== '') {
+        await postJson(`/api/items/${item.id}/opening-balance`, {
+          'In Stock': Number(form.opening_stock),
+          Allocated: 0,
+          Warehouse: form.warehouse.trim(),
+          'Inventory Location': form.inventory_location.trim(),
+          idempotencyKey: `woo-import-opening-${item.id}`,
+        });
+      }
+      await onRefreshItemFacets();
+      setMessage(saved.wooSyncStatus === 'pending_writeback' ? 'Saved in Pongo. WooCommerce writeback is pending.' : 'Product saved.');
+      await onSaved();
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to save this product.');
+    } finally {
+      setSaving(false);
+    }
   }
   return (
-    <div className="drawer-section operation-grid">
-      {['category', 'brand', 'manufacturer', 'unit_cost', 'sales_price'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={form[field]} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
+    <form className="drawer-section operation-grid" onSubmit={saveMetadata}>
+      <label className="field"><span>SKU {setupProgress ? '(required)' : ''}</span><input disabled={item.sku_locked} required={Boolean(setupProgress)} value={form.sku} onChange={(event) => setForm((current) => ({ ...current, sku: event.target.value }))} />{item.sku_locked && <small>Locked because stock activity has started.</small>}</label>
+      <label className="field"><span>Barcode {setupProgress ? '(required)' : ''}</span><input required={Boolean(setupProgress)} value={form.barcode} onChange={(event) => setForm((current) => ({ ...current, barcode: event.target.value }))} /></label>
+      <label className="field operation-grid-wide"><span>Description</span><textarea rows={3} value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></label>
+      {['category', 'brand', 'manufacturer'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={form[field]} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
+      {['unit_cost', 'sales_price'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input min="0" step="0.01" type="number" value={form[field]} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
+      <label className="field"><span>Warehouse</span><input value={form.warehouse} onChange={(event) => setForm((current) => ({ ...current, warehouse: event.target.value }))} /></label>
+      <label className="field"><span>Inventory location</span><input value={form.inventory_location} onChange={(event) => setForm((current) => ({ ...current, inventory_location: event.target.value }))} /></label>
+      <label className="field"><span>Opening stock</span><input min="0" step="0.001" type="number" value={form.opening_stock} onChange={(event) => setForm((current) => ({ ...current, opening_stock: event.target.value }))} /><small>Optional and available only before stock activity starts.</small></label>
       <label className="check-field"><input checked={form.active} onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))} type="checkbox" />Active</label>
-      <button className="primary-button" onClick={saveMetadata} type="button"><Save size={16} />Save Metadata</button>
-      {message && <div className="api-success">{message}</div>}
-    </div>
+      <button aria-busy={saving} className="primary-button" disabled={saving} type="submit"><Save size={16} />{saving ? 'Saving…' : setupProgress && setupProgress.current < setupProgress.total ? 'Save & next' : 'Save product'}</button>
+      {error && <div className="api-error operation-grid-wide">{error}</div>}
+      {message && <div className="api-success operation-grid-wide">{message}</div>}
+    </form>
   );
 }
 
@@ -14672,6 +14764,7 @@ function filtersToQueryString(filters = {}, options = {}) {
   if (filters.status === 'active') params.set('active', 'true');
   if (filters.status === 'inactive') params.set('active', 'false');
   if (filters.stockStatus) params.set('stock_status', filters.stockStatus);
+  if (filters.latestWooImport) params.set('latest_woo_import', 'true');
   params.set('include_non_inventory', String(Boolean(filters.includeNonInventory)));
   if (filters.page) params.set('page', String(filters.page));
   if (filters.pageSize) params.set('page_size', String(filters.pageSize));

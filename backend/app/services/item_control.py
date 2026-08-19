@@ -170,6 +170,14 @@ def item_summary(item: InventoryItem | None) -> dict[str, Any] | None:
     }
 
 
+def sku_is_locked(db: Session, item: InventoryItem) -> bool:
+    return bool(
+        to_decimal(item.in_stock) != 0
+        or to_decimal(item.allocated) != 0
+        or db.scalar(select(StockMovement.id).where(StockMovement.inventory_item_id == item.id).limit(1))
+    )
+
+
 def item_location_summary(row: InventoryItemLocation, item: InventoryItem | None = None) -> dict[str, Any]:
     recalculate_item_location(row, item)
     return {
@@ -197,8 +205,10 @@ def build_item_detail(db: Session, item_id: int) -> dict[str, Any]:
     recalculate_item_totals(db, item.id)
     stock_by_location = [item_location_summary(row, item) for row in sorted(item.locations, key=lambda row: (not row.is_default_location, row.warehouse or "", row.inventory_location or ""))]
     quick_stats = build_item_quick_stats(db, item)
+    summary = item_summary(item)
+    summary["sku_locked"] = sku_is_locked(db, item)
     return {
-        "item": item_summary(item),
+        "item": summary,
         "stock_by_location": stock_by_location,
         "recent_activity": build_item_activity(db, item_id, limit=25, offset=0)["activity"],
         "quick_stats": quick_stats,

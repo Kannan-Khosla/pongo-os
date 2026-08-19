@@ -35,6 +35,27 @@ class FakeWooClient:
         return None
 
 
+class IncrementalWooClient:
+    configured = True
+
+    def __init__(self, products, variations=None, error=None):
+        self.products = products
+        self.variations = variations or {}
+        self.error = error
+        self.modified_after_calls = []
+        self.variation_calls = []
+
+    def list_products(self, page=1, per_page=None, statuses=None, *, modified_after=None):
+        self.modified_after_calls.append(modified_after)
+        if self.error:
+            raise self.error
+        return self.products if page == 1 else []
+
+    def get_product_variation(self, product_id, variation_id):
+        self.variation_calls.append((product_id, variation_id))
+        return self.variations[(product_id, variation_id)]
+
+
 def test_sync_errors_are_deduplicated_per_run_and_expire(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)
@@ -604,6 +625,12 @@ def patch_woo_client(monkeypatch, records):
     return fake
 
 
+def patch_incremental_woo_client(monkeypatch, products, variations=None, error=None):
+    fake = IncrementalWooClient(products, variations, error)
+    monkeypatch.setattr("app.api.routes.woocommerce.create_woocommerce_client", lambda: fake)
+    return fake
+
+
 def test_woocommerce_status_returns_unconfigured_without_secrets(client, monkeypatch):
     monkeypatch.setattr(
         "app.api.routes.woocommerce.get_settings",
@@ -970,3 +997,78 @@ def test_later_new_variation_creates_only_one_item_and_mapping_targets_writeback
     writeback = client.post("/api/integrations/woocommerce/writeback/stock/preview", json={"item_id": item["id"]})
     assert writeback.status_code == 200
     assert writeback.json()["payload_json"]["path"] == "/wp-json/wc/v3/products/202/variations/4102"
+
+
+def test_import_new_products_is_one_step_idempotent_and_accepts_missing_identifiers(client, monkeypatch):
+    product = simple_product(id=9001, sku="", meta_data=[])["product"]
+    fake = patch_incremental_woo_client(monkeypatch, [product])
+
+    first = client.post("/api/integrations/woocommerce/products/import-new", json={})
+    second = client.post("/api/integrations/woocommerce/products/import-new", json={})
+
+    assert first.status_code == 200
+    assert first.json()["created_count"] == 1
+    assert first.json()["setup_item_ids"]
+    assert second.status_code == 200
+    assert second.json()["created_count"] == 0
+    assert client.get("/api/items").json()["total"] == 1
+    assert fake.modified_after_calls[0] is None
+    assert fake.modified_after_calls[-1] is not None
+
+    item = client.get("/api/items", params={"woo_product_id": 9001}).json()["items"][0]
+    assert item["wooSyncStatus"] == "needs_setup"
+    assert client.patch(f"/api/items/{item['id']}", json={"SKU": "NEW-SKU"}).status_code == 422
+    completed = client.patch(f"/api/items/{item['id']}", json={"SKU": "NEW-SKU", "Barcode": "NEW-BAR"})
+    assert completed.status_code == 200
+    assert completed.json()["wooSyncStatus"] == "synced"
+    seed_item(client, sku="MANUAL-NOT-LATEST")
+    latest = client.get("/api/items", params={"latest_woo_import": True}).json()
+    assert latest["total"] == 1
+    assert latest["items"][0]["SKU"] == "NEW-SKU"
+
+
+def test_import_new_products_fetches_only_unknown_variations(client, monkeypatch):
+    seed_item(client, sku="KNOWN-VARIATION", wooProductId=202, wooVariationId=303)
+    parent = variation_product()["product"]
+    parent["variations"] = [303, 304]
+    missing = variation_product(sku="NEW-VARIATION")["variation"]
+    missing["id"] = 304
+    fake = patch_incremental_woo_client(monkeypatch, [parent], {(202, 304): missing})
+
+    response = client.post("/api/integrations/woocommerce/products/import-new", json={})
+
+    assert response.status_code == 200
+    assert response.json()["created_count"] == 1
+    assert fake.variation_calls == [(202, 304)]
+    assert client.get("/api/items", params={"sku": "NEW-VARIATION"}).json()["total"] == 1
+
+
+def test_import_new_products_returns_actionable_503_without_partial_changes(client, monkeypatch):
+    patch_incremental_woo_client(monkeypatch, [], error=WooCommerceClientError("upstream unavailable", 503))
+
+    response = client.post("/api/integrations/woocommerce/products/import-new", json={})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "WooCommerce is temporarily unavailable. No products were changed. Try again."
+    assert client.get("/api/items").json()["total"] == 0
+
+
+def test_imported_product_sku_locks_after_audited_opening_stock(client, monkeypatch):
+    product = simple_product(id=9002, sku="LOCK-ME", meta_data=[{"key": "barcode", "value": "LOCK-BAR"}])["product"]
+    patch_incremental_woo_client(monkeypatch, [product])
+    imported = client.post("/api/integrations/woocommerce/products/import-new", json={}).json()
+    item_id = imported["created_item_ids"][0]
+
+    opening = client.post(f"/api/items/{item_id}/opening-balance", json={
+        "In Stock": 3,
+        "Allocated": 0,
+        "Warehouse": "Main",
+        "Inventory Location": "A-01",
+        "idempotencyKey": f"woo-import-opening-{item_id}",
+    })
+    changed = client.patch(f"/api/items/{item_id}", json={"SKU": "CHANGED-SKU"})
+
+    assert opening.status_code == 200
+    assert client.get("/api/stock-movements").json()["total"] == 1
+    assert changed.status_code == 422
+    assert "stock activity" in changed.json()["detail"]

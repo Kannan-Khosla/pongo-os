@@ -14,18 +14,20 @@ from app.models.imports import ImportJob
 from app.models.item_notes import ItemNote
 from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.orders import Order, OrderItem
+from app.models.woocommerce import WooCommerceSyncRun
 from app.schemas.imports import ImportCommitResponse, ImportPreviewResponse
 from app.schemas.inventory import InventoryItemLocationCreate, InventoryItemLocationListResponse, InventoryItemLocationRead, InventoryItemLocationUpdate
 from app.schemas.items import InventoryItemBulkUpdateRequest, InventoryItemCreate, InventoryItemListResponse, InventoryItemRead, InventoryItemUpdate, InventoryOpeningBalanceRequest
 from app.services.item_import import create_payload_from_row, parse_items_csv, preview_from_parsed, read_upload_text
 from app.services.auth import authenticated_actor
 from app.services.item_enrichment import commit_enrichment, enrichment_csv, parse_enrichment_csv, preview_enrichment
-from app.services.item_control import build_item_activity, build_item_detail, commit_bulk_item_update, item_keyword_predicates, preview_bulk_item_update, search_items
+from app.services.item_control import build_item_activity, build_item_detail, commit_bulk_item_update, item_keyword_predicates, preview_bulk_item_update, search_items, sku_is_locked
 from app.services.item_identifiers import barcode_scan_candidates
 from app.services.item_import_workflow import field_specs_for, safe_csv_value
 from app.services.items import CANONICAL_ITEM_COLUMNS, apply_calculated_fields, apply_item_payload, item_to_csv_row
 from app.services.location_inventory import ensure_default_item_location_from_item, get_or_create_item_location, lock_inventory_stock, recalculate_item_location, recalculate_item_totals, set_default_item_location, set_opening_balance, to_decimal
 from app.services.stock_mutation_guard import IdempotencyConflict
+from app.services.woocommerce_sync import NEW_PRODUCT_SYNC_TYPE, sync_item_metadata_to_woo
 
 router = APIRouter(prefix="/items", tags=["items"])
 
@@ -75,6 +77,7 @@ def build_items_statement(
     woo_variation_id: int | None = None,
     data_quality: str | None = None,
     stock_status: ItemStockStatus | None = None,
+    item_ids: list[int] | None = None,
 ):
     statement = select(InventoryItem)
     if search:
@@ -101,6 +104,8 @@ def build_items_statement(
         statement = statement.where(InventoryItem.woo_product_id == woo_product_id)
     if woo_variation_id is not None:
         statement = statement.where(InventoryItem.woo_variation_id == woo_variation_id)
+    if item_ids is not None:
+        statement = statement.where(InventoryItem.id.in_(item_ids))
     if stock_status == "in_stock":
         statement = statement.where(InventoryItem.in_stock > 0)
     elif stock_status == "out_of_stock":
@@ -231,12 +236,28 @@ def list_items(
     woo_variation_id: int | None = None,
     data_quality: str | None = None,
     stock_status: ItemStockStatus | None = None,
+    latest_woo_import: bool = False,
     page: int | None = Query(default=None, ge=1),
     page_size: int | None = Query(default=None, ge=1, le=100),
     sort_by: Literal["sku", "barcode", "description", "brand", "category", "in_stock", "allocated", "sellable", "unit_cost", "sales_price", "updated_at"] = "sku",
     sort_direction: Literal["asc", "desc"] = "asc",
     db: Session = Depends(get_db),
 ) -> InventoryItemListResponse:
+    latest_item_ids = None
+    if latest_woo_import:
+        latest_run = db.scalars(
+            select(WooCommerceSyncRun)
+            .where(WooCommerceSyncRun.sync_type == NEW_PRODUCT_SYNC_TYPE, WooCommerceSyncRun.created_count > 0)
+            .order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())
+            .limit(1)
+        ).first()
+        latest_item_ids = list((latest_run.progress or {}).get("created_item_ids") or []) if latest_run else []
+        if latest_run and not latest_item_ids and latest_run.completed_at:
+            latest_item_ids = list(db.scalars(select(InventoryItem.id).where(
+                InventoryItem.source == "woocommerce",
+                InventoryItem.created_at >= latest_run.started_at,
+                InventoryItem.created_at <= latest_run.completed_at,
+            )).all())
     statement = build_items_statement(
         search=search,
         sku=sku,
@@ -252,6 +273,7 @@ def list_items(
         woo_variation_id=woo_variation_id,
         data_quality=data_quality,
         stock_status=stock_status,
+        item_ids=latest_item_ids,
     )
     total = int(db.scalar(select(func.count()).select_from(statement.order_by(None).subquery())) or 0)
     sort_column = ITEM_SORT_COLUMNS[sort_by]
@@ -709,12 +731,30 @@ def update_item(item_id: int, payload: InventoryItemUpdate, db: Session = Depend
         raise HTTPException(status_code=404, detail="Item not found")
     if {"in_stock", "allocated"} & payload.model_fields_set:
         raise HTTPException(status_code=422, detail="In Stock and Allocated can only change through audited stock workflows.")
+    next_sku = payload.sku.strip() if "sku" in payload.model_fields_set and payload.sku else (item.sku or "").strip()
+    next_barcode = payload.barcode.strip() if "barcode" in payload.model_fields_set and payload.barcode else (item.barcode or "").strip()
+    if "sku" in payload.model_fields_set and next_sku.casefold() != (item.sku or "").strip().casefold() and sku_is_locked(db, item):
+        raise HTTPException(status_code=422, detail="SKU cannot be changed after stock activity has started.")
+    if item.woo_sync_status == "needs_setup" and (not next_sku or not next_barcode):
+        raise HTTPException(status_code=422, detail="SKU and barcode are required to finish importing this WooCommerce product.")
+    identifiers = []
+    if "sku" in payload.model_fields_set or item.woo_sync_status == "needs_setup":
+        identifiers.append((InventoryItem.sku, next_sku))
+    if "barcode" in payload.model_fields_set or item.woo_sync_status == "needs_setup":
+        identifiers.append((InventoryItem.barcode, next_barcode))
+    for field, value in identifiers:
+        if value and db.scalar(select(InventoryItem.id).where(InventoryItem.id != item.id, func.lower(func.trim(field)) == value.casefold()).limit(1)):
+            raise HTTPException(status_code=422, detail=f"{field.key.replace('_', ' ').title()} is already used by another item.")
     apply_item_payload(item, payload, partial=True)
+    if item.woo_sync_status == "needs_setup" and item.sku and item.barcode:
+        item.woo_sync_status = "synced"
+        item.woo_sync_error = None
     db.add(item)
     db.flush()
     ensure_default_item_location_from_item(db, item)
     db.commit()
     db.refresh(item)
+    sync_item_metadata_to_woo(db, item, payload.model_fields_set)
     return item
 
 

@@ -9,10 +9,11 @@ import httpx
 from app.core.config import Settings
 
 logger = logging.getLogger(__name__)
-ALLOWED_WRITE_OPERATIONS = {"update_product_stock", "update_variation_stock", "update_order_status"}
+ALLOWED_WRITE_OPERATIONS = {"update_product_stock", "update_variation_stock", "update_product_metadata", "update_variation_metadata", "update_order_status"}
 ALLOWED_WRITE_METHODS = {"PUT", "PATCH"}
 ALLOWED_STOCK_PAYLOAD_FIELDS = {"stock_quantity", "stock_status", "manage_stock"}
 ALLOWED_ORDER_STATUS_PAYLOAD_FIELDS = {"status"}
+ALLOWED_PRODUCT_METADATA_PAYLOAD_FIELDS = {"sku", "global_unique_id", "description", "regular_price", "sale_price"}
 
 
 @dataclass
@@ -37,6 +38,7 @@ class WooCommerceClient:
         self.allow_stock_write = getattr(settings, "woocommerce_allow_stock_write", False)
         self.production_stock_authority = getattr(settings, "woocommerce_production_stock_authority", "disabled").strip().casefold()
         self.allow_order_status_write = getattr(settings, "woocommerce_allow_order_status_write", False)
+        self.allow_product_metadata_write = getattr(settings, "woocommerce_allow_product_metadata_write", False)
         self.allow_delete = getattr(settings, "woocommerce_allow_delete", False)
         self.allowed_host = getattr(settings, "woocommerce_allowed_host", "").strip().lower()
         self.timeout_seconds = settings.woocommerce_timeout_seconds
@@ -65,10 +67,19 @@ class WooCommerceClient:
         if self.allowed_host and host != self.allowed_host:
             raise WooCommerceClientError("WooCommerce base URL host does not match the allowed host.")
 
-    def list_products(self, page: int = 1, per_page: int | None = None, statuses: list[str] | None = None) -> list[dict[str, Any]]:
+    def list_products(
+        self,
+        page: int = 1,
+        per_page: int | None = None,
+        statuses: list[str] | None = None,
+        *,
+        modified_after: str | None = None,
+    ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"page": page, "per_page": per_page or self.page_size}
         if statuses:
             params["status"] = ",".join(statuses)
+        if modified_after:
+            params.update({"modified_after": modified_after, "dates_are_gmt": "true", "orderby": "modified", "order": "asc"})
         return self._get("/wp-json/wc/v3/products", params)
 
     def list_product_variations(self, product_id: int, page: int = 1, per_page: int | None = None) -> list[dict[str, Any]]:
@@ -234,10 +245,11 @@ class WooCommerceClient:
         production_write = self.app_environment == "production" or self.environment == "production"
         if production_write:
             stock_write = operation_type in {"update_product_stock", "update_variation_stock"}
+            metadata_write = operation_type in {"update_product_metadata", "update_variation_metadata"}
             order_completion = operation_type == "update_order_status" and method == "PUT"
             if stock_write and self.production_stock_authority != "pongo":
                 raise WooCommerceClientError("Production stock writeback requires WOOCOMMERCE_PRODUCTION_STOCK_AUTHORITY=pongo.")
-            if not stock_write and not order_completion:
+            if not stock_write and not metadata_write and not order_completion:
                 raise WooCommerceClientError("Production WooCommerce writes are limited to explicit Pongo stock authority and completed order status updates.")
         if not production_write and self.environment == "staging" and not self.staging_live_test_mode:
             raise WooCommerceClientError("WooCommerce live staging test mode is disabled.")
@@ -254,6 +266,10 @@ class WooCommerceClient:
             raise WooCommerceClientError("WooCommerce variation stock write path is not allowlisted.")
         if operation_type == "update_order_status" and (not self.allow_order_status_write or not is_order_status_write_path(path)):
             raise WooCommerceClientError("WooCommerce order status write path is not allowlisted.")
+        if operation_type == "update_product_metadata" and (not self.allow_product_metadata_write or not is_simple_product_stock_write_path(path)):
+            raise WooCommerceClientError("WooCommerce product metadata write path is not allowlisted.")
+        if operation_type == "update_variation_metadata" and (not self.allow_product_metadata_write or not is_variation_stock_write_path(path)):
+            raise WooCommerceClientError("WooCommerce variation metadata write path is not allowlisted.")
         if validate_payload:
             validate_payload_fields(operation_type, payload)
             if production_write and operation_type == "update_order_status" and payload.get("status") not in {"completed", "cancelled"}:
@@ -370,6 +386,8 @@ def sanitized_write_payload(operation_type: str, payload: dict[str, Any]) -> dic
         return {key: payload[key] for key in ALLOWED_STOCK_PAYLOAD_FIELDS if key in payload}
     if operation_type == "update_order_status":
         return {"status": payload["status"]}
+    if operation_type in {"update_product_metadata", "update_variation_metadata"}:
+        return {key: payload[key] for key in ALLOWED_PRODUCT_METADATA_PAYLOAD_FIELDS if key in payload}
     return {}
 
 
@@ -382,5 +400,9 @@ def validate_payload_fields(operation_type: str, payload: dict[str, Any]) -> Non
     if operation_type == "update_order_status":
         if fields != ALLOWED_ORDER_STATUS_PAYLOAD_FIELDS:
             raise WooCommerceClientError("WooCommerce order status payload must contain only status.")
+        return
+    if operation_type in {"update_product_metadata", "update_variation_metadata"}:
+        if not fields or not fields.issubset(ALLOWED_PRODUCT_METADATA_PAYLOAD_FIELDS):
+            raise WooCommerceClientError("WooCommerce product metadata payload contains non-allowlisted fields.")
         return
     raise WooCommerceClientError("WooCommerce write operation is not allowlisted.")

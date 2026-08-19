@@ -1,19 +1,182 @@
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.inventory import InventoryItem
 from app.models.woocommerce import WooCommerceSyncRun, WooItemMapping
 from app.services.woocommerce_sync_errors import prune_sync_errors, store_sync_error_once
-from app.schemas.woocommerce import WooCommerceProductPreviewResponse, WooCommerceProductPreviewRow, WooCommerceSyncRequest
+from app.schemas.woocommerce import WooCommerceNewProductImportResponse, WooCommerceProductPreviewResponse, WooCommerceProductPreviewRow, WooCommerceSyncRequest
 from app.services.items import apply_calculated_fields
+from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
+
+
+NEW_PRODUCT_SYNC_TYPE = "new_products"
+WOO_METADATA_FIELDS = {"sku", "barcode", "description", "recommended_retail_price", "sales_price"}
+
+
+def sync_item_metadata_to_woo(db: Session, item: InventoryItem, changed_fields: set[str]) -> None:
+    if item.woo_product_id is None or not changed_fields.intersection(WOO_METADATA_FIELDS):
+        return
+    payload = {}
+    if "sku" in changed_fields:
+        payload["sku"] = item.sku or ""
+    if "barcode" in changed_fields:
+        payload["global_unique_id"] = item.barcode or ""
+    if "description" in changed_fields:
+        payload["description"] = item.description or ""
+    if "recommended_retail_price" in changed_fields:
+        payload["regular_price"] = str(item.recommended_retail_price) if item.recommended_retail_price is not None else ""
+    if "sales_price" in changed_fields:
+        payload["sale_price"] = str(item.sales_price) if item.sales_price is not None else ""
+    settings = effective_woocommerce_settings(db, get_settings())
+    if not settings.woocommerce_allow_product_metadata_write:
+        return
+    client = WooCommerceClient(settings)
+    variation = item.woo_variation_id is not None
+    operation = "update_variation_metadata" if variation else "update_product_metadata"
+    path = f"/wp-json/wc/v3/products/{item.woo_product_id}"
+    if variation:
+        path += f"/variations/{item.woo_variation_id}"
+    try:
+        client.guarded_write(operation, "PATCH", path, payload)
+        item.woo_sync_status = "synced"
+        item.woo_sync_error = None
+    except WooCommerceClientError as error:
+        item.woo_sync_status = "pending_writeback"
+        item.woo_sync_error = error.message
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+
+
+def import_new_products(db: Session, client: WooCommerceClient, created_by: str) -> WooCommerceNewProductImportResponse:
+    if not client.configured:
+        raise WooCommerceClientError("WooCommerce credentials are not configured.")
+
+    started_at = datetime.now(timezone.utc)
+    previous = db.scalars(
+        select(WooCommerceSyncRun)
+        .where(WooCommerceSyncRun.sync_type == NEW_PRODUCT_SYNC_TYPE, WooCommerceSyncRun.status == "completed")
+        .order_by(WooCommerceSyncRun.completed_at.desc(), WooCommerceSyncRun.id.desc())
+    ).first()
+    cursor_value = (previous.progress or {}).get("cursor_at") if previous else None
+    cursor = datetime.fromisoformat(cursor_value.replace("Z", "+00:00")) if cursor_value else None
+    checked_since = cursor - timedelta(minutes=5) if cursor else None
+
+    known_product_ids = set(db.scalars(select(InventoryItem.woo_product_id).where(InventoryItem.woo_product_id.is_not(None), InventoryItem.woo_variation_id.is_(None))).all())
+    known_variation_ids = set(db.scalars(select(InventoryItem.woo_variation_id).where(InventoryItem.woo_variation_id.is_not(None))).all())
+    active_mappings = list(db.scalars(select(WooItemMapping).where(WooItemMapping.active.is_(True))).all())
+    known_product_ids.update(mapping.woo_product_id for mapping in active_mappings if mapping.woo_variation_id is None)
+    known_variation_ids.update(mapping.woo_variation_id for mapping in active_mappings if mapping.woo_variation_id is not None)
+
+    remote_records: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        products = client.list_products(
+            page=page,
+            per_page=100,
+            statuses=["any"],
+            modified_after=checked_since.isoformat().replace("+00:00", "Z") if checked_since else None,
+        )
+        for product in products:
+            product_id = int(product["id"])
+            product_type = product.get("type")
+            if product_type == "simple" and product_id not in known_product_ids:
+                remote_records.append({"product": product, "variation": None})
+            elif product_type == "variable":
+                for variation_id in product.get("variations") or []:
+                    variation_id = int(variation_id)
+                    if variation_id not in known_variation_ids:
+                        remote_records.append({"product": product, "variation": client.get_product_variation(product_id, variation_id)})
+        if len(products) < 100:
+            break
+        page += 1
+
+    rows = build_preview_rows(db, remote_records, allow_missing_sku=True)
+    sync_run = WooCommerceSyncRun(
+        sync_type=NEW_PRODUCT_SYNC_TYPE,
+        status="running",
+        started_at=started_at,
+        created_by=created_by,
+        total_remote_records=len(rows),
+    )
+    db.add(sync_run)
+    db.flush()
+    created_ids: list[int] = []
+    setup_ids: list[int] = []
+    created_count = linked_count = skipped_count = conflict_count = error_count = 0
+    warnings = [warning for row in rows for warning in row.warnings]
+    errors = [error for row in rows for error in row.errors]
+    synced_at = datetime.now(timezone.utc)
+
+    for row, remote in zip(rows, remote_records):
+        if row.action in {"skip", "conflict", "error"}:
+            skipped_count += row.action == "skip"
+            conflict_count += row.action == "conflict"
+            error_count += row.action == "error"
+            store_sync_error(db, sync_run.id, row, row.errors or row.warnings)
+            continue
+        record = normalize_remote_record(remote["product"], remote.get("variation"))
+        savepoint = db.begin_nested()
+        try:
+            if row.action == "create":
+                item = create_item_from_woo(record, synced_at)
+                db.add(item)
+                db.flush()
+                created_count += 1
+                created_ids.append(item.id)
+            else:
+                item = db.get(InventoryItem, row.local_item_id)
+                if item is None:
+                    raise ValueError("Matched local item no longer exists.")
+                update_item_from_woo(item, record, synced_at)
+                linked_count += 1
+            ensure_mapping_record(db, item, record)
+            setup_ids.append(item.id)
+            savepoint.commit()
+        except Exception as exc:
+            savepoint.rollback()
+            error_count += 1
+            errors.append(str(exc))
+            store_sync_error(db, sync_run.id, row, [str(exc)])
+
+    sync_run.created_count = created_count
+    sync_run.matched_count = linked_count
+    sync_run.skipped_count = skipped_count
+    sync_run.conflict_count = conflict_count
+    sync_run.error_count = error_count
+    sync_run.completed_at = datetime.now(timezone.utc)
+    sync_run.status = "completed_with_errors" if conflict_count or error_count else "completed"
+    sync_run.progress = {"created_item_ids": created_ids}
+    if sync_run.status == "completed":
+        sync_run.progress["cursor_at"] = started_at.isoformat()
+    db.commit()
+    db.refresh(sync_run)
+    imported_count = created_count + linked_count
+    return WooCommerceNewProductImportResponse(
+        sync_run_id=sync_run.id,
+        status=sync_run.status,
+        checked_since=checked_since,
+        total_remote_records=len(rows),
+        created_count=created_count,
+        linked_count=linked_count,
+        skipped_count=skipped_count,
+        conflict_count=conflict_count,
+        error_count=error_count,
+        created_item_ids=created_ids,
+        setup_item_ids=setup_ids,
+        warnings=warnings,
+        errors=errors,
+        message=(f"Imported {imported_count} new product{'s' if imported_count != 1 else ''}." if imported_count else "No new WooCommerce products found."),
+    )
 
 
 @dataclass
@@ -190,13 +353,13 @@ def fetch_product_records(client: WooCommerceClient, payload: WooCommerceSyncReq
     return client.fetch_all_sellable_products_and_variations(payload.include_statuses, payload.limit), False
 
 
-def build_preview_rows(db: Session, remote_records: list[dict[str, Any]], blocked_skus: list[str] | None = None) -> list[WooCommerceProductPreviewRow]:
+def build_preview_rows(db: Session, remote_records: list[dict[str, Any]], blocked_skus: list[str] | None = None, *, allow_missing_sku: bool = False) -> list[WooCommerceProductPreviewRow]:
     records = [normalize_remote_record(remote["product"], remote.get("variation"), parent_container=bool(remote.get("parent_container"))) for remote in remote_records]
     sku_counts = Counter(normalize_key(record.sku) for record in records if record.sku)
     duplicate_skus = {sku for sku, count in sku_counts.items() if count > 1} | {normalize_key(sku) for sku in (blocked_skus or []) if sku}
     rows = []
     for record in records:
-        row = build_preview_row(db, record)
+        row = build_preview_row(db, record, allow_missing_sku=allow_missing_sku)
         if not record.parent_container and normalize_key(record.sku) in duplicate_skus:
             row.action = "conflict"
             row.status = "conflict"
@@ -247,7 +410,7 @@ def normalize_remote_record(product: dict[str, Any], variation: dict[str, Any] |
     )
 
 
-def build_preview_row(db: Session, record: NormalizedWooRecord) -> WooCommerceProductPreviewRow:
+def build_preview_row(db: Session, record: NormalizedWooRecord, *, allow_missing_sku: bool = False) -> WooCommerceProductPreviewRow:
     warnings: list[str] = []
     errors: list[str] = []
     local_item = None if record.parent_container else find_matching_item(db, record, errors)
@@ -265,7 +428,7 @@ def build_preview_row(db: Session, record: NormalizedWooRecord) -> WooCommercePr
         action = "skip"
         status = "skipped"
         warnings.append("Variation is not currently purchasable.")
-    elif not record.sku and local_item is None:
+    elif not allow_missing_sku and not record.sku and local_item is None:
         action = "skip"
         status = "skipped"
         warnings.append("Missing SKU: no existing Woo identity was found, so no item was created.")
@@ -394,8 +557,10 @@ def create_item_from_woo(record: NormalizedWooRecord, synced_at: datetime) -> In
 
 def update_item_from_woo(item: InventoryItem, record: NormalizedWooRecord, synced_at: datetime) -> None:
     item.sku = record.sku or item.sku
+    item.barcode = item.barcode or record.barcode or None
     item.description = record.description or item.description
     item.category = record.category or item.category
+    item.brand = item.brand or record.brand or None
     item.recommended_retail_price = record.regular_price
     item.sales_price = record.price
     item.weight = record.weight
@@ -420,7 +585,7 @@ def attach_woo_mapping(item: InventoryItem, record: NormalizedWooRecord, synced_
     item.woo_stock_status = record.stock_status
     item.woo_stock_quantity_snapshot = record.stock_quantity
     item.woo_last_synced_at = synced_at
-    item.woo_sync_status = "synced"
+    item.woo_sync_status = "synced" if item.sku and item.barcode else "needs_setup"
     item.woo_sync_error = None
 
 

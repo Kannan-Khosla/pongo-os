@@ -185,6 +185,23 @@ class WooCommerceProductCommitResponse(BaseModel):
     unchanged_count: int = 0
 
 
+class WooCommerceNewProductImportResponse(BaseModel):
+    sync_run_id: int
+    status: str
+    checked_since: datetime | None = None
+    total_remote_records: int
+    created_count: int
+    linked_count: int
+    skipped_count: int
+    conflict_count: int
+    error_count: int
+    created_item_ids: list[int] = Field(default_factory=list)
+    setup_item_ids: list[int] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    message: str
+
+
 class WooCommerceOrderPreviewLine(BaseModel):
     woo_line_item_id: int | None = None
     woo_product_id: int | None = None

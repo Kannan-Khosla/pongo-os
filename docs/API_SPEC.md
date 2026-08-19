@@ -61,7 +61,7 @@ local-only route creation/management.
 - Receipts/direct receiving: `/api/receipts`
 - Reports: background jobs under `/api/reports/jobs/*`, immutable runs and delivery under `/api/reports/runs/*`, plus legacy received, fulfillment, and SKU-order report endpoints
 - Cycle counts: `/api/cycle-counts`
-- WooCommerce read-only product sync: `/api/integrations/woocommerce/products/*`
+- WooCommerce product import and guarded metadata sync: `/api/integrations/woocommerce/products/*`
 - WooCommerce read-only order sync: `/api/integrations/woocommerce/orders/*`
 - WooCommerce signed order webhook and event cursor:
   `/api/integrations/woocommerce/webhooks/*`
@@ -795,6 +795,27 @@ Preview row fields:
 - `status`
 - `warnings`
 - `errors`
+
+### POST /api/integrations/woocommerce/products/import-new
+
+Primary no-CSV product intake. The endpoint scans WooCommerce once, filters out
+already mapped simple products and variations, creates or links only the missing
+sellable records, and returns `setup_item_ids` for the frontend setup sequence.
+After the first successful reconciliation it passes a saved `modified_after`
+cursor (with overlap) and fetches only unknown variation IDs. Missing SKU or
+barcode does not block creation; the local item is marked `needs_setup`.
+
+If the Woo scan fails, the endpoint returns `503` with “WooCommerce is
+temporarily unavailable. No products were changed. Try again.” and advances no
+cursor.
+
+Response fields include `sync_run_id`, `status`, `checked_since`, counts,
+`created_item_ids`, `setup_item_ids`, warnings/errors, and a user-facing
+`message`.
+
+`GET /api/items?latest_woo_import=true` returns only the exact item IDs created
+by the newest `new_products` run that added products. Empty import checks do not
+replace that filter target.
 
 Action values:
 - `create`

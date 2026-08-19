@@ -588,3 +588,19 @@ Safety: production rows and integration configuration are never available to a
 demo request. All mutations fail with `demo_read_only`; WooCommerce and Google
 integration routes fail with `demo_external_access_blocked`. Seed records use
 fictional names, `.example.test` emails, and reserved `DEMO-` identifiers.
+
+## ADR-040: New Woo Products Import Incrementally Without CSV
+
+Decision: make Items → Import new products the primary product intake. The
+first successful run reconciles Woo IDs once; later runs scan from a saved
+modification cursor and fetch only missing variations. Imported items are linked
+immediately and completed in a guided local setup form.
+
+Reason: adding a few storefront products should not require CSV work or a full
+preview-plus-commit catalog read.
+
+Safety: Woo reads finish before local writes, repeated runs are idempotent,
+cursor advancement occurs only after a clean run, local stock starts at zero,
+opening stock uses the audited opening-balance workflow, and SKU becomes locked
+after stock activity. Metadata writeback is limited to explicit product fields
+and preserves the local save when WooCommerce is unavailable.

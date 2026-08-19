@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
@@ -100,7 +101,7 @@ def test_woocommerce_access_mode_is_audited_and_enforced(client, monkeypatch):
     assert status["dry_run"] is False
     assert status["stock_write_allowed"] is True
     assert status["order_status_write_allowed"] is True
-    assert status["product_metadata_write_allowed"] is False
+    assert status["product_metadata_write_allowed"] is True
     assert status["customer_write_allowed"] is False
     assert status["coupon_write_allowed"] is False
     assert status["refund_write_allowed"] is False
@@ -327,6 +328,41 @@ def test_woocommerce_client_blocks_product_metadata_payload():
         assert "non-allowlisted fields" in error.message
     else:
         raise AssertionError("Product metadata payload should be blocked")
+
+
+def test_woocommerce_client_allows_only_explicit_product_metadata(monkeypatch):
+    woo_client = WooCommerceClient(staging_settings(woocommerce_allow_product_metadata_write=True))
+    monkeypatch.setattr(woo_client, "_request", lambda method, path, params=None, payload=None: {"id": 101, **payload})
+
+    result = woo_client.guarded_write(
+        "update_product_metadata",
+        "PATCH",
+        "/wp-json/wc/v3/products/101",
+        {"sku": "SAFE-SKU", "global_unique_id": "SAFE-BAR", "description": "Safe description"},
+    )
+
+    assert result["sku"] == "SAFE-SKU"
+    with pytest.raises(WooCommerceClientError, match="non-allowlisted"):
+        woo_client.guarded_write("update_product_metadata", "PATCH", "/wp-json/wc/v3/products/101", {"brand": "Nope"})
+
+
+def test_item_metadata_save_survives_woo_writeback_failure(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.woocommerce_sync.get_settings",
+        lambda: staging_settings(woocommerce_allow_product_metadata_write=True),
+    )
+    monkeypatch.setattr(
+        "app.services.woocommerce_sync.WooCommerceClient.guarded_write",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(WooCommerceClientError("temporary Woo failure")),
+    )
+    item = seed_item(client, sku="LOCAL-SAVE", Barcode="LOCAL-BAR", wooProductId=101)
+
+    response = client.patch(f"/api/items/{item['id']}", json={"Description": "Saved locally"})
+
+    assert response.status_code == 200
+    assert response.json()["Description"] == "Saved locally"
+    assert response.json()["wooSyncStatus"] == "pending_writeback"
+    assert response.json()["wooSyncError"] == "temporary Woo failure"
 
 
 def test_stock_preview_creates_no_woo_request(client, monkeypatch):

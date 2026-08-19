@@ -35,7 +35,7 @@ def effective_woocommerce_settings(db: Session, settings: Settings | None = None
         "woocommerce_allow_stock_write": writable,
         "woocommerce_production_stock_authority": "pongo" if writable else "disabled",
         "woocommerce_allow_order_status_write": writable,
-        "woocommerce_allow_product_metadata_write": False,
+        "woocommerce_allow_product_metadata_write": writable,
         "woocommerce_allow_customer_write": False,
         "woocommerce_allow_coupon_write": False,
         "woocommerce_allow_refund_write": False,
