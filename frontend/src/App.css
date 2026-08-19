@@ -5064,6 +5064,7 @@ tbody tr:nth-child(even) .sticky-col {
   }
 
   .inventory-filter-grid,
+  .orders-filter-grid,
   .report-filter-grid,
   .route-filter-grid,
   .route-history-filter-grid,
