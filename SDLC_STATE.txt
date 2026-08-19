@@ -659,3 +659,15 @@ MODE: Stabilize and Repair; Release Readiness and Release
 SUMMARY: Exact-SHA PostgreSQL CI stopped order-operations candidate a3b9dd3 before production because the legacy base migration creates current ORM columns on a fresh database and migration 0040 attempted to add them again.
 EVIDENCE: GitHub run 32284342512 failed only at the first PostgreSQL migration upgrade with DuplicateColumn; all later gates were skipped and Heroku remained untouched. Migration 0040 now inspects existing columns, foreign keys, indexes, and unique constraints before adding them; its local 0039-0040-0039-0040/check cycle passes.
 NEXT ACTION: Commit and push the migration repair as a new immutable SHA, then require the entire PostgreSQL 16 release gate to pass from the beginning before any production backup or deployment.
+
+--- DELIVERY RUN: 2026-08-19T18:26:19Z ---
+MODE: Release Readiness and Release; Stabilize and Repair
+SUMMARY: Live Woo processing-order actions, local substitution, completed-order reprint, and picking recovery released on Pongo production as Heroku v58; final 375 px verification then found and repaired a 12 px Completed Orders filter overflow.
+EVIDENCE: Exact commit ba18c9e passed GitHub run 32284963599; backup b017 restored successfully; clean 0039 preflight preceded migration 0040; web/worker are up; health/root returned 200; authenticated Dashboard and Completed Orders checks passed without console errors or business-data mutation. The one-line mobile CSS repair passed 160 frontend tests, the production build, and diff check.
+NEXT ACTION: Commit and push the scoped mobile repair, require its exact green release gate, deploy it as a code-only release, and recheck Completed Orders at 375 px.
+
+--- DELIVERY RUN: 2026-08-19T18:38:58Z ---
+MODE: Release Readiness and Release
+SUMMARY: Completed Orders mobile overflow repair released and verified on Pongo production as Heroku v59.
+EVIDENCE: Exact commit 9ff688e passed GitHub run 32287452305; release phase remained at Alembic 20260819_0040; web/worker are up; health/root returned 200; 300 recent application log lines contained no error matches. Authenticated 375 px verification measured zero page overflow, a single-column filter, an in-bounds pager, and no browser warnings or errors; no order, stock, or WooCommerce record changed.
+NEXT ACTION: Monitor normal staff use; separately resolve the pre-existing 224 missing positive unit costs and operations alert-webhook readiness warning.
