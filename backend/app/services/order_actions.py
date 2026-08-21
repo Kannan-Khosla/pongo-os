@@ -15,6 +15,9 @@ from app.models.woocommerce import WooWritebackQueue
 from app.schemas.orders import (
     CompletedOrderPickRecoveryRequest,
     CompletedOrderPickRecoveryResponse,
+    OrderLineAddRequest,
+    OrderLineEditResponse,
+    OrderLineRemoveRequest,
     OrderSubstitutionRequest,
     OrderSubstitutionResponse,
     WooOrderStatusActionRequest,
@@ -41,7 +44,7 @@ from app.services.order_workflow import (
 )
 from app.services.stock_mutation_guard import begin_stock_mutation, complete_stock_mutation
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
-from app.services.woocommerce_orders import commit_remote_order_records, get_open_order_detail
+from app.services.woocommerce_orders import RETIRED_WOO_LINE_STATUS, commit_remote_order_records, get_open_order_detail
 from app.services.woocommerce_writeback import sync_inventory_stock, sync_order_status, validate_item_mapping
 
 
@@ -238,7 +241,7 @@ def substitute_order_line(
     *,
     actor: str,
 ) -> OrderSubstitutionResponse:
-    reason = required_reason(payload.reason)
+    reason = optional_reason(payload.reason)
     idempotency_key = required_idempotency_key(payload.idempotency_key)
     mutation_payload = {
         "order_id": order_id,
@@ -298,7 +301,7 @@ def substitute_order_line(
         order,
         line,
         max(to_decimal(line.quantity_allocated) - to_decimal(line.quantity_picked), Decimal("0")),
-        f"Substituted order line {line.id}. {reason}",
+        f"Substituted order line {line.id}." + (f" Reason: {reason}" if reason else ""),
         "order_line_substitution",
         created_by=actor,
     )
@@ -306,7 +309,7 @@ def substitute_order_line(
     line.inventory_item_id = replacement.id
     line.inventory_item = replacement
     line.substituted_from_inventory_item_id = None if reverting else original_item_id
-    line.substitution_reason = None if reverting else reason
+    line.substitution_reason = None if reverting else (reason or None)
     line.substituted_by = None if reverting else actor
     line.substituted_at = None if reverting else datetime.now(timezone.utc)
     line.matched_status = "matched"
@@ -321,7 +324,8 @@ def substitute_order_line(
     line.status = order.local_status
     order.workflow_notes = append_note(
         order.workflow_notes,
-        f"Order line {line.id} {'reverted to its original item' if reverting else f'substituted from item {original_item_id} to item {replacement.id}'}. {reason}",
+        f"Order line {line.id} {'reverted to its original item' if reverting else f'substituted from item {original_item_id} to item {replacement.id}'}."
+        + (f" Reason: {reason}" if reason else ""),
     )
     audit_substitution(db, order, current_item, replacement, reason, actor)
     sync_order_workflow_statuses(order)
@@ -342,6 +346,194 @@ def substitute_order_line(
             if reverting
             else "Order line was substituted locally and reallocated where stock was available. WooCommerce line items were not changed."
         ),
+    )
+    complete_stock_mutation(mutation, response)
+    db.commit()
+    return response
+
+
+def add_local_order_line(
+    db: Session,
+    order_id: int,
+    payload: OrderLineAddRequest,
+    *,
+    actor: str,
+) -> OrderLineEditResponse:
+    reason = optional_reason(payload.reason)
+    idempotency_key = required_idempotency_key(payload.idempotency_key)
+    quantity = Decimal(str(payload.quantity))
+    mutation_payload = {
+        "order_id": order_id,
+        "inventory_item_id": payload.inventory_item_id,
+        "quantity": str(quantity),
+        "reason": reason,
+        "idempotency_key": idempotency_key,
+    }
+    mutation, replay = begin_stock_mutation(db, "order_line_addition", idempotency_key, mutation_payload)
+    if replay is not None:
+        return OrderLineEditResponse.model_validate(replay)
+
+    lock_inventory_stock(db, {payload.inventory_item_id})
+    order = db.scalars(
+        select(Order)
+        .where(Order.id == order_id)
+        .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if order is None:
+        raise OrderActionConflict("Order was not found.")
+    if not is_operational_order(order) or order.woo_status != "processing":
+        raise OrderActionConflict("Products can only be added to a live processing order.")
+    item = db.get(InventoryItem, payload.inventory_item_id)
+    if item is None or not item.active:
+        raise OrderActionConflict("Inventory item was not found or is inactive.")
+    if item.non_inventory:
+        raise OrderActionConflict("Added products must be inventory-tracked items.")
+    validate_item_mapping(db, item)
+
+    line = OrderItem(
+        order=order,
+        woo_order_item_id=None,
+        woo_product_id=item.woo_product_id,
+        woo_variation_id=item.woo_variation_id,
+        inventory_item_id=item.id,
+        line_number=max((existing.line_number or 0 for existing in order.items), default=0) + 1,
+        sku=item.sku,
+        barcode=item.barcode,
+        description=item.description,
+        name=item.description,
+        quantity_ordered=quantity,
+        ordered_qty=quantity,
+        ordered_uom="Each",
+        quantity_allocated=Decimal("0"),
+        allocated_qty=Decimal("0"),
+        quantity_picked=Decimal("0"),
+        picked_qty=Decimal("0"),
+        quantity_fulfilled=Decimal("0"),
+        fulfilled_qty=Decimal("0"),
+        quantity_stock_reduced=Decimal("0"),
+        unit_cost=item.unit_cost,
+        unit_price=item.sales_price or item.recommended_retail_price,
+        unit_cost_total=(item.unit_cost * quantity if item.unit_cost is not None else None),
+        brand=item.brand,
+        matched_status="matched",
+        availability_status="unallocated",
+        allocation_status="unallocated",
+        pick_status="not_ready",
+        sellable_snapshot=to_decimal(item.sellable),
+        shortage_quantity=quantity,
+        sync_status="local_added",
+        status=order.local_status,
+    )
+    db.add(line)
+    db.flush()
+    order.workflow_notes = append_note(
+        order.workflow_notes,
+        f"Added item {item.id} as local-only order line {line.id} with quantity {quantity}."
+        + (f" Reason: {reason}" if reason else ""),
+    )
+    sync_order_workflow_statuses(order)
+    auto_allocate_order_if_possible(db, order.id, source=f"local-order-edit:{actor}")
+    db.flush()
+    db.refresh(line)
+    response = OrderLineEditResponse(
+        status="added",
+        order_id=order.id,
+        order_line_id=line.id,
+        inventory_item_id=item.id,
+        allocation_status=line.allocation_status,
+        pick_status=line.pick_status,
+        message="Product was added to the Pongo order and allocated where stock was available. The WooCommerce order was not changed.",
+    )
+    complete_stock_mutation(mutation, response)
+    db.commit()
+    return response
+
+
+def remove_local_order_line(
+    db: Session,
+    order_id: int,
+    order_line_id: int,
+    payload: OrderLineRemoveRequest,
+    *,
+    actor: str,
+) -> OrderLineEditResponse:
+    reason = optional_reason(payload.reason)
+    idempotency_key = required_idempotency_key(payload.idempotency_key)
+    mutation_payload = {
+        "order_id": order_id,
+        "order_line_id": order_line_id,
+        "reason": reason,
+        "idempotency_key": idempotency_key,
+    }
+    mutation, replay = begin_stock_mutation(db, "order_line_removal", idempotency_key, mutation_payload)
+    if replay is not None:
+        return OrderLineEditResponse.model_validate(replay)
+
+    item_id = db.scalar(
+        select(OrderItem.inventory_item_id).where(OrderItem.id == order_line_id, OrderItem.order_id == order_id)
+    )
+    if item_id is not None:
+        lock_inventory_stock(db, {item_id})
+    line = db.scalars(
+        select(OrderItem)
+        .where(OrderItem.id == order_line_id, OrderItem.order_id == order_id)
+        .options(selectinload(OrderItem.order), selectinload(OrderItem.inventory_item))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if line is None:
+        raise OrderActionConflict("Order line was not found.")
+    order = line.order
+    if not is_operational_order(order) or order.woo_status != "processing":
+        raise OrderActionConflict("Products can only be removed from a live processing order.")
+    if line.matched_status == "removed":
+        raise OrderActionConflict("Order line was already removed from the Pongo order.")
+    if any(
+        to_decimal(value) > 0
+        for value in (line.quantity_picked, line.quantity_fulfilled, line.quantity_stock_reduced)
+    ):
+        raise OrderActionConflict("A picked, fulfilled, or stock-reduced line cannot be removed.")
+
+    released = release_line_allocations(
+        db,
+        order,
+        line,
+        to_decimal(line.quantity_allocated),
+        f"Removed order line {line.id} from the local Pongo order."
+        + (f" Reason: {reason}" if reason else ""),
+        "order_line_removal",
+        created_by=actor,
+    )
+    if to_decimal(line.quantity_allocated) > 0:
+        raise OrderActionConflict("The order line allocation could not be fully released; refresh it and try again.")
+    line.quantity_ordered = Decimal("0")
+    line.ordered_qty = Decimal("0")
+    line.shortage_quantity = Decimal("0")
+    line.matched_status = "removed"
+    line.availability_status = "removed"
+    line.allocation_status = "removed"
+    line.pick_status = "not_ready"
+    line.allocation_exception_reason = None
+    line.status = RETIRED_WOO_LINE_STATUS
+    line.sync_status = "local_removed"
+    line.sync_error = None
+    order.workflow_notes = append_note(
+        order.workflow_notes,
+        f"Removed order line {line.id} from the local Pongo order."
+        + (f" Reason: {reason}" if reason else ""),
+    )
+    sync_order_workflow_statuses(order)
+    response = OrderLineEditResponse(
+        status="removed",
+        order_id=order.id,
+        order_line_id=line.id,
+        inventory_item_id=item_id,
+        released_quantity=float(released),
+        allocation_status=line.allocation_status,
+        pick_status=line.pick_status,
+        message="Product was removed from the Pongo order and its unpicked allocation was released. The WooCommerce order was not changed.",
     )
     complete_stock_mutation(mutation, response)
     db.commit()
@@ -456,6 +648,10 @@ def required_reason(value: str) -> str:
     if not reason:
         raise OrderActionConflict("A nonblank reason is required.")
     return reason
+
+
+def optional_reason(value: str | None) -> str:
+    return (value or "").strip()
 
 
 def required_idempotency_key(value: str) -> str:

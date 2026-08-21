@@ -447,6 +447,8 @@ function mockFetch(url, options = {}) {
   if (target.includes('/api/orders/woocommerce/802/status')) return json({ status: 'completed', target_status: 'completed', woo_order_id: 802, local_order_id: 701, local_status: 'completed_without_picking', woo_sync_status: 'sent', released_quantity: 0, message: 'Order 0802 was marked processed without picking.' });
   if (target.includes('/api/orders/woocommerce/803/status')) return json({ status: 'completed', target_status: 'completed', woo_order_id: 803, local_order_id: 702, local_status: 'completed_without_picking', woo_sync_status: 'sent', released_quantity: 0, message: 'Order 0803 was marked processed without picking.' });
   if (target.includes('/api/orders/701/lines/9001/substitute')) return json({ status: 'completed', message: 'SMOKE-001 was substituted.' });
+  if (target.includes('/api/orders/701/lines/9001/remove')) return json({ status: 'removed', message: 'SMOKE-001 was removed from the Pongo order.' });
+  if (target.match(/\/api\/orders\/701\/lines$/)) return json({ status: 'added', message: 'Replacement Treat was added to the Pongo order.' });
   if (target.includes('/api/orders/701/prepare-picking')) return json({ status: 'ready_to_pick', message: 'Order 0802 is ready in Pick Orders.' });
   if (target.match(/\/api\/orders\/701$/)) return json(mockOrderDetail);
   if (target.includes('/api/orders/allocate')) return json({ orders: [], total: 0 });
@@ -3147,7 +3149,6 @@ describe('App shell and workflows', () => {
 
   it('substitutes an unpicked Open Order line with a searched inventory item and an audited reason', async () => {
     const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     mockItemsFeed = {
       items: [{ id: 2, sku: 'REPLACE-002', barcode: 'REPLACE002', product_name: 'Replacement Treat', brand: 'Pongo', category: 'Treats', sellable: 5, in_stock: 6 }],
       page: 1,
@@ -3164,12 +3165,12 @@ describe('App shell and workflows', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Edit order' }));
     const dialog = await screen.findByRole('dialog', { name: 'View Customer Order' });
     await user.click(within(dialog).getByRole('button', { name: 'Substitute' }));
-    await user.type(within(dialog).getByRole('combobox', { name: 'Replacement inventory item' }), 'REPLACE');
+    expect(within(dialog).getByRole('button', { name: 'Scan QR code or barcode' })).toBeInTheDocument();
+    await user.type(within(dialog).getByRole('combobox', { name: 'Replacement product' }), 'REPLACE');
     await user.click(await screen.findByRole('option', { name: /Replacement Treat/i }));
     await user.type(within(dialog).getByRole('textbox', { name: /Reason/i }), 'Customer approved an equivalent treat.');
     await user.click(within(dialog).getByRole('button', { name: 'Confirm substitution' }));
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/WooCommerce order line will remain unchanged/i));
     await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => {
       if (!String(url).endsWith('/api/orders/701/lines/9001/substitute')) return false;
       const body = JSON.parse(options.body);
@@ -3180,7 +3181,49 @@ describe('App shell and workflows', () => {
         && options.headers['Idempotency-Key'] === body.idempotency_key;
     })).toBe(true));
     expect(await within(dialog).findByText('SMOKE-001 was substituted.')).toBeInTheDocument();
-    confirmSpy.mockRestore();
+  });
+
+  it('adds and removes Pongo-only order products without requiring a reason', async () => {
+    const user = userEvent.setup();
+    mockItemsFeed = {
+      items: [{ id: 2, sku: 'REPLACE-002', barcode: 'REPLACE002', product_name: 'Replacement Treat', brand: 'Pongo', category: 'Treats', sellable: 5, in_stock: 6 }],
+      page: 1,
+      page_size: 100,
+      total: 1,
+      total_pages: 1,
+      returned_count: 1,
+    };
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Open Orders', level: 1 });
+    await user.click(screen.getByRole('button', { name: 'Open actions for order 0802' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Edit order' }));
+    const dialog = await screen.findByRole('dialog', { name: 'View Customer Order' });
+    await user.click(within(dialog).getByRole('button', { name: 'Add product' }));
+    await user.type(within(dialog).getByRole('combobox', { name: 'Product to add' }), 'REPLACE');
+    await user.click(await screen.findByRole('option', { name: /Replacement Treat/i }));
+    const quantity = within(dialog).getByRole('spinbutton', { name: 'Quantity' });
+    await user.clear(quantity);
+    await user.type(quantity, '2');
+    await user.click(within(within(dialog).getByRole('region', { name: 'Add product' })).getByRole('button', { name: 'Add product' }));
+
+    await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => {
+      if (!String(url).endsWith('/api/orders/701/lines') || options.method !== 'POST') return false;
+      const body = JSON.parse(options.body);
+      return body.inventory_item_id === 2 && body.quantity === 2 && body.reason === '' && Boolean(body.idempotency_key);
+    })).toBe(true));
+    expect(await within(dialog).findByText('Replacement Treat was added to the Pongo order.')).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    expect(within(dialog).getByRole('textbox', { name: /Reason Optional/i })).not.toBeRequired();
+    await user.click(within(dialog).getByRole('button', { name: 'Remove product' }));
+    await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => {
+      if (!String(url).endsWith('/api/orders/701/lines/9001/remove') || options.method !== 'POST') return false;
+      const body = JSON.parse(options.body);
+      return body.reason === '' && Boolean(body.idempotency_key);
+    })).toBe(true));
+    expect(await within(dialog).findByText('SMOKE-001 was removed from the Pongo order.')).toBeInTheDocument();
   });
 
   it('shows replacement identity operationally while labelling the original Woo line', async () => {

@@ -2740,9 +2740,20 @@ HTTP 409.
   includes `local_order_id`, `local_status`, `released_quantity`,
   `woo_sync_status`, `woo_writeback_queue_id`, and `woo_sync_error`.
 - `POST /api/orders/{order_id}/lines/{order_line_id}/substitute` accepts
-  `replacement_inventory_item_id`, `reason`, and `idempotency_key`. It releases
+  `replacement_inventory_item_id`, optional `reason`, and `idempotency_key`. It releases
   the old unpicked allocation, selects the effective replacement, and reruns
-  allocation. Woo line items are never changed. `OpenOrderLineRead` retains the
+  allocation.
+- `POST /api/orders/{order_id}/lines` accepts `inventory_item_id`, `quantity`,
+  optional `reason`, and `idempotency_key`. It creates a Pongo-only line and
+  runs local auto-allocation.
+- `POST /api/orders/{order_id}/lines/{order_line_id}/remove` accepts optional
+  `reason` and `idempotency_key`. It releases unpicked allocation and hides the
+  retained local audit row.
+
+These three product edits never change Woo order lines or totals. They submit
+the affected products' current sellable stock through the audited Woo stock
+writeback path and return `woo_stock_sync_status` plus
+`woo_stock_sync_error`. `OpenOrderLineRead` retains the
   commercial Woo identity in `sku`, `barcode`, and `name`, exposes the
   operational identity in `item_id`, `effective_sku`, `effective_barcode`, and
   `effective_name`, and exposes the audit identity in `substituted_from_item_id`,

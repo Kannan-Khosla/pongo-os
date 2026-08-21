@@ -6909,7 +6909,8 @@ button[title="Pagination is not available yet"] {
 }
 
 .table-row-link:focus-visible,
-.order-line-substitute-button:focus-visible {
+.order-line-substitute-button:focus-visible,
+.danger-link:focus-visible {
   border-radius: 4px;
   outline: 3px solid rgba(15, 20, 154, 0.28);
   outline-offset: 2px;
@@ -6933,6 +6934,53 @@ button[title="Pagination is not available yet"] {
   white-space: normal;
 }
 
+.order-line-local-badge {
+  display: block;
+  width: fit-content;
+  margin-top: 6px;
+  padding: 3px 7px;
+  border: 1px solid #b9dcca;
+  border-radius: 999px;
+  background: #edf8f2;
+  color: #287251;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.order-line-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 18px 0 10px;
+  padding: 12px 14px;
+  border: 1px solid #dce2f3;
+  border-radius: 10px;
+  background: #fbfcff;
+}
+
+.order-line-toolbar > div {
+  display: grid;
+  gap: 3px;
+}
+
+.order-line-toolbar span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.order-line-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+
+.danger-link {
+  color: #b42318;
+}
+
 .order-substitution-panel {
   display: grid;
   gap: 14px;
@@ -6940,6 +6988,7 @@ button[title="Pagination is not available yet"] {
   padding: 18px;
   border: 1px solid #cbd3ef;
   border-radius: 10px;
+  border-top: 4px solid var(--pongo-blue);
   background: #f7f8ff;
 }
 
@@ -6957,6 +7006,47 @@ button[title="Pagination is not available yet"] {
   color: var(--muted);
 }
 
+.order-editor-kicker {
+  color: var(--pongo-blue);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.order-edit-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.order-edit-search-row .keyword-item-search > span,
+.order-substitution-fields .field > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.order-edit-search-row .keyword-search-input input,
+.order-substitution-fields input,
+.order-substitution-fields textarea {
+  min-height: 44px;
+  border: 1px solid #bfc9dd;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.order-edit-scan-button {
+  min-height: 44px;
+  white-space: nowrap;
+}
+
 .order-substitution-fields {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 0.75fr);
@@ -6966,7 +7056,41 @@ button[title="Pagination is not available yet"] {
 
 .order-substitution-fields textarea {
   width: 100%;
+  min-height: 86px;
   resize: vertical;
+}
+
+.mode-substitute .order-substitution-fields,
+.mode-remove .order-substitution-fields {
+  grid-template-columns: 1fr;
+}
+
+.order-edit-quantity {
+  max-width: 180px;
+}
+
+.order-edit-current-product,
+.order-edit-impact {
+  display: grid;
+  gap: 3px;
+  padding: 12px 14px;
+  border: 1px solid #d8deee;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.order-edit-current-product span,
+.order-edit-current-product small,
+.order-edit-impact span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.order-edit-impact {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  border-color: #cbd6f7;
+  background: #eef2ff;
 }
 
 .replacement-item-preview {
@@ -7009,8 +7133,22 @@ button[title="Pagination is not available yet"] {
   }
 
   .order-substitution-fields,
+  .order-edit-search-row,
   .replacement-item-preview {
     grid-template-columns: 1fr;
+  }
+
+  .order-edit-scan-button,
+  .order-line-toolbar .primary-button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .order-line-toolbar,
+  .order-edit-impact {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+    flex-direction: column;
   }
 
   .order-detail-dialog-footer > button {

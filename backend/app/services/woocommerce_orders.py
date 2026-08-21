@@ -702,6 +702,8 @@ def upsert_order_lines(
     for index, record_line in enumerate(record.lines, start=1):
         preview_line = preview_by_line_id.get(record_line.woo_line_item_id)
         local_line = existing_by_line_id.get(record_line.woo_line_item_id)
+        if local_line is not None and local_line.sync_status == "local_removed":
+            continue
         if local_line is None:
             local_line = OrderItem(order=order, woo_order_item_id=record_line.woo_line_item_id)
             db.add(local_line)
@@ -891,6 +893,8 @@ def upsert_order_lines(
         local_line.status = record.local_status
 
     for local_line in order.items:
+        if local_line.sync_status == "local_removed":
+            continue
         if local_line.woo_order_item_id is None or local_line.woo_order_item_id in remote_line_ids:
             continue
         previous_ordered = local_line.quantity_ordered or Decimal("0")
@@ -1172,7 +1176,11 @@ def get_open_order_detail(db: Session, order_id: int) -> OpenOrderDetail | None:
             "tax_total": decimal_to_float(order.tax_total),
             "customer_note": str((order.raw_woo_payload or {}).get("customer_note") or "").strip() or None,
             "workflow_notes": order.workflow_notes,
-            "lines": [line_to_read(line) for line in sorted(order.items, key=lambda item: item.line_number or item.id)],
+            "lines": [
+                line_to_read(line)
+                for line in sorted(order.items, key=lambda item: item.line_number or item.id)
+                if line.sync_status != "local_removed"
+            ],
         }
     )
     return OpenOrderDetail.model_validate(base)
@@ -1189,7 +1197,7 @@ def export_open_orders_csv(db: Session, **filters) -> str:
 
 
 def order_to_read(order: Order, *, shipping_lines=SHIPPING_LINES_UNSET) -> OpenOrderRead:
-    line_reads = [line_to_read(line) for line in order.items]
+    line_reads = [line_to_read(line) for line in order.items if line.sync_status != "local_removed"]
     flags = workflow_flags(order)
     raw_shipping_lines = (
         (order.raw_woo_payload or {}).get("shipping_lines")

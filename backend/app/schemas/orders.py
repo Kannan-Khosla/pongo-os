@@ -253,7 +253,7 @@ class WooOrderReconcileResponse(BaseModel):
 
 class OrderSubstitutionRequest(BaseModel):
     replacement_inventory_item_id: int = Field(gt=0)
-    reason: str = Field(min_length=1, max_length=1000)
+    reason: str | None = Field(default=None, max_length=1000)
     idempotency_key: str = Field(min_length=1, max_length=120)
 
 
@@ -267,6 +267,33 @@ class OrderSubstitutionResponse(BaseModel):
     allocation_status: str | None = None
     pick_status: str | None = None
     message: str
+    woo_stock_sync_status: str | None = None
+    woo_stock_sync_error: str | None = None
+
+
+class OrderLineAddRequest(BaseModel):
+    inventory_item_id: int = Field(gt=0)
+    quantity: float = Field(gt=0, le=100000)
+    reason: str | None = Field(default=None, max_length=1000)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class OrderLineRemoveRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class OrderLineEditResponse(BaseModel):
+    status: Literal["added", "removed"]
+    order_id: int
+    order_line_id: int
+    inventory_item_id: int | None = None
+    released_quantity: float = 0
+    allocation_status: str | None = None
+    pick_status: str | None = None
+    message: str
+    woo_stock_sync_status: str | None = None
+    woo_stock_sync_error: str | None = None
 
 
 class CompletedOrderPickRecoveryRequest(BaseModel):

@@ -390,6 +390,89 @@ def test_substitution_preserves_original_identity_uses_effective_scan_and_surviv
     assert reviewed["sync_status"] == "needs_review"
 
 
+def test_order_product_edits_allow_blank_reasons_sync_stock_and_survive_woo_resync(client, monkeypatch):
+    _, order, original_line = synced_order(client, monkeypatch, item_stock=8, item_allocated=0, quantity=2)
+    added_item = seed_item(
+        client,
+        sku="LOCAL-ADD-SKU",
+        Barcode="LOCAL-ADD-BAR",
+        wooProductId=202,
+        Description="Locally added product",
+        **{"In Stock": 8, "Allocated": 0},
+    )
+    fake = patch_action_client(monkeypatch, woo_order())
+
+    added = client.post(
+        f"/api/orders/{order['id']}/lines",
+        json={
+            "inventory_item_id": added_item["id"],
+            "quantity": 2,
+            "idempotency_key": "local-add-line",
+        },
+    )
+
+    assert added.status_code == 200, added.text
+    assert added.json()["woo_stock_sync_status"] == "sent"
+    detail = client.get(f"/api/orders/{order['id']}").json()
+    local_line = next(line for line in detail["lines"] if line["item_id"] == added_item["id"])
+    assert local_line["woo_line_item_id"] is None
+    assert local_line["quantity_ordered"] == 2
+    assert local_line["quantity_allocated"] == 2
+    assert any(path == "/wp-json/wc/v3/products/202" and payload["stock_quantity"] == 6 for _, _, path, payload in fake.calls)
+
+    removed_original = client.post(
+        f"/api/orders/{order['id']}/lines/{original_line['id']}/remove",
+        json={"idempotency_key": "local-remove-woo-line"},
+    )
+    assert removed_original.status_code == 200, removed_original.text
+    assert removed_original.json()["released_quantity"] == 2
+    assert [line["id"] for line in client.get(f"/api/orders/{order['id']}").json()["lines"]] == [local_line["id"]]
+
+    patch_woo_order_client(monkeypatch, [woo_order()])
+    assert client.post("/api/integrations/woocommerce/orders/commit", json={}).status_code == 200
+    after_resync = client.get(f"/api/orders/{order['id']}").json()["lines"]
+    assert [line["id"] for line in after_resync] == [local_line["id"]]
+
+    removed_local = client.post(
+        f"/api/orders/{order['id']}/lines/{local_line['id']}/remove",
+        json={"reason": "", "idempotency_key": "local-remove-added-line"},
+    )
+    assert removed_local.status_code == 200, removed_local.text
+    assert client.get(f"/api/orders/{order['id']}").json()["lines"] == []
+    assert any(path == "/wp-json/wc/v3/products/101" and payload["stock_quantity"] == 8 for _, _, path, payload in fake.calls)
+    assert any(path == "/wp-json/wc/v3/products/202" and payload["stock_quantity"] == 8 for _, _, path, payload in fake.calls)
+    with Session(client.test_engine) as db:
+        assert db.get(OrderItem, original_line["id"]).sync_status == "local_removed"
+        assert db.get(OrderItem, local_line["id"]).sync_status == "local_removed"
+
+
+def test_substitution_reason_is_optional_and_syncs_both_products(client, monkeypatch):
+    _, order, line = synced_order(client, monkeypatch, item_stock=8, item_allocated=0, quantity=2)
+    replacement = seed_item(
+        client,
+        sku="OPTIONAL-REASON-REPLACEMENT",
+        Barcode="OPTIONAL-REASON-BAR",
+        wooProductId=202,
+        **{"In Stock": 8, "Allocated": 0},
+    )
+    fake = patch_action_client(monkeypatch, woo_order())
+
+    response = client.post(
+        f"/api/orders/{order['id']}/lines/{line['id']}/substitute",
+        json={
+            "replacement_inventory_item_id": replacement["id"],
+            "idempotency_key": "substitute-without-reason",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["woo_stock_sync_status"] == "sent"
+    paths = [path for operation, _, path, _ in fake.calls if operation.startswith("update_")]
+    assert "/wp-json/wc/v3/products/101" in paths
+    assert "/wp-json/wc/v3/products/202" in paths
+    assert client.get(f"/api/orders/{order['id']}").json()["lines"][0]["substitution_reason"] is None
+
+
 def test_woo_product_identity_change_preserves_substitute_but_blocks_picking_for_review(client, monkeypatch):
     _, order, line = synced_order(client, monkeypatch, item_stock=8, item_allocated=0, quantity=2)
     replacement = seed_item(

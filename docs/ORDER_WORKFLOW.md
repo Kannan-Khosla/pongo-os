@@ -204,20 +204,29 @@ written to the order workflow notes and affected releases create inventory
 audit events. Each order is reconciled inside a database savepoint so a failed
 line update cannot partially change that order.
 
-## Local Product Substitution
+## Local Order Product Edits
 
-A processing order line may be substituted before any part of that line is
-picked, fulfilled, or stock-reduced. The replacement must be an active,
-inventory-tracked item with a valid Woo stock mapping. The mutation requires a
-reason and idempotency key, releases the old unpicked reservation, switches the
-effective operational inventory item, reruns auto-allocation, and writes audit
-events for both item identities.
+A processing order may add a local product, remove a line, or substitute a line
+before any affected quantity is picked, fulfilled, or stock-reduced. Added and
+replacement products must be active, inventory-tracked items with valid Woo
+stock mappings. Every mutation requires an idempotency key; the internal reason
+is optional. Add reserves stock through normal auto-allocation, remove releases
+the unpicked reservation, and substitute moves the reservation to the effective
+replacement item. Allocation changes retain the existing inventory audit trail.
 
 The original Woo product/variation IDs and commercial SKU/name snapshots remain
 unchanged for customer-facing detail and invoices. Allocation, scanner lookup,
 picking, and local stock mutation accept only the effective replacement
 identity. Scanning the original barcode after substitution cannot decrement the
-replacement. No Woo order-line update is sent.
+replacement. No Woo order-line update is sent. After the local transaction
+commits, Pongo sends sellable stock for only the affected products through the
+audited Woo stock-writeback path. A writeback failure is reported without
+rolling back the local order edit.
+
+Locally added lines have no Woo order-line ID. Locally removed lines remain as
+hidden audit tombstones with `sync_status = local_removed`. Both states survive
+ordinary Woo order reconciliation, so Woo refresh cannot remove a Pongo-only
+addition or resurrect a Pongo-only removal.
 
 An ordinary Woo resync preserves an active substitution when the remote
 product, variation, and ordered quantity still match the recorded original.

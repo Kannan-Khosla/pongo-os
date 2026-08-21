@@ -461,6 +461,22 @@ function substituteOrderLine(orderId, lineId, payload, idempotencyRef) {
   });
 }
 
+function addOrderLine(orderId, payload, idempotencyRef) {
+  return postOrderMutation(`/api/orders/${orderId}/lines`, payload, {
+    idempotencyRef,
+    operation: `order-${orderId}-line-add`,
+    includeKeyInBody: true,
+  });
+}
+
+function removeOrderLine(orderId, lineId, payload, idempotencyRef) {
+  return postOrderMutation(`/api/orders/${orderId}/lines/${lineId}/remove`, payload, {
+    idempotencyRef,
+    operation: `order-${orderId}-line-${lineId}-remove`,
+    includeKeyInBody: true,
+  });
+}
+
 function prepareCompletedOrderForPicking(orderId, payload, idempotencyRef) {
   return postOrderMutation(`/api/orders/${orderId}/prepare-picking`, payload, {
     idempotencyRef,
@@ -9439,7 +9455,7 @@ function OrdersPage({
   const [bulkActionError, setBulkActionError] = useState('');
   const [bulkPrintOrders, setBulkPrintOrders] = useState([]);
   const unpickMutationRef = useRef(null);
-  const substitutionMutationRef = useRef(null);
+  const orderEditMutationRef = useRef(null);
   const orders = ordersData.orders || [];
   const ordersPageCount = Math.max(1, Number(ordersData.total_pages || 1));
   const pagedOpenOrders = orders;
@@ -9521,13 +9537,37 @@ function OrdersPage({
     const result = await substituteOrderLine(detail.id, line.id, {
       replacement_inventory_item_id: Number(replacementItem.id),
       reason,
-    }, substitutionMutationRef);
-    resetMutationIdempotency(substitutionMutationRef);
+    }, orderEditMutationRef);
+    resetMutationIdempotency(orderEditMutationRef);
+    await refreshEditedOpenOrder();
+    return result;
+  }
+
+  async function addOpenOrderLine(item, quantity, reason) {
+    if (!detail?.id || !item?.id) throw new Error('The order or inventory item is unavailable.');
+    const result = await addOrderLine(detail.id, {
+      inventory_item_id: Number(item.id),
+      quantity: Number(quantity),
+      reason,
+    }, orderEditMutationRef);
+    resetMutationIdempotency(orderEditMutationRef);
+    await refreshEditedOpenOrder();
+    return result;
+  }
+
+  async function removeOpenOrderLine(line, reason) {
+    if (!detail?.id || !line?.id) throw new Error('The order line is unavailable.');
+    const result = await removeOrderLine(detail.id, line.id, { reason }, orderEditMutationRef);
+    resetMutationIdempotency(orderEditMutationRef);
+    await refreshEditedOpenOrder();
+    return result;
+  }
+
+  async function refreshEditedOpenOrder() {
     await Promise.all([
       onLoadOpenOrderDetail(detail.id),
       onLoadOpenOrders({ ...appliedOrderFilters, page: ordersPageNumber, pageSize: ordersPageSize }, { ordersView: 'open', preserveDetail: true }),
     ]);
-    return result;
   }
 
   async function printOpenOrder(orderId) {
@@ -9779,7 +9819,7 @@ function OrdersPage({
         )}
       />
       <OrdersPager count={ordersData.total || 0} page={ordersPageNumber} pageCount={ordersPageCount} pageSize={ordersPageSize} onPageChange={changeOpenOrdersPage} onPageSizeChange={changeOpenOrdersPageSize} />
-      {orderDialogOpen && <OpenOrderDetailPanel order={detail} onClose={() => { setOrderDialogOpen(false); onLoadOpenOrderDetail(null); }} onPrint={() => printVisibleRoot('single-order-printing')} onSubstitute={substituteOpenOrderLine} />}
+      {orderDialogOpen && <OpenOrderDetailPanel order={detail} onAdd={addOpenOrderLine} onClose={() => { setOrderDialogOpen(false); onLoadOpenOrderDetail(null); }} onPrint={() => printVisibleRoot('single-order-printing')} onRemove={removeOpenOrderLine} onSubstitute={substituteOpenOrderLine} />}
       <BulkPrintSheet orders={bulkPrintOrders} />
     </section>
   );
@@ -10854,16 +10894,22 @@ function inventorySearchItemSku(item = {}) {
   return candidate.sku || candidate.SKU || '';
 }
 
-function OpenOrderDetailPanel({ order, onClose, onPrint, onSubstitute = null, showPrint = true, statusActions = null, title = 'View Customer Order' }) {
+function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove = null, onSubstitute = null, showPrint = true, statusActions = null, title = 'View Customer Order' }) {
   const dialogRef = useRef(null);
   const onCloseRef = useRef(onClose);
-  const [substitutionLine, setSubstitutionLine] = useState(null);
-  const [replacementQuery, setReplacementQuery] = useState('');
-  const [replacementItem, setReplacementItem] = useState(null);
-  const [substitutionReason, setSubstitutionReason] = useState('');
-  const [substitutionBusy, setSubstitutionBusy] = useState(false);
-  const [substitutionError, setSubstitutionError] = useState('');
-  const [substitutionMessage, setSubstitutionMessage] = useState('');
+  const scannerOpenRef = useRef(false);
+  const [editMode, setEditMode] = useState('');
+  const [editLine, setEditLine] = useState(null);
+  const [itemQuery, setItemQuery] = useState('');
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [quantity, setQuantity] = useState('1');
+  const [reason, setReason] = useState('');
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [editMessage, setEditMessage] = useState('');
+  const [editWarning, setEditWarning] = useState('');
+  const [scannerOpen, setScannerOpen] = useState(false);
+  scannerOpenRef.current = scannerOpen;
   onCloseRef.current = onClose;
 
   useEffect(() => {
@@ -10872,6 +10918,7 @@ function OpenOrderDetailPanel({ order, onClose, onPrint, onSubstitute = null, sh
     function handleDialogKeys(event) {
       if (event.key === 'Escape') {
         if (event.target?.getAttribute?.('role') === 'combobox' && event.target.getAttribute('aria-expanded') === 'true') return;
+        if (scannerOpenRef.current) return;
         onCloseRef.current();
         return;
       }
@@ -10896,54 +10943,81 @@ function OpenOrderDetailPanel({ order, onClose, onPrint, onSubstitute = null, sh
   }, []);
 
   useEffect(() => {
-    setSubstitutionLine(null);
-    setReplacementQuery('');
-    setReplacementItem(null);
-    setSubstitutionReason('');
-    setSubstitutionError('');
-    setSubstitutionMessage('');
+    closeEditor();
+    setEditMessage('');
+    setEditWarning('');
   }, [order?.id]);
 
-  function beginSubstitution(line) {
-    setSubstitutionLine(line);
-    setReplacementQuery('');
-    setReplacementItem(null);
-    setSubstitutionReason('');
-    setSubstitutionError('');
-    setSubstitutionMessage('');
+  function closeEditor() {
+    setEditMode('');
+    setEditLine(null);
+    setItemQuery('');
+    setSelectedItem(null);
+    setQuantity('1');
+    setReason('');
+    setEditError('');
   }
 
-  async function commitSubstitution() {
-    const replacementId = replacementItem?.id;
-    const reason = substitutionReason.trim();
-    if (!replacementId) {
-      setSubstitutionError('Choose the replacement inventory item.');
-      return;
-    }
-    if (!reason) {
-      setSubstitutionError('Enter a reason for this substitution.');
-      return;
-    }
-    if (Number(replacementId) === Number(substitutionLine?.inventory_item_id || substitutionLine?.item_id)) {
-      setSubstitutionError('Choose a different inventory item from the current product.');
-      return;
-    }
-    const originalLabel = substitutionLine?.sku || substitutionLine?.name || 'this item';
-    const replacementLabel = inventorySearchItemSku(replacementItem) || inventorySearchItemLabel(replacementItem);
-    if (!window.confirm(`Replace ${originalLabel} with ${replacementLabel}? The WooCommerce order line will remain unchanged; Pongo will use the replacement item for inventory.`)) return;
-    setSubstitutionBusy(true);
-    setSubstitutionError('');
+  function beginEdit(mode, line = null) {
+    closeEditor();
+    setEditMode(mode);
+    setEditLine(line);
+    setEditMessage('');
+    setEditWarning('');
+  }
+
+  async function selectScannedItem(value) {
+    const scannedValue = value.trim();
+    setItemQuery(scannedValue);
+    setSelectedItem(null);
+    setEditError('');
     try {
-      const result = await onSubstitute(substitutionLine, replacementItem, reason);
-      setSubstitutionMessage(result?.message || `${originalLabel} was substituted with ${replacementLabel}.`);
-      setSubstitutionLine(null);
-      setReplacementQuery('');
-      setReplacementItem(null);
-      setSubstitutionReason('');
+      const response = await apiFetch(`${API_BASE_URL}/api/items/search?q=${encodeURIComponent(scannedValue)}&limit=100`);
+      if (!response.ok) throw new Error(`Item search returned ${response.status}`);
+      const body = await response.json();
+      const exact = (body.items || []).find((item) => [item.sku, item.barcode].some((code) => String(code || '').trim().toLowerCase() === scannedValue.toLowerCase()));
+      if (!exact) {
+        setEditError(`No inventory item matched ${scannedValue}. You can continue searching by name, SKU, or barcode.`);
+        return;
+      }
+      setSelectedItem(exact);
+      setItemQuery(inventorySearchItemSku(exact) || exact.barcode || inventorySearchItemLabel(exact));
     } catch (error) {
-      setSubstitutionError(error.message || 'Unable to substitute this product.');
+      setEditError(error.message || 'Unable to search the scanned code.');
+    }
+  }
+
+  async function commitEdit() {
+    const cleanReason = reason.trim();
+    const numericQuantity = Number(quantity);
+    if (editMode !== 'remove' && !selectedItem?.id) {
+      setEditError(editMode === 'add' ? 'Choose the inventory product to add.' : 'Choose the replacement inventory product.');
+      return;
+    }
+    if (editMode === 'add' && (!Number.isFinite(numericQuantity) || numericQuantity <= 0)) {
+      setEditError('Enter a quantity greater than zero.');
+      return;
+    }
+    if (editMode === 'substitute' && Number(selectedItem.id) === Number(editLine?.inventory_item_id || editLine?.item_id)) {
+      setEditError('Choose a different inventory item from the current product.');
+      return;
+    }
+    setEditBusy(true);
+    setEditError('');
+    setEditWarning('');
+    try {
+      const result = editMode === 'add'
+        ? await onAdd(selectedItem, numericQuantity, cleanReason)
+        : editMode === 'remove'
+          ? await onRemove(editLine, cleanReason)
+          : await onSubstitute(editLine, selectedItem, cleanReason);
+      setEditMessage(result?.message || 'Pongo order inventory was updated.');
+      setEditWarning(result?.woo_stock_sync_error || '');
+      closeEditor();
+    } catch (error) {
+      setEditError(error.message || 'Unable to update this Pongo order.');
     } finally {
-      setSubstitutionBusy(false);
+      setEditBusy(false);
     }
   }
 
@@ -10955,6 +11029,12 @@ function OpenOrderDetailPanel({ order, onClose, onPrint, onSubstitute = null, sh
     [shipping.city || order.shipping_city, shipping.state || order.shipping_state, shipping.postcode || order.shipping_zip].filter(Boolean).join(' '),
   ].filter(Boolean);
   const hasStatusResult = Boolean(statusActions?.message);
+  const canEditProducts = Boolean(onAdd && onRemove && onSubstitute);
+  const editorTitle = editMode === 'add'
+    ? 'Add product'
+    : editMode === 'remove'
+      ? `Remove ${editLine?.effective_sku || editLine?.sku || editLine?.name || 'product'}`
+      : `Substitute ${editLine?.effective_sku || editLine?.sku || editLine?.name || 'product'}`;
   return (
     <BodyPortal><div className="order-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section aria-labelledby="open-order-detail-title" aria-modal="true" className="order-detail-dialog print-order-panel" id="open-order-detail" ref={dialogRef} role="dialog" tabIndex={-1}>
@@ -10966,8 +11046,9 @@ function OpenOrderDetailPanel({ order, onClose, onPrint, onSubstitute = null, sh
           {statusActions?.loading && <div className="loading-strip" role="status">Loading local order details…</div>}
           {statusActions?.error && <div className="api-error" role="alert">{statusActions.error}</div>}
           {statusActions?.message && <div className="success-strip" role="status">{statusActions.message}</div>}
-          {substitutionError && <div className="api-error" role="alert">{substitutionError}</div>}
-          {substitutionMessage && <div className="success-strip" role="status">{substitutionMessage}</div>}
+          {editError && <div className="api-error" role="alert">{editError}</div>}
+          {editMessage && <div className="success-strip" role="status" aria-live="polite">{editMessage}</div>}
+          {editWarning && <div className="warning-strip" role="status">Local edit saved. WooCommerce stock needs attention: {editWarning}</div>}
           <div className="order-detail-summary">
             <div className="order-address-card">
               <strong>Ship/Bill To</strong>
@@ -10986,15 +11067,22 @@ function OpenOrderDetailPanel({ order, onClose, onPrint, onSubstitute = null, sh
               <div><dt>Ship From</dt><dd>{order.ship_from || 'Main Warehouse'}</dd></div>
             </dl>
           </div>
+          {canEditProducts && (
+            <div className="order-line-toolbar">
+              <div><strong>Pongo order products</strong><span>Local edits change allocations and Woo product stock. They do not rewrite the WooCommerce order.</span></div>
+              <button className="primary-button" disabled={editBusy} onClick={() => beginEdit('add')} type="button"><Plus size={17} />Add product</button>
+            </div>
+          )}
           <div className="order-detail-lines-scroll">
             <table className="order-detail-lines-table">
-              <thead><tr><th>SKU</th><th>Product Title</th><th>UOM</th><th>Quantity</th><th>Picked</th><th>Shipped</th><th>Total</th>{onSubstitute && <th>Action</th>}</tr></thead>
+              <thead><tr><th>SKU</th><th>Product Title</th><th>UOM</th><th>Quantity</th><th>Picked</th><th>Shipped</th><th>Total</th>{canEditProducts && <th>Actions</th>}</tr></thead>
               <tbody>
                 {(order.lines || []).map((line) => {
                   const substitution = orderLineSubstitution(line);
                   const displayedSku = substitution?.effectiveSku || line.sku;
                   const displayedName = substitution?.effectiveName || line.name;
-                  const substitutionLocked = Number(line.quantity_picked || 0) > 0 || Number(line.quantity_fulfilled || 0) > 0 || Number(line.quantity_stock_reduced || 0) > 0;
+                  const editLocked = Number(line.quantity_picked || 0) > 0 || Number(line.quantity_fulfilled || 0) > 0 || Number(line.quantity_stock_reduced || 0) > 0;
+                  const localOnly = line.sync_status === 'local_added';
                   return <tr key={line.id}>
                     <td className="mono">
                       {displayedSku || '—'}
@@ -11003,48 +11091,60 @@ function OpenOrderDetailPanel({ order, onClose, onPrint, onSubstitute = null, sh
                     <td>
                       {displayedName || 'Unnamed product'}
                       {substitution && <small className="order-line-substitution">{substitution.originalName || substitution.originalSku || 'Original item'} → {displayedName || displayedSku}</small>}
+                      {localOnly && <small className="order-line-local-badge">Pongo only · not added to Woo order</small>}
                     </td>
                     <td>Each</td>
                     <td>{formatNumber(line.quantity_ordered)}</td>
                     <td>{formatNumber(line.quantity_picked)}</td>
                     <td>{formatNumber(line.quantity_fulfilled)}</td>
-                    <td>{formatCurrency(line.line_total)}</td>
-                    {onSubstitute && <td><button className="link-button order-line-substitute-button" disabled={substitutionBusy || substitutionLocked} onClick={() => beginSubstitution(line)} title={substitutionLocked ? 'Picked or fulfilled lines cannot be substituted.' : undefined} type="button">Substitute</button></td>}
+                    <td>{localOnly ? '—' : formatCurrency(line.line_total)}</td>
+                    {canEditProducts && <td><div className="order-line-actions"><button className="link-button order-line-substitute-button" disabled={editBusy || editLocked} onClick={() => beginEdit('substitute', line)} title={editLocked ? 'Picked or fulfilled lines cannot be edited.' : undefined} type="button">Substitute</button><button className="link-button danger-link" disabled={editBusy || editLocked} onClick={() => beginEdit('remove', line)} title={editLocked ? 'Picked or fulfilled lines cannot be edited.' : undefined} type="button">Remove</button></div></td>}
                   </tr>;
                 })}
-                {!order.lines?.length && <tr><td colSpan={onSubstitute ? 8 : 7}><div className="empty-table-row">No product lines are available for this order.</div></td></tr>}
+                {!order.lines?.length && <tr><td colSpan={canEditProducts ? 8 : 7}><div className="empty-table-row">No product lines are available for this order.</div></td></tr>}
               </tbody>
             </table>
           </div>
-          {substitutionLine && (
-            <section aria-labelledby="substitute-order-line-title" className="order-substitution-panel">
+          {editMode && (
+            <section aria-labelledby="edit-order-line-title" className={`order-substitution-panel order-product-editor mode-${editMode}`}>
               <div className="panel-title">
                 <div>
-                  <h3 id="substitute-order-line-title">Substitute {substitutionLine.sku || substitutionLine.name || 'order item'}</h3>
-                  <p>The WooCommerce order line stays unchanged. Pongo will allocate and deduct the selected replacement product.</p>
+                  <span className="order-editor-kicker">Pongo-only order edit</span>
+                  <h3 id="edit-order-line-title">{editorTitle}</h3>
+                  <p>{editMode === 'remove' ? 'This releases the unpicked allocation.' : 'Search by product name, SKU, or barcode, or scan the product code.'} The WooCommerce order stays unchanged.</p>
                 </div>
-                <button aria-label="Cancel product substitution" className="icon-button" disabled={substitutionBusy} onClick={() => setSubstitutionLine(null)} type="button"><X size={18} /></button>
+                <button aria-label="Close product editor" className="icon-button" disabled={editBusy} onClick={closeEditor} type="button"><X size={18} /></button>
               </div>
-              <div className="order-substitution-fields">
-                <InventoryKeywordSearch
-                  label="Replacement inventory item"
-                  onChange={(value) => { setReplacementQuery(value); if (value !== inventorySearchItemSku(replacementItem)) setReplacementItem(null); }}
-                  onSelect={setReplacementItem}
-                  placeholder="Search replacement SKU, barcode, or title"
-                  value={replacementQuery}
-                />
-                <label className="field"><span>Reason <b aria-hidden="true">*</b></span><textarea onChange={(event) => setSubstitutionReason(event.target.value)} placeholder="Why is this product being substituted?" required rows="3" value={substitutionReason} /></label>
-              </div>
-              {replacementItem && (
-                <div className="replacement-item-preview" role="status">
-                  <div><span>Replacement</span><strong>{inventorySearchItemLabel(replacementItem)}</strong><small>{inventorySearchItemSku(replacementItem) ? `SKU ${inventorySearchItemSku(replacementItem)}` : 'SKU unavailable'}</small></div>
-                  <div><span>Sellable</span><strong>{formatNumber(replacementItem.sellable ?? replacementItem.Sellable)}</strong></div>
-                  <div><span>In stock</span><strong>{formatNumber(replacementItem.in_stock ?? replacementItem['In Stock'])}</strong></div>
+              {editMode === 'remove' ? (
+                <div className="order-edit-current-product"><span>Product to remove</span><strong>{editLine?.effective_name || editLine?.name || 'Unnamed product'}</strong><small>{editLine?.effective_sku || editLine?.sku || 'No SKU'} · Qty {formatNumber(editLine?.quantity_ordered)}</small></div>
+              ) : (
+                <div className="order-edit-search-row">
+                  <InventoryKeywordSearch
+                    autoFocus
+                    label={editMode === 'add' ? 'Product to add' : 'Replacement product'}
+                    onChange={(value) => { setItemQuery(value); if (![inventorySearchItemSku(selectedItem), selectedItem?.barcode].includes(value)) setSelectedItem(null); }}
+                    onSelect={setSelectedItem}
+                    placeholder="Search product name, SKU, or barcode"
+                    value={itemQuery}
+                  />
+                  <button aria-label="Scan QR code or barcode" className="action-button order-edit-scan-button" onClick={() => setScannerOpen(true)} type="button"><Camera aria-hidden="true" size={18} />Scan code</button>
                 </div>
               )}
+              <div className="order-substitution-fields">
+                {editMode === 'add' && <label className="field order-edit-quantity"><span>Quantity</span><input min="0.001" onChange={(event) => setQuantity(event.target.value)} step="1" type="number" value={quantity} /></label>}
+                <label className="field"><span>Reason <small>Optional</small></span><textarea onChange={(event) => setReason(event.target.value)} placeholder="Add an internal note if needed" rows="3" value={reason} /></label>
+              </div>
+              {selectedItem && editMode !== 'remove' && (
+                <div className="replacement-item-preview" role="status">
+                  <div><span>{editMode === 'add' ? 'Product' : 'Replacement'}</span><strong>{inventorySearchItemLabel(selectedItem)}</strong><small>{inventorySearchItemSku(selectedItem) ? `SKU ${inventorySearchItemSku(selectedItem)}` : 'SKU unavailable'}</small></div>
+                  <div><span>Sellable now</span><strong>{formatNumber(selectedItem.sellable ?? selectedItem.Sellable)}</strong></div>
+                  <div><span>In stock</span><strong>{formatNumber(selectedItem.in_stock ?? selectedItem['In Stock'])}</strong></div>
+                </div>
+              )}
+              <div className="order-edit-impact"><strong>What will change</strong><span>Pongo allocations and the affected products’ WooCommerce stock values. The Woo order’s products and totals will not change.</span></div>
               <div className="button-row">
-                <button className="primary-button" disabled={substitutionBusy || !replacementItem || !substitutionReason.trim()} onClick={commitSubstitution} type="button">{substitutionBusy ? 'Saving substitution…' : 'Confirm substitution'}</button>
-                <button className="muted-button" disabled={substitutionBusy} onClick={() => setSubstitutionLine(null)} type="button">Cancel</button>
+                <button className={editMode === 'remove' ? 'muted-button danger-button' : 'primary-button'} disabled={editBusy || (editMode !== 'remove' && !selectedItem) || (editMode === 'add' && !(Number(quantity) > 0))} onClick={commitEdit} type="button">{editBusy ? 'Saving…' : editMode === 'add' ? 'Add product' : editMode === 'remove' ? 'Remove product' : 'Confirm substitution'}</button>
+                <button className="muted-button" disabled={editBusy} onClick={closeEditor} type="button">Cancel</button>
               </div>
             </section>
           )}
@@ -11062,6 +11162,7 @@ function OpenOrderDetailPanel({ order, onClose, onPrint, onSubstitute = null, sh
         <OrderInvoice className="order-invoice-print" order={order} />,
         document.body,
       )}
+      <MobileCodeScanner open={scannerOpen} onClose={() => setScannerOpen(false)} onDetected={selectScannedItem} />
     </div></BodyPortal>
   );
 }

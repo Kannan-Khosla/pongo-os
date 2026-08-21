@@ -16,6 +16,9 @@ from app.schemas.orders import (
     OpenOrderListResponse,
     OrderCompletionRequest,
     OrderCompletionResponse,
+    OrderLineAddRequest,
+    OrderLineEditResponse,
+    OrderLineRemoveRequest,
     OrderSubstitutionRequest,
     OrderSubstitutionResponse,
     OrderWorkflowPreviewResponse,
@@ -30,9 +33,11 @@ from app.services.completed_orders import CompletedOrderFilters, export_complete
 from app.services.fulfillments import fulfillment_to_read, list_fulfillments_page
 from app.services.order_actions import (
     OrderActionConflict,
+    add_local_order_line,
     change_live_woo_order_status,
     prepare_completed_order_for_picking,
     reconcile_live_woo_order,
+    remove_local_order_line,
     stock_sync_error,
     substitute_order_line,
     sync_completed_picked_stock,
@@ -43,7 +48,7 @@ from app.services.stock_mutation_guard import IdempotencyConflict
 from app.services.woocommerce_orders import export_open_orders_csv, get_open_order_detail, list_open_orders
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.woocommerce_access import effective_woocommerce_settings
-from app.services.woocommerce_writeback import sync_completed_order_status
+from app.services.woocommerce_writeback import sync_completed_order_status, sync_inventory_stock
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -458,7 +463,54 @@ def substitute_open_order_line(
 ) -> OrderSubstitutionResponse:
     assert_matching_idempotency_keys(payload.idempotency_key, idempotency_key_header)
     try:
-        return substitute_order_line(db, order_id, order_line_id, payload, actor=actor)
+        result = substitute_order_line(db, order_id, order_line_id, payload, actor=actor)
+        return attach_order_edit_stock_sync(
+            db,
+            result,
+            {result.substituted_from_item_id, result.replacement_inventory_item_id},
+            actor,
+        )
+    except (OrderActionConflict, IdempotencyConflict) as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/{order_id}/lines", response_model=OrderLineEditResponse)
+def add_open_order_line(
+    order_id: int,
+    payload: OrderLineAddRequest,
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> OrderLineEditResponse:
+    assert_matching_idempotency_keys(payload.idempotency_key, idempotency_key_header)
+    try:
+        result = add_local_order_line(db, order_id, payload, actor=actor)
+        return attach_order_edit_stock_sync(db, result, {result.inventory_item_id}, actor)
+    except (OrderActionConflict, IdempotencyConflict) as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/{order_id}/lines/{order_line_id}/remove", response_model=OrderLineEditResponse)
+def remove_open_order_line(
+    order_id: int,
+    order_line_id: int,
+    payload: OrderLineRemoveRequest,
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> OrderLineEditResponse:
+    assert_matching_idempotency_keys(payload.idempotency_key, idempotency_key_header)
+    try:
+        result = remove_local_order_line(db, order_id, order_line_id, payload, actor=actor)
+        return attach_order_edit_stock_sync(db, result, {result.inventory_item_id}, actor)
     except (OrderActionConflict, IdempotencyConflict) as error:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -499,6 +551,32 @@ def prepare_completed_order_pick_recovery(
 def assert_matching_idempotency_keys(body_key: str, header_key: str | None) -> None:
     if header_key is not None and header_key.strip() != body_key.strip():
         raise HTTPException(status_code=409, detail="Body and Idempotency-Key header values must match.")
+
+
+def attach_order_edit_stock_sync(db: Session, result, item_ids: set[int | None], actor: str):
+    try:
+        settings = effective_woocommerce_settings(db, get_settings())
+        sync = sync_inventory_stock(
+            db,
+            settings,
+            WooCommerceClient(settings),
+            item_ids={item_id for item_id in item_ids if item_id is not None},
+            requested_by=f"order-edit:{actor}",
+        )
+    except Exception:
+        result.woo_stock_sync_status = "failed"
+        result.woo_stock_sync_error = "WooCommerce stock update could not start. Retry from Inventory."
+        return result
+    result.woo_stock_sync_status = sync.status
+    if sync.failed_count:
+        result.woo_stock_sync_error = "; ".join(sync.errors) or "WooCommerce stock update failed."
+    elif sync.dry_run_count:
+        result.woo_stock_sync_error = "WooCommerce stock writeback ran in dry-run mode."
+    elif sync.skipped_unmapped_count:
+        result.woo_stock_sync_error = "An affected product is not mapped to WooCommerce."
+    elif sync.status not in {"sent", "no_changes"}:
+        result.woo_stock_sync_error = "; ".join(sync.errors) or f"WooCommerce stock sync status is {sync.status}."
+    return result
 
 
 @router.get("/{order_id}", response_model=OpenOrderDetail)

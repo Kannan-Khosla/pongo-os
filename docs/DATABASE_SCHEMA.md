@@ -836,6 +836,10 @@ Read-only order sync rules:
   reduction use the effective item. A Woo resync preserves the substitution
   only while the original product/variation identity and ordered quantity are
   unchanged; an incompatible remote change marks the line for review.
+- A Pongo-only added line has no `woo_order_item_id` and uses
+  `sync_status = local_added`. A Pongo-only removal is retained with ordered
+  quantity zero, `matched_status = removed`, and `sync_status = local_removed`.
+  Order reconciliation preserves both local edit states.
 - Order sync can auto-allocate active orders by increasing local Allocated and
   creating allocation/audit rows. It does not update `inventory_items.in_stock`
   or create stock movements.
