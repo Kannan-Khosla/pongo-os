@@ -149,3 +149,82 @@ def test_worker_prioritizes_stock_and_only_warms_when_idle(monkeypatch):
 
     assert worker.run_cycle() is True
     assert calls == ["order", "stock"]
+
+
+def test_worker_keeps_live_subscriptions_ahead_of_one_catalog_step(monkeypatch):
+    from app.workers import woocommerce as worker
+
+    calls = []
+
+    class DummySession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    settings = SimpleNamespace()
+    monkeypatch.setattr(worker, "get_settings", lambda: settings)
+    monkeypatch.setattr(worker, "SessionLocal", DummySession)
+    monkeypatch.setattr(worker, "ensure_automatic_order_sync_job", lambda *_args: None)
+    monkeypatch.setattr(worker, "ensure_daily_full_stock_sync_job", lambda *_args: None)
+    monkeypatch.setattr(worker, "process_next_order_sync_job", lambda *_args: calls.append("order"))
+    monkeypatch.setattr(worker, "process_next_stock_sync_job", lambda *_args: calls.append("stock"))
+    monkeypatch.setattr(worker, "process_subscription_sync_if_due", lambda *_args: calls.append("subscriptions") or True)
+    monkeypatch.setattr(worker, "process_next_catalog_sync", lambda *_args, **_kwargs: calls.append("catalog") or object())
+    monkeypatch.setattr(worker, "process_next_report_job", lambda: calls.append("report"))
+
+    assert worker.run_cycle() is True
+    assert calls == ["order", "stock", "subscriptions"]
+
+    calls.clear()
+    monkeypatch.setattr(worker, "process_subscription_sync_if_due", lambda *_args: calls.append("subscriptions") or False)
+    assert worker.run_cycle() is True
+    assert calls == ["order", "stock", "subscriptions", "catalog"]
+    assert worker._catalog_step_completed is True
+
+
+def test_worker_reuses_catalog_http_pool_until_credentials_change(monkeypatch):
+    from app.workers import woocommerce as worker
+
+    instances = []
+
+    class FakeClient:
+        def __init__(self, settings):
+            self.settings = settings
+            self.open_count = 0
+            self.close_count = 0
+            instances.append(self)
+
+        def open(self):
+            self.open_count += 1
+            return self
+
+        def close(self):
+            self.close_count += 1
+
+    first_settings = SimpleNamespace(
+        woocommerce_base_url="https://store.example",
+        woocommerce_consumer_key="ck_one",
+        woocommerce_consumer_secret="cs_one",
+    )
+    changed_settings = SimpleNamespace(
+        woocommerce_base_url="https://store.example",
+        woocommerce_consumer_key="ck_two",
+        woocommerce_consumer_secret="cs_two",
+    )
+    worker._catalog_client = None
+    worker._catalog_client_fingerprint = None
+    monkeypatch.setattr(worker, "WooCommerceClient", FakeClient)
+
+    first = worker.pooled_catalog_client(first_settings)
+    second_page = worker.pooled_catalog_client(first_settings)
+    replacement = worker.pooled_catalog_client(changed_settings)
+
+    assert first is second_page
+    assert first.open_count == 1
+    assert first.close_count == 1
+    assert replacement is not first
+    assert replacement.open_count == 1
+    worker._catalog_client = None
+    worker._catalog_client_fingerprint = None

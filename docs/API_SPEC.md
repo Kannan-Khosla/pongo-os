@@ -744,6 +744,43 @@ operator explicitly authorizes replacement. An authorized replacement updates
 the base URL and exact allowed host together only after verification; it never
 changes writeback feature flags.
 
+### Durable catalog reconciliation
+
+`POST /api/integrations/woocommerce/catalog-syncs` queues the durable catalog
+job and returns HTTP `202` without calling WooCommerce. The first run performs
+a full reconciliation. Later runs request only products modified since the
+last completed run with a five-minute overlap; at least every seven days the
+service automatically performs another full reconciliation so removed remote
+identities are detected. Supply a stable
+`Idempotency-Key` header (1–120 characters); the optional body
+`idempotency_key` must match it. Repeating a key returns the same run. While one
+catalog run is active, another click returns that active run rather than
+creating competing work.
+
+Run responses include `id`, `status`, `stage`, actor/timestamps,
+`attempt_count`, `next_retry_at`, count fields, `progress_percent`, `message`,
+`can_resume`, `can_cancel`, `can_resolve`, and `deduplicated`. Statuses include
+`queued`, `fetching_products`, `fetching_variations`, `matching`, `applying`,
+`waiting_retry`, `paused`, `completed`, `completed_with_attention`, `failed`,
+and `cancelled`.
+
+- `GET /catalog-syncs/current` returns HTTP `200` with `{ "run": null }` before
+  the first run.
+- `GET /catalog-syncs/{id}` returns persisted state after browser/worker
+  restarts.
+- `GET /catalog-syncs/{id}/rows` supports `status`, `search`, `page`, and
+  `page_size` (maximum 100), returning standard page metadata.
+- `POST /catalog-syncs/{id}/resume` accepts only paused/failed runs;
+  `waiting_retry` resumes automatically.
+- `POST /catalog-syncs/{id}/cancel` cancels active work idempotently.
+- `POST /catalog-syncs/{id}/rows/{row_id}/resolve` accepts
+  `{ "action": "link", "item_id": 123 }`, `{ "action": "create" }`, or
+  `{ "action": "skip" }`. The actor is server-derived.
+
+Catalog reconciliation performs Woo GET requests only. It does not change
+local stock or create stock movements. Demo accounts are rejected by the
+existing integration boundary before a run is inserted.
+
 ### POST /api/integrations/woocommerce/products/preview
 
 Fetch WooCommerce products and variations through the backend WooCommerce REST
@@ -798,7 +835,8 @@ Preview row fields:
 
 ### POST /api/integrations/woocommerce/products/import-new
 
-Primary no-CSV product intake. The endpoint scans WooCommerce once, filters out
+Legacy compatibility intake. The primary Items workflow uses the durable
+`/catalog-syncs` worker above. This endpoint scans WooCommerce once, filters out
 already mapped simple products and variations, creates or links only the missing
 sellable records, and returns `setup_item_ids` for the frontend setup sequence.
 After the first successful reconciliation it passes a saved `modified_after`
@@ -814,8 +852,9 @@ Response fields include `sync_run_id`, `status`, `checked_since`, counts,
 `message`.
 
 `GET /api/items?latest_woo_import=true` returns only the exact item IDs created
-by the newest `new_products` run that added products. Empty import checks do not
-replace that filter target.
+by the newest completed durable `catalog` run that added products, with legacy
+`new_products` history as a fallback. Empty import checks do not replace the
+latest non-empty result.
 
 Action values:
 - `create`
@@ -1194,7 +1233,12 @@ Supports `page` and `page_size` with the same response metadata as Open Orders.
 Return one local order with line-level match and availability detail. The detail
 payload also includes stored billing, shipping, customer, payment and order
 totals; each line exposes `unit_price`, `line_tax`, and `line_total` for the
-Pongo invoice print view.
+original Woo snapshot plus `invoice_unit_price` and `invoice_line_total` for
+the effective Pongo invoice. The order exposes `invoice_subtotal` and
+`invoice_total`; these preserve Woo discount, shipping, and tax adjustments
+while applying Pongo-only product-price changes. `line_tax` remains the
+original Woo audit value and must not be presented as recalculated tax for a
+locally added or substituted line.
 
 ### POST /api/orders/bulk/complete
 
@@ -2733,10 +2777,11 @@ HTTP 409.
   `complete_picked`, or `complete_without_picking`), `reason`, and
   `idempotency_key`. The backend re-fetches the exact Woo order and requires
   live status `processing`. It infers and revalidates the safe completion path
-  under the order lock; partial picking blocks completion. Cancellation blocks
-  any picked, fulfilled, or stock-reduced quantity, creates a durable local
-  cancellation guard, releases allocations only after Woo confirms
-  cancellation, and cannot race an accepted local completion. The response
+  under the order lock; partial picking blocks completion. Cancellation
+  reverses picked and stock-reduced quantities through the audited unpick path,
+  blocks fulfilled quantities, creates a durable local cancellation guard,
+  releases allocations only after Woo confirms cancellation, synchronizes the
+  final Pongo stock to Woo, and cannot race an accepted local completion. The response
   includes `local_order_id`, `local_status`, `released_quantity`,
   `woo_sync_status`, `woo_writeback_queue_id`, and `woo_sync_error`.
 - `POST /api/orders/{order_id}/lines/{order_line_id}/substitute` accepts
@@ -2750,9 +2795,10 @@ HTTP 409.
   `reason` and `idempotency_key`. It releases unpicked allocation and hides the
   retained local audit row.
 
-These three product edits never change Woo order lines or totals. They submit
-the affected products' current sellable stock through the audited Woo stock
-writeback path and return `woo_stock_sync_status` plus
+These three product edits never change Woo order lines or totals. They update
+the Pongo invoice using a snapshotted effective-item price and submit the
+affected products' current sellable stock through the audited Woo stock
+writeback path. The response returns `woo_stock_sync_status` plus
 `woo_stock_sync_error`. `OpenOrderLineRead` retains the
   commercial Woo identity in `sku`, `barcode`, and `name`, exposes the
   operational identity in `item_id`, `effective_sku`, `effective_barcode`, and
@@ -2805,3 +2851,65 @@ order payloads are not loaded for dashboard requests.
   quantity. Completed and dry-run history is immutable.
 
 Mapping import, enrichment, and remap never send a WooCommerce write.
+
+## Internal Order Notes, Tags, and Completed Pick Recovery
+
+Order list rows (`OpenOrderRead` and `CompletedOrderRead`) expose `tags`,
+`highlight_tag_id`, `highlight_color`, `note_count`, and `latest_note`. Order
+detail also exposes the complete newest-first `internal_notes` list. These are
+Pongo-only fields and are never read from or written to WooCommerce.
+
+- `GET /api/orders/tags` returns `{tags, total}`.
+- `POST /api/orders/tags` accepts `{name, color}`. Names are trimmed,
+  case-insensitively unique, and limited to 80 characters. Colors must be a
+  six-digit CSS hex value and are returned uppercase.
+- `PUT /api/orders/{order_id}/tags` accepts ordered `tag_ids` and an optional
+  `highlight_tag_id`. The highlight must be one of the assigned IDs. Passing a
+  null highlight keeps the ordered tags without coloring the order row.
+- `GET /api/orders/{order_id}/notes` returns `{notes, total}` newest first.
+- `POST /api/orders/{order_id}/notes` accepts `{note, idempotency_key}` and
+  requires the same `Idempotency-Key` header. Notes are append-only, trimmed,
+  limited to 4,000 characters, and attributed to the authenticated staff
+  account. Replaying the same request returns the original note; changing the
+  order or text with the same key returns `409`.
+
+`POST /api/orders/completed/bulk/record-picked` accepts one to 100 order IDs,
+an optional 1,000-character reason, and an idempotency key with a matching
+header. It returns one result per order, so an ineligible order does not roll
+back other valid orders. Each valid order must still be `completed` in a live
+WooCommerce collection read, remain locally terminal, contain matched active
+inventory lines, have zero allocated/picked/fulfilled/stock-reduced quantities,
+and have no pick or fulfillment history. Pongo then fully allocates, posts a
+real Pick/PickLine with stock movements and inventory audits, and completes the
+local transition in one per-order transaction. It restores the original local
+completion/closed timestamps and appends one visible system note naming the
+authenticated actor.
+
+The endpoint never changes Woo order status, lines, prices, or customer data.
+After all valid local transactions commit, it creates one durable, targeted
+Woo stock-sync job for the deduplicated picked item IDs. It does not perform
+per-product Woo writes inside the HTTP request. A completed row returns
+`status: "completed"`, `woo_stock_sync_status: "queued"`, and the shared
+`woo_stock_sync_job_id`; the existing stock-sync worker performs the absolute,
+audited writes. If durable job creation itself fails after the local pick,
+that row returns `status: "pending_stock_sync"`,
+`woo_stock_sync_status: "queue_failed"`, and an actionable
+`woo_stock_sync_error`. Retrying the exact original selection/body/key replays
+the committed child picks and retries only durable queue creation. A fully
+queued batch replay rebuilds the same aggregate response from guarded child
+results and cannot reduce stock or enqueue the job twice.
+
+Live status validation is one WooCommerce collection request. If that request
+fails, every not-yet-recorded row is rejected without local stock changes; the
+backend never fans the failure out into up to 100 individual Woo requests.
+Each order has a deterministic child idempotency key and the targeted job has a
+deterministic job key. A completed fingerprint row binds the caller's batch key
+to the normalized order IDs, reason, and actor before child work, so changing
+that payload returns HTTP 409. The fingerprint is identity only—not an
+ownership lease—so concurrent or crash-retried matching batches serialize at
+the child mutation and job uniqueness guards without leaving a top-level claim
+stuck after process death. An aggregate response is `completed`
+only when every local pick has a
+durable stock job, `pending_stock_sync` when every locally recorded row still
+needs queue creation, `partial` for mixed outcomes, and `rejected` when no row
+was recorded.

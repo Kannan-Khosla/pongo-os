@@ -2,19 +2,25 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from hashlib import sha256
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import Settings
+from app.models.fulfillments import FulfillmentLine
 from app.models.inventory import InventoryItem
 from app.models.orders import Order, OrderItem
 from app.models.picks import PickLine
+from app.models.stock_mutations import StockMutationRequest
 from app.models.woocommerce import WooWritebackQueue
 from app.schemas.orders import (
     CompletedOrderPickRecoveryRequest,
     CompletedOrderPickRecoveryResponse,
+    CompletedOrderRecordPickedRequest,
+    CompletedOrderRecordPickedResponse,
+    CompletedOrderRecordPickedResult,
     OrderLineAddRequest,
     OrderLineEditResponse,
     OrderLineRemoveRequest,
@@ -25,7 +31,10 @@ from app.schemas.orders import (
     WooOrderReconcileRequest,
     WooOrderReconcileResponse,
 )
+from app.schemas.picks import PickCommitRequest
+from app.schemas.woocommerce import WooStockSyncRequest
 from app.services.location_inventory import lock_inventory_stock
+from app.services.order_metadata import add_order_note
 from app.services.order_workflow import (
     add_audit_event,
     add_order_audit_events,
@@ -42,14 +51,55 @@ from app.services.order_workflow import (
     sync_order_workflow_statuses,
     to_decimal,
 )
-from app.services.stock_mutation_guard import begin_stock_mutation, complete_stock_mutation
+from app.services.picks import commit_pick, unpick_orders
+from app.services.stock_mutation_guard import IdempotencyConflict, begin_stock_mutation, complete_stock_mutation
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.woocommerce_orders import RETIRED_WOO_LINE_STATUS, commit_remote_order_records, get_open_order_detail
-from app.services.woocommerce_writeback import sync_inventory_stock, sync_order_status, validate_item_mapping
+from app.services.woocommerce_stock_sync_jobs import create_stock_sync_job, resume_stock_sync_job
+from app.services.woocommerce_writeback import (
+    stock_writeback_enabled,
+    sync_inventory_stock,
+    sync_order_status,
+    validate_item_mapping,
+)
 
 
 class OrderActionConflict(ValueError):
     pass
+
+
+_REMOTE_ORDER_UNSET = object()
+_REMOTE_ORDER_MISSING = object()
+_REMOTE_ORDER_VALIDATION_FAILED = object()
+
+
+def register_completed_pick_batch_fingerprint(
+    db: Session,
+    payload: CompletedOrderRecordPickedRequest,
+    *,
+    actor: str,
+) -> None:
+    """Persist request identity without claiming ownership of batch execution."""
+    fingerprint_payload = {
+        "order_ids": list(dict.fromkeys(payload.order_ids)),
+        "reason": payload.reason,
+        "actor": actor,
+        "idempotency_key": payload.idempotency_key,
+    }
+    mutation, replay = begin_stock_mutation(
+        db,
+        "record_completed_pick_batch_fingerprint",
+        payload.idempotency_key,
+        fingerprint_payload,
+    )
+    if replay is not None:
+        return
+    # This row records only immutable request identity. It is deliberately
+    # completed before work begins, so a crash cannot leave an ownership lease
+    # that blocks replay. Child mutation and stock-job keys provide execution
+    # idempotency.
+    complete_stock_mutation(mutation, {"status": "accepted"})
+    db.commit()
 
 
 def reconcile_live_woo_order(
@@ -111,6 +161,11 @@ def change_live_woo_order_status(
                 "this action has no matching idempotent writeback record."
             )
         local_order = reconcile_one_remote_order(db, remote, payload.target_status, actor)
+        stock_sync = (
+            sync_order_inventory_stock(db, settings, client, local_order.id, actor)
+            if payload.target_status == "cancelled"
+            else None
+        )
         if existing_queue.status != "sent":
             existing_queue.status = "sent"
             existing_queue.sent_at = datetime.now(timezone.utc)
@@ -137,7 +192,7 @@ def change_live_woo_order_status(
             message=f"WooCommerce order is already {payload.target_status}.",
             woo_sync_status=existing_queue.status,
             woo_writeback_queue_id=existing_queue.id,
-            woo_sync_error=existing_queue.error_message,
+            woo_sync_error=existing_queue.error_message or stock_sync_error(stock_sync),
         )
     if remote_status != "processing":
         raise OrderActionConflict(
@@ -156,6 +211,7 @@ def change_live_woo_order_status(
     else:
         local_order = reconcile_one_remote_order(db, remote, "processing", actor)
     released_quantity = Decimal("0")
+    restored_quantity = Decimal("0")
     stock_sync = None
 
     if payload.target_status == "completed":
@@ -163,8 +219,27 @@ def change_live_woo_order_status(
         result = complete_local_order_once(db, local_order.id, completion_mode, reason, actor)
         released_quantity = to_decimal(result.get("released_quantity"))
         if completion_mode == "complete_picked":
-            stock_sync = sync_completed_picked_stock(db, settings, client, local_order.id, actor)
+            stock_sync = sync_order_inventory_stock(db, settings, client, local_order.id, actor)
     else:
+        if any(
+            to_decimal(value) > 0
+            for line in local_order.items
+            for value in (line.quantity_picked, line.quantity_stock_reduced)
+        ):
+            unpick_result = unpick_orders(
+                db,
+                [local_order.id],
+                created_by=actor,
+                reason=f"Cancellation: {reason}",
+                idempotency_key=idempotency_key,
+                commit=False,
+            )
+            if unpick_result.get("status") != "completed":
+                raise OrderActionConflict(
+                    "Cancellation could not restore picked stock. "
+                    + " ".join(unpick_result.get("errors") or [])
+                )
+            restored_quantity = to_decimal(unpick_result.get("total_quantity_restored"))
         local_order = begin_cancellation_guard(
             db,
             local_order.id,
@@ -197,8 +272,11 @@ def change_live_woo_order_status(
         local_order = reconcile_one_remote_order(db, post_write_remote, payload.target_status, actor)
         if payload.target_status == "cancelled":
             released_quantity = max(before_allocated - total_allocated(local_order), Decimal("0"))
+            stock_sync = sync_order_inventory_stock(db, settings, client, local_order.id, actor)
         action_status = payload.target_status
         message = f"Order changed to {payload.target_status} in WooCommerce."
+        if restored_quantity > 0:
+            message += f" Restored {restored_quantity} picked unit(s) to Pongo stock."
     else:
         local_order = load_local_order_by_woo(db, woo_order_id) or local_order
         action_status = "writeback_pending"
@@ -206,7 +284,10 @@ def change_live_woo_order_status(
             f"Local workflow was saved, but WooCommerce status is still processing. "
             f"Writeback status: {writeback.status}."
             if payload.target_status == "completed"
-            else f"Cancellation was not applied locally because WooCommerce writeback status is {writeback.status}."
+            else (
+                f"Cancellation is pending in Pongo because WooCommerce writeback status is {writeback.status}. "
+                "Remaining allocation stays reserved until WooCommerce confirms cancellation."
+            )
         )
 
     record_status_action_audit(
@@ -309,6 +390,7 @@ def substitute_order_line(
     line.inventory_item_id = replacement.id
     line.inventory_item = replacement
     line.substituted_from_inventory_item_id = None if reverting else original_item_id
+    line.local_invoice_unit_price = None if reverting else item_invoice_unit_price(replacement, line.unit_price)
     line.substitution_reason = None if reverting else (reason or None)
     line.substituted_by = None if reverting else actor
     line.substituted_at = None if reverting else datetime.now(timezone.utc)
@@ -414,7 +496,8 @@ def add_local_order_line(
         fulfilled_qty=Decimal("0"),
         quantity_stock_reduced=Decimal("0"),
         unit_cost=item.unit_cost,
-        unit_price=item.sales_price or item.recommended_retail_price,
+        unit_price=item_invoice_unit_price(item),
+        local_invoice_unit_price=item_invoice_unit_price(item),
         unit_cost_total=(item.unit_cost * quantity if item.unit_cost is not None else None),
         brand=item.brand,
         matched_status="matched",
@@ -621,7 +704,432 @@ def prepare_completed_order_for_picking(
     return response
 
 
-def sync_completed_picked_stock(
+def record_completed_orders_picked(
+    db: Session,
+    settings: Settings,
+    client: WooCommerceClient,
+    payload: CompletedOrderRecordPickedRequest,
+    *,
+    actor: str,
+) -> CompletedOrderRecordPickedResponse:
+    selected_ids = list(dict.fromkeys(payload.order_ids))
+    register_completed_pick_batch_fingerprint(db, payload, actor=actor)
+    prefetched_remote = prefetch_live_orders_for_record_picked(
+        db,
+        client,
+        selected_ids,
+        payload.idempotency_key,
+    )
+    results: list[CompletedOrderRecordPickedResult] = []
+    errors: list[str] = []
+    for order_id in selected_ids:
+        child_key = completed_pick_idempotency_key(payload.idempotency_key, order_id)
+        try:
+            result = record_completed_order_picked(
+                db,
+                client,
+                order_id,
+                reason=payload.reason,
+                idempotency_key=child_key,
+                actor=actor,
+                remote=prefetched_remote.get(order_id, _REMOTE_ORDER_UNSET),
+            )
+        except IdempotencyConflict:
+            db.rollback()
+            raise
+        except Exception as error:
+            db.rollback()
+            message = getattr(error, "message", None) or str(error) or "Order could not be recorded as picked."
+            result = CompletedOrderRecordPickedResult(
+                order_id=order_id,
+                status="rejected",
+                message=message,
+            )
+            errors.append(f"Order {order_id}: {message}")
+        # Aggregate replay is intentionally rebuilt from the independently
+        # guarded child operations. Normalizing this presentation flag keeps a
+        # successful retry byte-for-byte stable without a crash-prone batch
+        # ownership row.
+        result.replayed = False
+        results.append(result)
+
+    queue_recorded_batch_stock(
+        db,
+        settings,
+        results,
+        batch_key=payload.idempotency_key,
+        actor=actor,
+    )
+    succeeded = [result for result in results if result.status == "completed"]
+    pending = [result for result in results if result.status == "pending_stock_sync"]
+    failed_count = len(results) - len(succeeded)
+    if len(succeeded) == len(results):
+        status = "completed"
+    elif len(pending) == len(results):
+        status = "pending_stock_sync"
+    elif succeeded or pending:
+        status = "partial"
+    else:
+        status = "rejected"
+    for result in pending:
+        error = result.woo_stock_sync_error or "WooCommerce stock sync still needs to be queued."
+        errors.append(f"Order {result.order_id}: {error}")
+    locally_recorded = [
+        result for result in results if result.status in {"completed", "pending_stock_sync"}
+    ]
+    response = CompletedOrderRecordPickedResponse(
+        status=status,
+        requested_count=len(selected_ids),
+        succeeded_count=len(succeeded),
+        failed_count=failed_count,
+        total_quantity_picked=sum(result.total_quantity_picked for result in locally_recorded),
+        created_stock_movements=sum(result.created_stock_movements for result in locally_recorded),
+        created_audit_events=sum(result.created_audit_events for result in locally_recorded),
+        results=results,
+        errors=errors,
+    )
+    return response
+
+
+def record_completed_order_picked(
+    db: Session,
+    client: WooCommerceClient,
+    order_id: int,
+    *,
+    reason: str | None,
+    idempotency_key: str,
+    actor: str,
+    remote: Any = _REMOTE_ORDER_UNSET,
+) -> CompletedOrderRecordPickedResult:
+    mutation_payload = {
+        "order_id": order_id,
+        "reason": reason,
+        "actor": actor,
+        "idempotency_key": idempotency_key,
+    }
+    mutation, replay = begin_stock_mutation(
+        db,
+        "record_completed_order_picked",
+        idempotency_key,
+        mutation_payload,
+    )
+    if replay is not None:
+        return CompletedOrderRecordPickedResult.model_validate(replay).model_copy(update={"replayed": True})
+
+    cached_order = db.get(Order, order_id)
+    if cached_order is None or cached_order.woo_order_id is None:
+        raise OrderActionConflict("Order is not linked to WooCommerce.")
+    if remote is _REMOTE_ORDER_VALIDATION_FAILED:
+        raise WooCommerceClientError(
+            "Live WooCommerce batch validation is unavailable. No local stock was changed; retry the batch."
+        )
+    if remote is _REMOTE_ORDER_UNSET:
+        remote = client.get_order(cached_order.woo_order_id)
+    if remote is _REMOTE_ORDER_MISSING:
+        raise WooCommerceClientError(
+            f"WooCommerce did not return order {cached_order.woo_order_id} during live validation."
+        )
+    remote = validate_remote_order(remote, cached_order.woo_order_id)
+    if str(remote.get("status") or "").strip().casefold() != "completed":
+        raise OrderActionConflict("The live WooCommerce order must still be completed.")
+
+    order = lock_order_completion_scope(db, order_id)
+    if order is None:
+        raise OrderActionConflict("Order was not found.")
+    assert_completed_order_can_be_recorded_picked(db, order)
+    original_completed_at = order.completed_at
+    original_closed_at = order.closed_at
+    original_local_status = order.local_status
+
+    order.completion_status = "picking_recovery"
+    order.local_status = "open"
+    order.allocation_status = "unallocated"
+    order.auto_allocation_status = None
+    order.pick_status = "not_ready"
+    order.allocation_exception_reason = None
+    for line in order.items:
+        if not is_actionable_order_line(line):
+            continue
+        line.allocation_status = "unallocated"
+        line.availability_status = "unallocated"
+        line.pick_status = "not_ready"
+        line.allocation_exception_reason = None
+    sync_order_workflow_statuses(order)
+
+    allocation = auto_allocate_order_if_possible(
+        db,
+        order.id,
+        source=f"completed-record-picked:{actor}",
+    )
+    if allocation["status"] != "allocated":
+        raise OrderActionConflict(
+            allocation.get("reason") or "Every inventory line must be fully allocatable before stock can be recorded."
+        )
+    required_lines = actionable_inventory_lines(order)
+    if not required_lines or any(
+        to_decimal(line.quantity_allocated) < to_decimal(line.quantity_ordered)
+        for line in required_lines
+    ):
+        raise OrderActionConflict("Every inventory line must be fully allocated before stock can be recorded.")
+
+    note_text = f"Manually recorded as picked from Completed Orders by {actor}."
+    if reason:
+        note_text += f" Reason: {reason}"
+    pick_result = commit_pick(
+        db,
+        PickCommitRequest(
+            order_ids=[order.id],
+            allow_partial=False,
+            created_by=actor,
+            notes=note_text,
+            idempotency_key=completed_pick_step_key(idempotency_key),
+        ),
+        commit=False,
+    )
+    if pick_result.status != "posted" or pick_result.errors:
+        raise OrderActionConflict(" ".join(pick_result.errors) or "Order could not be fully picked.")
+
+    # A fully picked recovery releases no sellable stock, so running the global
+    # FIFO allocator for every row only adds batch latency and lock contention.
+    complete_picked_order(db, order.id, created_by=actor, commit=False, run_fifo=False)
+    order = lock_order_completion_scope(db, order.id)
+    if order is None:
+        raise OrderActionConflict("Order was not found after picking.")
+    order.local_status = original_local_status if original_local_status in {"completed", "closed"} else "completed"
+    order.completion_status = "completed"
+    order.completed_without_picking = False
+    order.completed_at = original_completed_at
+    order.closed_at = original_closed_at
+    order.workflow_notes = append_note(order.workflow_notes, note_text)
+    add_order_note(
+        db,
+        order.id,
+        note_text,
+        note_type="system",
+        created_by=actor,
+    )
+    db.flush()
+
+    response = CompletedOrderRecordPickedResult(
+        order_id=order.id,
+        status="completed",
+        message="Stock was recorded through a real Pongo pick. The WooCommerce order remained completed.",
+        pick_id=pick_result.pick_id,
+        pick_number=pick_result.pick_number,
+        total_quantity_picked=pick_result.total_quantity_picked,
+        created_stock_movements=pick_result.created_stock_movements,
+        created_audit_events=pick_result.created_audit_events,
+    )
+    complete_stock_mutation(mutation, response)
+    db.commit()
+    return response
+
+
+def assert_completed_order_can_be_recorded_picked(db: Session, order: Order) -> None:
+    if order.woo_status != "completed":
+        raise OrderActionConflict("The local WooCommerce status must be completed.")
+    if order.local_status not in {"completed", "closed"}:
+        raise OrderActionConflict("Only a locally completed order can be recorded as picked.")
+    if order.completion_status not in {"completed", "completed_without_picking"}:
+        raise OrderActionConflict("Only a completed order with no picking history can be recorded as picked.")
+    if any(
+        to_decimal(value) > 0
+        for line in order.items
+        for value in (
+            line.quantity_allocated,
+            line.quantity_picked,
+            line.quantity_fulfilled,
+            line.quantity_stock_reduced,
+        )
+    ):
+        raise OrderActionConflict("The order already has allocated, picked, fulfilled, or stock-reduced quantities.")
+    if db.scalar(select(PickLine.id).where(PickLine.order_id == order.id).limit(1)) is not None:
+        raise OrderActionConflict("The order has prior pick history and cannot be recorded again.")
+    if db.scalar(select(FulfillmentLine.id).where(FulfillmentLine.order_id == order.id).limit(1)) is not None:
+        raise OrderActionConflict("The order has prior fulfillment history and cannot be recorded again.")
+    required_lines = actionable_inventory_lines(order)
+    if not required_lines:
+        raise OrderActionConflict("The order has no actionable inventory lines to pick.")
+    if any(
+        line.matched_status != "matched"
+        or line.inventory_item is None
+        or not line.inventory_item.active
+        for line in required_lines
+    ):
+        raise OrderActionConflict("Every inventory line must be matched to an active Pongo item.")
+    for line in required_lines:
+        try:
+            validate_item_mapping(db, line.inventory_item)
+        except ValueError as error:
+            raise OrderActionConflict(
+                f"Item {line.inventory_item.sku or line.inventory_item.id} cannot sync stock to WooCommerce: {error}"
+            ) from error
+
+
+def actionable_inventory_lines(order: Order) -> list[OrderItem]:
+    return [
+        line
+        for line in order.items
+        if is_actionable_order_line(line)
+        and line.inventory_item is not None
+        and not line.inventory_item.non_inventory
+    ]
+
+
+def queue_recorded_batch_stock(
+    db: Session,
+    settings: Settings,
+    results: list[CompletedOrderRecordPickedResult],
+    *,
+    batch_key: str,
+    actor: str,
+) -> None:
+    pending = [
+        result
+        for result in results
+        if result.status in {"completed", "pending_stock_sync"}
+        and result.woo_stock_sync_status not in {"queued", "sent", "no_changes"}
+    ]
+    if not pending:
+        return
+    pick_ids = [result.pick_id for result in pending if result.pick_id is not None]
+    item_ids = set(
+        db.scalars(select(PickLine.item_id).where(PickLine.pick_id.in_(pick_ids))).all()
+    ) if pick_ids else set()
+    job = None
+    job_sync_status = None
+    queue_error = None
+    try:
+        if not getattr(settings, "woocommerce_stock_sync_jobs_enabled", True):
+            raise ValueError("The durable WooCommerce stock-sync worker is disabled.")
+        if not stock_writeback_enabled(settings):
+            raise ValueError("WooCommerce stock writeback is not enabled.")
+        if getattr(settings, "woocommerce_writeback_dry_run", True):
+            raise ValueError("WooCommerce stock writeback is still in dry-run mode.")
+        if not item_ids:
+            raise ValueError("No picked inventory items were available for stock sync.")
+        job = create_stock_sync_job(
+            db,
+            WooStockSyncRequest(
+                force=False,
+                requested_by=f"completed-record-picked:{actor}"[:120],
+                idempotency_key=completed_pick_stock_job_key(batch_key, item_ids),
+                chunk_size=50,
+                item_ids=sorted(item_ids),
+            ),
+        )
+        if job.status in {"paused", "completed_with_errors"}:
+            job = resume_stock_sync_job(db, job.id)
+        if job is None or job.status not in {"queued", "running", "completed"}:
+            raise ValueError(
+                f"The durable WooCommerce stock-sync job is {getattr(job, 'status', 'unavailable')}."
+            )
+        job_sync_status = "sent" if job.status == "completed" else "queued"
+    except Exception as error:
+        db.rollback()
+        job = None
+        job_sync_status = None
+        queue_error = (
+            "Pongo stock was recorded, but its durable WooCommerce stock-sync job could not be queued. "
+            f"Retry this action safely. {str(error)[:500]}"
+        )
+    keys_by_order_id = {
+        result.order_id: completed_pick_idempotency_key(batch_key, result.order_id)
+        for result in pending
+    }
+    mutations = {
+        row.idempotency_key: row
+        for row in db.scalars(
+            select(StockMutationRequest).where(
+                StockMutationRequest.operation == "record_completed_order_picked",
+                StockMutationRequest.idempotency_key.in_(list(keys_by_order_id.values())),
+            )
+        ).all()
+    }
+    for response in pending:
+        if job is not None:
+            response.status = "completed"
+            response.woo_stock_sync_status = job_sync_status
+            response.woo_stock_sync_error = None
+            response.woo_stock_sync_job_id = job.id
+        else:
+            response.status = "pending_stock_sync"
+            response.woo_stock_sync_status = "queue_failed"
+            response.woo_stock_sync_error = queue_error
+            response.woo_stock_sync_job_id = None
+        mutation = mutations.get(keys_by_order_id[response.order_id])
+        complete_stock_mutation(mutation, response.model_copy(update={"replayed": False}))
+    db.commit()
+
+
+def prefetch_live_orders_for_record_picked(
+    db: Session,
+    client: WooCommerceClient,
+    order_ids: list[int],
+    batch_key: str,
+) -> dict[int, Any]:
+    keys_by_order_id = {
+        order_id: completed_pick_idempotency_key(batch_key, order_id)
+        for order_id in order_ids
+    }
+    completed_keys = set(
+        db.scalars(
+            select(StockMutationRequest.idempotency_key).where(
+                StockMutationRequest.operation == "record_completed_order_picked",
+                StockMutationRequest.status == "completed",
+                StockMutationRequest.idempotency_key.in_(list(keys_by_order_id.values())),
+            )
+        ).all()
+    )
+    pending_ids = [
+        order_id
+        for order_id in order_ids
+        if keys_by_order_id[order_id] not in completed_keys
+    ]
+    local_rows = db.execute(
+        select(Order.id, Order.woo_order_id).where(
+            Order.id.in_(pending_ids),
+            Order.woo_order_id.is_not(None),
+        )
+    ).all()
+    local_by_woo_id = {woo_order_id: order_id for order_id, woo_order_id in local_rows}
+    get_orders = getattr(client, "get_orders", None)
+    if not local_by_woo_id:
+        return {}
+    if not callable(get_orders):
+        return {order_id: _REMOTE_ORDER_VALIDATION_FAILED for order_id in pending_ids}
+    try:
+        remote_orders = get_orders(list(local_by_woo_id))
+    except Exception:
+        return {order_id: _REMOTE_ORDER_VALIDATION_FAILED for order_id in pending_ids}
+    remote_by_woo_id = {
+        remote.get("id"): remote
+        for remote in remote_orders
+        if isinstance(remote, dict) and isinstance(remote.get("id"), int)
+    }
+    return {
+        order_id: remote_by_woo_id.get(woo_order_id, _REMOTE_ORDER_MISSING)
+        for woo_order_id, order_id in local_by_woo_id.items()
+    }
+
+
+def completed_pick_idempotency_key(batch_key: str, order_id: int) -> str:
+    digest = sha256(f"{batch_key}:{order_id}".encode("utf-8")).hexdigest()
+    return f"record-picked:{digest}"
+
+
+def completed_pick_step_key(order_key: str) -> str:
+    digest = sha256(f"pick:{order_key}".encode("utf-8")).hexdigest()
+    return f"record-picked-step:{digest}"
+
+
+def completed_pick_stock_job_key(batch_key: str, item_ids: set[int]) -> str:
+    targets = ",".join(str(item_id) for item_id in sorted(item_ids))
+    digest = sha256(f"stock-job:{batch_key}:{targets}".encode("utf-8")).hexdigest()
+    return f"record-picked-stock:{digest}"
+
+
+def sync_order_inventory_stock(
     db: Session,
     settings: Settings,
     woo_client: WooCommerceClient,
@@ -652,6 +1160,14 @@ def required_reason(value: str) -> str:
 
 def optional_reason(value: str | None) -> str:
     return (value or "").strip()
+
+
+def item_invoice_unit_price(item: InventoryItem, fallback: Decimal | None = None) -> Decimal | None:
+    if item.sales_price is not None:
+        return item.sales_price
+    if item.recommended_retail_price is not None:
+        return item.recommended_retail_price
+    return fallback
 
 
 def required_idempotency_key(value: str) -> str:
@@ -874,12 +1390,12 @@ def stock_sync_error(sync) -> str | None:
     if sync is None:
         return None
     if sync.failed_count:
-        return f"{sync.failed_count} completed-order stock update(s) failed to reach WooCommerce."
+        return f"{sync.failed_count} order stock update(s) failed to reach WooCommerce."
     if sync.dry_run_count:
         return "WooCommerce stock writeback ran in dry-run mode; remote stock was not changed."
     if sync.skipped_unmapped_count:
-        return f"{sync.skipped_unmapped_count} completed-order stock target(s) were not mapped to WooCommerce."
+        return f"{sync.skipped_unmapped_count} order stock target(s) were not mapped to WooCommerce."
     if sync.status not in {"sent", "no_changes"}:
         details = "; ".join(sync.errors) if sync.errors else f"Stock sync status is {sync.status}."
-        return f"Completed-order stock was not fully synchronized to WooCommerce. {details}"
+        return f"Order stock was not fully synchronized to WooCommerce. {details}"
     return None

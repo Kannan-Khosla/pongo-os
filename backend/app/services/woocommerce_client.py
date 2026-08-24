@@ -45,6 +45,17 @@ class WooCommerceClient:
         self.page_size = settings.woocommerce_page_size
         self.order_page_size = settings.woocommerce_order_sync_page_size
         self.last_response_headers: dict[str, str] = {}
+        self._http_client: httpx.Client | None = None
+
+    def open(self) -> "WooCommerceClient":
+        if self._http_client is None:
+            self._http_client = httpx.Client(timeout=self.timeout_seconds)
+        return self
+
+    def close(self) -> None:
+        if self._http_client is not None:
+            self._http_client.close()
+            self._http_client = None
 
     @property
     def configured(self) -> bool:
@@ -74,19 +85,39 @@ class WooCommerceClient:
         statuses: list[str] | None = None,
         *,
         modified_after: str | None = None,
+        orderby: str | None = None,
+        order: str | None = None,
     ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"page": page, "per_page": per_page or self.page_size}
         if statuses:
             params["status"] = ",".join(statuses)
         if modified_after:
             params.update({"modified_after": modified_after, "dates_are_gmt": "true", "orderby": "modified", "order": "asc"})
+        elif orderby:
+            params["orderby"] = orderby
+            params["order"] = order or "asc"
         return self._get("/wp-json/wc/v3/products", params)
 
-    def list_product_variations(self, product_id: int, page: int = 1, per_page: int | None = None) -> list[dict[str, Any]]:
-        return self._get(f"/wp-json/wc/v3/products/{product_id}/variations", {"page": page, "per_page": per_page or self.page_size})
+    def list_product_variations(
+        self,
+        product_id: int,
+        page: int = 1,
+        per_page: int | None = None,
+        *,
+        modified_after: str | None = None,
+        orderby: str | None = None,
+        order: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"page": page, "per_page": per_page or self.page_size}
+        if modified_after:
+            params.update({"modified_after": modified_after, "dates_are_gmt": "true", "orderby": "modified", "order": "asc"})
+        elif orderby:
+            params.update({"orderby": orderby, "order": order or "asc"})
+        return self._get(f"/wp-json/wc/v3/products/{product_id}/variations", params)
 
     def fetch_sellable_product_batch(self, page: int, per_page: int, statuses: list[str] | None = None) -> tuple[list[dict[str, Any]], bool]:
         products = self.list_products(page=page, per_page=per_page, statuses=statuses)
+        products_have_more = self.page_has_more(page, len(products), per_page)
         records: list[dict[str, Any]] = []
         for product in products:
             if product.get("type") != "variable":
@@ -97,10 +128,17 @@ class WooCommerceClient:
             while True:
                 variations = self.list_product_variations(product["id"], page=variation_page, per_page=self.page_size)
                 records.extend({"product": product, "variation": variation} for variation in variations)
-                if len(variations) < self.page_size:
+                if not self.page_has_more(variation_page, len(variations), self.page_size):
                     break
                 variation_page += 1
-        return records, len(products) == per_page
+        return records, products_have_more
+
+    def page_has_more(self, page: int, returned_count: int, page_size: int) -> bool:
+        total_pages = self.last_response_headers.get("x-wp-totalpages")
+        try:
+            return page < int(total_pages) if total_pages is not None else returned_count == page_size
+        except (TypeError, ValueError):
+            return returned_count == page_size
 
     def fetch_all_sellable_products_and_variations(self, statuses: list[str] | None = None, limit: int | None = None) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
@@ -138,6 +176,18 @@ class WooCommerceClient:
         if modified_before:
             params["modified_before"] = modified_before
         return self._get("/wp-json/wc/v3/orders", params)
+
+    def get_orders(self, order_ids: list[int]) -> list[dict[str, Any]]:
+        selected_ids = list(dict.fromkeys(order_id for order_id in order_ids if order_id > 0))
+        if not selected_ids:
+            return []
+        return self._get(
+            "/wp-json/wc/v3/orders",
+            {
+                "include": ",".join(str(order_id) for order_id in selected_ids),
+                "per_page": min(len(selected_ids), 100),
+            },
+        )
 
     def list_subscriptions(
         self,
@@ -314,14 +364,18 @@ class WooCommerceClient:
             started_at = time.perf_counter()
             response = None
             try:
-                response = httpx.request(method, url, params=safe_params, json=payload, auth=auth, timeout=self.timeout_seconds)
+                self.last_response_headers = {}
+                request = self._http_client.request if self._http_client is not None else httpx.request
+                response = request(method, url, params=safe_params, json=payload, auth=auth, timeout=self.timeout_seconds)
                 last_status_code = response.status_code
+                self.last_response_headers = dict(response.headers)
+                if response.status_code == 429:
+                    response.raise_for_status()
                 if response.status_code in retry_statuses and attempt < 3:
                     time.sleep(0.2 * attempt)
                     continue
                 response.raise_for_status()
                 data = response.json()
-                self.last_response_headers = dict(response.headers)
                 return data
             except httpx.TimeoutException as exc:
                 if attempt < 3:

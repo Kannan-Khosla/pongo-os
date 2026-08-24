@@ -34,17 +34,29 @@ _worker_health = {
 
 
 def create_stock_sync_job(db: Session, payload: WooStockSyncRequest) -> WooStockSyncJob:
+    target_item_ids = normalized_target_item_ids(payload.item_ids)
     existing = db.scalar(select(WooStockSyncJob).where(WooStockSyncJob.idempotency_key == payload.idempotency_key))
     if existing:
-        if existing.force != payload.force or existing.chunk_size != payload.chunk_size:
+        if (
+            existing.force != payload.force
+            or existing.chunk_size != payload.chunk_size
+            or normalized_target_item_ids(existing.target_item_ids) != target_item_ids
+        ):
             raise ValueError("Idempotency key was already used for a different stock sync request.")
         return existing
-    total = int(db.scalar(select(func.count(InventoryItem.id)).where(InventoryItem.active.is_(True), InventoryItem.non_inventory.is_not(True))) or 0)
+    total_statement = select(func.count(InventoryItem.id)).where(
+        InventoryItem.active.is_(True),
+        InventoryItem.non_inventory.is_not(True),
+    )
+    if target_item_ids is not None:
+        total_statement = total_statement.where(InventoryItem.id.in_(target_item_ids))
+    total = int(db.scalar(total_statement) or 0)
     job = WooStockSyncJob(
         idempotency_key=payload.idempotency_key,
         status="queued",
         force=payload.force,
         requested_by=payload.requested_by or "inventory-page",
+        target_item_ids=target_item_ids,
         chunk_size=payload.chunk_size,
         total_items=total,
         errors=[],
@@ -59,7 +71,11 @@ def create_stock_sync_job(db: Session, payload: WooStockSyncRequest) -> WooStock
         existing = db.scalar(select(WooStockSyncJob).where(WooStockSyncJob.idempotency_key == payload.idempotency_key))
         if existing is None:
             raise
-        if existing.force != payload.force or existing.chunk_size != payload.chunk_size:
+        if (
+            existing.force != payload.force
+            or existing.chunk_size != payload.chunk_size
+            or normalized_target_item_ids(existing.target_item_ids) != target_item_ids
+        ):
             raise ValueError("Idempotency key was already used for a different stock sync request.") from exc
         return existing
     db.refresh(job)
@@ -141,12 +157,18 @@ def _process_next_stock_sync_job(db: Session, settings: Settings, client_factory
     if retry_ids:
         item_ids = retry_ids
     else:
-        item_ids = list(db.scalars(
-            select(InventoryItem.id)
-            .where(InventoryItem.active.is_(True), InventoryItem.non_inventory.is_not(True), InventoryItem.id > job.last_item_id)
-            .order_by(InventoryItem.id)
-            .limit(job.chunk_size)
-        ).all())
+        item_statement = select(InventoryItem.id).where(
+            InventoryItem.active.is_(True),
+            InventoryItem.non_inventory.is_not(True),
+            InventoryItem.id > job.last_item_id,
+        )
+        if job.target_item_ids is not None:
+            item_statement = item_statement.where(InventoryItem.id.in_(job.target_item_ids))
+        item_ids = list(
+            db.scalars(
+                item_statement.order_by(InventoryItem.id).limit(job.chunk_size)
+            ).all()
+        )
         if item_ids:
             job.last_item_id = item_ids[-1]
             job.processed_items = min(job.total_items, job.processed_items + len(item_ids))
@@ -337,6 +359,12 @@ def unresolved_stock_sync_job_count(db: Session) -> int:
         WooStockSyncJob.status == "paused",
         and_(WooStockSyncJob.status == "completed_with_errors", WooStockSyncJob.failed_count > 0),
     ))) or 0)
+
+
+def normalized_target_item_ids(values: list[int] | None) -> list[int] | None:
+    if values is None:
+        return None
+    return sorted(set(values))
 
 
 def stock_sync_scheduler_should_start(settings: Settings) -> bool:

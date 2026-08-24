@@ -150,6 +150,13 @@ Disallowed:
 
 Implemented endpoints:
 - `GET /api/integrations/woocommerce/status`
+- `POST /api/integrations/woocommerce/catalog-syncs`
+- `GET /api/integrations/woocommerce/catalog-syncs/current`
+- `GET /api/integrations/woocommerce/catalog-syncs/{id}`
+- `GET /api/integrations/woocommerce/catalog-syncs/{id}/rows`
+- `POST /api/integrations/woocommerce/catalog-syncs/{id}/resume`
+- `POST /api/integrations/woocommerce/catalog-syncs/{id}/cancel`
+- `POST /api/integrations/woocommerce/catalog-syncs/{id}/rows/{row_id}/resolve`
 - `POST /api/integrations/woocommerce/products/preview`
 - `POST /api/integrations/woocommerce/products/commit`
 - `POST /api/integrations/woocommerce/products/import-new`
@@ -173,17 +180,35 @@ the candidate metadata. Counts, filters, and page boundaries are calculated in
 SQL, while mappings and suggestion rows are bulk-loaded for only the requested
 page.
 
-The repair UI calls preview/commit in pages of Woo parent products. Each
-backend batch fetches:
-- simple products;
-- variable products;
-- all variations for variable products.
+The dedicated catalog reconciler is the primary path. Enqueue persists a
+`catalog` sync run before any network request and returns HTTP `202`. One worker
+cycle handles at most one product page, one variation page, or one local apply
+batch, then yields to live order, stock, and subscription work. Product and
+variation pages use deterministic ID ordering and Woo's total-page headers; a
+final modified-since pass catches products changed or added during the walk.
+Every checkpoint is committed before the next Woo request, so retry/resume does
+not repeat an entire catalog or high-variation parent.
 
-Existing items are matched by an exact unique SKU, then by an exact unique
-barcode only when SKU did not match. Existing item IDs and Pongo-owned fields
-are preserved; only Woo mapping/snapshot metadata is attached. Woo records
-without a local match create a new `inventory_items` row. Duplicate local or
-remote SKUs and mapping conflicts are reported and left unchanged.
+Identity precedence is: exact active mapping or embedded Woo identity, then
+exactly one normalized local SKU. Barcode and product name never auto-match.
+Variable parents are staged as context only. Published variations are captured
+even when out of stock or marked non-purchasable. Safe missing units are created
+with zero stock and no movement. Blank-SKU rows and any identity ambiguity are
+persisted as `needs_attention` instead of silently skipped.
+
+Existing item IDs, stock, allocation, cost, location rows, local metadata, and
+history are preserved. Woo snapshot fields are refreshed; a dedicated Woo
+barcode may fill an empty local barcode once, but never overwrites a populated
+local barcode. A completed full scan also surfaces active/embedded identities
+not returned by Woo as attention rows without deactivating or deleting them.
+
+The worker automatically retries bounded 429/5xx/timeouts (honoring
+`Retry-After`), then pauses visibly. Resume continues from the durable cursor.
+Cancel is idempotent at a page boundary. Explicit Link/Create/Skip decisions
+are revalidated under lock and retain actor/time audit fields. Automatic
+terminal stage rows older than 30 days may be pruned; attention rows and manual
+decisions are retained. The legacy preview/commit/import-new endpoints remain
+compatible but are no longer the recommended customer path.
 
 ## Variation Sync Behavior
 
@@ -255,8 +280,9 @@ These fields must not be overwritten by refresh:
 - Route data
 
 Barcode rule:
-- Barcode may be filled from a clearly dedicated Woo barcode/meta field only
-  for a newly created item. Existing Pongo barcodes are preserved.
+- Barcode may be filled from a clearly dedicated Woo barcode field for a new
+  item or when an existing local barcode is blank. A populated Pongo barcode is
+  always preserved. Barcode is never an automatic identity match.
 
 Woo stock rule:
 - WooCommerce stock quantity is stored only as `woo_stock_quantity_snapshot`.
@@ -309,13 +335,17 @@ items missing from WooCommerce are not deleted or deactivated.
 
 ## Preview and Commit
 
-The primary Items workflow calls `products/import-new`. The first successful
-call performs one catalog reconciliation; later calls use the last successful
-cursor with a five-minute overlap. Known Woo IDs are discarded before local
-work, and variable products fetch only variation IDs not already mapped. The
-scan completes before any local rows are written, so an upstream error leaves
-the catalog unchanged. New rows may start without SKU/barcode and are marked
-`needs_setup` until both identifiers are saved.
+The primary Items workflow queues `catalog-syncs`. The first successful run
+walks the full catalog. Later runs use the last completed cursor with a
+five-minute overlap and fetch only new or changed products; a full
+reconciliation runs at least every seven days to detect remote removals. Work
+is checkpointed in the database, so browser closure or a transient upstream
+error does not discard progress. New simple products and purchasable variations
+are created at zero operational stock, while unclear rows remain available for
+staff resolution.
+
+`products/import-new` remains available for backward compatibility but is not
+called by the current Items interface.
 
 Preview:
 - Fetches WooCommerce products/variations.
@@ -757,6 +787,13 @@ Current behavior:
 - `POST /api/integrations/woocommerce/writeback/stock/sync` with `force=false`
   retries only mapped items whose local `sellable` differs from the last
   successful WooCommerce stock snapshot.
+- The stock-sync job request may carry an internal `item_ids` target list.
+  Targeted jobs retain the same cursor, retry, audit, and worker safety as full
+  jobs but never scan or write inventory outside that normalized ID set.
+- Completed-order `Record selected as picked` validates live statuses in one
+  collection read, commits each eligible local pick, and queues one targeted
+  job for the deduplicated picked items. It does not issue synchronous
+  per-product Woo writes from the request.
 - The same endpoint with `force=true` resends every active mapped inventory
   item, even when its snapshot already matches.
 - Successful sends update `woo_stock_quantity_snapshot`; failed sends remain in

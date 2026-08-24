@@ -24,6 +24,7 @@ from app.schemas.woocommerce import (
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.woocommerce_sync_errors import prune_sync_errors, store_sync_error_once
 from app.services.location_inventory import lock_inventory_stock
+from app.services.order_metadata import metadata_load_options, note_to_read, order_metadata_fields
 from app.services.order_workflow import (
     BLOCKING_ALLOCATION_EXCEPTION_REASONS,
     BLOCKING_MATCH_STATUSES,
@@ -39,6 +40,7 @@ from app.services.order_workflow import (
 )
 
 OPEN_WOO_STATUSES = {"processing", "on-hold", "pending"}
+TERMINAL_WOO_STATUSES = {"completed", "cancelled", "refunded", "failed"}
 BARCODE_META_KEYS = {"barcode", "_barcode", "_ywbc_barcode", "upc", "gtin"}
 WOO_QUANTITY_BELOW_ALLOCATED_REASON = "woo_quantity_below_allocated"
 RETIRED_WOO_LINE_STATUS = "removed_from_woocommerce"
@@ -305,6 +307,10 @@ def commit_remote_order_records(
                 elif (
                     not snapshot_only
                     and not is_operational_record(record)
+                    and (
+                        order.completion_status != "cancellation_pending"
+                        or record.woo_status in TERMINAL_WOO_STATUSES
+                    )
                     and not (
                         order.completion_status == "picking_recovery"
                         and record.woo_status == "completed"
@@ -323,9 +329,8 @@ def commit_remote_order_records(
                         )
                     order.local_status = record.local_status
                     if order.completion_status == "cancellation_pending":
-                        # A processing snapshot must not clear the local guard while
-                        # Woo cancellation is in flight. Once Woo reaches a terminal
-                        # status, however, that remote source of truth resolves it.
+                        # Non-terminal Woo snapshots must not clear the local guard.
+                        # A terminal remote source of truth resolves it here.
                         order.completion_status = record.local_status
                     elif not preserve_local_workflow:
                         order.completion_status = record.local_status
@@ -1124,6 +1129,7 @@ def list_open_orders(
         .options(
             defer(Order.raw_woo_payload, raiseload=True),
             selectinload(Order.items).selectinload(OrderItem.inventory_item),
+            *metadata_load_options(),
         )
     ).all()) if order_ids else []
     orders_by_id = {order.id: order for order in loaded_orders}
@@ -1157,11 +1163,13 @@ def get_open_order_detail(db: Session, order_id: int) -> OpenOrderDetail | None:
         .options(
             selectinload(Order.items).selectinload(OrderItem.inventory_item),
             selectinload(Order.items).selectinload(OrderItem.substituted_from_item),
+            *metadata_load_options(),
         )
     ).one_or_none()
     if order is None:
         return None
     sync_order_workflow_statuses(order)
+    invoice_subtotal, invoice_total = local_invoice_totals(order)
     base = order_to_read(order).model_dump()
     base.update(
         {
@@ -1174,8 +1182,14 @@ def get_open_order_detail(db: Session, order_id: int) -> OpenOrderDetail | None:
             "discount_total": decimal_to_float(order.discount_total),
             "shipping_total": decimal_to_float(order.shipping_total),
             "tax_total": decimal_to_float(order.tax_total),
+            "invoice_subtotal": decimal_to_float(invoice_subtotal),
+            "invoice_total": decimal_to_float(invoice_total),
             "customer_note": str((order.raw_woo_payload or {}).get("customer_note") or "").strip() or None,
             "workflow_notes": order.workflow_notes,
+            "internal_notes": [
+                note_to_read(note)
+                for note in sorted(order.notes, key=lambda row: (row.created_at, row.id), reverse=True)
+            ],
             "lines": [
                 line_to_read(line)
                 for line in sorted(order.items, key=lambda item: item.line_number or item.id)
@@ -1209,6 +1223,7 @@ def order_to_read(order: Order, *, shipping_lines=SHIPPING_LINES_UNSET) -> OpenO
         for line in raw_shipping_lines
         if isinstance(line, dict)
     ]
+    metadata = order_metadata_fields(order)
     return OpenOrderRead(
         id=order.id,
         woo_order_id=order.woo_order_id,
@@ -1254,6 +1269,7 @@ def order_to_read(order: Order, *, shipping_lines=SHIPPING_LINES_UNSET) -> OpenO
         shows_in_pick_orders=flags["shows_in_pick_orders"],
         shows_in_completed_orders=flags["shows_in_completed_orders"],
         last_synced_at=order.last_synced_at,
+        **metadata,
     )
 
 
@@ -1295,6 +1311,12 @@ def line_to_read(line: OrderItem) -> OpenOrderLineRead:
     quantity_fulfilled = line.quantity_fulfilled or Decimal("0")
     quantity_stock_reduced = line.quantity_stock_reduced or Decimal("0")
     item_sellable = ((line.inventory_item.in_stock or Decimal("0")) - (line.inventory_item.allocated or Decimal("0"))) if line.inventory_item else Decimal("0")
+    invoice_unit_price = line.local_invoice_unit_price if line.local_invoice_unit_price is not None else line.unit_price
+    invoice_line_total = (
+        (invoice_unit_price * quantity_ordered).quantize(Decimal("0.01"))
+        if line.local_invoice_unit_price is not None and invoice_unit_price is not None
+        else line.line_total
+    )
     return OpenOrderLineRead(
         id=line.id,
         woo_line_item_id=line.woo_order_item_id,
@@ -1330,6 +1352,8 @@ def line_to_read(line: OrderItem) -> OpenOrderLineRead:
         unit_price=decimal_to_float(line.unit_price),
         line_tax=decimal_to_float(line.line_tax),
         line_total=decimal_to_float(line.line_total),
+        invoice_unit_price=decimal_to_float(invoice_unit_price),
+        invoice_line_total=decimal_to_float(invoice_line_total),
         matched_status=line.matched_status,
         availability_status=line.availability_status,
         local_sellable=decimal_to_float(item_sellable) or 0,
@@ -1338,6 +1362,26 @@ def line_to_read(line: OrderItem) -> OpenOrderLineRead:
         sync_status=line.sync_status,
         sync_error=line.sync_error,
     )
+
+
+def local_invoice_totals(order: Order) -> tuple[Decimal | None, Decimal | None]:
+    remote_subtotal = order.subtotal
+    remote_total = order.total
+    delta = Decimal("0")
+    for line in order.items:
+        remote_line_subtotal = line.line_subtotal if line.line_subtotal is not None else line.line_total
+        if line.sync_status == "local_removed":
+            if line.woo_order_item_id is not None:
+                delta -= remote_line_subtotal or Decimal("0")
+            continue
+        if line.local_invoice_unit_price is not None:
+            local_line_subtotal = (line.local_invoice_unit_price * (line.quantity_ordered or Decimal("0"))).quantize(
+                Decimal("0.01")
+            )
+            delta += local_line_subtotal - (remote_line_subtotal or Decimal("0"))
+    invoice_subtotal = (remote_subtotal + delta).quantize(Decimal("0.01")) if remote_subtotal is not None else None
+    invoice_total = (remote_total + delta).quantize(Decimal("0.01")) if remote_total is not None else None
+    return invoice_subtotal, invoice_total
 
 
 def store_order_sync_error(db: Session, sync_run_id: int, order: WooCommerceOrderPreviewOrder, line: WooCommerceOrderPreviewLine | None, messages: list[str]) -> None:
@@ -1386,8 +1430,8 @@ def aggregate_availability_status(lines) -> str:
 
 
 def calculate_subtotal(order: dict[str, Any]) -> Decimal | None:
-    subtotal = sum((to_decimal(line.get("subtotal")) for line in order.get("line_items") or []), Decimal("0"))
-    return subtotal if subtotal else None
+    lines = order.get("line_items") or []
+    return sum((to_decimal(line.get("subtotal")) for line in lines), Decimal("0")) if lines else None
 
 
 def address_summary(address: dict[str, Any]) -> dict[str, Any]:

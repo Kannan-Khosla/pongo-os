@@ -302,14 +302,15 @@ Invalid quantities, allocation conflicts, or stale stock block every matched
 change. Allocated and Sellable remain system-managed. Starting inventory
 remains limited to pre-operational stock.
 
-Items → **Import new products** is the normal WooCommerce workflow. One click
-reconciles missing simple products and purchasable variations, links them, and
-opens each imported item for setup. SKU and barcode are required; description,
-brand, cost, location, and audited opening stock are optional. Later clicks use
-a modification cursor and only inspect changed Woo products. The **Latest Woo
-import** Items filter shows the exact products created by the newest import run
-that added products. The full preview
-and mapping workflow remains under Items → More for repairs.
+The dedicated **WooCommerce Catalog** page is the normal catalog workflow. One
+click queues a durable background reconciliation and returns immediately. The
+worker reads every simple product and every variation, stores page/parent
+checkpoints, links authoritative Woo identities or one unique normalized SKU,
+creates safe missing items at zero stock, and persists ambiguous rows for staff
+resolution. Variable parents are context only. The run never writes
+WooCommerce or changes local stock, locations, costs, or movement history.
+Legacy preview/commit and incremental import routes remain for compatibility,
+but are not the primary workflow.
 
 See [`docs/ITEM_IMPORTS.md`](docs/ITEM_IMPORTS.md) for templates, validation,
 concurrency, rollback, API, configuration, and the QA runbook. Legacy canonical

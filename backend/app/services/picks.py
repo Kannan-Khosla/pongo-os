@@ -133,7 +133,7 @@ def commit_scan(db: Session, order_id: int, payload: PickScanRequest) -> PickSca
     )
 
 
-def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
+def commit_pick(db: Session, payload: PickRequest, *, commit: bool = True) -> PickCommitResponse:
     mutation, replay = begin_stock_mutation(db, "pick", payload.idempotency_key, payload)
     if replay is not None:
         return PickCommitResponse.model_validate(replay)
@@ -157,7 +157,7 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
             created_audit_events=0,
             warnings=preview.warnings,
             errors=blocking_errors,
-        ))
+        ), commit=commit)
 
     pickable_preview_lines = [line for order in preview.preview_orders for line in order.lines if line.recommended_pick_quantity > 0 and line.pick_status in {"picked", "partial"}]
     if not pickable_preview_lines:
@@ -172,7 +172,7 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
             created_audit_events=0,
             warnings=preview.warnings,
             errors=["No order lines are eligible for picking."],
-        ))
+        ), commit=commit)
 
     now = datetime.now(timezone.utc)
     first_order = preview.preview_orders[0] if len(preview.preview_orders) == 1 else None
@@ -307,9 +307,14 @@ def commit_pick(db: Session, payload: PickRequest) -> PickCommitResponse:
             errors=[],
         )
         complete_stock_mutation(mutation, response)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         return response
     except Exception as exc:
+        if not commit:
+            raise
         db.rollback()
         return PickCommitResponse(
             status="error",
@@ -332,6 +337,7 @@ def unpick_orders(
     created_by: str | None = "system",
     reason: str | None = None,
     idempotency_key: str | None = None,
+    commit: bool = True,
 ) -> dict:
     selected_ids = list(dict.fromkeys(order_ids))
     notes = (reason or "Bulk unpick from order workflow.").strip()
@@ -421,8 +427,10 @@ def unpick_orders(
             "errors": errors,
         }
         complete_stock_mutation(mutation, response)
-        if mutation is not None:
+        if commit and mutation is not None:
             db.commit()
+        elif mutation is not None:
+            db.flush()
         return response
 
     now = datetime.now(timezone.utc)
@@ -504,7 +512,10 @@ def unpick_orders(
         "errors": [],
     }
     complete_stock_mutation(mutation, response)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return response
 
 
@@ -592,10 +603,18 @@ def lock_pick_scope(db: Session, payload: PickRequest) -> None:
             raise ValueError("Order line inventory mapping changed while the pick was starting; refresh and retry.")
 
 
-def persist_rejected_pick(db: Session, mutation, response: PickCommitResponse) -> PickCommitResponse:
+def persist_rejected_pick(
+    db: Session,
+    mutation,
+    response: PickCommitResponse,
+    *,
+    commit: bool = True,
+) -> PickCommitResponse:
     complete_stock_mutation(mutation, response)
-    if mutation is not None:
+    if mutation is not None and commit:
         db.commit()
+    elif mutation is not None:
+        db.flush()
     return response
 
 

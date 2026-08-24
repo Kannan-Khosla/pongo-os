@@ -20,6 +20,7 @@ from app.services.woocommerce_order_reconciliation import (
     enqueue_order_history_import,
     order_history_coverage,
     process_next_order_history_import,
+    reconciliation_cursor,
     reconciliation_health,
     reconciliation_should_start,
     run_order_reconciliation_once,
@@ -110,6 +111,42 @@ def test_scheduler_fetches_all_active_orders_and_recent_terminal_changes():
         assert health["healthy"] is True
         assert health["last_status"] == "completed"
         assert health["error_count"] == 0
+
+
+def test_scheduler_always_scans_cancelled_and_refunded_when_configuration_omits_them():
+    factory = session_factory()
+
+    class Client:
+        configured = True
+
+        def __init__(self):
+            self.statuses = []
+
+        def list_orders(self, **kwargs):
+            self.statuses.append(kwargs["status"])
+            return []
+
+    fake = Client()
+    result = run_order_reconciliation_once(
+        reconciliation_settings(order_reconciliation_statuses=["processing"]),
+        session_factory=factory,
+        client_factory=lambda _settings: fake,
+    )
+
+    assert result["status"] == "completed"
+    assert fake.statuses == ["processing", "cancelled", "refunded"]
+
+
+def test_reconciliation_cursor_continues_from_last_clean_run_after_long_outage():
+    now = datetime(2026, 8, 22, 12, tzinfo=timezone.utc)
+    previous = WooCommerceSyncRun(
+        sync_type="order_job",
+        status="completed",
+        started_at=now - timedelta(days=30),
+        created_by="server-order-reconciliation",
+    )
+
+    assert reconciliation_cursor(reconciliation_settings(), now, previous) == previous.started_at - timedelta(seconds=1)
 
 
 def test_scheduler_failure_is_durable_and_visible_in_health(caplog):

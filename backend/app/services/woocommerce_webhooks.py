@@ -23,6 +23,7 @@ from app.schemas.woocommerce import (
 )
 from app.services.woocommerce_orders import (
     RETIRED_WOO_LINE_STATUS,
+    TERMINAL_WOO_STATUSES,
     acquire_order_import_transaction_lock,
     commit_remote_order_records,
 )
@@ -205,7 +206,11 @@ def process_order_webhook(
         actual_line_ids = [
             line.woo_order_item_id
             for line in local_order.items
-            if line.status != RETIRED_WOO_LINE_STATUS
+            if line.woo_order_item_id is not None
+            and (
+                line.status != RETIRED_WOO_LINE_STATUS
+                or (line.sync_status == "local_removed" and line.woo_order_item_id in expected_line_ids)
+            )
         ] if local_order else []
         if local_order is None or len(actual_line_ids) != len(expected_line_ids) or set(actual_line_ids) != set(expected_line_ids):
             raise RuntimeError("Verified WooCommerce order payload was not imported completely.")
@@ -414,7 +419,13 @@ def webhook_payload_is_stale(existing_order: Order, payload: dict[str, Any]) -> 
     else:
         existing_modified = existing_modified.astimezone(timezone.utc)
     incoming_modified = parse_webhook_datetime(payload.get("date_modified_gmt") or payload.get("date_modified"))
-    return incoming_modified is None or incoming_modified <= existing_modified
+    if incoming_modified is None or incoming_modified < existing_modified:
+        return True
+    if incoming_modified > existing_modified:
+        return False
+    existing_status = str(existing_order.woo_status or "").strip().lower()
+    incoming_status = str(payload.get("status") or "").strip().lower()
+    return existing_status in TERMINAL_WOO_STATUSES and incoming_status not in TERMINAL_WOO_STATUSES
 
 
 def find_delivery(db: Session, webhook_id: str, delivery_id: str, payload_sha256: str, *, for_update: bool = False) -> WooCommerceWebhookDelivery | None:

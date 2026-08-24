@@ -14,7 +14,7 @@ from app.models.imports import ImportJob
 from app.models.item_notes import ItemNote
 from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.orders import Order, OrderItem
-from app.models.woocommerce import WooCommerceSyncRun
+from app.models.woocommerce import WooCatalogSyncRow, WooCommerceSyncRun
 from app.schemas.imports import ImportCommitResponse, ImportPreviewResponse
 from app.schemas.inventory import InventoryItemLocationCreate, InventoryItemLocationListResponse, InventoryItemLocationRead, InventoryItemLocationUpdate
 from app.schemas.items import InventoryItemBulkUpdateRequest, InventoryItemCreate, InventoryItemListResponse, InventoryItemRead, InventoryItemUpdate, InventoryOpeningBalanceRequest
@@ -27,6 +27,7 @@ from app.services.item_import_workflow import field_specs_for, safe_csv_value
 from app.services.items import CANONICAL_ITEM_COLUMNS, apply_calculated_fields, apply_item_payload, item_to_csv_row
 from app.services.location_inventory import ensure_default_item_location_from_item, get_or_create_item_location, lock_inventory_stock, recalculate_item_location, recalculate_item_totals, set_default_item_location, set_opening_balance, to_decimal
 from app.services.stock_mutation_guard import IdempotencyConflict
+from app.services.woocommerce_catalog_sync import CATALOG_SYNC_TYPE
 from app.services.woocommerce_sync import NEW_PRODUCT_SYNC_TYPE, sync_item_metadata_to_woo
 
 router = APIRouter(prefix="/items", tags=["items"])
@@ -245,19 +246,43 @@ def list_items(
 ) -> InventoryItemListResponse:
     latest_item_ids = None
     if latest_woo_import:
+        latest_catalog_run = db.scalars(
+            select(WooCommerceSyncRun)
+            .where(
+                WooCommerceSyncRun.sync_type == CATALOG_SYNC_TYPE,
+                WooCommerceSyncRun.completed_at.is_not(None),
+                WooCommerceSyncRun.status.in_(("completed", "completed_with_attention")),
+                WooCommerceSyncRun.created_count > 0,
+            )
+            .order_by(WooCommerceSyncRun.completed_at.desc(), WooCommerceSyncRun.id.desc())
+            .limit(1)
+        ).first()
+        if latest_catalog_run:
+            latest_item_ids = list((latest_catalog_run.progress or {}).get("created_item_ids") or [])
+            if not latest_item_ids:
+                latest_item_ids = list(db.scalars(
+                    select(WooCatalogSyncRow.local_item_id)
+                    .where(
+                        WooCatalogSyncRow.sync_run_id == latest_catalog_run.id,
+                        WooCatalogSyncRow.status == "created",
+                        WooCatalogSyncRow.local_item_id.is_not(None),
+                    )
+                    .distinct()
+                ).all())
         latest_run = db.scalars(
             select(WooCommerceSyncRun)
             .where(WooCommerceSyncRun.sync_type == NEW_PRODUCT_SYNC_TYPE, WooCommerceSyncRun.created_count > 0)
             .order_by(WooCommerceSyncRun.started_at.desc(), WooCommerceSyncRun.id.desc())
             .limit(1)
-        ).first()
-        latest_item_ids = list((latest_run.progress or {}).get("created_item_ids") or []) if latest_run else []
-        if latest_run and not latest_item_ids and latest_run.completed_at:
-            latest_item_ids = list(db.scalars(select(InventoryItem.id).where(
-                InventoryItem.source == "woocommerce",
-                InventoryItem.created_at >= latest_run.started_at,
-                InventoryItem.created_at <= latest_run.completed_at,
-            )).all())
+        ).first() if latest_item_ids is None else None
+        if latest_item_ids is None:
+            latest_item_ids = list((latest_run.progress or {}).get("created_item_ids") or []) if latest_run else []
+            if latest_run and not latest_item_ids and latest_run.completed_at:
+                latest_item_ids = list(db.scalars(select(InventoryItem.id).where(
+                    InventoryItem.source == "woocommerce",
+                    InventoryItem.created_at >= latest_run.started_at,
+                    InventoryItem.created_at <= latest_run.completed_at,
+                )).all())
     statement = build_items_statement(
         search=search,
         sku=sku,

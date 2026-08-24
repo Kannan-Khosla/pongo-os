@@ -662,9 +662,12 @@ def run_order_reconciliation_once(
                 if job is None:
                     return {"status": "failed", "sync_run_id": job_id, "error": "Order sync job was not found."}
             requested_by = job.created_by or SCHEDULER_CREATED_BY
-            previous_success = latest_scheduler_run(db, SUCCESS_STATUSES, exclude_id=job.id)
+            previous_success = latest_scheduler_run(db, {"completed"}, exclude_id=job.id)
             modified_after = reconciliation_cursor(effective_settings, started_at, previous_success)
-            statuses = list(getattr(effective_settings, "order_reconciliation_statuses", None) or DEFAULT_STATUSES)
+            configured_statuses = list(
+                getattr(effective_settings, "order_reconciliation_statuses", None) or DEFAULT_STATUSES
+            )
+            statuses = list(dict.fromkeys([*configured_statuses, "cancelled", "refunded"]))
 
         client = client_factory(effective_settings)
         totals = {
@@ -830,7 +833,7 @@ def reconciliation_cursor(settings: Any, now: datetime, last_success: WooCommerc
     fallback = now - timedelta(hours=max(1, int(getattr(settings, "woocommerce_order_reconciliation_lookback_hours", 168))))
     if last_success is None:
         return fallback
-    return max(fallback, as_utc(last_success.started_at) - timedelta(seconds=1))
+    return as_utc(last_success.started_at) - timedelta(seconds=1)
 
 
 def latest_scheduler_run(

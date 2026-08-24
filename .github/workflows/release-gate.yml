@@ -115,6 +115,7 @@ jobs:
           for url in http://127.0.0.1:5173/ http://127.0.0.1:8000/health http://127.0.0.1:9000/writes; do for attempt in {1..60}; do curl --fail --silent "$url" >/dev/null 2>&1 && break; sleep 1; done; done
           curl --fail --silent http://127.0.0.1:8000/health
           curl --fail --silent http://127.0.0.1:9000/writes
+          (cd backend && python -m app.workers.woocommerce > /tmp/pongo-worker-e2e.log 2>&1) &
           cd frontend && npm run test:e2e
       - name: Upload Playwright report
         if: always()
@@ -130,6 +131,7 @@ jobs:
           name: browser-service-logs
           path: |
             /tmp/pongo-api-e2e.log
+            /tmp/pongo-worker-e2e.log
             /tmp/pongo-web-e2e.log
             /tmp/pongo-woo-e2e.log
           if-no-files-found: ignore

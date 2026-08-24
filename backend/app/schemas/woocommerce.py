@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class WooCommerceOrderReconciliationStatus(BaseModel):
@@ -200,6 +201,78 @@ class WooCommerceNewProductImportResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     message: str
+
+
+class WooCatalogSyncCreateRequest(BaseModel):
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class WooCatalogSyncRunRead(BaseModel):
+    id: int
+    status: str
+    stage: str
+    created_by: str | None = None
+    started_at: datetime
+    completed_at: datetime | None = None
+    updated_at: datetime
+    attempt_count: int
+    next_retry_at: datetime | None = None
+    total_remote_records: int
+    processed_records: int
+    created_count: int
+    updated_count: int
+    matched_count: int
+    unchanged_count: int
+    skipped_count: int
+    conflict_count: int
+    error_count: int
+    progress_percent: float
+    message: str
+    can_resume: bool
+    can_cancel: bool
+    can_resolve: bool
+    deduplicated: bool = False
+
+
+class WooCatalogSyncCurrentResponse(BaseModel):
+    run: WooCatalogSyncRunRead | None = None
+
+
+class WooCatalogSyncRowRead(BaseModel):
+    id: int
+    sync_run_id: int
+    remote_type: str
+    woo_product_id: int | None = None
+    woo_variation_id: int | None = None
+    sku: str | None = None
+    barcode: str | None = None
+    product_name: str | None = None
+    status: str
+    action: str
+    local_item_id: int | None = None
+    message: str | None = None
+    resolution_action: str | None = None
+    resolution_item_id: int | None = None
+    resolved_by: str | None = None
+    resolved_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WooCatalogSyncRowListResponse(BaseModel):
+    rows: list[WooCatalogSyncRowRead]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    returned_count: int
+    has_previous: bool
+    has_next: bool
+
+
+class WooCatalogSyncResolveRequest(BaseModel):
+    action: Literal["link", "create", "skip"]
+    item_id: int | None = Field(default=None, ge=1)
 
 
 class WooCommerceOrderPreviewLine(BaseModel):
@@ -460,6 +533,16 @@ class WooStockSyncRequest(BaseModel):
     requested_by: str | None = "inventory-page"
     idempotency_key: str = Field(min_length=1, max_length=120)
     chunk_size: int = Field(default=50, ge=10, le=200)
+    item_ids: list[int] | None = Field(default=None, max_length=5000)
+
+    @field_validator("item_ids")
+    @classmethod
+    def validate_item_ids(cls, values: list[int] | None) -> list[int] | None:
+        if values is None:
+            return None
+        if any(value <= 0 for value in values):
+            raise ValueError("Item IDs must be positive integers.")
+        return list(dict.fromkeys(values))
 
 
 class WooStockSyncResponse(BaseModel):

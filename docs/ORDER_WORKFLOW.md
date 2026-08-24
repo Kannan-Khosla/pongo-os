@@ -84,7 +84,8 @@ An order can appear in more than one operational view:
   allocated. Partially allocated orders remain in Allocate. Fully picked
   orders leave this queue and remain available for audited correction in Open
   Orders.
-- Completed Orders: locally completed, closed, fulfilled, or completed-without-picking orders.
+- Completed Orders: locally completed, closed, fulfilled, cancelled, refunded,
+  or completed-without-picking orders.
 - Order History: allocation, pick, and legacy fulfillment/completion records.
 
 Open Orders is for review, export, printing, local completion, and correction.
@@ -96,6 +97,11 @@ show the pick scanner or history panels.
 
 Customer invoices print from an isolated page root, show the WooCommerce
 checkout customer note, and omit internal workflow notes and identifiers.
+Pongo-only product edits use the effective local product and its snapshotted
+sales price on the invoice while retaining the original Woo discount,
+shipping, and tax adjustments. Because Pongo does not store the replacement
+product's Woo tax class, locally repriced lines show no recalculated line tax;
+the invoice labels the preserved order-level amount as `Woo tax`.
 
 ## Auto-Allocation
 
@@ -171,13 +177,15 @@ record, then permits only `completed` or `cancelled`. Every action requires a
 reason and idempotency key. Completion mode is inferred and revalidated under
 the order lock: a pristine order may complete without picking, a fully picked
 order completes as picked, and partial processing is rejected. Cancellation is
-revalidated under the same order/inventory lock scope and is blocked after any
-pick, fulfillment, or stock reduction.
+revalidated under the same order/inventory lock scope. Reversible picked stock
+is first returned to its original pick locations with the normal unpick audit
+trail; fulfilled quantities remain blocked from cancellation.
 
 Cancellation commits a local `cancellation_pending` guard before the external
 request. The guard removes the order from allocation/pick eligibility and a
-routine processing-order sync cannot clear it. A confirmed terminal Woo
-snapshot resolves the guard. A local completed state and a cancellation guard
+non-terminal Woo snapshot, including `processing`, `on-hold`, or `pending`,
+cannot clear it or release its reservation. A confirmed terminal Woo snapshot
+resolves the guard. A local completed state and a cancellation guard
 are opposing terminal transitions: whichever commits first blocks the other.
 Same-key retry is permitted; a different key cannot take over an in-flight
 cancellation.
@@ -214,14 +222,16 @@ is optional. Add reserves stock through normal auto-allocation, remove releases
 the unpicked reservation, and substitute moves the reservation to the effective
 replacement item. Allocation changes retain the existing inventory audit trail.
 
-The original Woo product/variation IDs and commercial SKU/name snapshots remain
-unchanged for customer-facing detail and invoices. Allocation, scanner lookup,
-picking, and local stock mutation accept only the effective replacement
-identity. Scanning the original barcode after substitution cannot decrement the
-replacement. No Woo order-line update is sent. After the local transaction
-commits, Pongo sends sellable stock for only the affected products through the
-audited Woo stock-writeback path. A writeback failure is reported without
-rolling back the local order edit.
+The original Woo product/variation IDs and commercial SKU/name/price snapshots
+remain unchanged for reconciliation and reporting. Allocation, scanner lookup,
+picking, local stock mutation, and the Pongo invoice use the effective
+replacement identity. The invoice price is snapshotted from the effective
+item's sales price, falling back to recommended retail price. Scanning the
+original barcode after substitution cannot decrement the replacement. No Woo
+order-line or Woo total update is sent. After the local transaction commits,
+Pongo sends sellable stock for only the affected products through the audited
+Woo stock-writeback path. A writeback failure is reported without rolling back
+the local order edit.
 
 Locally added lines have no Woo order-line ID. Locally removed lines remain as
 hidden audit tombstones with `sync_status = local_removed`. Both states survive
@@ -348,6 +358,47 @@ Fulfillment endpoints still exist for compatibility and history/reporting. They 
 If fulfillment is called after picking already reduced stock, it can create local fulfillment/completion records and returns a warning that stock was already reduced during picking. It does not double-reduce stock.
 
 If fulfillment is called for an unpicked order, it rejects the request instead of silently using the old stock-decrement path.
+
+## Completed-Order Corrections and Collaboration
+
+Open and completed orders can carry append-only internal notes and reusable
+colored tags. They are visible to authenticated Pongo staff, remain attached
+across WooCommerce reconciliation, and never become Woo customer/order notes.
+Tag ordering is explicit; a separately selected primary tag supplies the row
+highlight color, and staff can keep tags with no highlight.
+
+Completed Orders retain their existing single-order invoice reprint path. The
+bulk `Record selected as picked` correction is for pristine orders that were
+closed without warehouse stock reduction. For every selected order Pongo:
+
+1. validates the exact live Woo order is still `completed`;
+2. locks the local order, inventory aggregates, and item-location rows;
+3. rejects any prior allocation still held, processed quantity, pick history,
+   fulfillment history, unmatched item, inactive item, or stock shortage;
+4. fully allocates and posts the existing real pick machinery;
+5. immediately returns the order to a terminal local completion state inside
+   the same transaction;
+6. preserves the original `completed_at` and `closed_at` values;
+7. records one system order note plus the normal Pick, PickLine, StockMovement,
+   and inventory audit history; and
+8. after local commits, queues one durable targeted stock-sync job for the
+   deduplicated picked item IDs; the worker then applies the guarded absolute
+   stock writes to WooCommerce.
+
+No committed `picking_recovery` or Open Orders state is visible during this
+bulk action. Woo order status and Woo order lines are never mutated. Each order
+has its own derived idempotency key and transaction, and the targeted stock job
+has one deterministic job key. A completed identity-only fingerprint binds the
+batch key to its normalized selection, reason, and actor, rejecting changed
+payloads without acting as an ownership lease. This avoids a top-level claim
+that could remain stuck after process death while still serializing concurrent
+child mutations and job creation. Live status is fetched in one Woo collection request; a
+collection failure rejects the pending rows without individual-read fan-out.
+Completed rows expose the durable stock-sync job ID.
+If job creation fails after local stock commits, the exact same batch key can
+resume only queue creation, without double-decrementing stock. Fully picked
+recovery releases no sellable allocation, so it suppresses the normal global
+FIFO allocation scan inside each row.
 
 ## Safety Rules
 

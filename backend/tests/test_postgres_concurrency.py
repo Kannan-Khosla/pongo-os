@@ -18,6 +18,7 @@ from app.models.inventory import InventoryItem, InventoryItemLocation, Inventory
 from app.models.orders import Order, OrderItem
 from app.models.performance import MetricVersion
 from app.models.receipts import Receipt
+from app.models.stock_mutations import StockMutationRequest
 from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun, WooStockSyncJob
 from app.schemas.picks import PickRequest
 from app.schemas.receipts import DirectReceiptRequest
@@ -25,10 +26,13 @@ from app.schemas.auth import LoginRequest
 from app.services.auth import hash_password
 from app.services.location_inventory import create_committed_adjustment
 from app.services.metric_cache import current_metric_version, invalidate_metrics
+from app.services.order_actions import completed_pick_idempotency_key
 from app.api.routes.locations import ensure_location_has_no_stock
 from app.services.order_workflow import complete_picked_order
 from app.services.picks import commit_pick, unpick_orders
 from app.services.receiving import commit_direct_receipt
+from app.services.stock_mutation_guard import begin_stock_mutation, complete_stock_mutation
+from app.services.woocommerce_catalog_sync import POSTGRES_CATALOG_WORKER_LOCK_KEY, process_next_catalog_sync
 from app.services.woocommerce_stock_sync_jobs import POSTGRES_STOCK_JOB_WORKER_LOCK_KEY, process_next_stock_sync_job
 from app.services.woocommerce_sync_errors import store_sync_error_once
 
@@ -65,6 +69,37 @@ def test_postgres_reporting_indexes_keep_intended_expressions_and_predicates():
 
     customer_expressions = " ".join(definitions["ix_orders_reporting_customer_date"]["expressions"].lower().split())
     assert "lower(trim(both from customer_email))" in customer_expressions
+
+
+@pytest.mark.skipif(not os.environ.get("PONGO_TEST_POSTGRES_URL"), reason="PONGO_TEST_POSTGRES_URL is required for migration index verification")
+def test_postgres_catalog_sync_indexes_have_exact_active_and_identity_predicates():
+    engine = make_engine(os.environ["PONGO_TEST_POSTGRES_URL"])
+    with engine.connect() as connection:
+        rows = connection.execute(text(
+            "SELECT index_class.relname AS name, pg_get_indexdef(index_row.indexrelid) AS definition, "
+            "pg_get_expr(index_row.indpred, index_row.indrelid) AS predicate "
+            "FROM pg_index AS index_row "
+            "JOIN pg_class AS index_class ON index_class.oid = index_row.indexrelid "
+            "JOIN pg_class AS table_class ON table_class.oid = index_row.indrelid "
+            "JOIN pg_namespace AS namespace ON namespace.oid = table_class.relnamespace "
+            "WHERE namespace.nspname = 'public' AND index_class.relname IN "
+            "('uq_woo_catalog_one_active', 'uq_woo_catalog_request_key', "
+            "'uq_woo_map_active_item', 'uq_woo_map_active_product', 'uq_woo_map_active_variation')"
+        )).mappings().all()
+
+    definitions = {row["name"]: row for row in rows}
+    assert set(definitions) == {
+        "uq_woo_catalog_one_active",
+        "uq_woo_catalog_request_key",
+        "uq_woo_map_active_item",
+        "uq_woo_map_active_product",
+        "uq_woo_map_active_variation",
+    }
+    active = " ".join((definitions["uq_woo_catalog_one_active"]["predicate"] or "").lower().split())
+    assert all(status in active for status in ("fetching_variations", "waiting_retry", "cancelling"))
+    variation = " ".join(definitions["uq_woo_map_active_variation"]["definition"].lower().split())
+    assert "(woo_variation_id)" in variation
+    assert "(woo_product_id, woo_variation_id)" not in variation
 
 
 @pytest.mark.skipif(not os.environ.get("PONGO_TEST_POSTGRES_URL"), reason="PONGO_TEST_POSTGRES_URL is required for real transaction locking")
@@ -429,3 +464,65 @@ def test_postgres_stock_job_worker_releases_advisory_lock():
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": POSTGRES_STOCK_JOB_WORKER_LOCK_KEY}) is True
         connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": POSTGRES_STOCK_JOB_WORKER_LOCK_KEY})
+
+
+@pytest.mark.skipif(not os.environ.get("PONGO_TEST_POSTGRES_URL"), reason="PONGO_TEST_POSTGRES_URL is required for same-key concurrency verification")
+def test_postgres_completed_pick_child_guard_serializes_same_batch_key():
+    engine = make_engine(os.environ["PONGO_TEST_POSTGRES_URL"])
+    sessions = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    suffix = uuid4().hex
+    batch_key = f"pg-record-picked-{suffix}"
+    idempotency_key = completed_pick_idempotency_key(batch_key, 1)
+    payload = {
+        "order_id": 1,
+        "reason": None,
+        "actor": "postgres-concurrency-test",
+        "idempotency_key": idempotency_key,
+    }
+    barrier = Barrier(2)
+
+    def commit_guarded_child() -> str:
+        with sessions() as db:
+            barrier.wait()
+            mutation, replay = begin_stock_mutation(
+                db,
+                "record_completed_order_picked",
+                idempotency_key,
+                payload,
+            )
+            if replay is not None:
+                return "replayed"
+            assert mutation is not None
+            complete_stock_mutation(mutation, {"status": "completed", "order_id": 1})
+            db.commit()
+            return "committed"
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(lambda _index: commit_guarded_child(), range(2)))
+        assert sorted(outcomes) == ["committed", "replayed"]
+    finally:
+        with sessions() as db:
+            db.execute(
+                delete(StockMutationRequest).where(
+                    StockMutationRequest.operation == "record_completed_order_picked",
+                    StockMutationRequest.idempotency_key == idempotency_key,
+                )
+            )
+            db.commit()
+
+
+@pytest.mark.skipif(not os.environ.get("PONGO_TEST_POSTGRES_URL"), reason="PONGO_TEST_POSTGRES_URL is required for PostgreSQL advisory locks")
+def test_postgres_catalog_worker_respects_and_releases_advisory_lock():
+    engine = make_engine(os.environ["PONGO_TEST_POSTGRES_URL"])
+    sessions = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    settings = Settings(_env_file=None, app_env="test")
+    with engine.connect() as holder:
+        assert holder.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": POSTGRES_CATALOG_WORKER_LOCK_KEY}) is True
+        assert process_next_catalog_sync(settings, db_factory=sessions) is None
+        holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": POSTGRES_CATALOG_WORKER_LOCK_KEY})
+
+    assert process_next_catalog_sync(settings, db_factory=sessions) is None
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": POSTGRES_CATALOG_WORKER_LOCK_KEY}) is True
+        connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": POSTGRES_CATALOG_WORKER_LOCK_KEY})

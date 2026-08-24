@@ -194,7 +194,7 @@ class NormalizedWooRecord:
     description: str
     category: str
     brand: str
-    regular_price: Decimal
+    regular_price: Decimal | None
     sale_price: Decimal | None
     price: Decimal
     permalink: str
@@ -376,7 +376,7 @@ def normalize_remote_record(product: dict[str, Any], variation: dict[str, Any] |
     description = name if variation else strip_html(source.get("description") or product.get("short_description") or parent_name)
     dimensions = source.get("dimensions") or {}
     parent_dimensions = product.get("dimensions") or {}
-    regular_price = to_decimal(source.get("regular_price"))
+    regular_price = to_decimal_or_none(source.get("regular_price"))
     sale_price = to_decimal_or_none(source.get("sale_price"))
     price = to_decimal(source.get("price") or source.get("sale_price") or source.get("regular_price"))
     return NormalizedWooRecord(
@@ -452,7 +452,7 @@ def build_preview_row(db: Session, record: NormalizedWooRecord, *, allow_missing
         category=record.category,
         brand=record.brand,
         price=float(record.price),
-        regular_price=float(record.regular_price),
+        regular_price=float(record.regular_price) if record.regular_price is not None else None,
         stock_status=record.stock_status,
         stock_quantity_snapshot=float(record.stock_quantity) if record.stock_quantity is not None else None,
         local_item_id=local_item.id if local_item else None,
@@ -590,9 +590,15 @@ def attach_woo_mapping(item: InventoryItem, record: NormalizedWooRecord, synced_
 
 
 def active_mapping_matches(db: Session, record: NormalizedWooRecord) -> list[WooItemMapping]:
+    if record.woo_variation_id is None:
+        predicate = (
+            WooItemMapping.woo_product_id == record.woo_product_id,
+            WooItemMapping.woo_variation_id.is_(None),
+        )
+    else:
+        predicate = (WooItemMapping.woo_variation_id == record.woo_variation_id,)
     return list(db.scalars(select(WooItemMapping).where(
-        WooItemMapping.woo_product_id == record.woo_product_id,
-        WooItemMapping.woo_variation_id.is_(None) if record.woo_variation_id is None else WooItemMapping.woo_variation_id == record.woo_variation_id,
+        *predicate,
         WooItemMapping.active.is_(True),
     )).all())
 
@@ -695,6 +701,8 @@ def extract_brand(product: dict[str, Any]) -> str:
 
 
 def extract_barcode(record: dict[str, Any]) -> str:
+    if record.get("global_unique_id") not in (None, ""):
+        return str(record["global_unique_id"])
     for meta in record.get("meta_data") or []:
         if str(meta.get("key", "")).casefold() in {"barcode", "_barcode", "_ywbc_barcode"}:
             return str(meta.get("value") or "")

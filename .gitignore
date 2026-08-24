@@ -5,6 +5,7 @@ frontend/dist/
 frontend/playwright-report/
 frontend/test-results/
 .DS_Store
+outputs/
 Untitled.mov
 tmp/
 docs/ui-reference/zenventory_images/

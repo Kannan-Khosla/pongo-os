@@ -514,7 +514,14 @@ def complete_order_without_stock_reduction(db: Session, order_id: int, reason: s
     return {"status": "completed_without_picking", "order_id": order.id, "released_quantity": decimal_to_float(released_quantity), "message": "Order completed without picking. Stock was not reduced."}
 
 
-def complete_picked_order(db: Session, order_id: int, *, created_by: str = "system") -> dict:
+def complete_picked_order(
+    db: Session,
+    order_id: int,
+    *,
+    created_by: str = "system",
+    commit: bool = True,
+    run_fifo: bool = True,
+) -> dict:
     order = lock_order_completion_scope(db, order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -540,9 +547,13 @@ def complete_picked_order(db: Session, order_id: int, *, created_by: str = "syst
     order.workflow_notes = append_note(order.workflow_notes, "Order completed locally. Stock was already reduced during picking.")
     add_order_audit_events(db, order, "complete_picked_order", "Order completed locally. Stock was already reduced during picking.", created_by=created_by)
     sync_order_workflow_statuses(order)
-    auto_allocate_processing_orders_fifo(db, source="completion-release")
-    db.commit()
-    db.refresh(order)
+    if run_fifo:
+        auto_allocate_processing_orders_fifo(db, source="completion-release")
+    if commit:
+        db.commit()
+        db.refresh(order)
+    else:
+        db.flush()
     return {"status": "completed", "order_id": order.id, "released_quantity": decimal_to_float(released_quantity), "message": "Order completed locally. Stock was already reduced during picking."}
 
 

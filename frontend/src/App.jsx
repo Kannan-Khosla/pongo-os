@@ -7,6 +7,7 @@ import MobileCodeScanner from './MobileCodeScanner';
 import {
   ArrowLeft,
   BarChart3,
+  Ban,
   Bell,
   Boxes,
   CalendarDays,
@@ -41,8 +42,11 @@ import {
   Settings,
   ShoppingCart,
   SlidersHorizontal,
+  StickyNote,
+  Tag,
   TriangleAlert,
   Truck,
+  Trash2,
   Upload,
   UserCircle,
   Warehouse,
@@ -414,6 +418,20 @@ async function fetchOrderDetailRequest(orderId) {
   return response.json();
 }
 
+async function getJsonRequest(path, fallbackMessage = 'Unable to load data.') {
+  const response = await apiFetch(`${API_BASE_URL}${path}`);
+  if (!response.ok) {
+    let detail = '';
+    try {
+      detail = apiErrorDetail(await response.json());
+    } catch {
+      detail = await safeResponseText(response);
+    }
+    throw new Error(detail || fallbackMessage);
+  }
+  return response.json();
+}
+
 async function postOrderMutation(path, payload, { idempotencyRef, operation, includeKeyInBody = true }) {
   const mutation = withMutationIdempotency(idempotencyRef, operation, payload);
   const idempotencyKey = mutation.idempotency_key;
@@ -477,10 +495,10 @@ function removeOrderLine(orderId, lineId, payload, idempotencyRef) {
   });
 }
 
-function prepareCompletedOrderForPicking(orderId, payload, idempotencyRef) {
-  return postOrderMutation(`/api/orders/${orderId}/prepare-picking`, payload, {
+function recordCompletedOrdersPicked(orderIds, payload, idempotencyRef) {
+  return postOrderMutation('/api/orders/completed/bulk/record-picked', { order_ids: orderIds, ...payload }, {
     idempotencyRef,
-    operation: `order-${orderId}-prepare-picking`,
+    operation: 'completed-orders-record-picked',
     includeKeyInBody: true,
   });
 }
@@ -767,8 +785,9 @@ const pageMeta = {
     kicker: 'Settings / Integrations',
     tabs: [
       { label: 'Connection', href: '#/settings/connection' },
-      { label: 'Sync & Mapping', href: '#/settings/sync' },
-      { label: 'Writeback', href: '#/settings/writeback' },
+      { label: 'Products', href: '#/settings/catalog' },
+      { label: 'Orders & Product Links', href: '#/settings/sync' },
+      { label: 'WooCommerce Updates', href: '#/settings/writeback' },
       { label: 'Google Sheets', href: '#/settings/google-sheets' },
     ],
   },
@@ -778,8 +797,9 @@ const detailTabs = [];
 
 const settingsViews = [
   { id: 'connection', label: 'Connection', href: '#/settings/connection' },
-  { id: 'sync', label: 'Sync & Mapping', href: '#/settings/sync' },
-  { id: 'writeback', label: 'Writeback', href: '#/settings/writeback' },
+  { id: 'catalog', label: 'Products', href: '#/settings/catalog' },
+  { id: 'sync', label: 'Orders & Product Links', href: '#/settings/sync' },
+  { id: 'writeback', label: 'WooCommerce Updates', href: '#/settings/writeback' },
   { id: 'google-sheets', label: 'Google Sheets', href: '#/settings/google-sheets' },
 ];
 
@@ -788,12 +808,16 @@ const settingsViewMeta = {
     title: 'WooCommerce Connection',
     kicker: 'Settings / Integrations',
   },
+  catalog: {
+    title: 'WooCommerce Products',
+    kicker: 'Settings / WooCommerce',
+  },
   sync: {
-    title: 'Sync & Mapping',
+    title: 'Orders & Product Links',
     kicker: 'Settings / WooCommerce',
   },
   writeback: {
-    title: 'Writeback Control',
+    title: 'WooCommerce Updates',
     kicker: 'Settings / WooCommerce',
   },
   'google-sheets': {
@@ -810,7 +834,7 @@ function submitSearchOnEnter(event, submit) {
   submit();
 }
 
-function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect = null, onSubmit = null, label, placeholder, className = '', autoFocus = false, hideLabel = false }) {
+function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect = null, onSubmit = null, label, placeholder, className = '', autoFocus = false, hideLabel = false, suggestionsDisabled = false }) {
   const listboxId = useId();
   const inputRef = useRef(null);
   const [suggestions, setSuggestions] = useState([]);
@@ -828,15 +852,16 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
       mountedRef.current = true;
       return undefined;
     }
+    if (suggestionsDisabled) return undefined;
     const query = value.trim();
     if (dismissedQueryRef.current === query) return undefined;
     const timer = window.setTimeout(() => searchRef.current(query), 250);
     return () => window.clearTimeout(timer);
-  }, [value]);
+  }, [value, suggestionsDisabled]);
 
   useEffect(() => {
     const query = value.trim();
-    if (!query) {
+    if (!query || suggestionsDisabled) {
       setSuggestions([]);
       setOpen(false);
       setLoading(false);
@@ -872,7 +897,7 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [value]);
+  }, [value, suggestionsDisabled]);
 
   function submit(nextValue = value.trim()) {
     dismissedQueryRef.current = nextValue.trim();
@@ -937,12 +962,12 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
           aria-label={label}
           aria-autocomplete="list"
           aria-controls={listboxId}
-          aria-expanded={open}
+          aria-expanded={open && !suggestionsDisabled}
           aria-activedescendant={activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined}
           autoComplete="off"
           autoFocus={autoFocus}
           onChange={(event) => changeQuery(event.target.value)}
-          onFocus={() => value.trim() && dismissedQueryRef.current !== value.trim() && setOpen(true)}
+          onFocus={() => !suggestionsDisabled && value.trim() && dismissedQueryRef.current !== value.trim() && setOpen(true)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           ref={inputRef}
@@ -952,7 +977,7 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
         />
         <Search aria-hidden="true" size={18} />
       </div>
-      <FloatingMenu ariaLabel="Inventory suggestions" className="keyword-suggestions" id={listboxId} menuRole="listbox" onClose={() => setOpen(false)} open={open} triggerRef={inputRef}>
+      <FloatingMenu ariaLabel="Inventory suggestions" className="keyword-suggestions" id={listboxId} menuRole="listbox" onClose={() => setOpen(false)} open={open && !suggestionsDisabled} triggerRef={inputRef}>
           {loading && <div className="keyword-suggestion-status" role="status">Finding inventory…</div>}
           {!loading && error && <div className="keyword-suggestion-status">{error}</div>}
           {!loading && !error && !suggestions.length && <div className="keyword-suggestion-status">No matching inventory items</div>}
@@ -1338,9 +1363,11 @@ function parseHashRoute() {
   if (path === 'settings' || path.startsWith('settings/')) {
     const requestedView = path.split('/')[1] || 'connection';
     const view = settingsViews.some((candidate) => candidate.id === requestedView) ? requestedView : 'connection';
+    const requestedCatalogTab = query.get('tab') || 'overview';
     return {
       pageId: 'settings',
       settingsView: view,
+      catalogTab: view === 'catalog' && ['overview', 'attention', 'runs'].includes(requestedCatalogTab) ? requestedCatalogTab : 'overview',
       googleOAuthResult: view === 'google-sheets' ? query.get('google') || '' : '',
     };
   }
@@ -3397,11 +3424,12 @@ export default function App({ currentUser = null, onLogout = null }) {
           onDismiss={dismissActiveOrderNotifications}
           onViewOpenOrders={viewOpenOrdersFromNotification}
         />
-        <WooOrderSyncHealthWarning status={wooStatus} error={wooHealthError} />
+        <WooOrderSyncHealthWarning status={wooStatus} error={wooHealthError} route={route} />
         <main className="main-content" id="main-content" tabIndex={-1}>
           <PageHeader meta={activeMeta} route={route} />
           <PageBody
             route={route}
+            readOnly={isDemo}
             items={items}
             itemsPagination={itemsPagination}
             itemsLoading={itemsLoading}
@@ -3903,27 +3931,37 @@ function NewOrderNotificationRegion({ notifications = [], onDismiss, onViewOpenO
   );
 }
 
-function WooOrderSyncHealthWarning({ status, error }) {
+function WooOrderSyncHealthWarning({ status, error, route }) {
   const health = status?.order_reconciliation;
+  const relevantPage = route?.pageId === 'dashboard'
+    || route?.pageId === 'orders'
+    || (route?.pageId === 'settings' && (route.settingsView || 'connection') === 'sync');
+  if (!relevantPage) {
+    return null;
+  }
   if (status?.environment === 'development') {
     return null;
   }
   if (!error && (!status?.configured || !health || health.healthy)) {
     return null;
   }
+  const checkingIsOff = health?.enabled === false || /reconciliation is disabled/i.test(health?.message || '');
   const title = error
-    ? 'Automatic order sync health is unavailable'
-    : (health.degraded ? 'Automatic order sync needs review' : 'Automatic order sync is not healthy');
-  const detail = error || health.last_error || health.message || 'Open WooCommerce Settings to review the server reconciliation status.';
+    ? 'Pongo could not check for WooCommerce order updates'
+    : checkingIsOff ? 'Automatic order updates are turned off' : 'WooCommerce orders may be out of date';
+  const rawDetail = error || health.last_error || health.message;
+  const detail = /reconciliation is disabled/i.test(rawDetail || '')
+    ? 'Pongo is not checking WooCommerce for order changes automatically.'
+    : rawDetail || 'Review the order update settings to reconnect WooCommerce.';
   return (
-    <section className="woo-sync-health-warning" role="alert" aria-label="WooCommerce order sync warning">
+    <section className="woo-sync-health-warning" role="alert" aria-label="WooCommerce order update warning">
       <span className="woo-sync-health-icon" aria-hidden="true"><TriangleAlert size={21} /></span>
       <div>
         <strong>{title}</strong>
         <p>{detail}</p>
         {health?.last_success_at && <small>Last successful check {formatDateTime(health.last_success_at)}</small>}
       </div>
-      <a href="#/settings/sync">Review WooCommerce Settings</a>
+      <a href="#/settings/sync">Review order update settings</a>
     </section>
   );
 }
@@ -3966,6 +4004,7 @@ function PageHeader({ meta, route }) {
 
 function PageBody({
   route,
+  readOnly,
   items,
   itemsPagination,
   itemsLoading,
@@ -4295,6 +4334,7 @@ function PageBody({
 
   if (route.pageId === 'settings') {
     if (route.settingsView === 'google-sheets') return <GoogleSheetsSettingsPage oauthResult={route.googleOAuthResult} />;
+    if (route.settingsView === 'catalog') return <WooCatalogSyncPage route={route} configured={wooStatus.configured} readOnly={readOnly} />;
     return (
       <WooCommerceSettingsPage
         view={route.settingsView || 'connection'}
@@ -4449,7 +4489,7 @@ function BusinessDashboardPage({ dashboard, loading, error, onRefresh, onRefresh
     const confirmation = targetStatus === 'completed'
       ? fullyPicked
         ? `Mark order ${orderNumber} processed? Stock was already reduced during picking. This will mark the order completed in Pongo OS and WooCommerce.`
-        : `Mark order ${orderNumber} processed without picking? This will complete the order without reducing stock. You can later use Send to Pick Orders from Completed Orders.`
+        : `Mark order ${orderNumber} processed without picking? This will complete the order without reducing stock. If it was physically picked, you can later select it in Completed Orders and use Record selected as picked.`
       : `Cancel order ${orderNumber} in Pongo OS and WooCommerce?`;
     if (!window.confirm(confirmation)) return;
     setLiveOrderMutation({ pending: targetStatus, error: '', message: '', retryTarget: '' });
@@ -6307,23 +6347,17 @@ function ItemsCommandMenu({ label, align = 'start', children }) {
 }
 
 function ItemsList({ items, pagination = emptyItemsPagination, loading, error, onLoadItems, onRefreshItemFacets }) {
-  const [mappingOpen, setMappingOpen] = useState(false);
   const [cameraScannerOpen, setCameraScannerOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [visibleColumns, setVisibleColumns] = useState(ITEM_DEFAULT_VISIBLE_COLUMNS);
   const [detailId, setDetailId] = useState(null);
   const [detailData, setDetailData] = useState(null);
   const [detailTab, setDetailTab] = useState('overview');
-  const [importingNew, setImportingNew] = useState(false);
-  const [importError, setImportError] = useState('');
-  const [setupItemIds, setSetupItemIds] = useState([]);
-  const [setupIndex, setSetupIndex] = useState(0);
   const [savedViews, setSavedViews] = useState([]);
   const [selectedViewId, setSelectedViewId] = useState('');
   const [viewName, setViewName] = useState('');
   const [message, setMessage] = useState('');
   const [bulkOpen, setBulkOpen] = useState(false);
-  const [remapOpen, setRemapOpen] = useState(false);
   const [dataQuality, setDataQuality] = useState(null);
   const [filters, setFilters] = useState({
     search: '',
@@ -6469,41 +6503,6 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     }
   }
 
-  async function importNewProducts() {
-    setImportingNew(true);
-    setImportError('');
-    setMessage('');
-    try {
-      const result = await postJson('/api/integrations/woocommerce/products/import-new', {});
-      setMessage(result.message);
-      await onRefreshItemFacets();
-      await onLoadItems({ ...filters, page, pageSize });
-      const itemIds = result.setup_item_ids || [];
-      setSetupItemIds(itemIds);
-      setSetupIndex(0);
-      if (itemIds.length) await openDetail(itemIds[0], 'edit');
-    } catch (apiError) {
-      setImportError(apiError.message || 'Unable to import new WooCommerce products.');
-    } finally {
-      setImportingNew(false);
-    }
-  }
-
-  async function finishImportedItemSetup() {
-    await onRefreshItemFacets();
-    await onLoadItems({ ...filters, page, pageSize });
-    const nextIndex = setupIndex + 1;
-    if (nextIndex < setupItemIds.length) {
-      setSetupIndex(nextIndex);
-      await openDetail(setupItemIds[nextIndex], 'edit');
-    } else {
-      setSetupItemIds([]);
-      setSetupIndex(0);
-      setMessage('New WooCommerce products are imported and ready in Pongo.');
-      await openDetail(detailId, 'overview');
-    }
-  }
-
   function toggleSelected(itemId) {
     if (loading) return;
     setSelectedIds((current) => (current.includes(itemId) ? current.filter((id) => id !== itemId) : [...current, itemId]));
@@ -6553,7 +6552,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
           </div>
           <div className="button-row items-actions">
             <a className="primary-button" href="#/items/new"><Plus size={17} /> Add item</a>
-            <button aria-busy={importingNew} className="action-button items-import-new-button" disabled={importingNew} onClick={importNewProducts} type="button"><PackagePlus size={17} /> {importingNew ? 'Checking WooCommerce…' : 'Import new products'}</button>
+            <a className="action-button items-import-new-button" href="#/settings/catalog"><RefreshCw size={17} /> Update from WooCommerce</a>
             <a className="action-button items-import-button" href="#/items/import"><Upload size={17} /> Import items</a>
             <a className="action-button" href="#/items/import?outcome=update_stock"><RefreshCw size={17} /> Update stock CSV</a>
             <ItemsCommandMenu label="Export">
@@ -6565,8 +6564,8 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
             <ItemsCommandMenu align="end" label="More">
                 <button onClick={() => { onLoadItems({ ...filters, page, pageSize }); loadDataQuality(); }} type="button"><RefreshCw size={16} /><span><strong>Refresh items</strong><small>Reload items and quality checks</small></span></button>
                 <a href="#/items/imports"><History size={16} /><span><strong>Import history</strong><small>Jobs, changes, and failures</small></span></a>
-                <button onClick={() => setMappingOpen(true)} type="button"><Link2 size={16} /><span><strong>Sync WooCommerce catalog</strong><small>Preview storefront mappings</small></span></button>
-                <button onClick={() => setRemapOpen(true)} type="button"><Link2 size={16} /><span><strong>Fix connection exceptions</strong><small>Resolve unmatched products</small></span></button>
+                <a href="#/settings/catalog"><Link2 size={16} /><span><strong>Update products from WooCommerce</strong><small>Add missing products and refresh product links</small></span></a>
+                <a href="#/settings/catalog?tab=attention"><TriangleAlert size={16} /><span><strong>Review product matches</strong><small>Choose what to do with products Pongo could not match</small></span></a>
             </ItemsCommandMenu>
             {!!selectedIds.length && <button className="action-button" disabled={loading} onClick={() => setBulkOpen(true)} type="button"><Edit3 size={17} /> Bulk edit {selectedIds.length}</button>}
             {filtersChanged && <button className="muted-button" onClick={clearFilters} type="button">Clear filters</button>}
@@ -6649,14 +6648,11 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
         </details>
       </div>
       {error && <div className="api-error">{error}</div>}
-      {importError && <div className="api-error">{importError}</div>}
       {message && <div className="api-success">{message}</div>}
       {loading && <div className="loading-strip">Loading backend items...</div>}
       <ItemsTable items={displayedItems} loading={loading} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: displayedItems.length, noun: 'items', onPageChange: changeItemsPage, onPageSizeChange: changeItemsPageSize }} visibleColumns={visibleColumns} selectedIds={selectedIds} onToggleSelected={toggleSelected} onToggleAll={toggleAllDisplayed} onOpenDetail={openDetail} />
-      {mappingOpen && <ImportMappingsModal onClose={() => setMappingOpen(false)} onImported={async () => { await onRefreshItemFacets(); await onLoadItems({ ...filters, page, pageSize }); }} />}
-      {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => { setDetailId(null); setSetupItemIds([]); setSetupIndex(0); }} onRefresh={() => openDetail(detailId, detailTab)} onRefreshItemFacets={onRefreshItemFacets} onSetupSaved={setupItemIds.length ? finishImportedItemSetup : null} setupProgress={setupItemIds.length ? { current: setupIndex + 1, total: setupItemIds.length } : null} />}
+      {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onRefresh={() => openDetail(detailId, detailTab)} onRefreshItemFacets={onRefreshItemFacets} />}
       {bulkOpen && <BulkEditModal selectedIds={selectedIds} onCommitted={finishBulkEdit} onClose={() => setBulkOpen(false)} />}
-      {remapOpen && <LocalRemapSearchModal onClose={() => setRemapOpen(false)} />}
       <MobileCodeScanner open={cameraScannerOpen} onClose={() => setCameraScannerOpen(false)} onDetected={searchScannedCode} />
     </section>
   );
@@ -7093,7 +7089,7 @@ function Metric({ label, value, help = '' }) {
   );
 }
 
-function FilterSelect({ label, value, options, onChange, disabled = false }) {
+function FilterSelect({ label, value, options, onChange, disabled = false, formatOption = (option) => decodeHtmlEntities(String(option)) }) {
   return (
     <label className="field">
       <span>{label}</span>
@@ -7102,7 +7098,7 @@ function FilterSelect({ label, value, options, onChange, disabled = false }) {
           <option value="">All {label}</option>
           {options.map((option) => (
             <option key={option} value={option}>
-              {decodeHtmlEntities(String(option))}
+              {formatOption(option)}
             </option>
           ))}
         </select>
@@ -9454,8 +9450,10 @@ function OrdersPage({
   const [bulkActionMessage, setBulkActionMessage] = useState('');
   const [bulkActionError, setBulkActionError] = useState('');
   const [bulkPrintOrders, setBulkPrintOrders] = useState([]);
+  const [orderCancellation, setOrderCancellation] = useState({ orderId: null, pending: false, error: '', retry: false });
   const unpickMutationRef = useRef(null);
   const orderEditMutationRef = useRef(null);
+  const orderCancelMutationRef = useRef(null);
   const orders = ordersData.orders || [];
   const ordersPageCount = Math.max(1, Number(ordersData.total_pages || 1));
   const pagedOpenOrders = orders;
@@ -9466,6 +9464,7 @@ function OrdersPage({
   useEffect(() => {
     setOrderDialogOpen(false);
     setSelectedOpenOrderIds([]);
+    setOrderCancellation({ orderId: null, pending: false, error: '', retry: false });
     if (view !== 'open') return;
     const cleared = { orderNumber: '', customer: '', containingItem: '', warehouse: '', search: '', wooStatus: '', availabilityStatus: '', matchedStatus: '' };
     setFilters(cleared);
@@ -9484,7 +9483,16 @@ function OrdersPage({
   }, [ordersData.page, ordersData.page_size]);
 
   useEffect(() => {
-    if (bulkPrintOrders.length) printVisibleRoot('bulk-order-printing');
+    if (!bulkPrintOrders.length) return undefined;
+    printVisibleRoot('bulk-order-printing');
+    let clearFrame = 0;
+    const afterPrintFrame = window.requestAnimationFrame(() => {
+      clearFrame = window.requestAnimationFrame(() => setBulkPrintOrders([]));
+    });
+    return () => {
+      window.cancelAnimationFrame(afterPrintFrame);
+      if (clearFrame) window.cancelAnimationFrame(clearFrame);
+    };
   }, [bulkPrintOrders]);
 
   function updateFilter(key, value) {
@@ -9591,6 +9599,48 @@ function OrdersPage({
       resetMutationIdempotency(unpickMutationRef);
     } catch (unpickError) {
       setBulkActionError(unpickError.message || 'Unable to unpick this order.');
+    } finally {
+      setBulkActionLoading(false);
+    }
+  }
+
+  async function cancelOpenOrder(order, confirmAction = true) {
+    if (!order?.woo_order_id || orderCancellation.pending) return;
+    const orderNumber = order.woo_order_number || order.woo_order_id;
+    if (confirmAction && !window.confirm(`Cancel order ${orderNumber} in Pongo OS and WooCommerce? Picked quantities will be restored to their original Pongo locations, and remaining allocations will be released. Fulfilled products cannot be cancelled.`)) return;
+    setBulkActionLoading(true);
+    setBulkActionMessage('');
+    setBulkActionError('');
+    setOrderCancellation({ orderId: order.id, pending: true, error: '', retry: false });
+    try {
+      const result = await updateLiveWooOrderStatus(order.woo_order_id, 'cancelled', {
+        reason: 'Cancelled from Open Orders.',
+        completion_mode: undefined,
+        queue_woo_status_update: true,
+      }, orderCancelMutationRef);
+      if (normalizeWooStatus(result.woo_sync_status) !== 'sent') {
+        const message = result.woo_sync_error || result.message || `WooCommerce cancellation is ${result.woo_sync_status || 'not confirmed'}.`;
+        setBulkActionError(message);
+        setOrderCancellation({ orderId: order.id, pending: false, error: message, retry: true });
+        return;
+      }
+      resetMutationIdempotency(orderCancelMutationRef);
+      setBulkActionMessage(result.message || `Order ${orderNumber} was cancelled.`);
+      setBulkActionError(result.woo_sync_error || '');
+      setOrderCancellation({ orderId: null, pending: false, error: '', retry: false });
+      if (detail?.id === order.id) {
+        setOrderDialogOpen(false);
+        onLoadOpenOrderDetail(null);
+      }
+      try {
+        await onLoadOpenOrders({ ...appliedOrderFilters, page: ordersPageNumber, pageSize: ordersPageSize }, { ordersView: 'open' });
+      } catch (refreshError) {
+        setBulkActionError(result.woo_sync_error || `Order ${orderNumber} was cancelled, but Open Orders could not refresh: ${refreshError.message}`);
+      }
+    } catch (cancellationError) {
+      const message = cancellationError.message || 'Unable to cancel this order.';
+      setBulkActionError(message);
+      setOrderCancellation({ orderId: order.id, pending: false, error: message, retry: true });
     } finally {
       setBulkActionLoading(false);
     }
@@ -9813,13 +9863,23 @@ function OrdersPage({
             onEdit={() => editOpenOrder(order.id)}
             onPrint={() => printOpenOrder(order.id)}
             onComplete={() => onCompleteOrder(order.id, order.pick_status)}
+            onCancel={() => cancelOpenOrder(order)}
             onUnpick={() => unpickOpenOrder(order)}
             onTimeline={() => { window.location.hash = '#/orders/history'; }}
           />
         )}
       />
       <OrdersPager count={ordersData.total || 0} page={ordersPageNumber} pageCount={ordersPageCount} pageSize={ordersPageSize} onPageChange={changeOpenOrdersPage} onPageSizeChange={changeOpenOrdersPageSize} />
-      {orderDialogOpen && <OpenOrderDetailPanel order={detail} onAdd={addOpenOrderLine} onClose={() => { setOrderDialogOpen(false); onLoadOpenOrderDetail(null); }} onPrint={() => printVisibleRoot('single-order-printing')} onRemove={removeOpenOrderLine} onSubstitute={substituteOpenOrderLine} />}
+      {orderDialogOpen && <OpenOrderDetailPanel order={detail} onAdd={addOpenOrderLine} onClose={() => { setOrderDialogOpen(false); onLoadOpenOrderDetail(null); }} onMetadataChange={refreshEditedOpenOrder} onPrint={() => printVisibleRoot('single-order-printing')} onRemove={removeOpenOrderLine} onSubstitute={substituteOpenOrderLine} statusActions={{
+        ready: true,
+        loading: false,
+        pending: orderCancellation.orderId === detail?.id && orderCancellation.pending ? 'cancelled' : '',
+        error: orderCancellation.orderId === detail?.id ? orderCancellation.error : '',
+        message: '',
+        retryTarget: orderCancellation.orderId === detail?.id && orderCancellation.retry ? 'cancelled' : '',
+        onCancel: () => cancelOpenOrder(detail),
+        onRetry: () => cancelOpenOrder(detail, false),
+      }} />}
       <BulkPrintSheet orders={bulkPrintOrders} />
     </section>
   );
@@ -10668,6 +10728,11 @@ export function OrderInvoice({ order, className = '' }) {
   const orderNumber = order.woo_order_number || order.woo_order_id || order.id;
   const paymentMethod = order.payment_method_title || order.payment_method || 'Not provided';
   const invoiceStatus = titleize(normalizeWooStatus(order.woo_status || order.status || order.local_status || order.completion_status) || 'unknown');
+  const hasLocalInvoicePrice = (line) => Boolean(line.substituted_from_item_id || line.sync_status === 'local_added')
+    || (line.invoice_unit_price != null && Number(line.invoice_unit_price) !== Number(line.unit_price));
+  const hasLocalInvoiceEdits = (order.lines || []).some(hasLocalInvoicePrice)
+    || (order.invoice_subtotal != null && Number(order.invoice_subtotal) !== Number(order.subtotal))
+    || (order.invoice_total != null && Number(order.invoice_total) !== Number(order.total));
   return (
     <article className={`order-invoice ${className}`.trim()} aria-label={`Invoice for order ${orderNumber}`}>
       <header className="invoice-masthead">
@@ -10710,17 +10775,17 @@ export function OrderInvoice({ order, className = '' }) {
         </thead>
         <tbody>
           {(order.lines || []).map((line) => {
-            const substitution = line.substitution || {};
-            const invoiceSku = line.sku || substitution.original_sku || line.substituted_from_sku;
-            const invoiceName = line.name || substitution.original_name || line.substituted_from_name;
-            const invoiceBarcode = line.barcode || substitution.original_barcode || line.substituted_from_barcode;
+            const substitution = orderLineSubstitution(line);
+            const invoiceSku = substitution?.effectiveSku || line.effective_sku || line.sku;
+            const invoiceName = substitution?.effectiveName || line.effective_name || line.name;
+            const invoiceBarcode = line.effective_barcode || line.barcode;
             return <tr key={line.id}>
               <td><strong>{invoiceSku || '—'}</strong><span>{invoiceBarcode || ''}</span></td>
               <td><strong>{decodeHtmlEntities(invoiceName || 'Unnamed product')}</strong></td>
               <td>{formatNumber(line.quantity_ordered)}</td>
-              <td>{formatCurrency(line.unit_price)}</td>
-              <td>{formatCurrency(line.line_tax)}</td>
-              <td>{formatCurrency(line.line_total)}</td>
+              <td>{formatCurrency(line.invoice_unit_price ?? line.unit_price)}</td>
+              <td>{formatCurrency(hasLocalInvoicePrice(line) ? null : line.line_tax)}</td>
+              <td>{formatCurrency(line.invoice_line_total ?? line.line_total)}</td>
             </tr>;
           })}
           {!order.lines?.length && <tr><td colSpan="6">No line items were returned for this order.</td></tr>}
@@ -10733,11 +10798,11 @@ export function OrderInvoice({ order, className = '' }) {
           <p>{order.customer_note || 'No delivery notes were provided.'}</p>
         </div>
         <dl className="invoice-totals">
-          <div><dt>Subtotal</dt><dd>{formatCurrency(order.subtotal)}</dd></div>
+          <div><dt>Subtotal</dt><dd>{formatCurrency(order.invoice_subtotal ?? order.subtotal)}</dd></div>
           <div><dt>Discount</dt><dd>{order.discount_total ? `−${formatCurrency(order.discount_total)}` : formatCurrency(0)}</dd></div>
           <div><dt>Shipping</dt><dd>{formatCurrency(order.shipping_total ?? 0)}</dd></div>
-          <div><dt>Tax</dt><dd>{formatCurrency(order.tax_total ?? 0)}</dd></div>
-          <div className="invoice-grand-total"><dt>Total</dt><dd>{formatCurrency(order.total)}</dd></div>
+          <div><dt>{hasLocalInvoiceEdits ? 'Woo tax' : 'Tax'}</dt><dd>{formatCurrency(order.tax_total ?? 0)}</dd></div>
+          <div className="invoice-grand-total"><dt>Total</dt><dd>{formatCurrency(order.invoice_total ?? order.total)}</dd></div>
         </dl>
       </section>
 
@@ -10780,6 +10845,291 @@ function OrdersPager({ count, page, pageCount, pageSize, onPageChange, onPageSiz
   );
 }
 
+function orderTagColor(tag = {}) {
+  const value = String(tag.color || '').trim();
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : '#667085';
+}
+
+function orderHighlightColor(order = {}) {
+  const value = String(order.highlight_color || '').trim();
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : '';
+}
+
+function orderNoteText(note) {
+  if (typeof note === 'string') return note;
+  return String(note?.note || '');
+}
+
+function orderHighlightTagId(order = {}, tags = order.tags || []) {
+  if (Object.prototype.hasOwnProperty.call(order, 'highlight_tag_id')) return order.highlight_tag_id;
+  const color = orderHighlightColor(order);
+  return color ? tags.find((tag) => orderTagColor(tag).toLowerCase() === color.toLowerCase())?.id ?? null : null;
+}
+
+function OrderTagChip({ tag, onRemove = null }) {
+  return (
+    <span className="order-tag-chip" style={{ '--order-tag-color': orderTagColor(tag) }}>
+      <span aria-hidden="true" className="order-tag-dot" />
+      <span>{tag.name || 'Unnamed tag'}</span>
+      {onRemove && <button aria-label={`Remove tag ${tag.name || 'Unnamed tag'}`} onClick={onRemove} type="button"><X aria-hidden="true" size={12} /></button>}
+    </span>
+  );
+}
+
+function OrderMetadataSummary({ order }) {
+  const tags = Array.isArray(order.tags) ? order.tags : [];
+  const latestNote = orderNoteText(order.latest_note);
+  const noteCount = Number(order.note_count || 0);
+  if (!tags.length && !latestNote && !noteCount) return null;
+  return (
+    <span className="order-metadata-summary">
+      {tags.length > 0 && (
+        <span aria-label={`${tags.length} Pongo order tag${tags.length === 1 ? '' : 's'}`} className="order-row-tags">
+          {tags.slice(0, 2).map((tag) => <OrderTagChip key={tag.id ?? tag.name} tag={tag} />)}
+          {tags.length > 2 && <span className="order-tag-overflow">+{tags.length - 2}</span>}
+        </span>
+      )}
+      {(latestNote || noteCount > 0) && <span className="order-latest-note"><StickyNote aria-hidden="true" size={12} />{latestNote || `${noteCount} Pongo note${noteCount === 1 ? '' : 's'}`}</span>}
+    </span>
+  );
+}
+
+function OrderMetadataPanel({ order, onMetadataChange = null }) {
+  const headingId = useId();
+  const noteMutationRef = useRef(null);
+  const noteVersionRef = useRef(0);
+  const [tagDefinitions, setTagDefinitions] = useState([]);
+  const [assignedTags, setAssignedTags] = useState(Array.isArray(order.tags) ? order.tags : []);
+  const [highlightTagId, setHighlightTagId] = useState(orderHighlightTagId(order));
+  const [notes, setNotes] = useState(Array.isArray(order.internal_notes) ? order.internal_notes : []);
+  const [note, setNote] = useState('');
+  const [tagToAssign, setTagToAssign] = useState('');
+  const [newTagName, setNewTagName] = useState('');
+  const [newTagColor, setNewTagColor] = useState('#0f149a');
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [metadataError, setMetadataError] = useState('');
+
+  useEffect(() => {
+    setAssignedTags(Array.isArray(order.tags) ? order.tags : []);
+    setHighlightTagId(orderHighlightTagId(order));
+    if (Array.isArray(order.internal_notes)) setNotes(order.internal_notes);
+  }, [order]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const noteVersion = noteVersionRef.current;
+    setLoading(true);
+    setMetadataError('');
+    Promise.allSettled([
+      getJsonRequest('/api/orders/tags', 'Unable to load Pongo order tags.'),
+      getJsonRequest(`/api/orders/${order.id}/notes`, 'Unable to load Pongo order notes.'),
+    ]).then(([tagResult, noteResult]) => {
+      if (cancelled) return;
+      const failures = [];
+      if (tagResult.status === 'fulfilled') setTagDefinitions(Array.isArray(tagResult.value) ? tagResult.value : tagResult.value.tags || []);
+      else failures.push(tagResult.reason?.message || 'Unable to load tags.');
+      if (noteResult.status === 'fulfilled' && noteVersion === noteVersionRef.current) {
+        setNotes(Array.isArray(noteResult.value) ? noteResult.value : noteResult.value.notes || []);
+      }
+      else failures.push(noteResult.reason?.message || 'Unable to load notes.');
+      setMetadataError(failures.join(' '));
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [order.id]);
+
+  async function refreshOrderMetadata() {
+    try {
+      const updatedOrder = await fetchOrderDetailRequest(order.id);
+      const updatedTags = Array.isArray(updatedOrder.tags) ? updatedOrder.tags : [];
+      setAssignedTags(updatedTags);
+      setHighlightTagId(orderHighlightTagId(updatedOrder, updatedTags));
+      if (Array.isArray(updatedOrder.internal_notes)) setNotes(updatedOrder.internal_notes);
+      await onMetadataChange?.(updatedOrder);
+    } catch (refreshError) {
+      setMetadataError(`The change was saved, but the latest order data could not be reloaded. ${refreshError.message || ''}`.trim());
+    }
+  }
+
+  async function submitNote(event) {
+    event.preventDefault();
+    const cleanNote = note.trim();
+    if (!cleanNote || busy) return;
+    setBusy(true);
+    noteVersionRef.current += 1;
+    setMetadataError('');
+    setMessage('');
+    try {
+      const savedNote = await postOrderMutation(`/api/orders/${order.id}/notes`, { note: cleanNote }, {
+        idempotencyRef: noteMutationRef,
+        operation: `order-${order.id}-note`,
+        includeKeyInBody: true,
+      });
+      resetMutationIdempotency(noteMutationRef);
+      setNote('');
+      setMessage('Pongo note saved for everyone.');
+      await refreshOrderMetadata();
+      setNotes((current) => [savedNote, ...current.filter((entry) => entry.id !== savedNote.id)]);
+    } catch (saveError) {
+      setMetadataError(saveError.message || 'Unable to save this Pongo note.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveTagAssignments(nextTags, nextHighlightTagId) {
+    await putJson(`/api/orders/${order.id}/tags`, {
+      tag_ids: nextTags.map((tag) => tag.id),
+      highlight_tag_id: nextHighlightTagId == null || nextHighlightTagId === '' ? null : nextHighlightTagId,
+    });
+    setAssignedTags(nextTags);
+    setHighlightTagId(nextHighlightTagId == null || nextHighlightTagId === '' ? null : nextHighlightTagId);
+    await refreshOrderMetadata();
+  }
+
+  async function assignTag() {
+    const selectedTag = tagDefinitions.find((tag) => String(tag.id) === String(tagToAssign));
+    if (!selectedTag || busy) return;
+    setBusy(true);
+    setMetadataError('');
+    setMessage('');
+    try {
+      const nextTags = [...assignedTags, selectedTag];
+      const nextHighlight = highlightTagId ?? selectedTag.id;
+      await saveTagAssignments(nextTags, nextHighlight);
+      setTagToAssign('');
+      setMessage(`${selectedTag.name} added to this order.`);
+    } catch (saveError) {
+      setMetadataError(saveError.message || 'Unable to assign this tag.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeTag(tag) {
+    if (busy) return;
+    setBusy(true);
+    setMetadataError('');
+    setMessage('');
+    const nextTags = assignedTags.filter((candidate) => String(candidate.id) !== String(tag.id));
+    const nextHighlight = String(highlightTagId) === String(tag.id) ? (nextTags[0]?.id ?? null) : highlightTagId;
+    try {
+      await saveTagAssignments(nextTags, nextHighlight);
+      setMessage(`${tag.name} removed from this order.`);
+    } catch (saveError) {
+      setMetadataError(saveError.message || 'Unable to remove this tag.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeHighlight(nextHighlight) {
+    if (busy) return;
+    setBusy(true);
+    setMetadataError('');
+    setMessage('');
+    const resolvedHighlight = nextHighlight === '' ? null : assignedTags.find((tag) => String(tag.id) === nextHighlight)?.id ?? null;
+    try {
+      await saveTagAssignments(assignedTags, resolvedHighlight);
+      setMessage(resolvedHighlight == null ? 'Order row highlight removed.' : 'Order row highlight updated.');
+    } catch (saveError) {
+      setMetadataError(saveError.message || 'Unable to update the order highlight.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createAndAssignTag(event) {
+    event.preventDefault();
+    const name = newTagName.trim();
+    if (!name || busy) return;
+    let createdTag = null;
+    setBusy(true);
+    setMetadataError('');
+    setMessage('');
+    try {
+      const body = await postJson('/api/orders/tags', { name, color: newTagColor });
+      createdTag = body.tag || body;
+      setTagDefinitions((current) => [...current.filter((tag) => String(tag.id) !== String(createdTag.id)), createdTag]);
+      setNewTagName('');
+      await saveTagAssignments([...assignedTags, createdTag], highlightTagId ?? createdTag.id);
+      setMessage(`${createdTag.name || name} created and added to this order.`);
+    } catch (saveError) {
+      setMetadataError(createdTag
+        ? `${createdTag.name || name} was created, but could not be added to this order. Select it under Add existing tag to retry.`
+        : saveError.message || 'Unable to create this tag.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const availableTags = tagDefinitions.filter((tag) => !assignedTags.some((assigned) => String(assigned.id) === String(tag.id)));
+  return (
+    <section aria-labelledby={headingId} className="order-metadata-panel">
+      <div className="order-metadata-heading">
+        <div><span className="order-editor-kicker">Pongo OS only</span><h3 id={headingId}>Notes &amp; tags</h3></div>
+        <span>Shared with Pongo staff. Never printed or sent to WooCommerce.</span>
+      </div>
+      {loading && <div className="loading-strip" role="status">Loading Pongo notes and tags…</div>}
+      {metadataError && <div className="api-error" role="alert">{metadataError}</div>}
+      {message && <div aria-live="polite" className="success-strip" role="status">{message}</div>}
+      <div className="order-metadata-grid">
+        <div className="order-notes-column">
+          <div className="order-metadata-section-title"><StickyNote aria-hidden="true" size={17} /><strong>Internal notes</strong><span>{notes.length}</span></div>
+          <form className="order-note-form" onSubmit={submitNote}>
+            <label htmlFor={`${headingId}-note`}>Add a Pongo note</label>
+            <textarea id={`${headingId}-note`} maxLength="4000" onChange={(event) => setNote(event.target.value)} placeholder="Write a note for your team…" rows="3" value={note} />
+            <button className="primary-button" disabled={busy || !note.trim()} type="submit">{busy ? 'Saving…' : 'Save note'}</button>
+          </form>
+          <div aria-label="Pongo order notes" className="order-notes-list">
+            {notes.map((entry, index) => (
+              <article className="order-note-card" key={entry.id ?? `${entry.created_at || 'note'}-${index}`}>
+                <p>{orderNoteText(entry)}</p>
+                <small>{entry.created_by || 'Pongo staff'}{entry.created_at ? ` · ${formatDateTime(entry.created_at)}` : ''}</small>
+              </article>
+            ))}
+            {!loading && notes.length === 0 && <p className="order-metadata-empty">No Pongo notes yet.</p>}
+          </div>
+        </div>
+        <div className="order-tags-column">
+          <div className="order-metadata-section-title"><Tag aria-hidden="true" size={17} /><strong>Order tags</strong><span>{assignedTags.length}</span></div>
+          <div aria-label="Assigned order tags" className="order-assigned-tags">
+            {assignedTags.map((tag) => <OrderTagChip key={tag.id ?? tag.name} onRemove={() => removeTag(tag)} tag={tag} />)}
+            {!assignedTags.length && <p className="order-metadata-empty">No tags assigned.</p>}
+          </div>
+          <div className="order-tag-controls">
+            <label htmlFor={`${headingId}-assign-tag`}>Add existing tag</label>
+            <div>
+              <select disabled={busy || availableTags.length === 0} id={`${headingId}-assign-tag`} onChange={(event) => setTagToAssign(event.target.value)} value={tagToAssign}>
+                <option value="">{availableTags.length ? 'Choose a tag…' : 'No unassigned tags'}</option>
+                {availableTags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
+              </select>
+              <button className="muted-button" disabled={busy || !tagToAssign} onClick={assignTag} type="button">Add tag</button>
+            </div>
+            <label htmlFor={`${headingId}-highlight-tag`}>Row highlight</label>
+            <select disabled={busy || assignedTags.length === 0} id={`${headingId}-highlight-tag`} onChange={(event) => changeHighlight(event.target.value)} value={highlightTagId == null ? '' : String(highlightTagId)}>
+              <option value="">No highlight</option>
+              {assignedTags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
+            </select>
+          </div>
+          <details className="order-create-tag">
+            <summary>Create a new tag</summary>
+            <form onSubmit={createAndAssignTag}>
+              <label htmlFor={`${headingId}-tag-name`}>Tag name</label>
+              <input id={`${headingId}-tag-name`} maxLength="80" onChange={(event) => setNewTagName(event.target.value)} placeholder="e.g. Call before delivery" value={newTagName} />
+              <label htmlFor={`${headingId}-tag-color`}>Tag color</label>
+              <input aria-label="Tag color" id={`${headingId}-tag-color`} onChange={(event) => setNewTagColor(event.target.value)} type="color" value={newTagColor} />
+              <button className="muted-button" disabled={busy || !newTagName.trim()} type="submit">Create &amp; add</button>
+            </form>
+          </details>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function OpenOrdersTable({ orders, onSelect, renderActions, selectable = false, selectedIds = new Set(), selectionDisabled = false, onToggleSelection, onToggleAll }) {
   const allSelected = orders.length > 0 && orders.every((order) => selectedIds.has(order.id));
   return (
@@ -10801,9 +11151,9 @@ function OpenOrdersTable({ orders, onSelect, renderActions, selectable = false, 
         </thead>
         <tbody>
           {orders.map((order) => (
-            <tr key={order.id} onDoubleClick={() => { if (!selectionDisabled) onSelect(order.id); }}>
+            <tr className={orderHighlightColor(order) ? 'order-row-highlighted' : ''} key={order.id} onDoubleClick={() => { if (!selectionDisabled) onSelect(order.id); }} style={orderHighlightColor(order) ? { '--order-highlight': orderHighlightColor(order) } : undefined}>
               <td className="order-actions-cell">{renderActions?.(order)}</td>
-              <td className="mono open-order-number" data-label="Order Number">{order.woo_order_number || order.woo_order_id}</td>
+              <td className="open-order-number order-metadata-cell" data-label="Order Number"><span className="mono">{order.woo_order_number || order.woo_order_id}</span><OrderMetadataSummary order={order} /></td>
               <td data-label="Placed On">{formatDateTime(order.date_created)}</td>
               <td data-label="Customer">{order.customer_name || '—'}</td>
               <td data-label="City">{order.shipping_city || '—'}</td>
@@ -10831,7 +11181,7 @@ function openOrderState(order) {
   return 'not picked';
 }
 
-function OrderActionsMenu({ order, disabled, onView, onEdit, onPrint, onComplete, onUnpick, onTimeline }) {
+function OrderActionsMenu({ order, disabled, onView, onEdit, onPrint, onComplete, onCancel, onUnpick, onTimeline }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
   const orderNumber = order.woo_order_number || order.woo_order_id;
@@ -10841,6 +11191,7 @@ function OrderActionsMenu({ order, disabled, onView, onEdit, onPrint, onComplete
     { label: 'Edit order', icon: Edit3, onClick: onEdit },
     { label: 'Print order', icon: Printer, onClick: onPrint },
     { label: 'Complete order', icon: CheckCircle2, onClick: onComplete, danger: true },
+    { label: 'Cancel order', icon: Ban, onClick: onCancel, danger: true },
     { label: 'Unpick', icon: RotateCcw, onClick: onUnpick, disabled: Number(order.total_quantity_picked || 0) <= 0 },
     { label: 'View timeline', icon: CalendarDays, onClick: onTimeline },
   ];
@@ -10894,10 +11245,16 @@ function inventorySearchItemSku(item = {}) {
   return candidate.sku || candidate.SKU || '';
 }
 
-function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove = null, onSubstitute = null, showPrint = true, statusActions = null, title = 'View Customer Order' }) {
+function inventorySearchItemPrice(item = {}) {
+  const candidate = item || {};
+  return candidate.sales_price ?? candidate['Sales Price'] ?? candidate.recommended_retail_price ?? candidate['Recommended Retail Price'];
+}
+
+function OpenOrderDetailPanel({ order, onAdd = null, onClose, onMetadataChange = null, onPrint, onRemove = null, onSubstitute = null, showPrint = true, statusActions = null, title = 'View Customer Order' }) {
   const dialogRef = useRef(null);
   const onCloseRef = useRef(onClose);
   const scannerOpenRef = useRef(false);
+  const scanRequestRef = useRef(0);
   const [editMode, setEditMode] = useState('');
   const [editLine, setEditLine] = useState(null);
   const [itemQuery, setItemQuery] = useState('');
@@ -10923,7 +11280,7 @@ function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove 
         return;
       }
       if (event.key !== 'Tab' || !dialogRef.current) return;
-      const focusable = [...dialogRef.current.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')];
+      const focusable = [...dialogRef.current.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [href], [tabindex]:not([tabindex="-1"])')];
       if (!focusable.length) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
@@ -10949,6 +11306,7 @@ function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove 
   }, [order?.id]);
 
   function closeEditor() {
+    scanRequestRef.current += 1;
     setEditMode('');
     setEditLine(null);
     setItemQuery('');
@@ -10967,6 +11325,7 @@ function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove 
   }
 
   async function selectScannedItem(value) {
+    const requestId = ++scanRequestRef.current;
     const scannedValue = value.trim();
     setItemQuery(scannedValue);
     setSelectedItem(null);
@@ -10975,6 +11334,7 @@ function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove 
       const response = await apiFetch(`${API_BASE_URL}/api/items/search?q=${encodeURIComponent(scannedValue)}&limit=100`);
       if (!response.ok) throw new Error(`Item search returned ${response.status}`);
       const body = await response.json();
+      if (requestId !== scanRequestRef.current) return;
       const exact = (body.items || []).find((item) => [item.sku, item.barcode].some((code) => String(code || '').trim().toLowerCase() === scannedValue.toLowerCase()));
       if (!exact) {
         setEditError(`No inventory item matched ${scannedValue}. You can continue searching by name, SKU, or barcode.`);
@@ -10983,6 +11343,7 @@ function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove 
       setSelectedItem(exact);
       setItemQuery(inventorySearchItemSku(exact) || exact.barcode || inventorySearchItemLabel(exact));
     } catch (error) {
+      if (requestId !== scanRequestRef.current) return;
       setEditError(error.message || 'Unable to search the scanned code.');
     }
   }
@@ -11049,6 +11410,7 @@ function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove 
           {editError && <div className="api-error" role="alert">{editError}</div>}
           {editMessage && <div className="success-strip" role="status" aria-live="polite">{editMessage}</div>}
           {editWarning && <div className="warning-strip" role="status">Local edit saved. WooCommerce stock needs attention: {editWarning}</div>}
+          <OrderMetadataPanel onMetadataChange={onMetadataChange} order={order} />
           <div className="order-detail-summary">
             <div className="order-address-card">
               <strong>Ship/Bill To</strong>
@@ -11097,8 +11459,8 @@ function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove 
                     <td>{formatNumber(line.quantity_ordered)}</td>
                     <td>{formatNumber(line.quantity_picked)}</td>
                     <td>{formatNumber(line.quantity_fulfilled)}</td>
-                    <td>{localOnly ? '—' : formatCurrency(line.line_total)}</td>
-                    {canEditProducts && <td><div className="order-line-actions"><button className="link-button order-line-substitute-button" disabled={editBusy || editLocked} onClick={() => beginEdit('substitute', line)} title={editLocked ? 'Picked or fulfilled lines cannot be edited.' : undefined} type="button">Substitute</button><button className="link-button danger-link" disabled={editBusy || editLocked} onClick={() => beginEdit('remove', line)} title={editLocked ? 'Picked or fulfilled lines cannot be edited.' : undefined} type="button">Remove</button></div></td>}
+                    <td>{formatCurrency(line.invoice_line_total ?? line.line_total)}</td>
+                    {canEditProducts && <td><div className="order-line-actions"><button className="order-line-action-button order-line-substitute-button" disabled={editBusy || editLocked} onClick={() => beginEdit('substitute', line)} title={editLocked ? 'Picked or fulfilled lines cannot be edited.' : undefined} type="button"><RefreshCw aria-hidden="true" size={14} />Substitute</button><button className="order-line-action-button danger-link" disabled={editBusy || editLocked} onClick={() => beginEdit('remove', line)} title={editLocked ? 'Picked or fulfilled lines cannot be edited.' : undefined} type="button"><Trash2 aria-hidden="true" size={14} />Remove</button></div></td>}
                   </tr>;
                 })}
                 {!order.lines?.length && <tr><td colSpan={canEditProducts ? 8 : 7}><div className="empty-table-row">No product lines are available for this order.</div></td></tr>}
@@ -11115,16 +11477,18 @@ function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove 
                 </div>
                 <button aria-label="Close product editor" className="icon-button" disabled={editBusy} onClick={closeEditor} type="button"><X size={18} /></button>
               </div>
-              {editMode === 'remove' ? (
-                <div className="order-edit-current-product"><span>Product to remove</span><strong>{editLine?.effective_name || editLine?.name || 'Unnamed product'}</strong><small>{editLine?.effective_sku || editLine?.sku || 'No SKU'} · Qty {formatNumber(editLine?.quantity_ordered)}</small></div>
-              ) : (
+              {editLine && (
+                <div className="order-edit-current-product"><span>{editMode === 'remove' ? 'Product to remove' : 'Current product'}</span><strong>{editLine.effective_name || editLine.name || 'Unnamed product'}</strong><small>{editLine.effective_sku || editLine.sku || 'No SKU'} · Qty {formatNumber(editLine.quantity_ordered)} · {formatCurrency(editLine.invoice_line_total ?? editLine.line_total)}</small></div>
+              )}
+              {editMode !== 'remove' && (
                 <div className="order-edit-search-row">
                   <InventoryKeywordSearch
                     autoFocus
                     label={editMode === 'add' ? 'Product to add' : 'Replacement product'}
-                    onChange={(value) => { setItemQuery(value); if (![inventorySearchItemSku(selectedItem), selectedItem?.barcode].includes(value)) setSelectedItem(null); }}
+                    onChange={(value) => { scanRequestRef.current += 1; setItemQuery(value); if (![inventorySearchItemSku(selectedItem), selectedItem?.barcode].includes(value)) setSelectedItem(null); }}
                     onSelect={setSelectedItem}
                     placeholder="Search product name, SKU, or barcode"
+                    suggestionsDisabled={Boolean(selectedItem)}
                     value={itemQuery}
                   />
                   <button aria-label="Scan QR code or barcode" className="action-button order-edit-scan-button" onClick={() => setScannerOpen(true)} type="button"><Camera aria-hidden="true" size={18} />Scan code</button>
@@ -11139,9 +11503,10 @@ function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove 
                   <div><span>{editMode === 'add' ? 'Product' : 'Replacement'}</span><strong>{inventorySearchItemLabel(selectedItem)}</strong><small>{inventorySearchItemSku(selectedItem) ? `SKU ${inventorySearchItemSku(selectedItem)}` : 'SKU unavailable'}</small></div>
                   <div><span>Sellable now</span><strong>{formatNumber(selectedItem.sellable ?? selectedItem.Sellable)}</strong></div>
                   <div><span>In stock</span><strong>{formatNumber(selectedItem.in_stock ?? selectedItem['In Stock'])}</strong></div>
+                  <div><span>Invoice unit price</span><strong>{formatCurrency(inventorySearchItemPrice(selectedItem))}</strong></div>
                 </div>
               )}
-              <div className="order-edit-impact"><strong>What will change</strong><span>Pongo allocations and the affected products’ WooCommerce stock values. The Woo order’s products and totals will not change.</span></div>
+              <div className="order-edit-impact"><strong>What will change</strong><span>Pongo allocations, this Pongo invoice, and the affected products’ WooCommerce stock values. The Woo order’s saved products and totals stay unchanged.</span></div>
               <div className="button-row">
                 <button className={editMode === 'remove' ? 'muted-button danger-button' : 'primary-button'} disabled={editBusy || (editMode !== 'remove' && !selectedItem) || (editMode === 'add' && !(Number(quantity) > 0))} onClick={commitEdit} type="button">{editBusy ? 'Saving…' : editMode === 'add' ? 'Add product' : editMode === 'remove' ? 'Remove product' : 'Confirm substitution'}</button>
                 <button className="muted-button" disabled={editBusy} onClick={closeEditor} type="button">Cancel</button>
@@ -11152,8 +11517,8 @@ function OpenOrderDetailPanel({ order, onAdd = null, onClose, onPrint, onRemove 
         <footer className="order-detail-dialog-footer">
           {statusActions && !statusActions.ready && !statusActions.loading && <button className="primary-button" onClick={statusActions.onRetryDetails} type="button"><RefreshCw size={17} />Retry order details</button>}
           {statusActions?.ready && statusActions.retryTarget && !hasStatusResult && <button className="primary-button" disabled={Boolean(statusActions.pending)} onClick={statusActions.onRetry} type="button"><RefreshCw size={17} />{statusActions.pending ? 'Retrying WooCommerce…' : 'Retry WooCommerce update'}</button>}
-          {statusActions?.ready && !statusActions.retryTarget && !hasStatusResult && <button className="primary-button" disabled={Boolean(statusActions.pending)} onClick={statusActions.onMarkProcessed} type="button"><CheckCircle2 size={17} />{statusActions.pending === 'completed' ? 'Marking processed…' : 'Mark processed'}</button>}
-          {statusActions?.ready && !statusActions.retryTarget && !hasStatusResult && <button className="muted-button danger-button" disabled={Boolean(statusActions.pending)} onClick={statusActions.onCancel} type="button">{statusActions.pending === 'cancelled' ? 'Cancelling…' : 'Cancel order'}</button>}
+          {statusActions?.ready && statusActions.onMarkProcessed && !statusActions.retryTarget && !hasStatusResult && <button className="primary-button" disabled={Boolean(statusActions.pending)} onClick={statusActions.onMarkProcessed} type="button"><CheckCircle2 size={17} />{statusActions.pending === 'completed' ? 'Marking processed…' : 'Mark processed'}</button>}
+          {statusActions?.ready && statusActions.onCancel && !statusActions.retryTarget && !hasStatusResult && <button className="muted-button danger-button" disabled={Boolean(statusActions.pending)} onClick={statusActions.onCancel} type="button"><Ban size={17} />{statusActions.pending === 'cancelled' ? 'Cancelling…' : 'Cancel order'}</button>}
           {showPrint && <button className="primary-button" onClick={onPrint} type="button"><Printer size={17} />Print</button>}
           <button className="muted-button" onClick={onClose} type="button">Close</button>
         </footer>
@@ -11436,6 +11801,15 @@ function PickDetailPanel({ pick }) {
           Export
         </button>
       </div>
+      {pick.notes && (
+        <div aria-label="Pick note" className="pick-history-note" role="note">
+          <StickyNote aria-hidden="true" size={18} />
+          <div>
+            <strong>Pick note</strong>
+            <p>{pick.notes}</p>
+          </div>
+        </div>
+      )}
       <TableShell caption={`${pick.lines?.length || 0} pick line(s)`} columns={['SKU', 'Picked', 'Picked After', 'Remaining', 'Warehouse', 'Location', 'Status']}>
         {(pick.lines || []).map((line) => (
           <tr key={line.id}>
@@ -11532,23 +11906,14 @@ function FulfillmentDetailPanel({ fulfillment }) {
   );
 }
 
-function canPrepareCompletedOrderForPicking(order) {
-  return Boolean(
-    order.completed_without_picking
-    && Number(order.total_quantity_ordered || 0) > Number(order.total_quantity_picked || 0)
-    && Number(order.line_count || 0) > 0,
-  );
-}
-
-function CompletedOrderActionsMenu({ order, busy, onView, onPrint, onPreparePicking }) {
+function CompletedOrderActionsMenu({ order, busy, onView, onPrint }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
   const orderNumber = order.woo_order_number || order.woo_order_id;
   const actions = [
     { label: 'View order', icon: Search, onClick: onView },
     { label: 'Reprint invoice', icon: Printer, onClick: onPrint },
-    canPrepareCompletedOrderForPicking(order) ? { label: 'Send to Pick Orders', icon: ClipboardCheck, onClick: onPreparePicking } : null,
-  ].filter(Boolean);
+  ];
   return (
     <div className="order-actions-menu">
       <button aria-expanded={open} aria-haspopup="menu" aria-label={`Open completed order actions for ${orderNumber}`} className="order-actions-trigger" disabled={busy} onClick={() => setOpen((current) => !current)} ref={triggerRef} type="button"><ClipboardList size={20} /></button>
@@ -11562,6 +11927,35 @@ function CompletedOrderActionsMenu({ order, busy, onView, onPrint, onPreparePick
   );
 }
 
+const completedRecordPickedReason = 'Recorded as picked manually from Completed Orders.';
+const successfulRecordPickedSyncStatuses = new Set(['queued', 'sent', 'no_changes']);
+const rejectedRecordPickedStatuses = new Set(['failed', 'error', 'rejected', 'skipped']);
+
+function recordPickedRowIssue(row = {}) {
+  const rowStatus = String(row.status || '').trim().toLowerCase();
+  const syncStatus = String(row.woo_stock_sync_status || '').trim().toLowerCase();
+  const syncError = String(row.woo_stock_sync_error || '').trim();
+  if (syncError) return syncError;
+  if (rowStatus === 'pending_stock_sync') {
+    return 'Pongo stock was recorded, but its WooCommerce stock update could not be queued.';
+  }
+  if (rejectedRecordPickedStatuses.has(rowStatus)) {
+    return row.message || row.error || 'Could not be recorded as picked.';
+  }
+  if (syncStatus && !successfulRecordPickedSyncStatuses.has(syncStatus)) {
+    return `Pongo stock was recorded, but WooCommerce stock sync is ${titleize(syncStatus)}.`;
+  }
+  return '';
+}
+
+function recordPickedRowNeedsSameKeyRetry(row = {}) {
+  const rowStatus = String(row.status || '').trim().toLowerCase();
+  if (rowStatus === 'pending_stock_sync') return true;
+  if (rejectedRecordPickedStatuses.has(rowStatus)) return false;
+  const syncStatus = String(row.woo_stock_sync_status || '').trim().toLowerCase();
+  return Boolean(row.woo_stock_sync_error || (syncStatus && !successfulRecordPickedSyncStatuses.has(syncStatus)));
+}
+
 function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrders }) {
   const [filters, setFilters] = useState(emptyCompletedOrderFilters);
   const [activeFilters, setActiveFilters] = useState(emptyCompletedOrderFilters);
@@ -11571,8 +11965,14 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
   const [actionError, setActionError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
   const [printAfterLoad, setPrintAfterLoad] = useState(false);
-  const preparePickingMutationRef = useRef(null);
+  const [selectedOrderIds, setSelectedOrderIds] = useState([]);
+  const [bulkPrintOrders, setBulkPrintOrders] = useState([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [recordPickedRetry, setRecordPickedRetry] = useState(null);
+  const recordPickedMutationRef = useRef(null);
   const orders = ordersData.orders || [];
+  const selectedOrderSet = useMemo(() => new Set(selectedOrderIds), [selectedOrderIds]);
+  const allPageOrdersSelected = orders.length > 0 && orders.every((order) => selectedOrderSet.has(order.id));
   const totals = orders.reduce(
     (acc, order) => ({
       quantityFulfilled: acc.quantityFulfilled + Number(order.total_quantity_fulfilled || 0),
@@ -11588,12 +11988,31 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
     window.requestAnimationFrame(() => printVisibleRoot('single-order-printing'));
   }, [printAfterLoad, selectedOrder]);
 
+  useEffect(() => {
+    const visibleIds = new Set(orders.map((order) => order.id));
+    setSelectedOrderIds((current) => current.filter((orderId) => visibleIds.has(orderId)));
+  }, [ordersData.orders]);
+
+  useEffect(() => {
+    if (!bulkPrintOrders.length) return undefined;
+    printVisibleRoot('bulk-order-printing');
+    let clearFrame = 0;
+    const afterPrintFrame = window.requestAnimationFrame(() => {
+      clearFrame = window.requestAnimationFrame(() => setBulkPrintOrders([]));
+    });
+    return () => {
+      window.cancelAnimationFrame(afterPrintFrame);
+      if (clearFrame) window.cancelAnimationFrame(clearFrame);
+    };
+  }, [bulkPrintOrders]);
+
   function updateFilter(name, value) {
     setFilters((current) => ({ ...current, [name]: value }));
   }
 
   function applyFilters() {
     setActiveFilters(filters);
+    setSelectedOrderIds([]);
     onLoadCompletedOrders({ ...filters, page: 1, pageSize: ordersData.page_size || 20 });
   }
 
@@ -11601,7 +12020,13 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
     const cleared = emptyCompletedOrderFilters();
     setFilters(cleared);
     setActiveFilters(cleared);
+    setSelectedOrderIds([]);
     onLoadCompletedOrders({ ...cleared, page: 1, pageSize: ordersData.page_size || 20 });
+  }
+
+  function loadCompletedPage(page, pageSize = ordersData.page_size || 20) {
+    setSelectedOrderIds([]);
+    return onLoadCompletedOrders({ ...activeFilters, page, pageSize });
   }
 
   async function openCompletedOrder(order, print = false) {
@@ -11620,25 +12045,107 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
     }
   }
 
-  async function prepareForPicking(order) {
-    const orderNumber = order.woo_order_number || order.woo_order_id;
-    if (!window.confirm(`Send completed order ${orderNumber} to Pick Orders? WooCommerce will remain completed while Pongo prepares its unpicked inventory lines.`)) return;
-    setActionOrderId(order.id);
+  function toggleCompletedOrder(orderId, checked) {
+    if (loading || bulkBusy) return;
+    setSelectedOrderIds((current) => checked ? Array.from(new Set([...current, orderId])) : current.filter((id) => id !== orderId));
+  }
+
+  function toggleAllCompletedOrders(checked) {
+    if (loading || bulkBusy) return;
+    setSelectedOrderIds(checked ? orders.map((order) => order.id) : []);
+  }
+
+  async function reprintSelectedOrders() {
+    if (!selectedOrderIds.length || bulkBusy) return;
+    setBulkBusy(true);
     setActionError('');
     setActionMessage('');
     try {
-      const result = await prepareCompletedOrderForPicking(order.id, {
-        reason: 'Prepared for late picking from Completed Orders.',
-      }, preparePickingMutationRef);
-      resetMutationIdempotency(preparePickingMutationRef);
-      setActionMessage(result.message || `Order ${orderNumber} is ready in Pick Orders.`);
-      await onLoadCompletedOrders({ ...activeFilters, page: ordersData.page || 1, pageSize: ordersData.page_size || 20 });
-      window.location.hash = '#/orders/pick';
-    } catch (prepareError) {
-      setActionError(prepareError.message || 'Unable to prepare this order for picking.');
+      const settled = await Promise.allSettled(selectedOrderIds.map((orderId) => fetchOrderDetailRequest(orderId)));
+      const printable = settled.filter((result) => result.status === 'fulfilled').map((result) => result.value);
+      const failedCount = settled.length - printable.length;
+      if (printable.length) setBulkPrintOrders(printable);
+      if (failedCount) setActionError(`${failedCount} selected invoice${failedCount === 1 ? '' : 's'} could not be loaded for printing.`);
+      if (!printable.length) throw new Error('None of the selected invoices could be loaded for printing.');
+    } catch (printError) {
+      setActionError(printError.message || 'Unable to reprint the selected orders.');
     } finally {
-      setActionOrderId(null);
+      setBulkBusy(false);
     }
+  }
+
+  async function submitRecordPickedRequest(requestOrderIds, retryContext = null) {
+    const count = requestOrderIds.length;
+    if (!count || bulkBusy) return;
+    const reason = retryContext?.reason || completedRecordPickedReason;
+    if (!retryContext && !window.confirm(`Record ${count} selected completed order${count === 1 ? '' : 's'} as picked? This reduces Pongo stock for eligible unpicked products. WooCommerce orders remain completed and are not moved back to Open Orders.`)) return;
+    setBulkBusy(true);
+    setActionError('');
+    setActionMessage('');
+    try {
+      const result = await recordCompletedOrdersPicked(requestOrderIds, { reason }, recordPickedMutationRef);
+      const resultRows = Array.isArray(result.results) ? result.results : [];
+      const unresolvedRows = resultRows
+        .map((row) => ({ row, issue: recordPickedRowIssue(row) }))
+        .filter(({ issue }) => Boolean(issue));
+      const pendingSyncRows = unresolvedRows.filter(({ row }) => recordPickedRowNeedsSameKeyRetry(row));
+      const unresolvedIds = [...new Set(unresolvedRows.map(({ row }) => row.order_id).filter((orderId) => orderId != null))];
+      const backendErrors = (result.errors || []).map((entry) => typeof entry === 'string' ? entry : entry.message || entry.error || JSON.stringify(entry));
+      const rowErrors = unresolvedRows.map(({ row, issue }) => {
+        const orderNumber = orders.find((order) => String(order.id) === String(row.order_id))?.woo_order_number || row.order_id;
+        return `Order ${orderNumber}: ${issue}`;
+      });
+      const unmatchedBackendErrors = backendErrors.filter((entry) => !unresolvedRows.some(({ row }) => entry.startsWith(`Order ${row.order_id}:`)));
+      const fallbackUnresolvedIds = backendErrors.length && !unresolvedIds.length ? requestOrderIds : [];
+      const selectedUnresolvedIds = unresolvedIds.length ? unresolvedIds : fallbackUnresolvedIds;
+      const locallyRecordedCount = resultRows.length
+        ? resultRows.filter((row) => ['completed', 'recorded', 'pending_stock_sync'].includes(String(row.status || '').toLowerCase())).length
+        : Number(result.succeeded_count || 0);
+      const queuedCount = resultRows.filter((row) => String(row.woo_stock_sync_status || '').toLowerCase() === 'queued' && !recordPickedRowIssue(row)).length;
+      setSelectedOrderIds(selectedUnresolvedIds);
+      setActionMessage(`${locallyRecordedCount} of ${count} selected order${count === 1 ? '' : 's'} recorded as picked in Pongo.${queuedCount ? ` ${queuedCount} WooCommerce stock update${queuedCount === 1 ? '' : 's'} safely queued.` : ''} WooCommerce orders remain completed.`);
+      if (pendingSyncRows.length) {
+        setRecordPickedRetry({
+          orderIds: [...requestOrderIds],
+          reason,
+          unresolvedOrderIds: selectedUnresolvedIds,
+          cause: 'stock_queue',
+        });
+      } else {
+        setRecordPickedRetry(null);
+        resetMutationIdempotency(recordPickedMutationRef);
+      }
+      const recovery = pendingSyncRows.length
+        ? 'Pongo stock is already recorded for the affected order. Choose “Retry Woo stock queue” to queue the WooCommerce update without deducting Pongo stock twice.'
+        : selectedUnresolvedIds.length
+          ? 'Review the affected order, then retry the selected order.'
+          : '';
+      const combinedErrors = [...new Set([...rowErrors, ...unmatchedBackendErrors, recovery].filter(Boolean))];
+      if (combinedErrors.length) setActionError(combinedErrors.join(' '));
+      await onLoadCompletedOrders({ ...activeFilters, page: ordersData.page || 1, pageSize: ordersData.page_size || 20 });
+    } catch (recordError) {
+      const unresolvedOrderIds = retryContext?.unresolvedOrderIds?.length ? retryContext.unresolvedOrderIds : requestOrderIds;
+      setSelectedOrderIds(unresolvedOrderIds);
+      setRecordPickedRetry({ orderIds: [...requestOrderIds], reason, unresolvedOrderIds, cause: retryContext?.cause || 'request_unknown' });
+      setActionError(`${recordError.message || 'Unable to record the selected completed orders as picked.'} Choose “Retry safely” to reuse the same operation key; Pongo stock will not be deducted twice.`);
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function recordSelectedAsPicked() {
+    if (!selectedOrderIds.length || bulkBusy || recordPickedRetry) return;
+    await submitRecordPickedRequest([...selectedOrderIds]);
+  }
+
+  async function retryRecordPickedRequest() {
+    if (!recordPickedRetry || bulkBusy) return;
+    await submitRecordPickedRequest(recordPickedRetry.orderIds, recordPickedRetry);
+  }
+
+  async function refreshCompletedOrderMetadata(updatedOrder) {
+    setSelectedOrder(updatedOrder);
+    await onLoadCompletedOrders({ ...activeFilters, page: ordersData.page || 1, pageSize: ordersData.page_size || 20 });
   }
 
   return (
@@ -11646,10 +12153,10 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
       <div className="panel-title">
         <div>
           <h2>Completed Orders</h2>
-          <p>Search, review, reprint, or prepare eligible completed orders for late picking.</p>
+          <p>Review completed, cancelled, and refunded WooCommerce orders in one closed-order record.</p>
         </div>
         <div className="button-row compact">
-          <button className="muted-button" onClick={() => onLoadCompletedOrders({ ...activeFilters, page: ordersData.page || 1, pageSize: ordersData.page_size || 20 })} disabled={loading} type="button"><RefreshCw size={17} />Refresh</button>
+          <button className="muted-button" onClick={() => onLoadCompletedOrders({ ...activeFilters, page: ordersData.page || 1, pageSize: ordersData.page_size || 20 })} disabled={loading || bulkBusy} type="button"><RefreshCw size={17} />Refresh</button>
           <button className="action-button" onClick={() => exportCompletedOrdersCsv(activeFilters)} type="button"><Download size={17} />Export CSV</button>
         </div>
       </div>
@@ -11661,7 +12168,7 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
       </div>
       <div className="filter-panel">
         <div className="filter-grid orders-filter-grid">
-          <FilterSelect label="Local Status" value={filters.localStatus} options={['completed', 'closed', 'fulfilled', 'partially_fulfilled']} onChange={(value) => updateFilter('localStatus', value)} />
+          <FilterSelect label="Local Status" value={filters.localStatus} options={['completed', 'closed', 'fulfilled', 'partially_fulfilled', 'cancelled', 'refunded']} onChange={(value) => updateFilter('localStatus', value)} formatOption={titleize} />
           <label className="field"><span>Date From</span><div className="input-with-icon"><input value={filters.dateFrom} onChange={(event) => updateFilter('dateFrom', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" /><CalendarDays size={18} /></div></label>
           <label className="field"><span>Date To</span><div className="input-with-icon"><input value={filters.dateTo} onChange={(event) => updateFilter('dateTo', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" /><CalendarDays size={18} /></div></label>
           <label className="field"><span>Customer Email</span><div className="input-with-icon"><input value={filters.customerEmail} onChange={(event) => updateFilter('customerEmail', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
@@ -11678,12 +12185,51 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
       {error && <div className="api-error" role="alert">{error}</div>}
       {actionError && <div className="api-error" role="alert">{actionError}</div>}
       {actionMessage && <div className="success-strip" role="status">{actionMessage}</div>}
-      {(loading || detailLoading) && <div className="loading-strip" role="status">{detailLoading ? 'Loading completed order details…' : 'Loading completed orders...'}</div>}
-      <TableShell caption={`${ordersData.total || 0} completed order(s)`} className="completed-orders-table" columns={['Actions', 'Woo Order', 'Woo Status', 'Local Status', 'Completion', 'Customer', 'Email', 'Order Total', 'Picked', 'Completed Without Picking', 'Stock Reduced', 'Qty Ordered', 'Qty Allocated', 'Qty Picked', 'Qty Fulfilled', 'Closed']} pagination={serverTablePagination(ordersData, 'completed orders', (page) => onLoadCompletedOrders({ ...activeFilters, page, pageSize: ordersData.page_size || 20 }), (pageSize) => onLoadCompletedOrders({ ...activeFilters, page: 1, pageSize }))}>
+      {recordPickedRetry && (
+        <section aria-labelledby="record-picked-retry-title" className="record-picked-retry-strip">
+          <div aria-live="polite">
+            <strong id="record-picked-retry-title">{recordPickedRetry.cause === 'stock_queue' ? 'WooCommerce stock still needs to be queued' : 'The previous result is uncertain'}</strong>
+            <span>The saved operation key will be reused, so retrying cannot deduct Pongo stock twice.</span>
+          </div>
+          <button className="muted-button" disabled={bulkBusy} onClick={retryRecordPickedRequest} type="button">
+            <RefreshCw aria-hidden="true" size={17} />
+            {recordPickedRetry.cause === 'stock_queue' ? 'Retry Woo stock queue' : 'Retry safely'}
+          </button>
+        </section>
+      )}
+      {(loading || detailLoading || bulkBusy) && <div className="loading-strip" role="status">{detailLoading ? 'Loading completed order details…' : bulkBusy ? 'Updating selected completed orders…' : 'Loading completed orders...'}</div>}
+      <BulkActionsBar
+        actions={[
+          { label: 'Reprint selected', icon: <Printer size={17} />, onSelect: reprintSelectedOrders },
+          { label: 'Record selected as picked', icon: <ClipboardCheck size={17} />, onSelect: recordSelectedAsPicked, disabled: Boolean(recordPickedRetry) },
+        ]}
+        busy={loading || bulkBusy}
+        label="Completed order actions"
+        selectedCount={selectedOrderIds.length}
+      />
+      <TableShell caption={`${ordersData.total || 0} completed order(s)`} className="completed-orders-table" columns={[
+        'Actions',
+        'Woo Order',
+        'Woo Status',
+        'Local Status',
+        'Completion',
+        'Customer',
+        'Email',
+        'Order Total',
+        'Picked',
+        'Completed Without Picking',
+        'Stock Reduced',
+        'Qty Ordered',
+        'Qty Allocated',
+        'Qty Picked',
+        'Qty Fulfilled',
+        'Closed',
+        { key: 'completed-selection', label: <input aria-label="Select all completed orders on this page" checked={allPageOrdersSelected} disabled={loading || bulkBusy} onChange={(event) => toggleAllCompletedOrders(event.target.checked)} type="checkbox" /> },
+      ]} pagination={serverTablePagination(ordersData, 'completed orders', (page) => loadCompletedPage(page), (pageSize) => loadCompletedPage(1, pageSize))}>
         {orders.map((order) => (
-          <tr key={order.id}>
-            <td className="completed-actions-cell"><CompletedOrderActionsMenu busy={loading || actionOrderId === order.id} onPreparePicking={() => prepareForPicking(order)} onPrint={() => openCompletedOrder(order, true)} onView={() => openCompletedOrder(order)} order={order} /></td>
-            <td className="mono completed-order-number" data-label="Woo Order">{order.woo_order_number || order.woo_order_id}</td>
+          <tr className={orderHighlightColor(order) ? 'order-row-highlighted' : ''} key={order.id} style={orderHighlightColor(order) ? { '--order-highlight': orderHighlightColor(order) } : undefined}>
+            <td className="completed-actions-cell"><CompletedOrderActionsMenu busy={loading || bulkBusy || actionOrderId === order.id} onPrint={() => openCompletedOrder(order, true)} onView={() => openCompletedOrder(order)} order={order} /></td>
+            <td className="completed-order-number order-metadata-cell" data-label="Woo Order"><span className="mono">{order.woo_order_number || order.woo_order_id}</span><OrderMetadataSummary order={order} /></td>
             <td data-label="Woo Status">{StatusText(order.woo_status)}</td>
             <td data-label="Local Status">{StatusText(order.local_status)}</td>
             <td data-label="Completion">{StatusText(order.completion_status)}</td>
@@ -11698,11 +12244,13 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
             <td className="completed-secondary-cell" data-label="Qty Picked">{formatNumber(order.total_quantity_picked)}</td>
             <td className="completed-secondary-cell" data-label="Qty Fulfilled">{formatNumber(order.total_quantity_fulfilled)}</td>
             <td data-label="Closed">{formatDateTime(order.closed_at || order.completed_at || order.date_modified || order.date_created)}</td>
+            <td className="completed-bulk-select-cell"><input aria-label={`Select completed order ${order.woo_order_number || order.woo_order_id}`} checked={selectedOrderSet.has(order.id)} disabled={loading || bulkBusy} onChange={(event) => toggleCompletedOrder(order.id, event.target.checked)} type="checkbox" /></td>
           </tr>
         ))}
-        {orders.length === 0 && <tr className="completed-orders-empty"><td colSpan={16}><div className="empty-table-row">No completed orders match the current filters.</div></td></tr>}
+        {orders.length === 0 && <tr className="completed-orders-empty"><td colSpan={17}><div className="empty-table-row">No completed orders match the current filters.</div></td></tr>}
       </TableShell>
-      {selectedOrder && <OpenOrderDetailPanel onClose={() => setSelectedOrder(null)} onPrint={() => printVisibleRoot('single-order-printing')} order={selectedOrder} title="Completed Customer Order" />}
+      {selectedOrder && <OpenOrderDetailPanel onClose={() => setSelectedOrder(null)} onMetadataChange={refreshCompletedOrderMetadata} onPrint={() => printVisibleRoot('single-order-printing')} order={selectedOrder} title="Completed Customer Order" />}
+      <BulkPrintSheet orders={bulkPrintOrders} />
     </div>
   );
 }
@@ -12610,6 +13158,14 @@ const statusPresentation = {
   receive_direct: { label: 'Direct receiving', tone: 'info' },
   in_progress: { label: 'In progress', tone: 'info' },
   processing: { label: 'Processing', tone: 'info' },
+  queued: { label: 'Waiting to start', tone: 'info' },
+  fetching_products: { label: 'Reading products', tone: 'info' },
+  fetching_variations: { label: 'Reading product options', tone: 'info' },
+  matching: { label: 'Checking existing items', tone: 'info' },
+  applying: { label: 'Saving changes', tone: 'info' },
+  waiting_retry: { label: 'Waiting to try again', tone: 'warning' },
+  paused: { label: 'Paused', tone: 'warning' },
+  completed_with_attention: { label: 'Finished — review needed', tone: 'warning' },
   available: { label: 'Available', tone: 'success' },
   partial: { label: 'Partially available', tone: 'warning' },
   insufficient_history: { label: 'Insufficient history', tone: 'info' },
@@ -12636,6 +13192,412 @@ function StatusText(value, context = '') {
   const key = String(value).trim().toLowerCase();
   const presentation = (context === 'risk' ? riskStatusPresentation[key] : null) || statusPresentation[key] || { label: titleize(value), tone: 'neutral' };
   return <span className={`status-pill status-${presentation.tone} order-status-${key.replace(/[^a-z0-9-]/g, '-')}`} aria-label={presentation.help ? `${presentation.label}: ${presentation.help}` : presentation.label} title={presentation.help || undefined}>{presentation.label}</span>;
+}
+
+function statusLabel(value) {
+  return statusPresentation[String(value || '').trim().toLowerCase()]?.label || titleize(value);
+}
+
+function wooUpdateTypeLabel(value) {
+  return ({ catalog: 'Products', products: 'Products', orders: 'Orders', subscriptions: 'Subscriptions', order_history: 'Past orders' })[value] || titleize(value);
+}
+
+function updateStarterLabel(value) {
+  return /^(system|woocommerce-worker)$/i.test(String(value || '')) ? 'Automatic update' : value || 'Pongo staff';
+}
+
+const CATALOG_POLLING_STATUSES = new Set(['queued', 'fetching_products', 'fetching_variations', 'matching', 'applying', 'waiting_retry']);
+const CATALOG_ENQUEUE_KEY = 'pongo.catalog-sync.idempotency-key';
+
+function catalogEnqueueIdempotencyKey() {
+  const saved = window.sessionStorage.getItem(CATALOG_ENQUEUE_KEY);
+  if (saved) return saved;
+  const key = globalThis.crypto?.randomUUID?.() || `catalog-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  window.sessionStorage.setItem(CATALOG_ENQUEUE_KEY, key);
+  return key;
+}
+
+function catalogRunNeedsAttention(run) {
+  return Math.max(0, Number(run?.conflict_count || 0)) + Math.max(0, Number(run?.error_count || 0));
+}
+
+function catalogRunStage(run) {
+  return run?.stage || run?.status || 'queued';
+}
+
+function catalogRunMessage(run) {
+  if (run?.status === 'waiting_retry') return `WooCommerce is temporarily unavailable. Saved progress will retry automatically${run.next_retry_at ? ` at ${formatDateTime(run.next_retry_at)}` : ''}.`;
+  const messages = {
+    queued: 'Your product update is waiting to start.',
+    fetching_products: 'Reading products from WooCommerce. You can leave this page.',
+    fetching_variations: 'Reading every product option from WooCommerce. You can leave this page.',
+    matching: 'Checking which WooCommerce products already exist in Pongo.',
+    applying: 'Adding missing products and saving safe matches.',
+    paused: 'This product update is paused. Your progress is saved.',
+    failed: 'The product update could not finish. Review the message and try again.',
+    cancelled: 'This product update was stopped. Your completed work is saved.',
+    completed_with_attention: 'The safe changes are finished. A few products need your help.',
+    completed: 'Your WooCommerce products are up to date in Pongo.',
+  };
+  return messages[run?.status] || run?.message || 'The latest product update status is shown here.';
+}
+
+function CatalogStageRail({ run }) {
+  const stage = catalogRunStage(run);
+  const activeIndex = stage === 'applying' ? 2 : stage === 'matching' ? 1 : ['fetching_products', 'fetching_variations'].includes(stage) ? 0 : -1;
+  const terminal = ['completed', 'completed_with_attention'].includes(run?.status);
+  const stages = [
+    { key: 'fetching', label: 'Read WooCommerce products' },
+    { key: 'matching', label: 'Check existing Pongo items' },
+    { key: 'applying', label: 'Save safe changes' },
+  ];
+  return (
+    <ol className="catalog-stage-rail" aria-label="Product update steps">
+      {stages.map((item, index) => {
+        const complete = terminal || activeIndex > index;
+        const active = !terminal && activeIndex === index;
+        return (
+          <li className={complete ? 'is-complete' : active ? 'is-active' : ''} key={item.key}>
+            <span aria-hidden="true">{complete ? <CheckCircle2 size={18} /> : index + 1}</span>
+            <strong>{item.label}</strong>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function CatalogResultMetric({ label, value, tone = '', href = '' }) {
+  const content = <><strong>{formatNumber(value || 0)}</strong><span>{label}</span></>;
+  return href
+    ? <a className={`metric catalog-result-metric ${tone}`.trim()} href={href}>{content}<ChevronRight size={17} aria-hidden="true" /></a>
+    : <div className={`metric catalog-result-metric ${tone}`.trim()}>{content}</div>;
+}
+
+function CatalogAttentionResolution({ row, busy, canResolve, onResolve }) {
+  const [query, setQuery] = useState('');
+  const [selectedItem, setSelectedItem] = useState(null);
+  const canBecomeInventory = ['simple', 'variation'].includes(row.remote_type);
+  if (!canResolve) return <p className="help-text">Wait until the current product update finishes before resolving this product.</p>;
+  return (
+    <div className="catalog-resolution-actions" aria-label={`Resolve ${row.sku || row.product_name || `row ${row.id}`}`}>
+      {canBecomeInventory ? <>
+      <div className="catalog-link-existing">
+        <InventoryKeywordSearch
+          className="field catalog-item-search"
+          label="Find the existing Pongo item"
+          onChange={(value) => { setQuery(value); if (value !== (selectedItem?.sku || selectedItem?.barcode || selectedItem?.product_name || '')) setSelectedItem(null); }}
+          onSearch={() => {}}
+          onSelect={setSelectedItem}
+          placeholder="Search SKU, barcode, or product name"
+          value={query}
+        />
+        {selectedItem && <small>Selected: {selectedItem.sku || 'No SKU'} · {selectedItem.product_name || selectedItem.description || 'Untitled item'}</small>}
+        <button className="muted-button" disabled={busy || !selectedItem?.id} onClick={() => onResolve(row.id, { action: 'link', item_id: selectedItem.id })} type="button"><Link2 size={16} />Link to this item</button>
+      </div>
+      <button className="action-button" disabled={busy} onClick={() => onResolve(row.id, { action: 'create' })} type="button"><Plus size={16} />Add as a new item</button>
+      </> : <p className="help-text">This WooCommerce entry cannot become a Pongo item. Skip it here, then check its product type in WooCommerce.</p>}
+      <button className="muted-button" disabled={busy} onClick={() => onResolve(row.id, { action: 'skip' })} type="button"><X size={16} />Skip for now</button>
+    </div>
+  );
+}
+
+function WooCatalogSyncPage({ route, configured, readOnly = false }) {
+  if (readOnly) {
+    return (
+      <section className="content-panel catalog-sync-page">
+        <header className="form-card catalog-sync-hero">
+          <div>
+            <span className="integration-eyebrow">WooCommerce products</span>
+            <h2>Product updates are unavailable in the isolated demo.</h2>
+            <p>The demo uses sample products and cannot connect to Pongo's WooCommerce store. Sign in with an authorized staff account to view product updates.</p>
+          </div>
+          <div className="catalog-hero-action">
+            <div className="integration-health"><span className="integration-health-pulse" aria-hidden="true" /><div><strong>Demo isolation active</strong></div></div>
+            <a className="muted-button catalog-sync-button" href="#items"><Boxes size={18} aria-hidden="true" />Return to demo items</a>
+          </div>
+        </header>
+      </section>
+    );
+  }
+  return <WooCatalogSyncWorkspace configured={configured} route={route} />;
+}
+
+function WooCatalogSyncWorkspace({ route, configured }) {
+  const [run, setRun] = useState(null);
+  const [runs, setRuns] = useState([]);
+  const [runsPagination, setRunsPagination] = useState(() => emptyServerPagination(20));
+  const [attentionRows, setAttentionRows] = useState([]);
+  const [attentionPagination, setAttentionPagination] = useState(() => emptyServerPagination(20));
+  const [searchDraft, setSearchDraft] = useState('');
+  const [attentionSearch, setAttentionSearch] = useState('');
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [attentionLoading, setAttentionLoading] = useState(false);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [mutation, setMutation] = useState('');
+  const [resolvingRowId, setResolvingRowId] = useState(null);
+  const [error, setError] = useState('');
+  const mutationInFlightRef = useRef(false);
+  const activeTab = route.catalogTab || 'overview';
+
+  async function fetchRun(runId) {
+    const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/catalog-syncs/${runId}`);
+    if (!response.ok) throw new Error(`Catalog status returned ${response.status}`);
+    return response.json();
+  }
+
+  async function loadCurrentRun({ quiet = false } = {}) {
+    if (!quiet) setInitialLoading(true);
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/catalog-syncs/current`);
+      if (!response.ok) throw new Error(`Catalog status returned ${response.status}`);
+      const body = await response.json();
+      const currentRun = Object.prototype.hasOwnProperty.call(body || {}, 'run') ? body.run : body || null;
+      setRun(currentRun);
+      if (currentRun?.id) window.sessionStorage.removeItem(CATALOG_ENQUEUE_KEY);
+      setError('');
+    } catch (requestError) {
+      setError(requestError.message || 'Unable to load catalog status.');
+    } finally {
+      if (!quiet) setInitialLoading(false);
+    }
+  }
+
+  async function loadRuns(filters = {}) {
+    const page = filters.page || 1;
+    const pageSize = filters.page_size || runsPagination.page_size || 20;
+    setRunsLoading(true);
+    try {
+      const query = new URLSearchParams({ sync_type: 'catalog', page: String(page), page_size: String(pageSize) });
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/sync-runs?${query}`);
+      if (!response.ok) throw new Error(`Catalog history returned ${response.status}`);
+      const body = await response.json();
+      setRuns(body.sync_runs || []);
+      setRunsPagination(paginationFromResponse(body, pageSize));
+    } catch (requestError) {
+      setError(requestError.message || 'Unable to load catalog history.');
+    } finally {
+      setRunsLoading(false);
+    }
+  }
+
+  async function loadAttention(filters = {}) {
+    const selectedRun = run || runs[0];
+    if (!selectedRun?.id) {
+      setAttentionRows([]);
+      setAttentionPagination(emptyServerPagination(20));
+      return;
+    }
+    const page = filters.page || 1;
+    const pageSize = filters.page_size || attentionPagination.page_size || 20;
+    const search = filters.search ?? attentionSearch;
+    setAttentionLoading(true);
+    try {
+      const query = new URLSearchParams({ status: 'needs_attention', page: String(page), page_size: String(pageSize) });
+      if (search) query.set('search', search);
+      const response = await apiFetch(`${API_BASE_URL}/api/integrations/woocommerce/catalog-syncs/${selectedRun.id}/rows?${query}`);
+      if (!response.ok) throw new Error(`Catalog attention list returned ${response.status}`);
+      const body = await response.json();
+      setAttentionRows(body.rows || []);
+      setAttentionPagination(paginationFromResponse(body, pageSize));
+      setError('');
+    } catch (requestError) {
+      setError(requestError.message || 'Unable to load products needing attention.');
+    } finally {
+      setAttentionLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    Promise.all([loadCurrentRun(), loadRuns()]);
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'runs') loadRuns();
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'attention') loadAttention({ page: 1 });
+  }, [activeTab, run?.id, runs[0]?.id]);
+
+  useEffect(() => {
+    if (!run?.id || !CATALOG_POLLING_STATUSES.has(run.status) && !CATALOG_POLLING_STATUSES.has(run.stage)) return undefined;
+    let stopped = false;
+    let inFlight = false;
+    const poll = async () => {
+      if (inFlight || document.visibilityState === 'hidden') return;
+      inFlight = true;
+      try {
+        const nextRun = await fetchRun(run.id);
+        if (!stopped) {
+          setRun(nextRun);
+          setError('');
+          if (!CATALOG_POLLING_STATUSES.has(nextRun.status) && !CATALOG_POLLING_STATUSES.has(nextRun.stage)) loadRuns({ page: 1 });
+        }
+      } catch (requestError) {
+        if (!stopped) setError(`${requestError.message || 'Unable to refresh progress.'} The last confirmed progress is still shown.`);
+      } finally {
+        inFlight = false;
+      }
+    };
+    const intervalId = window.setInterval(poll, 2000);
+    return () => {
+      stopped = true;
+      window.clearInterval(intervalId);
+    };
+  }, [run?.id, run?.status, run?.stage]);
+
+  async function startSync() {
+    if (mutationInFlightRef.current || !configured) return;
+    const previousRun = run;
+    mutationInFlightRef.current = true;
+    setMutation('start');
+    setRun(null);
+    setError('');
+    try {
+      const idempotencyKey = catalogEnqueueIdempotencyKey();
+      const nextRun = await postJson('/api/integrations/woocommerce/catalog-syncs', { idempotency_key: idempotencyKey }, { headers: { 'Idempotency-Key': idempotencyKey } });
+      setRun(nextRun);
+      window.sessionStorage.removeItem(CATALOG_ENQUEUE_KEY);
+      window.location.hash = '#/settings/catalog?tab=overview';
+    } catch (requestError) {
+      setRun(previousRun);
+      setError(requestError.message || 'Unable to queue catalog sync.');
+    } finally {
+      mutationInFlightRef.current = false;
+      setMutation('');
+    }
+  }
+
+  async function updateRun(action) {
+    if (!run?.id || mutationInFlightRef.current) return;
+    mutationInFlightRef.current = true;
+    setMutation(action);
+    setError('');
+    try {
+      setRun(await postJson(`/api/integrations/woocommerce/catalog-syncs/${run.id}/${action}`, {}));
+    } catch (requestError) {
+      setError(requestError.message || `Unable to ${action} catalog sync.`);
+    } finally {
+      mutationInFlightRef.current = false;
+      setMutation('');
+    }
+  }
+
+  async function resolveAttention(rowId, payload) {
+    const targetRun = run || runs[0];
+    if (!targetRun?.id || resolvingRowId) return;
+    setResolvingRowId(rowId);
+    setError('');
+    try {
+      await postJson(`/api/integrations/woocommerce/catalog-syncs/${targetRun.id}/rows/${rowId}/resolve`, payload);
+      const nextRun = await fetchRun(targetRun.id);
+      setRun(nextRun);
+      await loadAttention({ page: attentionPagination.page, page_size: attentionPagination.page_size });
+    } catch (requestError) {
+      setError(requestError.message || 'Unable to save this catalog decision.');
+    } finally {
+      setResolvingRowId(null);
+    }
+  }
+
+  const selectedRun = mutation === 'start' ? null : run || runs[0] || null;
+  const needsAttention = catalogRunNeedsAttention(selectedRun);
+  const progress = Math.max(0, Math.min(100, Number(selectedRun?.progress_percent || 0)));
+  const isRunning = Boolean(selectedRun && (CATALOG_POLLING_STATUSES.has(selectedRun.status) || CATALOG_POLLING_STATUSES.has(selectedRun.stage)));
+  const canResolveAttention = typeof selectedRun?.can_resolve === 'boolean'
+    ? selectedRun.can_resolve
+    : ['queued', 'paused', 'failed', 'completed_with_attention'].includes(selectedRun?.status);
+  const needsResume = Boolean(selectedRun?.can_resume);
+  const syncDisabled = initialLoading || Boolean(mutation) || !configured || isRunning || needsResume;
+
+  return (
+    <section className="content-panel catalog-sync-page">
+      <header className="form-card catalog-sync-hero">
+        <div>
+          <span className="integration-eyebrow">WooCommerce products</span>
+          <h2>Bring WooCommerce products into Pongo</h2>
+          <p>Pongo checks new and recently changed products, adds anything missing, and leaves your stock, costs, locations, and history unchanged. A periodic full check catches deletions and older changes.</p>
+        </div>
+        <div className="catalog-hero-action">
+          <div className={`integration-health ${configured ? 'is-connected' : ''}`} role="status"><span className="integration-health-pulse" aria-hidden="true" /><div><strong>{configured ? 'WooCommerce connected' : 'Connect WooCommerce first'}</strong></div></div>
+          <button aria-busy={mutation === 'start'} className="primary-button catalog-sync-button" disabled={syncDisabled} onClick={startSync} type="button"><RefreshCw size={18} aria-hidden="true" />{mutation === 'start' ? 'Starting…' : isRunning ? 'Updating products…' : needsResume ? 'Continue the update below' : 'Update products from WooCommerce'}</button>
+          <small>You can leave this page while Pongo updates your products.</small>
+        </div>
+      </header>
+
+      <nav className="page-tabs catalog-local-tabs" aria-label="WooCommerce product sections">
+        {[
+          ['overview', 'Latest update'],
+          ['attention', `Products to review${needsAttention ? ` (${formatNumber(needsAttention)})` : ''}`],
+          ['runs', 'Update history'],
+        ].map(([id, label]) => <a aria-current={activeTab === id ? 'page' : undefined} className={`tab${activeTab === id ? ' active is-active' : ''}`} href={`#/settings/catalog?tab=${id}`} key={id}>{label}</a>)}
+      </nav>
+
+      {error && <div className="api-error catalog-error" role="alert"><TriangleAlert size={18} aria-hidden="true" /><div><strong>Product update needs your help</strong><span>{error}</span></div><button className="muted-button" onClick={() => Promise.all([loadCurrentRun(), loadRuns()])} type="button">Try again</button></div>}
+      <div aria-atomic="true" aria-live="polite" className="sr-only" role="status">{selectedRun ? `Product update ${selectedRun.id}: ${statusLabel(selectedRun.status)}, ${formatNumber(progress)} percent, ${formatNumber(selectedRun.processed_records || 0)} of ${formatNumber(selectedRun.total_remote_records || 0)} products and options checked.` : mutation === 'start' ? 'Starting product update.' : 'No product update is running.'}</div>
+
+      {activeTab === 'overview' && (
+        <div className="catalog-overview">
+          {initialLoading && !selectedRun && <div className="loading-strip catalog-loading" role="status"><RefreshCw size={18} aria-hidden="true" />Loading the latest product update…</div>}
+          {mutation === 'start' && <div className="loading-strip catalog-loading" role="status"><RefreshCw size={18} aria-hidden="true" />Starting a new product update…</div>}
+          {!initialLoading && !mutation && !selectedRun && (
+            <section className="form-card empty-state settings-operation-panel catalog-empty-state">
+              <span className="large-icon"><PackageSearch size={26} aria-hidden="true" /></span>
+              <div><h3>Ready for your first product update</h3><p>Pongo adds only products that are truly missing. For products with options, each sellable option becomes its own item; the main parent product is not counted as stock.</p></div>
+              <ul><li><CheckCircle2 size={17} />Local stock remains unchanged</li><li><CheckCircle2 size={17} />Costs and locations remain unchanged</li><li><CheckCircle2 size={17} />Ambiguity is never guessed</li></ul>
+            </section>
+          )}
+          {selectedRun && (
+            <>
+              <section className={`form-card settings-operation-panel catalog-progress-card is-${selectedRun.status}`} aria-labelledby="catalog-run-heading">
+                <div className="panel-title catalog-progress-heading">
+                  <div><span className="settings-view-eyebrow">Update #{selectedRun.id}</span><h3 id="catalog-run-heading">{statusLabel(selectedRun.status)}</h3><p>{catalogRunMessage(selectedRun)}</p></div>
+                  {StatusText(selectedRun.status)}
+                </div>
+                <CatalogStageRail run={selectedRun} />
+                <div className="catalog-progress-line">
+                  <div className="catalog-progress-copy"><span>{formatNumber(selectedRun.processed_records || 0)} of {formatNumber(selectedRun.total_remote_records || 0)} products and options checked</span><strong>{formatNumber(progress)}%</strong></div>
+                  <div aria-label={`${formatNumber(progress)} percent complete`} aria-valuemax="100" aria-valuemin="0" aria-valuenow={progress} className="catalog-progress-track" role="progressbar"><span style={{ width: `${progress}%` }} /></div>
+                </div>
+                {(selectedRun.can_resume || selectedRun.can_cancel) && <div className="button-row compact catalog-run-actions">{selectedRun.can_resume && <button className="primary-button" disabled={Boolean(mutation)} onClick={() => updateRun('resume')} type="button"><RefreshCw size={17} />{mutation === 'resume' ? 'Continuing…' : 'Continue update'}</button>}{selectedRun.can_cancel && <button className="muted-button" disabled={Boolean(mutation)} onClick={() => updateRun('cancel')} type="button"><X size={17} />{mutation === 'cancel' ? 'Stopping…' : 'Stop update'}</button>}</div>}
+              </section>
+              <section className="import-metrics catalog-results" aria-label="Product update results">
+                <CatalogResultMetric label="Added to Pongo" value={selectedRun.created_count} />
+                <CatalogResultMetric label="Matched with existing items" value={selectedRun.matched_count} />
+                <CatalogResultMetric label="Product details updated" value={selectedRun.updated_count} />
+                <CatalogResultMetric label="Already up to date" value={selectedRun.unchanged_count} />
+                <CatalogResultMetric href="#/settings/catalog?tab=attention" label="Needs review" tone={needsAttention ? 'needs-attention' : ''} value={needsAttention} />
+              </section>
+              <footer className="catalog-run-footnote"><span>Started {formatDateTime(selectedRun.started_at)}</span><span>{selectedRun.completed_at ? `Finished ${formatDateTime(selectedRun.completed_at)}` : 'Progress is saved automatically'}</span><span>Started by {updateStarterLabel(selectedRun.created_by)}</span></footer>
+            </>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'attention' && (
+        <section className="form-card settings-operation-panel catalog-attention" aria-labelledby="catalog-attention-heading">
+          <div className="panel-title catalog-section-heading"><div><span className="settings-view-eyebrow">Products that need your decision</span><h3 id="catalog-attention-heading">Products to review</h3><p>Pongo never guesses when two products could be a match. Choose the correct Pongo item, add a new one, or leave it for later.</p></div></div>
+          <form className="catalog-attention-search" onSubmit={(event) => { event.preventDefault(); setAttentionSearch(searchDraft.trim()); loadAttention({ page: 1, search: searchDraft.trim() }); }}><label className="field"><span>Search SKU, name, or WooCommerce number</span><div><Search size={17} aria-hidden="true" /><input className="input" onChange={(event) => setSearchDraft(event.target.value)} placeholder="Search products to review" type="search" value={searchDraft} /></div></label><button className="primary-button" type="submit">Search</button>{attentionSearch && <button className="muted-button" onClick={() => { setSearchDraft(''); setAttentionSearch(''); loadAttention({ page: 1, search: '' }); }} type="button">Clear</button>}</form>
+          {attentionLoading && <div className="loading-strip catalog-loading" role="status"><RefreshCw size={18} aria-hidden="true" />Loading products that need a decision…</div>}
+          {!attentionLoading && (
+            <TableShell className="catalog-attention-table" caption={`${attentionPagination.total} product(s) to review`} columns={['WooCommerce product', 'SKU / Barcode', 'Product', 'What needs review', 'Choose what to do']} showActionBand={false} pagination={serverTablePagination(attentionPagination, 'products to review', (page) => loadAttention({ page }), (pageSize) => loadAttention({ page: 1, page_size: pageSize }))}>
+              {attentionRows.map((row) => <tr key={row.id}><td data-label="WooCommerce product"><strong>{row.remote_type === 'variation' ? 'Product option' : titleize(row.remote_type)}</strong><span className="catalog-remote-id">#{row.woo_product_id}{row.woo_variation_id ? ` / ${row.woo_variation_id}` : ''}</span></td><td data-label="SKU / Barcode"><strong className="mono">{row.sku || 'No SKU'}</strong><span>{row.barcode || 'No barcode'}</span></td><td data-label="Product"><strong>{row.product_name || 'Unnamed WooCommerce product'}</strong></td><td data-label="What needs review"><strong>{row.message || 'Pongo could not find one certain match.'}</strong><span>{!['simple', 'variation'].includes(row.remote_type) ? 'This WooCommerce entry cannot become a Pongo item. Skip it, then check its product type in WooCommerce.' : row.action === 'conflict' ? 'Link the correct Pongo item, add a separate item, or fix the duplicate SKU in WooCommerce.' : 'Choose what Pongo should do with this product.'}</span></td><td data-label="Choose what to do"><CatalogAttentionResolution busy={resolvingRowId === row.id} canResolve={canResolveAttention} onResolve={resolveAttention} row={row} /></td></tr>)}
+              {!attentionRows.length && <tr><td colSpan={5}><div className="empty-table-row catalog-all-clear"><CheckCircle2 size={22} aria-hidden="true" /><strong>No products need your review.</strong><span>Every product in this update has been handled safely.</span></div></td></tr>}
+            </TableShell>
+          )}
+        </section>
+      )}
+
+      {activeTab === 'runs' && (
+        <section className="form-card settings-operation-panel catalog-runs" aria-labelledby="catalog-runs-heading">
+          <div className="panel-title catalog-section-heading"><div><span className="settings-view-eyebrow">Previous product updates</span><h3 id="catalog-runs-heading">Product update history</h3><p>See who started each update, what changed, and whether any products still need review.</p></div><button className="muted-button" disabled={runsLoading} onClick={() => loadRuns({ page: 1 })} type="button"><RefreshCw size={17} />Refresh</button></div>
+          {runsLoading && !runs.length && <div className="loading-strip catalog-loading" role="status"><RefreshCw size={18} aria-hidden="true" />Loading product update history…</div>}
+          <WooSyncRunsTable onLoad={loadRuns} pagination={runsPagination} runs={runs} />
+        </section>
+      )}
+    </section>
+  );
 }
 
 function GoogleSheetsSettingsPage({ oauthResult = '' }) {
@@ -12778,13 +13740,11 @@ function GoogleSheetsSettingsPage({ oauthResult = '' }) {
 }
 
 function WooCommerceSettingsPage({ view = 'connection', status, preview, commitSummary, orderPreview, orderCommitSummary, syncRuns, syncRunsPagination = emptyServerPagination(50), onLoadSyncRuns, remapCandidates, remapCandidatesPagination = emptyServerPagination(100), onLoadRemapCandidates, remapMappings, remapMappingsPagination = emptyServerPagination(100), onLoadRemapMappings, remapPreview, remapMessage, writebackQueue, writebackQueuePagination = emptyServerPagination(50), onLoadWritebackQueue, stockSyncJobs, stockSyncJobsPagination = emptyServerPagination(25), onLoadStockSyncJobs, writebackPreview, writebackMessage, loading, error, onCheckConnection, onSaveConfiguration, onChangeAccessMode, onPreview, onCommit, onPreviewOrders, onCommitOrders, onStartOrderHistoryImport, onPreviewRemap, onCommitRemap, onLoadRemap, onPreviewStockWriteback, onPreviewOrderStatusWriteback, onQueueWriteback, onApproveWriteback, onSendWriteback, onCancelWriteback, onRevalidateWriteback, onSyncStock, onResumeStockJob, onCancelStockJob }) {
-  const latestRun = syncRuns.find((run) => run.sync_type === 'products') || syncRuns[0];
   const latestOrderRun = syncRuns.find((run) => run.sync_type === 'orders');
   const reconciliation = status.order_reconciliation || {};
   const historyImport = status.order_history_import || {};
   const historyCoverage = status.order_history_coverage || {};
   const historyImportActive = ['queued', 'running'].includes(historyImport.status);
-  const commitDisabled = !status.configured || !preview || preview.error_count > 0;
   const [connectionForm, setConnectionForm] = useState({ base_url: status.base_url || '', consumer_key: '', consumer_secret: '' });
   const [connectionMessage, setConnectionMessage] = useState('');
   const [hostChangeAuthorized, setHostChangeAuthorized] = useState(false);
@@ -12817,7 +13777,7 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
     <section className="content-panel settings-page" data-settings-view={view}>
       {(loading || error) && (
         <div className="integration-feedback" aria-live="polite">
-          {loading && <div className="loading-strip">Working with the Pongo backend…</div>}
+          {loading && <div className="loading-strip">Loading WooCommerce settings…</div>}
           {error && <div className="api-error">{error}</div>}
         </div>
       )}
@@ -12833,23 +13793,23 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
             <span className={`integration-status-dot ${status.configured ? 'is-live' : ''}`} aria-hidden="true" />
           </button>
           <div className="integration-rail-note">
-            <span>Encrypted backend storage</span>
-            <p>Configure here. Keys never return to the browser after saving.</p>
+            <span>Saved securely</span>
+            <p>Your WooCommerce keys are encrypted and never shown again after saving.</p>
           </div>
         </aside>
 
         <div className="integration-workspace">
           <header className="integration-masthead">
             <div>
-              <span className="integration-eyebrow">Marketplace / WooCommerce</span>
-              <h2 id="woocommerce-integration-title">Store connection &amp; operations</h2>
-              <p>Connect Pongo to your WooCommerce store, then run the existing catalog, order, mapping, and stock workflows from one place.</p>
+              <span className="integration-eyebrow">WooCommerce</span>
+              <h2 id="woocommerce-integration-title">Connect your WooCommerce store</h2>
+              <p>Connect once, then Pongo can update products and orders and send approved stock changes back to WooCommerce.</p>
             </div>
             <div className={`integration-health ${hostMismatch ? 'needs-review' : (status.configured ? 'is-connected' : '')}`} role="status">
               <span className="integration-health-pulse" aria-hidden="true" />
               <div>
-                <strong>{hostMismatch ? 'Host review required' : (connectionMessage ? 'Connected' : (status.configured ? 'Configured' : 'Not connected'))}</strong>
-                <small>{hostMismatch ? requestedHost : `${status.environment || 'development'} environment`}</small>
+                <strong>{hostMismatch ? 'Store address needs review' : (connectionMessage ? 'Connected' : (status.configured ? 'Connection saved' : 'Not connected'))}</strong>
+                <small>{hostMismatch ? requestedHost : `${titleize(status.environment || 'development')} store`}</small>
               </div>
             </div>
           </header>
@@ -12858,7 +13818,7 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
             <form className="integration-credentials" onSubmit={connectWooCommerce}>
               <div className="integration-section-label">
                 <span>01</span>
-                <div><strong>Connection credentials</strong><small>Verify first, save second</small></div>
+                <div><strong>WooCommerce connection</strong><small>Enter these details once</small></div>
               </div>
               <label className="integration-field">
                 <span>Store URL</span>
@@ -12877,17 +13837,17 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
               {hostMismatch && (
                 <div className="integration-host-warning" role="alert">
                   <div className="integration-host-warning-heading">
-                    <span>Host replacement required</span>
-                    <strong>Explicit approval</strong>
+                    <span>Store address changed</span>
+                    <strong>Review required</strong>
                   </div>
                   <div className="integration-host-comparison" aria-label="WooCommerce host comparison">
                     <div>
-                      <span>Currently authorized</span>
+                      <span>Current store</span>
                       <strong>{allowedHost}</strong>
                     </div>
                     <ChevronRight size={18} aria-hidden="true" />
                     <div>
-                      <span>Requested host</span>
+                      <span>New store</span>
                       <strong>{requestedHost}</strong>
                     </div>
                   </div>
@@ -12898,15 +13858,15 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
                       onChange={(event) => setHostChangeAuthorized(event.target.checked)}
                     />
                     <span>
-                      <strong>Authorize replacing the WooCommerce host</strong>
-                      <small>This changes which store Pongo connects to. Existing credentials remain unchanged when the key fields are blank.</small>
+                      <strong>Connect Pongo to this new WooCommerce store</strong>
+                      <small>This changes which store Pongo uses. Leave the key fields blank to keep the saved keys.</small>
                     </span>
                   </label>
                 </div>
               )}
               <div className="integration-key-grid">
                 <label className="integration-field">
-                  <span>Consumer key</span>
+                  <span>WooCommerce key</span>
                   <input
                     type="password"
                     value={connectionForm.consumer_key}
@@ -12916,7 +13876,7 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
                   />
                 </label>
                 <label className="integration-field">
-                  <span>Consumer secret</span>
+                  <span>WooCommerce secret</span>
                   <input
                     type="password"
                     value={connectionForm.consumer_secret}
@@ -12929,12 +13889,12 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
               <div className="integration-form-footer">
                 <p>
                   {status.configuration_source === 'pongo_database'
-                    ? `Encrypted in Pongo${status.configuration_updated_by ? ` · saved by ${status.configuration_updated_by}` : ''}. Blank key fields keep the saved credentials.`
-                    : 'Save once to move this connection into encrypted Pongo storage.'}
+                    ? `Saved securely in Pongo${status.configuration_updated_by ? ` by ${status.configuration_updated_by}` : ''}. Leave the key fields blank to keep the saved keys.`
+                    : 'Your connection details will be encrypted inside Pongo.'}
                 </p>
                 <button className="primary-button integration-connect-button" disabled={loading || !connectionForm.base_url || (hostMismatch && !hostChangeAuthorized)} type="submit">
                   <CheckCircle2 size={17} />
-                  {loading ? 'Verifying…' : 'Save & verify connection'}
+                  {loading ? 'Testing…' : 'Save and test connection'}
                 </button>
               </div>
               {connectionMessage && <div className="integration-inline-success" role="status">{connectionMessage}</div>}
@@ -12943,7 +13903,7 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
             <nav className="integration-operations" aria-label="WooCommerce settings pages">
               <div className="integration-section-label">
                 <span>02</span>
-                <div><strong>Store access</strong><small>Choose what Pongo may do in WooCommerce</small></div>
+                <div><strong>What Pongo can do</strong><small>Choose whether Pongo may change WooCommerce</small></div>
               </div>
               <div className="integration-access-mode" role="group" aria-label="WooCommerce access mode">
                 <button
@@ -12953,8 +13913,8 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
                   disabled={loading}
                   onClick={() => onChangeAccessMode('read_only')}
                 >
-                  <span>Read only</span>
-                  <small>GET requests only. Sync products and orders without changing WooCommerce.</small>
+                  <span>View only</span>
+                  <small>Pongo can update its products and orders but cannot change WooCommerce.</small>
                 </button>
                 <button
                   type="button"
@@ -12963,35 +13923,40 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
                   disabled={loading}
                   onClick={() => onChangeAccessMode('read_write')}
                 >
-                  <span>Read &amp; write</span>
-                  <small>Enable Pongo stock updates, completed-order status writes, and background writeback jobs.</small>
+                  <span>View and update</span>
+                  <small>Pongo can send approved stock and completed-order changes to WooCommerce.</small>
                 </button>
               </div>
               <p className="integration-access-audit">
                 {status.access_mode_updated_by
                   ? `Last changed by ${status.access_mode_updated_by} · ${formatDateTime(status.access_mode_updated_at)}`
-                  : 'Using the deployment default until a team member changes it.'}
+                  : 'Using the default access until a team member changes it.'}
               </p>
               <div className="integration-section-label integration-workflow-label">
                 <span>03</span>
-                <div><strong>Continue setup</strong><small>Each workflow has its own page</small></div>
+                <div><strong>Choose what to manage</strong><small>Each task has its own page</small></div>
               </div>
               <div className="integration-destination-list">
+                <a href="#/settings/catalog">
+                  <span className="integration-destination-icon"><Boxes size={19} /></span>
+                  <span><strong>Products</strong><small>Add and match WooCommerce products and options</small></span>
+                  <ChevronRight size={18} aria-hidden="true" />
+                </a>
                 <a href="#/settings/sync">
                   <span className="integration-destination-icon"><RefreshCw size={19} /></span>
-                  <span><strong>Sync &amp; Mapping</strong><small>Catalog import, orders, remapping, and run history</small></span>
+                  <span><strong>Orders &amp; Product Links</strong><small>Update orders, import older orders, and fix product links</small></span>
                   <ChevronRight size={18} aria-hidden="true" />
                 </a>
                 <a href="#/settings/writeback">
                   <span className="integration-destination-icon is-live"><Upload size={19} /></span>
-                  <span><strong>Writeback Control</strong><small>Stock updates, order status, and guarded queue</small></span>
+                  <span><strong>WooCommerce Updates</strong><small>Review stock and order changes before sending</small></span>
                   <ChevronRight size={18} aria-hidden="true" />
                 </a>
               </div>
-              <button className="muted-button integration-test-button" onClick={onCheckConnection} disabled={loading || !status.configured} type="button"><CheckCircle2 size={17} />Test current connection</button>
+              <button className="muted-button integration-test-button" onClick={onCheckConnection} disabled={loading || !status.configured} type="button"><CheckCircle2 size={17} />Test connection</button>
               <div className="integration-safety-line">
-                <span>Effective access</span>
-                <strong>{status.access_mode === 'read_write' ? 'Live read & write' : 'GET requests only'}</strong>
+                <span>Current access</span>
+                <strong>{status.access_mode === 'read_write' ? 'View and update' : 'View only'}</strong>
               </div>
             </nav>
           </div>
@@ -13001,106 +13966,61 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
       {view === 'sync' && <>
       <SettingsViewIntro
         number="02"
-        eyebrow="Operational sync"
-        title="One preview before every commit"
-        description="Catalog, order, and mapping changes keep their existing guarded preview and commit flow. Nothing in this page bypasses Pongo’s allocation or inventory rules."
-        status={status.configured ? 'Connection ready' : 'Connection required'}
+        eyebrow="WooCommerce orders"
+        title="Keep orders and product links up to date"
+        description="Update current orders, add older orders to reports, and connect WooCommerce products to the correct Pongo items."
+        status={status.configured ? 'WooCommerce connected' : 'Connect WooCommerce first'}
         tone={status.configured ? 'success' : 'warning'}
       />
       <div className="wide-panel settings-operation-panel">
         <div className="panel-title">
           <div>
-            <h2>WooCommerce Catalog Mapping &amp; Import</h2>
-            <p>Reads WooCommerce in batches, maps existing items by unique SKU then barcode, and creates only missing products. Existing Pongo fields and item IDs stay unchanged.</p>
-          </div>
-          <div className="button-row compact">
-            <button className="muted-button" onClick={onCheckConnection} type="button">
-              <CheckCircle2 size={17} />
-              Check Connection
-            </button>
-            <button className="primary-button" disabled={loading || !status.configured} onClick={onPreview} type="button">
-              <Search size={17} />
-              Preview Catalog Mapping
-            </button>
-            <button className="action-button" disabled={loading || commitDisabled} onClick={onCommit} type="button">
-              <RefreshCw size={17} />
-              Import &amp; Map Catalog
-            </button>
-          </div>
-        </div>
-        <div className="summary-strip report-summary-strip">
-          <Metric label="Configured" value={status.configured ? 'Yes' : 'No'} />
-          <Metric label="Environment" value={status.environment || 'unknown'} />
-          <Metric label="Base Host" value={status.base_url_host || (status.base_url_present ? 'Present' : 'Missing')} />
-          <Metric label="Allowed Host" value={status.host_allowed ? 'Matched' : 'Not matched'} />
-          <Metric label="Read-only" value={status.read_only ? 'Yes' : 'No'} />
-          <Metric label="Dry-run" value={status.dry_run ? 'On' : 'Off'} />
-          <Metric label="Live Test" value={status.staging_live_test_mode ? 'On' : 'Off'} />
-          <Metric label="Last Sync" value={status.last_product_sync?.status || latestRun?.status || 'None'} />
-        </div>
-        {status.configured && status.message && <div className="csv-note">{status.message}</div>}
-        {preview && <WooPreviewSummary preview={preview} />}
-        {commitSummary && (
-          <div className="success-strip">
-            Catalog import finished with status {commitSummary.status}. Created {commitSummary.created_count}, mapped {commitSummary.updated_count}, conflicts {commitSummary.conflict_count}, and left {commitSummary.unmatched_local_count} local item(s) unmatched.
-          </div>
-        )}
-        {commitSummary?.unmatched_local_count > 0 && (
-          <div className="warning-strip">
-            Unmatched local SKUs: {(commitSummary.unmatched_local_skus || []).join(', ')}{commitSummary.unmatched_local_count > (commitSummary.unmatched_local_skus || []).length ? ' …' : ''}
-          </div>
-        )}
-      </div>
-      {preview && <WooPreviewTable rows={preview.preview_rows || []} />}
-      <div className="wide-panel settings-operation-panel">
-        <div className="panel-title">
-          <div>
-            <h2>WooCommerce Order Sync</h2>
-            <p>Checks automatically every two minutes. Use Fetch Orders Now for an immediate priority job; the worker imports in memory-safe batches.</p>
+            <h2>Keep orders up to date</h2>
+            <p>Pongo checks WooCommerce for new and changed orders every two minutes. Select “Update orders now” when you need the latest orders immediately.</p>
           </div>
           <div className="button-row compact">
             <button className="primary-button" disabled={loading || !status.configured} onClick={onPreviewOrders} type="button">
               <Search size={17} />
-              Preview Order Sync
+              See pending changes
             </button>
             <button className="action-button" disabled={loading || !status.configured} onClick={onCommitOrders} type="button">
               <RefreshCw size={17} />
-              Fetch Orders Now
+              Update orders now
             </button>
           </div>
         </div>
         <div className="summary-strip report-summary-strip">
-          <Metric label="Sync Statuses" value="open + completed snapshots" />
-          <Metric label="Last Order Sync" value={status.last_order_sync?.status || latestOrderRun?.status || 'None'} />
-          <Metric label="Last Orders" value={status.last_order_sync?.total_remote_records || latestOrderRun?.total_remote_records || 0} />
-          <Metric label="Webhook Receiver" value={status.webhook_configured ? 'Ready' : (status.webhook_enabled ? 'Needs setup' : 'Off')} />
-          <Metric label="Webhook Secret" value={status.webhook_secret_present ? 'Present' : 'Missing'} />
-          <Metric label="Last Webhook" value={status.last_webhook_delivery?.status || 'None'} />
-          <Metric label="Webhook Order" value={status.last_webhook_delivery?.woo_order_id ? `#${status.last_webhook_delivery.woo_order_id}` : 'None'} />
-          <Metric label="Server Reconciliation" value={reconciliation.healthy ? 'Healthy' : (reconciliation.degraded ? 'Needs review' : (reconciliation.enabled ? 'Attention' : 'Off'))} />
-          <Metric label="Last Server Success" value={reconciliation.last_success_at ? formatDateTime(reconciliation.last_success_at) : 'None'} />
+          <Metric label="Orders included" value="Open and completed orders" />
+          <Metric label="Last update" value={status.last_order_sync?.status || latestOrderRun?.status ? statusLabel(status.last_order_sync?.status || latestOrderRun?.status) : 'Not yet'} />
+          <Metric label="Orders checked" value={status.last_order_sync?.total_remote_records || latestOrderRun?.total_remote_records || 0} />
+          <Metric label="Instant order updates" value={status.webhook_configured ? 'On' : (status.webhook_enabled ? 'Needs setup' : 'Not enabled')} />
+          <Metric label="Instant update setup" value={status.webhook_secret_present ? 'Ready' : 'Needs setup'} />
+          <Metric label="Last instant update" value={status.last_webhook_delivery?.status ? statusLabel(status.last_webhook_delivery.status) : 'Not yet'} />
+          <Metric label="Last order received" value={status.last_webhook_delivery?.woo_order_id ? `#${status.last_webhook_delivery.woo_order_id}` : 'Not yet'} />
+          <Metric label="Automatic backup check" value={reconciliation.healthy ? 'Working' : (reconciliation.degraded ? 'Needs review' : (reconciliation.enabled ? 'Needs attention' : 'Not enabled'))} />
+          <Metric label="Last successful check" value={reconciliation.last_success_at ? formatDateTime(reconciliation.last_success_at) : 'Not yet'} />
         </div>
         {status.configured && reconciliation.enabled && !reconciliation.healthy && (
           <div className="warning-strip">
-            {reconciliation.message || 'Server order reconciliation needs attention.'}
+            {/reconciliation is disabled/i.test(reconciliation.message || '') ? 'Automatic backup order checks are turned off.' : reconciliation.message || 'Automatic backup order checks need attention.'}
             {reconciliation.last_error ? ` ${reconciliation.last_error}` : ''}
           </div>
         )}
         {status.last_webhook_delivery && (
           <div className="api-success">
-            Last webhook delivery {status.last_webhook_delivery.status} {formatDateTime(status.last_webhook_delivery.received_at)}.
-            {status.last_webhook_delivery.created_order ? ' A new local order was created.' : ' No new local order was created.'}
+            Last instant order update {statusLabel(status.last_webhook_delivery.status)} {formatDateTime(status.last_webhook_delivery.received_at)}.
+            {status.last_webhook_delivery.created_order ? ' A new order was added to Pongo.' : ' No new order was needed.'}
           </div>
         )}
         {orderPreview && <WooOrderPreviewSummary preview={orderPreview} />}
         {orderCommitSummary && ['queued', 'running'].includes(orderCommitSummary.status) && (
           <div className="success-strip">
-            Order fetch job #{orderCommitSummary.id} is {orderCommitSummary.status}. You can leave this page; the worker continues in the background.
+            Order update #{orderCommitSummary.id} is {statusLabel(orderCommitSummary.status)}. You can leave this page; Pongo will continue in the background.
           </div>
         )}
         {orderCommitSummary && !['queued', 'running'].includes(orderCommitSummary.status) && (
           <div className="success-strip">
-            Order fetch job #{orderCommitSummary.id || orderCommitSummary.sync_run_id} finished with status {orderCommitSummary.status}. Created {orderCommitSummary.created_count}, updated {orderCommitSummary.updated_count}, skipped {orderCommitSummary.skipped_count}.
+            Order update #{orderCommitSummary.id || orderCommitSummary.sync_run_id} {statusLabel(orderCommitSummary.status).toLowerCase()}. Added {orderCommitSummary.created_count}, updated {orderCommitSummary.updated_count}, unchanged {orderCommitSummary.skipped_count}.
           </div>
         )}
       </div>
@@ -13108,52 +14028,52 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
       <div className="wide-panel settings-operation-panel">
         <div className="panel-title">
           <div>
-            <h2>Historical Reporting Baseline</h2>
-            <p>Imports the complete WooCommerce order history across all statuses in resumable pages so customer, sales, SKU, and order intelligence uses the full local record.</p>
+            <h2>Add older orders to reports</h2>
+            <p>Bring your previous WooCommerce orders into Pongo so sales, customer, product, and order reports include your full history.</p>
           </div>
           <button className="action-button" disabled={loading || !status.configured || historyImportActive} onClick={onStartOrderHistoryImport} type="button">
             <Download size={17} />
-            {historyImportActive ? 'Import running' : (historyImport.status === 'failed' ? 'Resume history import' : 'Import full order history')}
+            {historyImportActive ? 'Importing previous orders…' : (historyImport.status === 'failed' ? 'Continue import' : 'Import previous orders')}
           </button>
         </div>
         <div className="summary-strip report-summary-strip">
-          <Metric label="Coverage" value={historyCoverage.verified_complete ? 'Verified' : 'Not verified'} />
-          <Metric label="Job Status" value={historyImport.status || 'Not started'} />
-          <Metric label="Orders Scanned" value={historyImport.total_remote_records || 0} />
-          <Metric label="New Snapshots" value={historyImport.created_count || 0} />
-          <Metric label="Already Local" value={historyImport.updated_count || 0} />
-          <Metric label="Local Orders" value={historyCoverage.local_order_count || 0} />
-          <Metric label="Archived Snapshots" value={historyCoverage.source_absent_snapshot_count || 0} />
-          <Metric label="Order Dates" value={historyCoverage.distinct_order_dates || 0} />
-          <Metric label="Earliest Order" value={historyCoverage.earliest_order_at ? formatDateTime(historyCoverage.earliest_order_at) : 'None'} />
-          <Metric label="Latest Order" value={historyCoverage.latest_order_at ? formatDateTime(historyCoverage.latest_order_at) : 'None'} />
+          <Metric label="Order history" value={historyCoverage.verified_complete ? 'Complete' : 'Not checked'} />
+          <Metric label="Import status" value={historyImport.status ? statusLabel(historyImport.status) : 'Not started'} />
+          <Metric label="Orders checked" value={historyImport.total_remote_records || 0} />
+          <Metric label="Orders added" value={historyImport.created_count || 0} />
+          <Metric label="Already in Pongo" value={historyImport.updated_count || 0} />
+          <Metric label="Total orders in Pongo" value={historyCoverage.local_order_count || 0} />
+          <Metric label="Saved only in Pongo" value={historyCoverage.source_absent_snapshot_count || 0} />
+          <Metric label="Days with orders" value={historyCoverage.distinct_order_dates || 0} />
+          <Metric label="Oldest order" value={historyCoverage.earliest_order_at ? formatDateTime(historyCoverage.earliest_order_at) : 'Not yet'} />
+          <Metric label="Newest order" value={historyCoverage.latest_order_at ? formatDateTime(historyCoverage.latest_order_at) : 'Not yet'} />
         </div>
         {historyImportActive && (
           <div className="loading-strip" role="status">
-            Importing {historyImport.progress?.current_status === 'any' ? 'all order statuses' : (historyImport.progress?.current_status || 'orders')}, page {historyImport.progress?.next_page || 1}. The worker safely resumes after restarts; you can leave this page.
+            Adding older orders from WooCommerce… You can leave this page. Pongo will continue in the background.
           </div>
         )}
         {historyCoverage.verified_complete && (
-          <div className="api-success">Full historical order coverage was verified {historyCoverage.verified_at ? formatDateTime(historyCoverage.verified_at) : ''}.</div>
+          <div className="api-success">Your full WooCommerce order history is available in Pongo {historyCoverage.verified_at ? `as of ${formatDateTime(historyCoverage.verified_at)}` : ''}.</div>
         )}
         {historyImport.status === 'completed_with_errors' && historyImport.progress?.coverage_complete && (
-          <div className="warning-strip">Order and customer coverage is complete. {historyImport.error_count || 0} item mapping issue(s) remain available in sync history for review.</div>
+          <div className="warning-strip">Your order history was added. {historyImport.error_count || 0} product link(s) still need review.</div>
         )}
         {historyImport.status === 'completed_with_errors' && !historyImport.progress?.coverage_complete && (
-          <div className="api-error">The history scan finished with errors, so full order coverage is not verified. Review Sync Run History and run it again.</div>
+          <div className="api-error">The import paused before it finished. Review Update history, then choose Continue import.</div>
         )}
         {historyImport.status === 'failed' && (
-          <div className="api-error">{historyImport.progress?.last_error || historyImport.notes || 'Historical order import paused. Resume it from the last committed page.'}</div>
+          <div className="api-error">{historyImport.progress?.last_error || historyImport.notes || 'The import paused before it finished. Select Continue import to pick up where it stopped.'}</div>
         )}
       </div>
       </>}
       {view === 'writeback' && <>
         <SettingsViewIntro
           number="03"
-          eyebrow="Controlled outbound changes"
-          title="Write only what has been reviewed"
-          description="Stock and order-status updates still pass through Pongo’s existing preview, queue, approval, environment, and host safeguards."
-          status={status.dry_run ? 'Dry-run active' : (status.writeback_enabled ? 'Live guard active' : 'Writes disabled')}
+          eyebrow="Changes sent to WooCommerce"
+          title="Review changes before sending"
+          description="Check stock and order-status changes before Pongo sends them to WooCommerce."
+          status={status.dry_run ? 'Test mode — nothing is sent' : (status.writeback_enabled ? 'Live updates enabled' : 'Sending changes is off')}
           tone={status.dry_run ? 'info' : (status.writeback_enabled ? 'warning' : 'neutral')}
         />
         <WooWritebackPanel status={status} queue={writebackQueue?.queue || []} queuePagination={writebackQueuePagination} onLoadQueue={onLoadWritebackQueue} stockSyncJobs={stockSyncJobs || []} stockSyncJobsPagination={stockSyncJobsPagination} onLoadStockSyncJobs={onLoadStockSyncJobs} preview={writebackPreview} message={writebackMessage} loading={loading} onPreviewStock={onPreviewStockWriteback} onPreviewOrderStatus={onPreviewOrderStatusWriteback} onQueue={onQueueWriteback} onApprove={onApproveWriteback} onSend={onSendWriteback} onCancel={onCancelWriteback} onRevalidate={onRevalidateWriteback} onSyncStock={onSyncStock} onResumeStockJob={onResumeStockJob} onCancelStockJob={onCancelStockJob} />
@@ -13163,8 +14083,8 @@ function WooCommerceSettingsPage({ view = 'connection', status, preview, commitS
       <div className="wide-panel settings-operation-panel">
         <div className="panel-title">
           <div>
-            <h2>Sync Run History</h2>
-            <p>Local WooCommerce sync attempts and outcomes.</p>
+            <h2>Update history</h2>
+            <p>See when Pongo checked WooCommerce and what changed.</p>
           </div>
         </div>
         <WooSyncRunsTable runs={syncRuns} pagination={syncRunsPagination} onLoad={onLoadSyncRuns} />
@@ -13315,7 +14235,9 @@ function WooWritebackPanel({ status, queue, queuePagination = emptyServerPaginat
   const [queueFilter, setQueueFilter] = useState('all');
   const [queueSearch, setQueueSearch] = useState('');
   const queueFilterInitializedRef = useRef(false);
-  const liveLabel = status.dry_run ? 'Dry Run On' : 'Live Staging Writes On';
+  const liveLabel = status.dry_run
+    ? 'Test mode — nothing is sent'
+    : status.writeback_enabled ? `Live updates to ${status.allowed_host || 'WooCommerce'}` : 'Sending changes is off';
 
   useEffect(() => {
     if (!queueFilterInitializedRef.current) {
@@ -13361,29 +14283,29 @@ function WooWritebackPanel({ status, queue, queuePagination = emptyServerPaginat
       <div className="writeback-overview-card">
         <div className="writeback-overview-header">
           <div>
-            <span className="settings-view-eyebrow">Environment safeguards</span>
-            <h2>WooCommerce write policy</h2>
-            <p>Every outbound change continues through the current Pongo write guards.</p>
+            <span className="settings-view-eyebrow">Safety settings</span>
+            <h2>What Pongo can change</h2>
+            <p>Pongo sends only the WooCommerce changes allowed below.</p>
           </div>
           <span className={`status-pill ${status.dry_run ? 'order-status-pending' : 'order-status-completed'}`}>{liveLabel}</span>
         </div>
         <div className="writeback-guard-grid">
-          <Metric label="Environment" value={status.environment || 'unknown'} />
-          <Metric label="Writeback" value={status.writeback_enabled ? 'Enabled' : 'Blocked'} />
-          <Metric label="Mode" value={status.dry_run ? 'Dry-run' : 'Live guarded'} />
-          <Metric label="Stock" value={status.stock_write_allowed ? 'Allowed' : 'Blocked'} />
-          <Metric label="Order Status" value={status.order_status_write_allowed ? 'Allowed' : 'Blocked'} />
-          <Metric label="Allowed Host" value={status.allowed_host || 'Not set'} />
+          <Metric label="Connected site" value={titleize(status.environment || 'unknown')} />
+          <Metric label="Sending changes" value={status.writeback_enabled ? 'Enabled' : 'Not enabled'} />
+          <Metric label="Test or live" value={status.dry_run ? 'Test only' : 'Live'} />
+          <Metric label="Stock updates" value={status.stock_write_allowed ? 'Allowed' : 'Not allowed'} />
+          <Metric label="Order status updates" value={status.order_status_write_allowed ? 'Allowed' : 'Not allowed'} />
+          <Metric label="Connected store" value={status.allowed_host || 'Not set'} />
         </div>
         <div className="writeback-policy-line">
           <TriangleAlert size={18} aria-hidden="true" />
           <div>
-            <strong>Hard-blocked operations</strong>
+            <strong>Pongo will never change</strong>
             <span>Product metadata · Customer writes · Coupons · Refunds · Delete</span>
           </div>
           <div className="button-row compact">
-            <button className="muted-button" disabled={loading || !status.configured} onClick={() => onSyncStock(false)} type="button"><RefreshCw size={16} />Update changed stock</button>
-            <button className="primary-button" disabled={loading || !status.configured} onClick={() => onSyncStock(true)} type="button"><Upload size={16} />Update all stock</button>
+            <button className="muted-button" disabled={loading || !status.configured} onClick={() => onSyncStock(false)} type="button"><RefreshCw size={16} />Send changed stock</button>
+            <button className="primary-button" disabled={loading || !status.configured} onClick={() => onSyncStock(true)} type="button"><Upload size={16} />Send all stock</button>
           </div>
         </div>
       </div>
@@ -13393,17 +14315,17 @@ function WooWritebackPanel({ status, queue, queuePagination = emptyServerPaginat
       <section className="writeback-queue-card" aria-labelledby="stock-sync-jobs-title">
         <div className="writeback-queue-header">
           <div>
-            <span className="settings-view-eyebrow">Resumable catalog jobs</span>
-            <h2 id="stock-sync-jobs-title">Update All history</h2>
-            <p>Progress and failures persist after refresh. Paused jobs can resume from their saved chunk.</p>
+            <span className="settings-view-eyebrow">Previous all-stock updates</span>
+            <h2 id="stock-sync-jobs-title">All-stock update history</h2>
+            <p>Progress is saved automatically. Paused updates can continue where they stopped.</p>
           </div>
         </div>
         <TableShell
-          caption={`${stockSyncJobsPagination.total} stock sync job(s)`}
-          columns={['Created', 'Status', 'Progress', 'Sent', 'Failed', 'Last error', 'Actions']}
+          caption={`${stockSyncJobsPagination.total} stock update(s)`}
+          columns={['Started', 'Result', 'Progress', 'Sent', 'Failed', 'Last problem', 'Actions']}
           pagination={serverTablePagination(
             stockSyncJobsPagination,
-            'stock sync jobs',
+            'stock updates',
             (page) => onLoadStockSyncJobs({ page, page_size: stockSyncJobsPagination.page_size }),
             (pageSize) => onLoadStockSyncJobs({ page: 1, page_size: pageSize }),
           )}
@@ -13433,7 +14355,7 @@ function WooWritebackPanel({ status, queue, queuePagination = emptyServerPaginat
               </div></td>
             </tr>
           ))}
-          {!stockSyncJobs.length && <tr><td colSpan={7}><div className="empty-table-row">No Update All jobs have been created.</div></td></tr>}
+          {!stockSyncJobs.length && <tr><td colSpan={7}><div className="empty-table-row">No all-stock updates have been started.</div></td></tr>}
         </TableShell>
       </section>
 
@@ -13441,51 +14363,51 @@ function WooWritebackPanel({ status, queue, queuePagination = emptyServerPaginat
         <article className="writeback-action-card">
           <div className="writeback-action-heading">
             <span className="writeback-action-icon"><Boxes size={20} /></span>
-            <div><h3>Preview a stock change</h3><p>Target one mapped item by SKU or local item ID.</p></div>
+            <div><h3>Check a stock update</h3><p>Find one linked item by SKU or Pongo item number.</p></div>
           </div>
           <div className="writeback-field-grid">
             <label className="field"><span>SKU</span><input value={stockForm.sku} onChange={(event) => setStockForm((current) => ({ ...current, sku: event.target.value }))} placeholder="e.g. 70001" /></label>
-            <label className="field"><span>Item ID</span><input value={stockForm.item_id} onChange={(event) => setStockForm((current) => ({ ...current, item_id: event.target.value }))} inputMode="numeric" /></label>
-            <label className="field is-wide"><span>Proposed Woo stock</span><input value={stockForm.proposed_stock_quantity} onChange={(event) => setStockForm((current) => ({ ...current, proposed_stock_quantity: event.target.value }))} inputMode="decimal" /></label>
+            <label className="field"><span>Pongo item number</span><input value={stockForm.item_id} onChange={(event) => setStockForm((current) => ({ ...current, item_id: event.target.value }))} inputMode="numeric" /></label>
+            <label className="field is-wide"><span>New WooCommerce stock</span><input value={stockForm.proposed_stock_quantity} onChange={(event) => setStockForm((current) => ({ ...current, proposed_stock_quantity: event.target.value }))} inputMode="decimal" /></label>
           </div>
-          <button className="primary-button writeback-preview-button" disabled={loading || (!stockForm.sku && !stockForm.item_id)} onClick={() => onPreviewStock(stockPayload())} type="button"><Search size={17} />Preview stock writeback</button>
+          <button className="primary-button writeback-preview-button" disabled={loading || (!stockForm.sku && !stockForm.item_id)} onClick={() => onPreviewStock(stockPayload())} type="button"><Search size={17} />Check stock update</button>
         </article>
 
         <article className="writeback-action-card">
           <div className="writeback-action-heading">
             <span className="writeback-action-icon is-order"><ShoppingCart size={20} /></span>
-            <div><h3>Preview an order status</h3><p>Target one Woo or local order before queueing it.</p></div>
+            <div><h3>Check an order status update</h3><p>Find one WooCommerce or Pongo order before adding it to the review list.</p></div>
           </div>
           <div className="writeback-field-grid">
-            <label className="field"><span>Woo Order ID</span><input value={orderForm.woo_order_id} onChange={(event) => setOrderForm((current) => ({ ...current, woo_order_id: event.target.value }))} inputMode="numeric" /></label>
-            <label className="field"><span>Local Order ID</span><input value={orderForm.order_id} onChange={(event) => setOrderForm((current) => ({ ...current, order_id: event.target.value }))} inputMode="numeric" /></label>
-            <label className="field is-wide"><span>Proposed Status</span><select value={orderForm.proposed_status} onChange={(event) => setOrderForm((current) => ({ ...current, proposed_status: event.target.value }))}><option value="processing">processing</option><option value="on-hold">on-hold</option><option value="completed">completed</option><option value="cancelled">cancelled</option><option value="refunded">refunded</option><option value="failed">failed</option></select></label>
+            <label className="field"><span>WooCommerce order number</span><input value={orderForm.woo_order_id} onChange={(event) => setOrderForm((current) => ({ ...current, woo_order_id: event.target.value }))} inputMode="numeric" /></label>
+            <label className="field"><span>Pongo order number</span><input value={orderForm.order_id} onChange={(event) => setOrderForm((current) => ({ ...current, order_id: event.target.value }))} inputMode="numeric" /></label>
+            <label className="field is-wide"><span>New status</span><select value={orderForm.proposed_status} onChange={(event) => setOrderForm((current) => ({ ...current, proposed_status: event.target.value }))}><option value="processing">Processing</option><option value="on-hold">On hold</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="refunded">Refunded</option><option value="failed">Failed</option></select></label>
           </div>
-          <button className="primary-button writeback-preview-button" disabled={loading || (!orderForm.woo_order_id && !orderForm.order_id)} onClick={() => onPreviewOrderStatus(orderPayload())} type="button"><Search size={17} />Preview order writeback</button>
+          <button className="primary-button writeback-preview-button" disabled={loading || (!orderForm.woo_order_id && !orderForm.order_id)} onClick={() => onPreviewOrderStatus(orderPayload())} type="button"><Search size={17} />Check order update</button>
         </article>
       </div>
 
       {preview && (
         <div className="writeback-preview-ready">
-          <div><strong>Preview ready</strong><span>{titleize(preview.operation_type)} is ready to enter the guarded queue.</span></div>
-          <button className="primary-button" disabled={loading} onClick={() => onQueue(preview, activeQueueQuery())} type="button"><Plus size={16} />Add to queue</button>
+          <div><strong>Ready to review</strong><span>This change can now be added to the review list.</span></div>
+          <button className="primary-button" disabled={loading} onClick={() => onQueue(preview, activeQueueQuery())} type="button"><Plus size={16} />Add to review list</button>
         </div>
       )}
 
       <section className="writeback-queue-card" aria-labelledby="writeback-queue-title">
         <div className="writeback-queue-header">
           <div>
-            <span className="settings-view-eyebrow">Review queue</span>
-            <h2 id="writeback-queue-title">Writeback activity</h2>
-            <p>{formatNumber(queuePagination.total)} matching queue item(s). Only the current server page is loaded.</p>
+            <span className="settings-view-eyebrow">Changes waiting to be sent</span>
+            <h2 id="writeback-queue-title">WooCommerce update activity</h2>
+            <p>{formatNumber(queuePagination.total)} matching change(s).</p>
           </div>
           <label className="writeback-queue-search">
-            <span className="sr-only">Search writeback queue</span>
+            <span className="sr-only">Search WooCommerce changes</span>
             <Search size={16} aria-hidden="true" />
-            <input value={queueSearch} onChange={(event) => setQueueSearch(event.target.value)} placeholder="Search operation, entity, Woo ID…" />
+            <input value={queueSearch} onChange={(event) => setQueueSearch(event.target.value)} placeholder="Search change, product, order, or WooCommerce number…" />
           </label>
         </div>
-        <div className="writeback-queue-filters" aria-label="Filter writeback queue">
+        <div className="writeback-queue-filters" aria-label="Filter WooCommerce changes">
           {['all', 'pending', 'approved', 'failed', 'sent', 'cancelled'].map((filter) => (
             <button className={queueFilter === filter ? 'is-active' : ''} aria-pressed={queueFilter === filter} onClick={() => setQueueFilter(filter)} type="button" key={filter}>{titleize(filter)}</button>
           ))}
@@ -13501,7 +14423,7 @@ function WooWritebackPanel({ status, queue, queuePagination = emptyServerPaginat
           pagination={{
             ...serverTablePagination(
               queuePagination,
-              'queue items',
+              'changes',
               (page) => onLoadQueue({ status: queueFilter === 'all' ? undefined : queueFilter, search: queueSearch.trim() || undefined, page, page_size: queuePagination.page_size }),
               (pageSize) => onLoadQueue({ status: queueFilter === 'all' ? undefined : queueFilter, search: queueSearch.trim() || undefined, page: 1, page_size: pageSize }),
             ),
@@ -13514,12 +14436,12 @@ function WooWritebackPanel({ status, queue, queuePagination = emptyServerPaginat
 
 function WooWritebackQueueTable({ rows, dryRun, loading, onApprove, onSend, onCancel, onRevalidate, pagination }) {
   return (
-    <TableShell className="writeback-queue-table" caption={`${pagination.total} matching queue item(s)`} columns={['Created', 'Operation', 'Entity', 'Woo ID', 'Status', 'Environment', 'Dry-run', 'Preview', 'Actions']} showActionBand={false} pagination={pagination}>
+    <TableShell className="writeback-queue-table" caption={`${pagination.total} matching change(s)`} columns={['Added', 'Change', 'Product or order', 'WooCommerce number', 'Result', 'Site', 'Test only', 'Details', 'Actions']} showActionBand={false} pagination={pagination}>
       {rows.map((row) => (
         <tr key={row.id}>
           <td>{formatDateTime(row.created_at)}</td>
-          <td>{row.operation_type}</td>
-          <td>{row.entity_type} {row.entity_id}</td>
+          <td>{row.operation_type === 'update_order_status' ? 'Order status update' : ['update_product_stock', 'update_variation_stock'].includes(row.operation_type) ? 'Stock update' : titleize(row.operation_type)}</td>
+          <td>{row.entity_type === 'inventory_item' ? 'Pongo item' : row.entity_type === 'order' ? 'Order' : titleize(row.entity_type)} {row.entity_id}</td>
           <td className="mono">{row.woo_entity_id}</td>
           <td>{StatusText(row.status)}</td>
           <td>{row.environment}</td>
@@ -13528,14 +14450,14 @@ function WooWritebackQueueTable({ rows, dryRun, loading, onApprove, onSend, onCa
           <td>
             <div className="button-row compact">
               <button className="muted-button" disabled={loading || !['pending', 'failed'].includes(row.status)} onClick={() => onApprove(row.id)} type="button">{row.status === 'failed' ? 'Retry' : 'Approve'}</button>
-              {['update_product_stock', 'update_variation_stock'].includes(row.operation_type) && <button className="muted-button" disabled={loading || !['pending', 'failed'].includes(row.status)} onClick={() => onRevalidate(row.id)} type="button">Revalidate Mapping</button>}
-              <button className="action-button" disabled={loading || row.status !== 'approved'} onClick={() => onSend(row.id)} type="button">{dryRun || row.dry_run ? 'Dry Run Send' : 'Send to Staging'}</button>
+              {['update_product_stock', 'update_variation_stock'].includes(row.operation_type) && <button className="muted-button" disabled={loading || !['pending', 'failed'].includes(row.status)} onClick={() => onRevalidate(row.id)} type="button">Check product link again</button>}
+              <button className="action-button" disabled={loading || row.status !== 'approved'} onClick={() => onSend(row.id)} type="button">{dryRun || row.dry_run ? 'Test send — no changes' : 'Send to WooCommerce'}</button>
               <button className="muted-button" disabled={loading || !['pending', 'approved', 'failed'].includes(row.status)} onClick={() => onCancel(row.id)} type="button">Cancel</button>
             </div>
           </td>
         </tr>
       ))}
-      {rows.length === 0 && <tr><td colSpan={9}><div className="empty-table-row">No staging writeback queue items yet.</div></td></tr>}
+      {rows.length === 0 && <tr><td colSpan={9}><div className="empty-table-row">No WooCommerce changes are waiting.</div></td></tr>}
     </TableShell>
   );
 }
@@ -13579,47 +14501,47 @@ function WooRemapPanel({ candidates, candidatePagination = emptyServerPagination
     <div className="wide-panel settings-operation-panel">
       <div className="panel-title">
         <div>
-          <h2>WooCommerce Remap</h2>
-          <p>Local-only relinking for Woo product/variation snapshots. It does not write WooCommerce or inventory.</p>
+          <h2>Fix product links</h2>
+          <p>Connect a WooCommerce product to the correct Pongo item. This does not change stock or edit the WooCommerce product.</p>
         </div>
-        <button className="muted-button" onClick={onRefresh} disabled={loading} type="button"><RefreshCw size={17} />Refresh Remap</button>
+        <button className="muted-button" onClick={onRefresh} disabled={loading} type="button"><RefreshCw size={17} />Refresh product list</button>
       </div>
       {message && <div className="success-strip">{message}</div>}
       <div className="receiving-form route-form">
         <div className="receiving-header-fields route-header-fields">
-          <div className="field"><span>Selected Woo record</span><strong>{selectedCandidate ? `${selectedCandidate.remote.woo_name || selectedCandidate.remote.woo_sku} (${selectedCandidate.remote.woo_product_id}${selectedCandidate.remote.woo_variation_id ? `/${selectedCandidate.remote.woo_variation_id}` : ''})` : 'Choose a candidate below'}</strong></div>
-          <label className="field"><span>Suggested local item</span><select value={selected.item_id} onChange={(event) => setSelected((current) => ({ ...current, item_id: event.target.value }))}><option value="">Choose item</option>{(selectedCandidate?.suggested_items || []).map((item) => <option key={item.item_id} value={item.item_id}>{item.sku || item.description}</option>)}</select></label>
-          <label className="field wide-field"><span>Note</span><input value={selected.note} onChange={(event) => setSelected((current) => ({ ...current, note: event.target.value }))} /></label>
+          <div className="field"><span>WooCommerce product</span><strong>{selectedCandidate ? `${selectedCandidate.remote.woo_name || selectedCandidate.remote.woo_sku} (${selectedCandidate.remote.woo_product_id}${selectedCandidate.remote.woo_variation_id ? `/${selectedCandidate.remote.woo_variation_id}` : ''})` : 'Choose a product below'}</strong></div>
+          <label className="field"><span>Pongo item</span><select value={selected.item_id} onChange={(event) => setSelected((current) => ({ ...current, item_id: event.target.value }))}><option value="">Choose a Pongo item</option>{(selectedCandidate?.suggested_items || []).map((item) => <option key={item.item_id} value={item.item_id}>{item.sku || item.description}</option>)}</select></label>
+          <label className="field wide-field"><span>Note (optional)</span><input value={selected.note} onChange={(event) => setSelected((current) => ({ ...current, note: event.target.value }))} /></label>
         </div>
         <div className="button-row">
-          <button className="primary-button" disabled={loading || !selected.woo_product_id || !selected.item_id} onClick={() => onPreview(payload())} type="button"><Search size={17} />Preview Mapping</button>
-          <button className="action-button" disabled={loading || !preview || preview.errors?.length > 0} onClick={() => onCommit(payload())} type="button"><Link2 size={17} />Commit Mapping</button>
+          <button className="primary-button" disabled={loading || !selected.woo_product_id || !selected.item_id} onClick={() => onPreview(payload())} type="button"><Search size={17} />Check link</button>
+          <button className="action-button" disabled={loading || !preview || preview.errors?.length > 0} onClick={() => onCommit(payload())} type="button"><Link2 size={17} />Save link</button>
         </div>
       </div>
       {preview && (
         <div className={preview.errors?.length ? 'api-error' : 'success-strip'}>
-          Preview maps Woo {preview.remote.woo_product_id}{preview.remote.woo_variation_id ? `/${preview.remote.woo_variation_id}` : ''} to {preview.item.sku || preview.item.description}. {(preview.warnings || []).join(' ')} {(preview.errors || []).join(' ')}
+          This will link WooCommerce product {preview.remote.woo_product_id}{preview.remote.woo_variation_id ? `/${preview.remote.woo_variation_id}` : ''} to {preview.item.sku || preview.item.description}. {(preview.warnings || []).join(' ')} {(preview.errors || []).join(' ')}
         </div>
       )}
-      <TableShell caption={`${candidatePagination.total} remap candidate(s)`} columns={['Woo Product', 'Variation', 'SKU', 'Reason', 'Current Item', 'Suggestions', 'Action']} pagination={serverTablePagination(candidatePagination, 'remap candidates', (page) => onLoadCandidates({ page, page_size: candidatePagination.page_size }), (pageSize) => onLoadCandidates({ page: 1, page_size: pageSize }))}>
+      <TableShell caption={`${candidatePagination.total} WooCommerce product(s)`} columns={['WooCommerce product', 'Product option ID', 'SKU', 'Link status', 'Currently linked item', 'Suggested Pongo item', 'Action']} pagination={serverTablePagination(candidatePagination, 'WooCommerce products', (page) => onLoadCandidates({ page, page_size: candidatePagination.page_size }), (pageSize) => onLoadCandidates({ page: 1, page_size: pageSize }))}>
         {candidates.map((candidate) => (
           <tr key={`${candidate.remote.woo_product_id}-${candidate.remote.woo_variation_id || 'simple'}`}>
             <td className="mono">{candidate.remote.woo_product_id}</td>
             <td className="mono">{candidate.remote.woo_variation_id}</td>
             <td className="mono">{candidate.remote.woo_sku}</td>
-            <td>{candidate.remote.reason}</td>
+            <td>{candidate.remote.reason === 'mapped' ? 'Linked' : titleize(candidate.remote.reason)}</td>
             <td>{candidate.current_mapping?.item_id || ''}</td>
             <td className="description-cell">{(candidate.suggested_items || []).map((item) => `${item.item_id}:${item.sku || item.description}`).join(', ')}</td>
-            <td><button className="muted-button" onClick={() => selectCandidate(candidate)} type="button">Select</button></td>
+            <td><button className="muted-button" onClick={() => selectCandidate(candidate)} type="button">Choose</button></td>
           </tr>
         ))}
-        {candidates.length === 0 && <tr><td colSpan={7}><div className="empty-table-row">No remap candidates found.</div></td></tr>}
+        {candidates.length === 0 && <tr><td colSpan={7}><div className="empty-table-row">No WooCommerce products need link review.</div></td></tr>}
       </TableShell>
-      <TableShell caption={`${mappingPagination.total} active mapping(s)`} columns={['Item ID', 'Woo Product', 'Variation', 'SKU', 'Source', 'Active', 'Updated']} pagination={serverTablePagination(mappingPagination, 'active mappings', (page) => onLoadMappings({ page, page_size: mappingPagination.page_size }), (pageSize) => onLoadMappings({ page: 1, page_size: pageSize }))}>
+      <TableShell caption={`${mappingPagination.total} saved product link(s)`} columns={['Pongo item', 'WooCommerce product', 'Product option ID', 'SKU', 'Linked by', 'In use', 'Last changed']} pagination={serverTablePagination(mappingPagination, 'saved product links', (page) => onLoadMappings({ page, page_size: mappingPagination.page_size }), (pageSize) => onLoadMappings({ page: 1, page_size: pageSize }))}>
         {mappings.map((mapping) => (
-          <tr key={mapping.id}><td>{mapping.item_id}</td><td className="mono">{mapping.woo_product_id}</td><td className="mono">{mapping.woo_variation_id}</td><td className="mono">{mapping.woo_sku}</td><td>{mapping.mapping_source}</td><td>{mapping.active ? 'Yes' : 'No'}</td><td>{formatDateTime(mapping.updated_at)}</td></tr>
+          <tr key={mapping.id}><td>{mapping.item_id}</td><td className="mono">{mapping.woo_product_id}</td><td className="mono">{mapping.woo_variation_id}</td><td className="mono">{mapping.woo_sku}</td><td>{mapping.mapping_source === 'sync' ? 'Automatic product update' : mapping.mapping_source === 'manual' ? 'Team member' : titleize(mapping.mapping_source)}</td><td>{mapping.active ? 'Yes' : 'No'}</td><td>{formatDateTime(mapping.updated_at)}</td></tr>
         ))}
-        {mappings.length === 0 && <tr><td colSpan={7}><div className="empty-table-row">No active local remap records yet.</div></td></tr>}
+        {mappings.length === 0 && <tr><td colSpan={7}><div className="empty-table-row">No saved product links yet.</div></td></tr>}
       </TableShell>
     </div>
   );
@@ -13627,27 +14549,27 @@ function WooRemapPanel({ candidates, candidatePagination = emptyServerPagination
 
 function WooSyncRunsTable({ runs, pagination = emptyServerPagination(50), onLoad }) {
   return (
-    <TableShell caption={`${pagination?.total ?? runs.length} sync run(s)`} columns={['Started At', 'Completed At', 'Sync Type', 'Status', 'Total Records', 'Created', 'Updated', 'Matched', 'Skipped', 'Conflicts', 'Errors', 'Created By']} pagination={serverTablePagination(pagination, 'sync runs', (page) => onLoad?.({ page, page_size: pagination.page_size || 50 }), (pageSize) => onLoad?.({ page: 1, page_size: pageSize }))}>
+    <TableShell caption={`${pagination?.total ?? runs.length} update(s)`} columns={['Started', 'Finished', 'What was updated', 'Result', 'Checked', 'Added', 'Updated', 'Linked', 'Skipped', 'Needs review', 'Failed', 'Started by']} pagination={serverTablePagination(pagination, 'updates', (page) => onLoad?.({ page, page_size: pagination.page_size || 50 }), (pageSize) => onLoad?.({ page: 1, page_size: pageSize }))}>
       {runs.map((run) => (
         <tr key={run.id}>
-          <td>{formatDateTime(run.started_at)}</td>
-          <td>{formatDateTime(run.completed_at)}</td>
-          <td>{titleize(run.sync_type)}</td>
-          <td>{StatusText(run.status)}</td>
-          <td>{formatNumber(run.total_remote_records)}</td>
-          <td>{formatNumber(run.created_count)}</td>
-          <td>{formatNumber(run.updated_count)}</td>
-          <td>{formatNumber(run.matched_count)}</td>
-          <td>{formatNumber(run.skipped_count)}</td>
-          <td>{formatNumber(run.conflict_count)}</td>
-          <td>{formatNumber(run.error_count)}</td>
-          <td>{run.created_by}</td>
+          <td data-label="Started">{formatDateTime(run.started_at)}</td>
+          <td data-label="Finished">{formatDateTime(run.completed_at)}</td>
+          <td data-label="What was updated">{wooUpdateTypeLabel(run.sync_type)}</td>
+          <td data-label="Result">{StatusText(run.status)}</td>
+          <td data-label="Checked">{formatNumber(run.total_remote_records)}</td>
+          <td data-label="Added">{formatNumber(run.created_count)}</td>
+          <td data-label="Updated">{formatNumber(run.updated_count)}</td>
+          <td data-label="Linked">{formatNumber(run.matched_count)}</td>
+          <td data-label="Skipped">{formatNumber(run.skipped_count)}</td>
+          <td data-label="Needs review">{formatNumber(run.conflict_count)}</td>
+          <td data-label="Failed">{formatNumber(run.error_count)}</td>
+          <td data-label="Started by">{updateStarterLabel(run.created_by)}</td>
         </tr>
       ))}
       {runs.length === 0 && (
         <tr>
           <td colSpan={12}>
-            <div className="empty-table-row">No WooCommerce sync runs yet.</div>
+            <div className="empty-table-row">No WooCommerce updates yet.</div>
           </td>
         </tr>
       )}
@@ -14706,9 +15628,28 @@ async function runWooCatalogBatchesRequest(endpoint, blockedSkus = []) {
   return summary;
 }
 
-async function postJson(path, payload) {
+async function postJson(path, payload, options = {}) {
   const response = await apiFetch(`${API_BASE_URL}${path}`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const body = await response.json();
+      detail = apiErrorDetail(body);
+    } catch {
+      detail = await safeResponseText(response);
+    }
+    throw new Error(detail || `API returned ${response.status}`);
+  }
+  return response.json();
+}
+
+async function putJson(path, payload) {
+  const response = await apiFetch(`${API_BASE_URL}${path}`, {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });

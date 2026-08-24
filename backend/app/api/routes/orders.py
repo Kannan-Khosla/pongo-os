@@ -1,6 +1,7 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -12,8 +13,18 @@ from app.schemas.orders import (
     CompletedOrderListResponse,
     CompletedOrderPickRecoveryRequest,
     CompletedOrderPickRecoveryResponse,
+    CompletedOrderRecordPickedRequest,
+    CompletedOrderRecordPickedResponse,
     OpenOrderDetail,
     OpenOrderListResponse,
+    OrderNoteCreate,
+    OrderNoteListResponse,
+    OrderNoteRead,
+    OrderTagCreate,
+    OrderTagListResponse,
+    OrderTagRead,
+    OrderTagsRead,
+    OrderTagsUpdate,
     OrderCompletionRequest,
     OrderCompletionResponse,
     OrderLineAddRequest,
@@ -36,13 +47,22 @@ from app.services.order_actions import (
     add_local_order_line,
     change_live_woo_order_status,
     prepare_completed_order_for_picking,
+    record_completed_orders_picked,
     reconcile_live_woo_order,
     remove_local_order_line,
     stock_sync_error,
     substitute_order_line,
-    sync_completed_picked_stock,
+    sync_order_inventory_stock,
 )
 from app.services.order_workflow import auto_allocate_order_if_possible, complete_order_without_stock_reduction, complete_picked_order, determine_order_workflow_flags, evaluate_order_allocation
+from app.services.order_metadata import (
+    OrderMetadataNotFound,
+    create_order_note,
+    create_order_tag,
+    list_order_notes,
+    list_order_tags,
+    replace_order_tags,
+)
 from app.services.picks import list_picks_page, pick_to_read, unpick_orders
 from app.services.stock_mutation_guard import IdempotencyConflict
 from app.services.woocommerce_orders import export_open_orders_csv, get_open_order_detail, list_open_orders
@@ -222,6 +242,65 @@ def pagination_metadata(total: int, page: int, page_size: int, total_pages: int,
     }
 
 
+@router.get("/tags", response_model=OrderTagListResponse)
+def get_order_tags(db: Session = Depends(get_db)) -> OrderTagListResponse:
+    return list_order_tags(db)
+
+
+@router.post("/tags", response_model=OrderTagRead, status_code=201)
+def post_order_tag(
+    payload: OrderTagCreate,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> OrderTagRead:
+    try:
+        return create_order_tag(db, payload, actor=actor)
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An order tag with this name already exists.") from error
+
+
+@router.get("/{order_id}/notes", response_model=OrderNoteListResponse)
+def get_order_notes(order_id: int, db: Session = Depends(get_db)) -> OrderNoteListResponse:
+    try:
+        return list_order_notes(db, order_id)
+    except OrderMetadataNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post("/{order_id}/notes", response_model=OrderNoteRead, status_code=201)
+def post_order_note(
+    order_id: int,
+    payload: OrderNoteCreate,
+    idempotency_key_header: str = Header(alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> OrderNoteRead:
+    assert_matching_idempotency_keys(payload.idempotency_key, idempotency_key_header)
+    try:
+        return create_order_note(db, order_id, payload, actor=actor)
+    except IdempotencyConflict as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except OrderMetadataNotFound as error:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.put("/{order_id}/tags", response_model=OrderTagsRead)
+def put_order_tags(
+    order_id: int,
+    payload: OrderTagsUpdate,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> OrderTagsRead:
+    try:
+        return replace_order_tags(db, order_id, payload, actor=actor)
+    except OrderMetadataNotFound as error:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
 @router.post("/bulk/complete", response_model=BulkOrderActionResponse)
 def bulk_complete_orders(payload: BulkOrderActionRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> BulkOrderActionResponse:
     selected_ids = list(dict.fromkeys(payload.order_ids))
@@ -239,7 +318,7 @@ def bulk_complete_orders(payload: BulkOrderActionRequest, db: Session = Depends(
                 result = complete_picked_order(db, order_id, created_by=actor)
             else:
                 result = complete_order_without_stock_reduction(db, order_id, payload.reason or "Bulk completed from Open Orders.", created_by=actor)
-            stock_sync = sync_completed_picked_stock(db, settings, woo_client, order_id, actor) if was_picked else None
+            stock_sync = sync_order_inventory_stock(db, settings, woo_client, order_id, actor) if was_picked else None
             writeback = sync_completed_order_status(db, settings, woo_client, order_id, actor)
             results.append({
                 "order_id": order_id,
@@ -263,6 +342,28 @@ def bulk_complete_orders(payload: BulkOrderActionRequest, db: Session = Depends(
         results=results,
         errors=errors,
     )
+
+
+@router.post("/completed/bulk/record-picked", response_model=CompletedOrderRecordPickedResponse)
+def bulk_record_completed_orders_picked(
+    payload: CompletedOrderRecordPickedRequest,
+    idempotency_key_header: str = Header(alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> CompletedOrderRecordPickedResponse:
+    assert_matching_idempotency_keys(payload.idempotency_key, idempotency_key_header)
+    settings = effective_woocommerce_settings(db, get_settings())
+    try:
+        return record_completed_orders_picked(
+            db,
+            settings,
+            WooCommerceClient(settings),
+            payload,
+            actor=actor,
+        )
+    except IdempotencyConflict as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/bulk/unpick", response_model=BulkOrderActionResponse)
@@ -372,7 +473,7 @@ def commit_order_completion(order_id: int, payload: OrderCompletionRequest, db: 
     settings = effective_woocommerce_settings(db, get_settings())
     woo_client = WooCommerceClient(settings)
     stock_sync = (
-        sync_completed_picked_stock(db, settings, woo_client, order_id, actor)
+        sync_order_inventory_stock(db, settings, woo_client, order_id, actor)
         if completion_mode == "complete_picked" and not recovery_completion_replay
         else None
     )

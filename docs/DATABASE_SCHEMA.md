@@ -793,6 +793,7 @@ Fields:
 - fulfilled_qty
 - unit_cost
 - unit_price
+- local_invoice_unit_price
 - line_subtotal
 - line_total
 - line_tax
@@ -836,6 +837,10 @@ Read-only order sync rules:
   reduction use the effective item. A Woo resync preserves the substitution
   only while the original product/variation identity and ordered quantity are
   unchanged; an incompatible remote change marks the line for review.
+- `local_invoice_unit_price` snapshots the effective item's sales price (or
+  recommended retail price fallback) for Pongo-only additions and
+  substitutions. Woo reconciliation continues to own `unit_price`,
+  `line_subtotal`, and `line_total` and does not overwrite the local snapshot.
 - A Pongo-only added line has no `woo_order_item_id` and uses
   `sync_status = local_added`. A Pongo-only removal is retained with ordered
   quantity zero, `matched_status = removed`, and `sync_status = local_removed`.
@@ -1393,6 +1398,8 @@ Fields:
 - started_at
 - completed_at
 - created_by
+- request_key
+- attempt_count
 - total_remote_records
 - created_count
 - updated_count
@@ -1402,9 +1409,13 @@ Fields:
 - error_count
 - notes
 - progress
+- updated_at
 
 Current usage:
 - Product/variation commit creates one run with `sync_type = products`.
+- Durable catalog reconciliation uses `sync_type = catalog`; progress stores
+  its scan ID, full/delta pass, product page, variable-parent index, variation
+  page, heartbeat, and retry time.
 - Order commit creates one run with `sync_type = orders`.
 - The durable full-history job uses `sync_type = order_history_v1`; `progress`
   stores its frozen cutoff, current status/page, retries, and verified coverage.
@@ -1415,7 +1426,31 @@ Current usage:
 
 Relationships:
 - Has many `woocommerce_sync_errors`.
+- Has many `woo_catalog_sync_rows`.
 - Can be referenced by `woocommerce_webhook_deliveries`.
+
+Catalog constraints:
+- One partial unique index permits only one nonterminal `catalog` run,
+  including variation fetch, retry, pause, and cancellation phases.
+- A second partial unique index makes each non-null catalog request key
+  idempotent.
+
+## woo_catalog_sync_rows
+
+Purpose: Durable per-remote-unit staging, result, conflict, and manual
+resolution ledger for full WooCommerce catalog reconciliation.
+
+The row stores run/remote identity, product type, Woo IDs, SKU, normalized SKU,
+barcode, name, status/action, optional local target, bounded message, raw Woo
+product/variation payload, resolution action/item/actor/time, and timestamps.
+`(sync_run_id, remote_key)` is unique, so replaying a page updates rather than
+duplicates its row. Variable parents use context rows and never become inventory
+items. Previously linked identities absent from a completed full scan are
+persisted as attention rows; no mapping is auto-deleted.
+
+Automatic terminal rows older than 30 days may be removed at completion.
+Unresolved attention/staged rows and every explicit human Link/Create/Skip
+decision are retained for audit.
 
 ## woocommerce_sync_errors
 
@@ -1601,6 +1636,14 @@ Current usage:
   and creates a new active local mapping.
 - Commit may update local item Woo ID metadata but does not overwrite manual
   fields or inventory quantities.
+
+Active identity constraints:
+- one active mapping per local item;
+- one active mapping per simple Woo product ID;
+- one active mapping per Woo variation ID, regardless of parent product ID.
+
+Migration `20260821_0041` fails closed when legacy duplicates violate these
+rules. It never auto-deletes or guesses which existing mapping to keep.
 
 Safety:
 - Local-only.
@@ -1794,3 +1837,50 @@ Existing mapping storage stays authoritative: a simple item has
 `woo_product_id` and null `woo_variation_id`; a variation stores its parent in
 `woo_product_id` and exact child in `woo_variation_id`. The existing
 `woo_item_mappings` and `woo_writeback_queue` tables are reused.
+
+## Internal Order Metadata
+
+Migration `20260823_0043_order_notes_tags` adds three Pongo-only tables:
+
+### `order_notes`
+
+- `id`
+- `order_id` (FK to `orders`, cascade delete)
+- `note`
+- `note_type` (`manual` or `system`)
+- `created_by` (authenticated staff identity)
+- `created_at`
+- `updated_at`
+
+Notes are immutable through the API. Manual note creation uses a
+`stock_mutation_requests` idempotency record so a retried POST cannot append a
+duplicate. Completed-order recovery inserts its system note in the same local
+transaction as the pick and inventory audit rows.
+
+### `order_tags`
+
+- `id`
+- `name`
+- `normalized_name` (case-folded, unique)
+- `color` (validated `#RRGGBB`)
+- `created_by`
+- `created_at`
+- `updated_at`
+
+### `order_tag_assignments`
+
+- composite primary key: (`order_id`, `tag_id`)
+- `position`
+- `assigned_by`
+- `created_at`
+
+Assignments are replaced under an order row lock. `position = 0` marks the
+single primary/highlight tag. When no highlight is selected, positions begin at
+1, so tag order does not accidentally imply a highlight.
+
+The same migration adds nullable `target_item_ids` JSON to
+`woo_stock_sync_jobs`. Null retains the existing full-catalog cursor behavior;
+a normalized list restricts each worker chunk and retry to those inventory
+items. Completed-order pick correction uses this targeted form so the request
+can commit local stock quickly while the existing durable worker performs only
+the affected WooCommerce writes.

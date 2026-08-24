@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App, {
@@ -338,6 +338,32 @@ const mockImportSchema = {
 
 const mockDataQuality = { total_items: 1, complete_items: 0, items_needing_attention: 1, completion_percent: 0, issues: [{ key: 'missing_cost', label: 'Missing unit cost', description: 'Add the landed unit cost.', count: 1, severity: 'attention' }, { key: 'missing_image', label: 'Missing image', description: 'Add an image.', count: 1, severity: 'attention' }] };
 
+function catalogRun(overrides = {}) {
+  return {
+    id: 42,
+    status: 'queued',
+    stage: 'queued',
+    created_by: 'Catalog Tester',
+    started_at: '2026-08-21T18:00:00Z',
+    completed_at: null,
+    total_remote_records: 0,
+    processed_records: 0,
+    created_count: 0,
+    updated_count: 0,
+    matched_count: 0,
+    unchanged_count: 0,
+    skipped_count: 0,
+    conflict_count: 0,
+    error_count: 0,
+    progress_percent: 0,
+    message: null,
+    can_resume: false,
+    can_cancel: true,
+    deduplicated: false,
+    ...overrides,
+  };
+}
+
 function mockFetch(url, options = {}) {
   const target = String(url);
   if (target.includes('/api/reports/google-sheets/oauth/start')) {
@@ -444,12 +470,20 @@ function mockFetch(url, options = {}) {
   if (target.includes('/api/orders/bulk/unpick')) return json({ status: 'completed', requested_count: 1, succeeded_count: 1, failed_count: 0, total_quantity_restored: 1, results: [], errors: [] });
   if (target.includes('/api/orders/woocommerce/802/reconcile')) return json({ status: 'reconciled', woo_order_id: 802, local_order_id: 701, order: mockOrderDetail });
   if (target.includes('/api/orders/woocommerce/803/reconcile')) return json({ status: 'reconciled', woo_order_id: 803, local_order_id: 702, order: mockRemoteOrderDetail });
-  if (target.includes('/api/orders/woocommerce/802/status')) return json({ status: 'completed', target_status: 'completed', woo_order_id: 802, local_order_id: 701, local_status: 'completed_without_picking', woo_sync_status: 'sent', released_quantity: 0, message: 'Order 0802 was marked processed without picking.' });
-  if (target.includes('/api/orders/woocommerce/803/status')) return json({ status: 'completed', target_status: 'completed', woo_order_id: 803, local_order_id: 702, local_status: 'completed_without_picking', woo_sync_status: 'sent', released_quantity: 0, message: 'Order 0803 was marked processed without picking.' });
+  if (target.includes('/api/orders/woocommerce/802/status')) {
+    const targetStatus = JSON.parse(options.body || '{}').target_status || 'completed';
+    return json({ status: targetStatus, target_status: targetStatus, woo_order_id: 802, local_order_id: 701, local_status: targetStatus === 'cancelled' ? 'cancelled' : 'completed_without_picking', woo_sync_status: 'sent', released_quantity: targetStatus === 'cancelled' ? 2 : 0, message: targetStatus === 'cancelled' ? 'Order changed to cancelled in WooCommerce.' : 'Order 0802 was marked processed without picking.' });
+  }
+  if (target.includes('/api/orders/woocommerce/803/status')) {
+    const targetStatus = JSON.parse(options.body || '{}').target_status || 'completed';
+    return json({ status: targetStatus, target_status: targetStatus, woo_order_id: 803, local_order_id: 702, local_status: targetStatus === 'cancelled' ? 'cancelled' : 'completed_without_picking', woo_sync_status: 'sent', released_quantity: targetStatus === 'cancelled' ? 2 : 0, message: targetStatus === 'cancelled' ? 'Order changed to cancelled in WooCommerce.' : 'Order 0803 was marked processed without picking.' });
+  }
   if (target.includes('/api/orders/701/lines/9001/substitute')) return json({ status: 'completed', message: 'SMOKE-001 was substituted.' });
   if (target.includes('/api/orders/701/lines/9001/remove')) return json({ status: 'removed', message: 'SMOKE-001 was removed from the Pongo order.' });
   if (target.match(/\/api\/orders\/701\/lines$/)) return json({ status: 'added', message: 'Replacement Treat was added to the Pongo order.' });
-  if (target.includes('/api/orders/701/prepare-picking')) return json({ status: 'ready_to_pick', message: 'Order 0802 is ready in Pick Orders.' });
+  if (target.includes('/api/orders/completed/bulk/record-picked')) return json({ status: 'completed', requested_count: 1, succeeded_count: 1, failed_count: 0, total_quantity_picked: 2, results: [{ order_id: 701, status: 'completed', message: 'Recorded as picked.', woo_stock_sync_status: 'queued', woo_stock_sync_job_id: 91, woo_stock_sync_error: null }], errors: [] });
+  if (target.includes('/api/orders/tags')) return json({ tags: [], total: 0 });
+  if (target.includes('/api/orders/701/notes')) return json({ notes: [], total: 0 });
   if (target.match(/\/api\/orders\/701$/)) return json(mockOrderDetail);
   if (target.includes('/api/orders/allocate')) return json({ orders: [], total: 0 });
   if (target.includes('/api/orders/pick')) return json(typeof mockPickOrdersFeed === 'function' ? mockPickOrdersFeed(target) : mockPickOrdersFeed);
@@ -607,6 +641,7 @@ function mockFetch(url, options = {}) {
       ...['2 kg', '5 kg', '11.4 kg'].map((size, index) => ({ remote_type: 'variation', product_name: `Nutram Dog Food - ${size}`, parent_product_name: 'Nutram Dog Food', variation_attributes: [{ name: 'Size', option: size }], sku: `NUTRAM-${index}`, woo_product_id: 7000, woo_variation_id: 7001 + index, proposed_item: { description: `Nutram Dog Food - ${size}` }, action: 'create', status: 'valid', warnings: [], errors: [] })),
     ],
   });
+  if (target.includes('/api/integrations/woocommerce/catalog-syncs/current')) return json({ run: null });
   if (target.includes('/api/integrations/woocommerce/sync-runs')) return json({ sync_runs: [] });
   if (target.includes('/api/integrations/woocommerce/writeback/queue')) return json({
     total: 1,
@@ -1414,23 +1449,22 @@ describe('App shell and workflows', () => {
     expect(within(zeroRow).getAllByText('$0.00')).toHaveLength(2);
   });
 
-  it('previews variable parents as skipped and three variations as separate proposed items', async () => {
+  it('routes item catalog sync to the dedicated durable workspace instead of a preview modal', async () => {
     const user = userEvent.setup();
     window.location.hash = '#items';
     render(<App />);
     await screen.findByText('Smoke Test Item');
 
     await user.click(screen.getByText('More'));
-    await user.click(screen.getByRole('button', { name: /Sync WooCommerce catalog/i }));
-    const dialog = screen.getByRole('dialog', { name: 'Import WooCommerce mappings' });
-    await user.click(within(dialog).getByRole('button', { name: /Start Import Preview/i }));
+    const syncLink = screen.getByRole('link', { name: /Update products from WooCommerce/i });
+    expect(syncLink).toHaveAttribute('href', '#/settings/catalog');
+    await user.click(syncLink);
 
-    expect(await within(dialog).findByText('Catalog mapping preview')).toBeInTheDocument();
-    expect(within(dialog).getByText('Parents skipped')).toBeInTheDocument();
-    expect(within(dialog).getAllByText('Nutram Dog Food - 2 kg').length).toBeGreaterThan(0);
-    expect(within(dialog).getAllByText('Nutram Dog Food - 5 kg').length).toBeGreaterThan(0);
-    expect(within(dialog).getAllByText('Nutram Dog Food - 11.4 kg').length).toBeGreaterThan(0);
-    expect(within(dialog).getByText('Variable parent container is informational and will not become a stock item.')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'WooCommerce Products', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Bring WooCommerce products into Pongo' })).toBeInTheDocument();
+    expect(screen.getByText(/each sellable option becomes its own item/i)).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Import WooCommerce mappings' })).not.toBeInTheDocument();
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/products/preview'))).toBe(false);
   });
 
   it('separates metadata updates from explicitly audited starting inventory', async () => {
@@ -1448,18 +1482,21 @@ describe('App shell and workflows', () => {
     expect(screen.queryByText(/closing stock/i)).not.toBeInTheDocument();
   });
 
-  it('opens searchable remap selection without raw local database ID inputs', async () => {
+  it('routes catalog exceptions to the dedicated attention page without raw database IDs', async () => {
     const user = userEvent.setup();
     window.location.hash = '#items';
     render(<App />);
     await screen.findByText('Smoke Test Item');
 
     await user.click(screen.getByText('More'));
-    await user.click(screen.getByRole('button', { name: /Fix connection exceptions/i }));
-    const dialog = screen.getByRole('dialog', { name: 'Remap WooCommerce exceptions' });
-    expect(within(dialog).getByPlaceholderText('Search product, variation, SKU, or Woo ID')).toBeInTheDocument();
-    expect(within(dialog).getByPlaceholderText('Search SKU, barcode, product name, or brand')).toBeInTheDocument();
-    expect(within(dialog).queryByText('Local Item ID')).not.toBeInTheDocument();
+    const exceptionsLink = screen.getByRole('link', { name: /Review product matches/i });
+    expect(exceptionsLink).toHaveAttribute('href', '#/settings/catalog?tab=attention');
+    await user.click(exceptionsLink);
+
+    expect(await screen.findByRole('heading', { name: 'Products to review' })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Search products to review')).toBeInTheDocument();
+    expect(screen.queryByText('Local Item ID')).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Remap WooCommerce exceptions' })).not.toBeInTheDocument();
   });
 
   it('switches scanner modes and shows a no-match result cleanly', async () => {
@@ -1842,7 +1879,7 @@ describe('App shell and workflows', () => {
     expect(within(dialog).getByRole('button', { name: 'Cancel order' })).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Mark processed' }));
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/complete the order without reducing stock.*Send to Pick Orders/i));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/complete the order without reducing stock.*Record selected as picked/i));
     await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => {
       if (!String(url).endsWith('/api/orders/woocommerce/803/status')) return false;
       const body = JSON.parse(options.body);
@@ -2119,10 +2156,10 @@ describe('App shell and workflows', () => {
     };
     render(<App />);
 
-    const warning = await screen.findByRole('alert', { name: 'WooCommerce order sync warning' });
-    expect(within(warning).getByText('Automatic order sync is not healthy')).toBeInTheDocument();
+    const warning = await screen.findByRole('alert', { name: 'WooCommerce order update warning' });
+    expect(within(warning).getByText('WooCommerce orders may be out of date')).toBeInTheDocument();
     expect(within(warning).getByText('WooCommerce credentials expired.')).toBeInTheDocument();
-    expect(within(warning).getByRole('link', { name: 'Review WooCommerce Settings' })).toHaveAttribute('href', '#/settings/sync');
+    expect(within(warning).getByRole('link', { name: 'Review order update settings' })).toHaveAttribute('href', '#/settings/sync');
   });
 
   it('hides WooCommerce health warnings from the local development environment', async () => {
@@ -2136,7 +2173,7 @@ describe('App shell and workflows', () => {
     render(<App />);
 
     await settleInitialOrderPolling();
-    expect(screen.queryByRole('alert', { name: 'WooCommerce order sync warning' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert', { name: 'WooCommerce order update warning' })).not.toBeInTheDocument();
   });
 
   it('shows Insights in the sidebar and opens Pongo Insights', async () => {
@@ -2296,6 +2333,256 @@ describe('App shell and workflows', () => {
     });
   });
 
+  it('opens a dedicated Catalog workspace with durable-job guidance and deep-linkable tabs', async () => {
+    window.location.hash = '#/settings/catalog';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'WooCommerce Products', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Bring WooCommerce products into Pongo' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Update products from WooCommerce' })).toBeEnabled();
+    const tabs = screen.getByRole('navigation', { name: 'WooCommerce product sections' });
+    expect(within(tabs).getByRole('link', { name: 'Latest update' })).toHaveAttribute('aria-current', 'page');
+    expect(within(tabs).getByRole('link', { name: 'Products to review' })).toHaveAttribute('href', '#/settings/catalog?tab=attention');
+    expect(within(tabs).getByRole('link', { name: 'Update history' })).toHaveAttribute('href', '#/settings/catalog?tab=runs');
+    expect(screen.getByText(/You can leave this page while Pongo updates your products/i)).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('queues exactly one catalog job with a stable idempotency key and polls to completion', async () => {
+    const user = userEvent.setup();
+    const intervalCallbacks = [];
+    let intervalId = 500;
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval');
+    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {
+      if (delay === 2000) intervalCallbacks.push(callback);
+      intervalId += 1;
+      return intervalId;
+    });
+    let runReadCount = 0;
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs' && options.method === 'POST') {
+        return json(catalogRun());
+      }
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/42') {
+        runReadCount += 1;
+        return json(runReadCount === 1
+          ? catalogRun({ status: 'matching', stage: 'matching', total_remote_records: 10, processed_records: 5, progress_percent: 50 })
+          : catalogRun({ status: 'completed', stage: 'completed', total_remote_records: 10, processed_records: 10, progress_percent: 100, created_count: 3, matched_count: 2, updated_count: 1, unchanged_count: 4, can_cancel: false, completed_at: '2026-08-21T18:01:00Z' }));
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/settings/catalog';
+    render(<App />);
+
+    const syncButton = await screen.findByRole('button', { name: 'Update products from WooCommerce' });
+    await waitFor(() => expect(syncButton).toBeEnabled());
+    await user.dblClick(syncButton);
+
+    const starts = fetch.mock.calls.filter(([url, options]) => new URL(String(url)).pathname === '/api/integrations/woocommerce/catalog-syncs' && options?.method === 'POST');
+    expect(starts).toHaveLength(1);
+    const startBody = JSON.parse(starts[0][1].body);
+    expect(startBody).toEqual({ idempotency_key: expect.any(String) });
+    expect(starts[0][1].headers['Idempotency-Key']).toBe(startBody.idempotency_key);
+    expect(await screen.findByRole('heading', { name: 'Waiting to start' })).toBeInTheDocument();
+    await waitFor(() => expect(intervalCallbacks.length).toBeGreaterThan(0));
+
+    await act(async () => { await intervalCallbacks.at(-1)(); });
+    expect(await screen.findByRole('heading', { name: 'Checking existing items' })).toBeInTheDocument();
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50');
+    await waitFor(() => expect(intervalCallbacks.length).toBeGreaterThan(1));
+
+    await act(async () => { await intervalCallbacks.at(-1)(); });
+    expect(await screen.findByRole('heading', { name: 'Completed' })).toBeInTheDocument();
+    const results = screen.getByLabelText('Product update results');
+    expect(within(results).getByText('3')).toBeInTheDocument();
+    expect(within(results).getByText('Added to Pongo')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100');
+    await waitFor(() => expect(clearIntervalSpy).toHaveBeenCalled());
+  });
+
+  it('reuses the catalog idempotency key after an uncertain enqueue failure', async () => {
+    const user = userEvent.setup();
+    let startAttempts = 0;
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs' && options.method === 'POST') {
+        startAttempts += 1;
+        if (startAttempts === 1) {
+          return Promise.resolve({ ok: false, status: 504, json: () => Promise.resolve({ detail: 'The queue response timed out. Check current status and retry.' }), text: () => Promise.resolve('') });
+        }
+        return json(catalogRun());
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/settings/catalog';
+    render(<App />);
+
+    const firstButton = await screen.findByRole('button', { name: 'Update products from WooCommerce' });
+    await waitFor(() => expect(firstButton).toBeEnabled());
+    await user.click(firstButton);
+    expect(await screen.findByText('The queue response timed out. Check current status and retry.')).toBeInTheDocument();
+    const savedKey = window.sessionStorage.getItem('pongo.catalog-sync.idempotency-key');
+    expect(savedKey).toEqual(expect.any(String));
+
+    await user.click(screen.getByRole('button', { name: 'Update products from WooCommerce' }));
+    const starts = fetch.mock.calls.filter(([url, options]) => new URL(String(url)).pathname === '/api/integrations/woocommerce/catalog-syncs' && options?.method === 'POST');
+    expect(starts).toHaveLength(2);
+    starts.forEach(([, options]) => {
+      expect(JSON.parse(options.body).idempotency_key).toBe(savedKey);
+      expect(options.headers['Idempotency-Key']).toBe(savedKey);
+    });
+    expect(await screen.findByRole('heading', { name: 'Waiting to start' })).toBeInTheDocument();
+    expect(window.sessionStorage.getItem('pongo.catalog-sync.idempotency-key')).toBeNull();
+  });
+
+  it('restores an interrupted run and exposes resume only when the backend allows it', async () => {
+    const user = userEvent.setup();
+    const paused = catalogRun({ status: 'paused', stage: 'matching', total_remote_records: 20, processed_records: 8, progress_percent: 40, can_resume: true, can_cancel: false });
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/current') return json({ run: paused });
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/42/resume' && options.method === 'POST') return json(catalogRun({ total_remote_records: 20, processed_records: 8, progress_percent: 40 }));
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/settings/catalog';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Paused' })).toBeInTheDocument();
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '40');
+    expect(screen.queryByRole('button', { name: 'Stop update' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Continue update' }));
+    await waitFor(() => expect(fetch.mock.calls.some(([url, options]) => new URL(String(url)).pathname === '/api/integrations/woocommerce/catalog-syncs/42/resume' && options?.method === 'POST')).toBe(true));
+    expect(await screen.findByRole('heading', { name: 'Waiting to start' })).toBeInTheDocument();
+  });
+
+  it('keeps automatic waiting-retry runs polling without offering a manual resume', async () => {
+    const intervalCallbacks = [];
+    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {
+      if (delay === 2000) intervalCallbacks.push(callback);
+      return 901 + intervalCallbacks.length;
+    });
+    const waiting = catalogRun({ status: 'waiting_retry', stage: 'waiting_retry', message: null, attempt_count: 2, next_retry_at: '2026-08-21T18:00:15Z', can_resume: false, can_cancel: true });
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/current') return json({ run: waiting });
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/42') return json(catalogRun({ status: 'matching', stage: 'matching', progress_percent: 25 }));
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/settings/catalog';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Waiting to try again' })).toBeInTheDocument();
+    expect(screen.getByText(/will retry automatically/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Resume/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(intervalCallbacks.length).toBeGreaterThan(0));
+    await act(async () => { await intervalCallbacks.at(-1)(); });
+    expect(await screen.findByRole('heading', { name: 'Checking existing items' })).toBeInTheDocument();
+  });
+
+  it('resolves attention by searching for a real Pongo item instead of entering a database ID', async () => {
+    const user = userEvent.setup();
+    let resolved = false;
+    const attentionRun = catalogRun({ status: 'completed_with_attention', stage: 'completed', total_remote_records: 1, processed_records: 1, progress_percent: 100, conflict_count: 1, can_cancel: false, can_resume: true });
+    const row = { id: 91, sync_run_id: 42, remote_type: 'variation', woo_product_id: 7000, woo_variation_id: 7002, sku: 'NUTRAM-5', barcode: '', product_name: 'Nutram Dog Food - 5 kg', status: 'needs_attention', action: 'conflict', local_item_id: null, message: 'Duplicate SKU needs a decision.' };
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/current') return json({ run: attentionRun });
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/42/rows' && !options.method) return json({ rows: resolved ? [] : [row], total: resolved ? 0 : 1, page: 1, page_size: 20, total_pages: 1 });
+      if (request.pathname === '/api/items/search') return json({ items: [{ id: 77, sku: 'LOCAL-77', barcode: '0077', product_name: 'Existing Nutram 5 kg', brand: 'Nutram', category: 'Dog Food' }], total: 1 });
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/42/rows/91/resolve' && options.method === 'POST') {
+        resolved = true;
+        return json({ ...row, status: 'linked', action: 'link', local_item_id: 77 });
+      }
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/42') return json(catalogRun({ status: 'completed', stage: 'completed', total_remote_records: 1, processed_records: 1, progress_percent: 100, matched_count: 1, can_cancel: false }));
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/settings/catalog?tab=attention';
+    render(<App />);
+
+    expect(await screen.findByText('Nutram Dog Food - 5 kg')).toBeInTheDocument();
+    expect(screen.queryByText('Local Item ID')).not.toBeInTheDocument();
+    const itemSearch = screen.getByRole('combobox', { name: 'Find the existing Pongo item' });
+    await user.type(itemSearch, 'Nutram');
+    await user.click(await screen.findByRole('option', { name: /Existing Nutram 5 kg.*LOCAL-77/i }));
+    await user.click(screen.getByRole('button', { name: 'Link to this item' }));
+
+    await waitFor(() => {
+      const resolveCall = fetch.mock.calls.find(([url, options]) => new URL(String(url)).pathname === '/api/integrations/woocommerce/catalog-syncs/42/rows/91/resolve' && options?.method === 'POST');
+      expect(JSON.parse(resolveCall[1].body)).toEqual({ action: 'link', item_id: 77 });
+    });
+    expect(await screen.findByText('No products need your review.')).toBeInTheDocument();
+  });
+
+  it('offers only Skip for unsupported Woo record types that cannot become inventory', async () => {
+    const attentionRun = catalogRun({ status: 'completed_with_attention', stage: 'completed', conflict_count: 1, can_cancel: false, can_resume: true });
+    const unsupportedRow = { id: 92, sync_run_id: 42, remote_type: 'variable', woo_product_id: 8000, woo_variation_id: null, sku: '', barcode: '', product_name: 'Variable parent context', status: 'needs_attention', action: 'conflict', message: 'Unsupported Woo record type.' };
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/current') return json({ run: attentionRun });
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/42/rows' && !options.method) return json({ rows: [unsupportedRow], total: 1, page: 1, page_size: 20, total_pages: 1 });
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/settings/catalog?tab=attention';
+    render(<App />);
+
+    const unsupported = (await screen.findByText('Variable parent context')).closest('tr');
+    expect([...unsupported.querySelectorAll('td')].map((cell) => cell.dataset.label)).toEqual(['WooCommerce product', 'SKU / Barcode', 'Product', 'What needs review', 'Choose what to do']);
+    expect(within(unsupported).getAllByText(/cannot become a Pongo item/i)).toHaveLength(2);
+    expect(within(unsupported).getByRole('button', { name: 'Skip for now' })).toBeEnabled();
+    expect(within(unsupported).queryByRole('button', { name: 'Create item' })).not.toBeInTheDocument();
+    expect(within(unsupported).queryByRole('button', { name: 'Link to this item' })).not.toBeInTheDocument();
+    expect(within(unsupported).queryByRole('combobox', { name: 'Find the existing Pongo item' })).not.toBeInTheDocument();
+  });
+
+  it('holds attention decisions while the catalog worker is applying a batch', async () => {
+    const applyingRun = catalogRun({ status: 'applying', stage: 'applying', conflict_count: 1, can_cancel: true, can_resume: false });
+    const row = { id: 93, sync_run_id: 42, remote_type: 'simple', woo_product_id: 8100, woo_variation_id: null, sku: 'WAIT-8100', barcode: '', product_name: 'Wait for this product', status: 'needs_attention', action: 'conflict', message: 'Duplicate SKU needs a decision.' };
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/current') return json({ run: applyingRun });
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/42/rows' && !options.method) return json({ rows: [row], total: 1, page: 1, page_size: 20, total_pages: 1 });
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/settings/catalog?tab=attention';
+    render(<App />);
+
+    const productRow = (await screen.findByText('Wait for this product')).closest('tr');
+    expect(within(productRow).getByText(/Wait until the current product update finishes/i)).toBeInTheDocument();
+    expect(within(productRow).queryByRole('button', { name: /Link to this item|Add as a new item|Skip for now/i })).not.toBeInTheDocument();
+  });
+
+  it('provides labeled card structure for Catalog run history at mobile widths', async () => {
+    const completed = catalogRun({ status: 'completed', stage: 'completed', total_remote_records: 4, processed_records: 4, progress_percent: 100, can_cancel: false, completed_at: '2026-08-21T18:01:00Z' });
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/integrations/woocommerce/catalog-syncs/current') return json({ run: completed });
+      if (request.pathname === '/api/integrations/woocommerce/sync-runs') return json({ sync_runs: [completed], total: 1, page: 1, page_size: 20, total_pages: 1 });
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/settings/catalog?tab=runs';
+    render(<App />);
+
+    const history = await screen.findByRole('heading', { name: 'Product update history' });
+    const table = history.closest('.catalog-runs').querySelector('.data-table');
+    const runRow = table.querySelector('tbody tr');
+    expect([...runRow.querySelectorAll('td')].map((cell) => cell.dataset.label)).toEqual([
+      'Started', 'Finished', 'What was updated', 'Result', 'Checked', 'Added', 'Updated', 'Linked', 'Skipped', 'Needs review', 'Failed', 'Started by',
+    ]);
+    expect(history.closest('.catalog-runs').querySelector('.table-scroll')).toBeInTheDocument();
+  });
+
+  it('keeps the Woo catalog integration fully isolated from demo sessions', async () => {
+    window.location.hash = '#/settings/catalog';
+    render(<App currentUser={{ display_name: 'Demo', email: 'demo@example.test', access_level: 'demo' }} />);
+
+    expect(await screen.findByRole('heading', { name: 'Product updates are unavailable in the isolated demo.' })).toBeInTheDocument();
+    expect(screen.getByText(/cannot connect to Pongo's WooCommerce store/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Update products/i })).not.toBeInTheDocument();
+    await act(async () => { await Promise.resolve(); });
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/integrations/'))).toBe(false);
+  });
+
   it('shows an Insights error without a contradictory empty table and retries successfully', async () => {
     const user = userEvent.setup();
     let overviewAttempts = 0;
@@ -2320,12 +2607,14 @@ describe('App shell and workflows', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: 'WooCommerce Connection', level: 1 })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Store connection & operations' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Catalog import, orders, remapping/i })).toHaveAttribute('href', '#/settings/sync');
-    expect(screen.getByRole('link', { name: /Stock updates, order status/i })).toHaveAttribute('href', '#/settings/writeback');
-    expect(await screen.findByText(/staging environment/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connect your WooCommerce store' })).toBeInTheDocument();
+    const workflowLinks = screen.getByRole('navigation', { name: 'WooCommerce settings pages' });
+    expect(within(workflowLinks).getByRole('link', { name: /Products/i })).toHaveAttribute('href', '#/settings/catalog');
+    expect(within(workflowLinks).getByRole('link', { name: /Orders & Product Links/i })).toHaveAttribute('href', '#/settings/sync');
+    expect(within(workflowLinks).getByRole('link', { name: /WooCommerce Updates/i })).toHaveAttribute('href', '#/settings/writeback');
+    expect(await screen.findByText(/Staging store/i)).toBeInTheDocument();
     expect(await screen.findByText('staging32.pongo.ca')).toBeInTheDocument();
-    expect(screen.getByText(/Keys never return to the browser after saving/i)).toBeInTheDocument();
+    expect(screen.getByText(/encrypted and never shown again/i)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'WooCommerce Catalog Mapping & Import' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'WooCommerce write policy' })).not.toBeInTheDocument();
     expect(screen.queryByText(/ck_test/i)).not.toBeInTheDocument();
@@ -2373,21 +2662,22 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/connection';
     render(<App />);
 
-    await screen.findByRole('heading', { name: 'Store connection & operations' });
-    expect(screen.getByText('Configured', { selector: '.integration-health strong' })).toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'Connect your WooCommerce store' });
+    expect(screen.getByText('Connection saved', { selector: '.integration-health strong' })).toBeInTheDocument();
     expect(screen.queryByText('Historical WooCommerce sync failed.')).not.toBeInTheDocument();
   });
 
-  it('keeps catalog, order, remap, and history workflows on Sync & Mapping only', async () => {
+  it('keeps order, remap, and operational history workflows separate from Catalog', async () => {
     window.location.hash = '#/settings/sync';
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Sync & Mapping', level: 1 })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'WooCommerce Catalog Mapping & Import' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'WooCommerce Order Sync' })).toBeInTheDocument();
-    expect(await screen.findByRole('heading', { name: 'WooCommerce Remap' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Sync Run History' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Store connection & operations' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Orders & Product Links', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Keep orders up to date' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Fix product links' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Update history' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'WooCommerce Catalog Mapping & Import' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Products' })).toHaveAttribute('href', '#/settings/catalog');
+    expect(screen.queryByRole('heading', { name: 'Connect your WooCommerce store' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'WooCommerce write policy' })).not.toBeInTheDocument();
   });
 
@@ -2419,14 +2709,14 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/sync';
     render(<App />);
 
-    const history = (await screen.findByText('55 sync run(s)')).closest('.table-wrap');
+    const history = (await screen.findByText('55 update(s)')).closest('.table-wrap');
     expect(within(history).getAllByRole('row')).toHaveLength(51);
-    expect(within(history).getByText(/Showing 1–50 of 55 sync runs/)).toBeInTheDocument();
+    expect(within(history).getByText(/Showing 1–50 of 55 updates/)).toBeInTheDocument();
 
     await user.click(within(history).getByRole('button', { name: 'Next page' }));
 
     expect(within(history).getAllByRole('row')).toHaveLength(6);
-    expect(within(history).getByText(/Showing 51–55 of 55 sync runs/)).toBeInTheDocument();
+    expect(within(history).getByText(/Showing 51–55 of 55 updates/)).toBeInTheDocument();
     expect(within(history).getByText('Worker 55')).toBeInTheDocument();
   });
 
@@ -2465,11 +2755,11 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/sync';
     render(<App />);
 
-    const history = (await screen.findByText('55 sync run(s)')).closest('.table-wrap');
+    const history = (await screen.findByText('55 update(s)')).closest('.table-wrap');
     await user.click(within(history).getByRole('button', { name: 'Next page' }));
     await waitFor(() => expect(resolveSlowPage).toBeTypeOf('function'));
     await user.selectOptions(within(history).getByRole('combobox', { name: 'Rows per page' }), '20');
-    await waitFor(() => expect(within(history).getByText(/Showing 1–20 of 55 sync runs/)).toBeInTheDocument());
+    await waitFor(() => expect(within(history).getByText(/Showing 1–20 of 55 updates/)).toBeInTheDocument());
     expect(within(history).getByText('Worker 20')).toBeInTheDocument();
 
     await act(async () => {
@@ -2478,7 +2768,7 @@ describe('App shell and workflows', () => {
       await Promise.resolve();
     });
 
-    expect(within(history).getByText(/Showing 1–20 of 55 sync runs/)).toBeInTheDocument();
+    expect(within(history).getByText(/Showing 1–20 of 55 updates/)).toBeInTheDocument();
     expect(within(history).getByText('Worker 20')).toBeInTheDocument();
     expect(within(history).queryByText('Worker 55')).not.toBeInTheDocument();
   });
@@ -2524,9 +2814,9 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/sync';
     render(<App />);
 
-    const history = (await screen.findByText('55 sync run(s)')).closest('.table-wrap');
+    const history = (await screen.findByText('55 update(s)')).closest('.table-wrap');
     await user.click(within(history).getByRole('button', { name: 'Next page' }));
-    await waitFor(() => expect(within(history).getByText(/Showing 51–55 of 55 sync runs/)).toBeInTheDocument());
+    await waitFor(() => expect(within(history).getByText(/Showing 51–55 of 55 updates/)).toBeInTheDocument());
     await waitFor(() => expect(intervalCallbacks.some(({ delay }) => delay === 3000)).toBe(true));
     const callsBeforePoll = fetch.mock.calls.length;
 
@@ -2542,7 +2832,7 @@ describe('App shell and workflows', () => {
         && request.searchParams.get('page') === '2'
         && request.searchParams.get('page_size') === '50';
     })).toBe(true));
-    expect(within(history).getByText(/Showing 51–55 of 55 sync runs/)).toBeInTheDocument();
+    expect(within(history).getByText(/Showing 51–55 of 55 updates/)).toBeInTheDocument();
   });
 
   it('sends changed WooCommerce credentials only to the backend configuration endpoint', async () => {
@@ -2550,10 +2840,10 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/connection';
     render(<App />);
 
-    await screen.findByRole('heading', { name: 'Store connection & operations' });
-    await user.type(screen.getByLabelText('Consumer key'), 'ck_replacement');
-    await user.type(screen.getByLabelText('Consumer secret'), 'cs_replacement');
-    await user.click(screen.getByRole('button', { name: 'Save & verify connection' }));
+    await screen.findByRole('heading', { name: 'Connect your WooCommerce store' });
+    await user.type(screen.getByLabelText('WooCommerce key'), 'ck_replacement');
+    await user.type(screen.getByLabelText('WooCommerce secret'), 'cs_replacement');
+    await user.click(screen.getByRole('button', { name: 'Save and test connection' }));
 
     await waitFor(() => {
       const call = fetch.mock.calls.find(([url]) => String(url).includes('/api/integrations/woocommerce/configuration'));
@@ -2564,7 +2854,7 @@ describe('App shell and workflows', () => {
         consumer_secret: 'cs_replacement',
       });
     });
-    expect(await screen.findByText(/verified and saved in the backend environment/i)).toBeInTheDocument();
+    expect(await screen.findByText(/verified and saved/i)).toBeInTheDocument();
   });
 
   it('changes WooCommerce access mode from the connection page', async () => {
@@ -2572,9 +2862,9 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/connection';
     render(<App />);
 
-    await screen.findByRole('heading', { name: 'Store connection & operations' });
-    expect(screen.getByRole('button', { name: /Read & writeEnable Pongo/i })).toHaveAttribute('aria-pressed', 'true');
-    await user.click(screen.getByRole('button', { name: /Read onlyGET requests only/i }));
+    await screen.findByRole('heading', { name: 'Connect your WooCommerce store' });
+    expect(screen.getByRole('button', { name: /View and updatePongo can send approved/i })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByRole('button', { name: /View onlyPongo can update its products/i }));
 
     await waitFor(() => {
       const call = fetch.mock.calls.find(([url]) => String(url).includes('/api/integrations/woocommerce/access-mode'));
@@ -2588,20 +2878,20 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/connection';
     render(<App />);
 
-    await screen.findByRole('heading', { name: 'Store connection & operations' });
+    await screen.findByRole('heading', { name: 'Connect your WooCommerce store' });
     const storeUrl = screen.getByLabelText('Store URL');
-    const saveButton = screen.getByRole('button', { name: 'Save & verify connection' });
+    const saveButton = screen.getByRole('button', { name: 'Save and test connection' });
     await user.clear(storeUrl);
     await user.type(storeUrl, 'https://staging23.pongo.ca/');
 
     expect(screen.getByText('staging32.pongo.ca', { selector: '.integration-host-comparison strong' })).toBeInTheDocument();
     expect(screen.getByText('staging23.pongo.ca', { selector: '.integration-host-comparison strong' })).toBeInTheDocument();
-    expect(screen.getByText('Host review required')).toBeInTheDocument();
+    expect(screen.getByText('Review required')).toBeInTheDocument();
     expect(saveButton).toBeDisabled();
     await user.keyboard('{Enter}');
     expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/integrations/woocommerce/configuration'))).toBe(false);
 
-    await user.click(screen.getByRole('checkbox', { name: /Authorize replacing the WooCommerce host/i }));
+    await user.click(screen.getByRole('checkbox', { name: /Connect Pongo to this new WooCommerce store/i }));
     expect(saveButton).toBeEnabled();
     await user.click(saveButton);
 
@@ -2631,8 +2921,8 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/connection';
     render(<App />);
 
-    await screen.findByRole('heading', { name: 'Store connection & operations' });
-    await user.click(screen.getByRole('button', { name: 'Save & verify connection' }));
+    await screen.findByRole('heading', { name: 'Connect your WooCommerce store' });
+    await user.click(screen.getByRole('button', { name: 'Save and test connection' }));
 
     const message = await screen.findByText('WooCommerce connection failed: host replacement was not authorized.');
     expect(message).toHaveTextContent(/^WooCommerce connection failed: host replacement was not authorized\.$/);
@@ -2642,14 +2932,14 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/writeback';
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Writeback Control', level: 1 })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'WooCommerce write policy' })).toBeInTheDocument();
-    expect(screen.getByText(/Live Staging Writes On/i)).toBeInTheDocument();
-    expect(screen.getByText('Hard-blocked operations')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Preview stock writeback/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Preview order writeback/i })).toBeInTheDocument();
-    expect(await screen.findByRole('button', { name: /Send to Staging/i })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Store connection & operations' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'WooCommerce Updates', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'What Pongo can change' })).toBeInTheDocument();
+    expect(screen.getByText(/Live updates to staging32\.pongo\.ca/i)).toBeInTheDocument();
+    expect(screen.getByText('Pongo will never change')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Check stock update/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Check order update/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /Send to WooCommerce/i })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Connect your WooCommerce store' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'WooCommerce Catalog Mapping & Import' })).not.toBeInTheDocument();
   });
 
@@ -2682,15 +2972,15 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/writeback';
     render(<App />);
 
-    const caption = await screen.findByText('55 matching queue item(s)', { selector: '.table-meta > span' });
+    const caption = await screen.findByText('55 matching change(s)', { selector: '.table-meta > span' });
     const table = caption.closest('.table-wrap');
-    expect(within(table).getByText(/Showing 1–50 of 55 queue items/)).toBeInTheDocument();
+    expect(within(table).getByText(/Showing 1–50 of 55 changes/)).toBeInTheDocument();
     await user.click(within(table).getByRole('button', { name: 'Next page' }));
-    await waitFor(() => expect(within(table).getByText(/Showing 51–55 of 55 queue items/)).toBeInTheDocument());
+    await waitFor(() => expect(within(table).getByText(/Showing 51–55 of 55 changes/)).toBeInTheDocument());
     expect(within(table).getByText(/QUEUE-055/)).toBeInTheDocument();
 
-    await user.type(screen.getByRole('textbox', { name: 'Search writeback queue' }), '1054');
-    await waitFor(() => expect(within(table).getByText(/Showing 1–1 of 1 queue items/)).toBeInTheDocument());
+    await user.type(screen.getByRole('textbox', { name: 'Search WooCommerce changes' }), '1054');
+    await waitFor(() => expect(within(table).getByText(/Showing 1–1 of 1 changes/)).toBeInTheDocument());
     expect(fetch.mock.calls.some(([url]) => new URL(String(url)).searchParams.get('search') === '1054')).toBe(true);
   });
 
@@ -2728,10 +3018,10 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/writeback';
     render(<App />);
 
-    const caption = await screen.findByText('55 matching queue item(s)', { selector: '.table-meta > span' });
+    const caption = await screen.findByText('55 matching change(s)', { selector: '.table-meta > span' });
     const table = caption.closest('.table-wrap');
-    await user.click(within(screen.getByLabelText('Filter writeback queue')).getByRole('button', { name: 'Pending' }));
-    await user.type(screen.getByRole('textbox', { name: 'Search writeback queue' }), 'keep');
+    await user.click(within(screen.getByLabelText('Filter WooCommerce changes')).getByRole('button', { name: 'Pending' }));
+    await user.type(screen.getByRole('textbox', { name: 'Search WooCommerce changes' }), 'keep');
     await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
       const request = new URL(String(url));
       return request.pathname === '/api/integrations/woocommerce/writeback/queue'
@@ -2739,7 +3029,7 @@ describe('App shell and workflows', () => {
         && request.searchParams.get('search') === 'keep';
     })).toBe(true));
     await user.click(within(table).getByRole('button', { name: 'Next page' }));
-    await waitFor(() => expect(within(table).getByText(/Showing 51–55 of 55 queue items/)).toBeInTheDocument());
+    await waitFor(() => expect(within(table).getByText(/Showing 51–55 of 55 changes/)).toBeInTheDocument());
 
     const callsBeforeMutation = fetch.mock.calls.length;
     await user.click(within(table).getAllByRole('button', { name: 'Approve' })[0]);
@@ -2883,7 +3173,7 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/writeback';
     render(<App />);
 
-    await screen.findByRole('heading', { name: 'Update All history' });
+    await screen.findByRole('heading', { name: 'All-stock update history' });
     await user.click(screen.getByText('SKU-B: mapping failed', { selector: 'summary' }));
     expect(screen.getByText('SKU-A: timeout')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Download error report' })).toHaveAttribute('download', 'pongo-stock-sync-job-81-errors.txt');
@@ -2926,10 +3216,10 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/writeback';
     render(<App />);
 
-    const caption = await screen.findByText('30 stock sync job(s)', { selector: '.table-meta > span' });
+    const caption = await screen.findByText('30 stock update(s)', { selector: '.table-meta > span' });
     const table = caption.closest('.table-wrap');
     await user.click(within(table).getByRole('button', { name: 'Next page' }));
-    await waitFor(() => expect(within(table).getByText(/Showing 26–30 of 30 stock sync jobs/)).toBeInTheDocument());
+    await waitFor(() => expect(within(table).getByText(/Showing 26–30 of 30 stock updates/)).toBeInTheDocument());
 
     const callsBeforeMutation = fetch.mock.calls.length;
     await user.click(within(table).getAllByRole('button', { name: 'Resume' })[0]);
@@ -3116,6 +3406,7 @@ describe('App shell and workflows', () => {
     expect(screen.getByRole('menuitem', { name: 'Edit order' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Print order' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Complete order' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Cancel order' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Unpick' })).toBeDisabled();
     expect(screen.getByRole('menuitem', { name: 'View timeline' })).toBeInTheDocument();
 
@@ -3145,6 +3436,30 @@ describe('App shell and workflows', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Print order' }));
     await waitFor(() => expect(printSpy).toHaveBeenCalled());
     printSpy.mockRestore();
+  });
+
+  it('cancels an Open Order in Pongo and WooCommerce from the row action', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Open Orders', level: 1 });
+    await user.click(screen.getByRole('button', { name: 'Open actions for order 0802' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Cancel order' }));
+
+    await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => {
+      if (!String(url).endsWith('/api/orders/woocommerce/802/status')) return false;
+      const body = JSON.parse(options.body);
+      return options.method === 'POST'
+        && body.target_status === 'cancelled'
+        && body.reason === 'Cancelled from Open Orders.'
+        && Boolean(body.idempotency_key)
+        && options.headers['Idempotency-Key'] === body.idempotency_key;
+    })).toBe(true));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/Picked quantities will be restored.*remaining allocations will be released/i));
+    expect(await screen.findByText('Order changed to cancelled in WooCommerce.')).toBeInTheDocument();
+    confirmSpy.mockRestore();
   });
 
   it('substitutes an unpicked Open Order line with a searched inventory item and an audited reason', async () => {
@@ -3181,6 +3496,64 @@ describe('App shell and workflows', () => {
         && options.headers['Idempotency-Key'] === body.idempotency_key;
     })).toBe(true));
     expect(await within(dialog).findByText('SMOKE-001 was substituted.')).toBeInTheDocument();
+  });
+
+  it('keeps the newest scanned order product when scan lookups finish out of order', async () => {
+    const user = userEvent.setup();
+    let resolveFirst;
+    let resolveSecond;
+    let resolveThird;
+    const firstLookup = new Promise((resolve) => { resolveFirst = resolve; });
+    const secondLookup = new Promise((resolve) => { resolveSecond = resolve; });
+    const thirdLookup = new Promise((resolve) => { resolveThird = resolve; });
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/items/search' && !options.signal) {
+        if (request.searchParams.get('q') === 'FIRST-SCAN') return firstLookup;
+        if (request.searchParams.get('q') === 'SECOND-SCAN') return secondLookup;
+        if (request.searchParams.get('q') === 'THIRD-SCAN') return thirdLookup;
+      }
+      if (request.pathname === '/api/items/search') return json({ items: [], total: 0 });
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Open Orders', level: 1 });
+    await user.click(screen.getByRole('button', { name: 'Open actions for order 0802' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Edit order' }));
+    const orderDialog = await screen.findByRole('dialog', { name: 'View Customer Order' });
+    await user.click(within(orderDialog).getByRole('button', { name: 'Substitute' }));
+
+    async function scan(code) {
+      await user.click(within(orderDialog).getByRole('button', { name: 'Scan QR code or barcode' }));
+      const scanner = await screen.findByRole('dialog', { name: 'Scan an item code' });
+      await user.type(within(scanner).getByLabelText('Enter barcode or SKU instead'), code);
+      await user.click(within(scanner).getByRole('button', { name: 'Search item' }));
+    }
+
+    await scan('FIRST-SCAN');
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => new URL(String(url)).searchParams.get('q') === 'FIRST-SCAN')).toBe(true));
+    await scan('SECOND-SCAN');
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => new URL(String(url)).searchParams.get('q') === 'SECOND-SCAN')).toBe(true));
+
+    await act(async () => resolveSecond({ ok: true, json: async () => ({ items: [{ id: 3, sku: 'SECOND-SCAN', barcode: 'SECOND-BAR', product_name: 'Second scanned product', sellable: 4, in_stock: 5 }] }) }));
+    expect(await within(orderDialog).findByText('Second scanned product')).toBeInTheDocument();
+    const productSearch = within(orderDialog).getByRole('combobox', { name: 'Replacement product' });
+    await user.click(productSearch);
+    expect(screen.queryByRole('listbox', { name: 'Inventory suggestions' })).not.toBeInTheDocument();
+
+    await act(async () => resolveFirst({ ok: true, json: async () => ({ items: [{ id: 2, sku: 'FIRST-SCAN', barcode: 'FIRST-BAR', product_name: 'First scanned product', sellable: 8, in_stock: 9 }] }) }));
+    await waitFor(() => expect(within(orderDialog).getByText('Second scanned product')).toBeInTheDocument());
+    expect(within(orderDialog).queryByText('First scanned product')).not.toBeInTheDocument();
+    expect(screen.queryByRole('listbox', { name: 'Inventory suggestions' })).not.toBeInTheDocument();
+
+    await scan('THIRD-SCAN');
+    await user.clear(productSearch);
+    await user.type(productSearch, 'typed product search');
+    await act(async () => resolveThird({ ok: true, json: async () => ({ items: [{ id: 4, sku: 'THIRD-SCAN', product_name: 'Stale third scanned product' }] }) }));
+    await waitFor(() => expect(productSearch).toHaveValue('typed product search'));
+    expect(within(orderDialog).queryByText('Stale third scanned product')).not.toBeInTheDocument();
   });
 
   it('adds and removes Pongo-only order products without requiring a reason', async () => {
@@ -3257,7 +3630,90 @@ describe('App shell and workflows', () => {
     expect(operationalRow).toHaveTextContent('Original Customer Product → Replacement Warehouse Product');
   });
 
-  it('lets staff view, reprint, and send eligible completed-without-picking orders to Pick Orders', async () => {
+  it('shares Pongo notes and colored tags from order detail while keeping internal metadata off invoices', async () => {
+    const user = userEvent.setup();
+    const priorityTag = { id: 11, name: 'Priority', color: '#ef5b3f', created_by: 'admin' };
+    let allTags = [priorityTag];
+    let notes = [{ id: 31, order_id: 701, note: 'Call before loading the van.', created_by: 'Kannan', created_at: '2026-07-08T11:00:00Z' }];
+    let detailState = { ...mockOrderDetail, tags: [priorityTag], highlight_tag_id: 11, highlight_color: '#ef5b3f', internal_notes: notes };
+    mockOpenOrdersFeed = (target) => pagedOrdersFeed([{
+      ...mockOrder,
+      tags: detailState.tags,
+      highlight_tag_id: detailState.highlight_tag_id,
+      highlight_color: detailState.highlight_color,
+      note_count: notes.length,
+      latest_note: notes[0],
+    }])(target);
+    fetch.mockImplementation((url, options = {}) => {
+      const target = String(url);
+      if (target.endsWith('/api/orders/701/notes')) {
+        if (options.method === 'POST') {
+          const body = JSON.parse(options.body);
+          const created = { id: 32, order_id: 701, note: body.note, created_by: 'admin', created_at: '2026-07-08T12:00:00Z' };
+          notes = [created, ...notes];
+          detailState = { ...detailState, internal_notes: notes };
+          return json(created);
+        }
+        return json({ notes, total: notes.length });
+      }
+      if (target.endsWith('/api/orders/701/tags') && options.method === 'PUT') {
+        const body = JSON.parse(options.body);
+        const assigned = body.tag_ids.map((tagId) => allTags.find((tag) => String(tag.id) === String(tagId))).filter(Boolean);
+        const highlightTag = assigned.find((tag) => String(tag.id) === String(body.highlight_tag_id));
+        detailState = { ...detailState, tags: assigned, highlight_tag_id: body.highlight_tag_id, highlight_color: highlightTag?.color || null };
+        return json({ tags: assigned, highlight_tag_id: body.highlight_tag_id });
+      }
+      if (target.endsWith('/api/orders/tags')) {
+        if (options.method === 'POST') {
+          const body = JSON.parse(options.body);
+          const created = { id: 12, name: body.name, color: body.color, created_by: 'admin' };
+          allTags = [...allTags, created];
+          return json(created);
+        }
+        return json({ tags: allTags, total: allTags.length });
+      }
+      if (target.match(/\/api\/orders\/701$/)) return json(detailState);
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Open Orders', level: 1 });
+    const orderRow = (await screen.findByRole('checkbox', { name: 'Select order 0802' })).closest('tr');
+    expect(within(orderRow).getByText('Priority')).toBeInTheDocument();
+    expect(within(orderRow).getByText('Call before loading the van.')).toBeInTheDocument();
+    expect(orderRow).toHaveClass('order-row-highlighted');
+
+    await user.click(screen.getByRole('button', { name: 'Open actions for order 0802' }));
+    await user.click(screen.getByRole('menuitem', { name: 'View order' }));
+    const dialog = await screen.findByRole('dialog', { name: 'View Customer Order' });
+    expect(within(dialog).getByRole('heading', { name: 'Notes & tags' })).toBeInTheDocument();
+    expect(within(dialog).getByText('Call before loading the van.')).toBeInTheDocument();
+
+    await user.type(within(dialog).getByRole('textbox', { name: 'Add a Pongo note' }), 'Packed with the red tote.');
+    await user.click(within(dialog).getByRole('button', { name: 'Save note' }));
+    expect(await within(dialog).findByText('Packed with the red tote.', {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(fetch.mock.calls.some(([url, options = {}]) => {
+      if (!String(url).endsWith('/api/orders/701/notes') || options.method !== 'POST') return false;
+      const body = JSON.parse(options.body);
+      return body.note === 'Packed with the red tote.' && Boolean(body.idempotency_key) && options.headers['Idempotency-Key'] === body.idempotency_key;
+    })).toBe(true);
+
+    await user.click(within(dialog).getByText('Create a new tag'));
+    await user.type(within(dialog).getByRole('textbox', { name: 'Tag name' }), 'Driver call');
+    fireEvent.change(within(dialog).getByLabelText('Tag color'), { target: { value: '#16835f' } });
+    await user.click(within(dialog).getByRole('button', { name: 'Create & add' }));
+    await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => {
+      if (!String(url).endsWith('/api/orders/701/tags') || options.method !== 'PUT') return false;
+      return JSON.parse(options.body).tag_ids.join(',') === '11,12';
+    })).toBe(true));
+    expect((await within(dialog).findAllByText('Driver call')).length).toBeGreaterThan(0);
+
+    const invoice = render(<OrderInvoice order={{ ...detailState, internal_notes: [{ note: 'Never print this note.' }] }} />);
+    expect(invoice.container).not.toHaveTextContent('Never print this note.');
+  }, 15000);
+
+  it('lets staff view, reprint, and record selected completed orders as picked without leaving Completed Orders', async () => {
     const user = userEvent.setup();
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     const printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
@@ -3276,6 +3732,8 @@ describe('App shell and workflows', () => {
 
     await screen.findByRole('heading', { name: 'Completed Orders', level: 1 });
     await user.type(screen.getByRole('textbox', { name: 'Customer Email' }), 'avery@example.invalid');
+    expect(screen.getByRole('option', { name: 'Cancelled' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Refunded' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Apply' }));
 
     const openActions = () => screen.getByRole('button', { name: 'Open completed order actions for 0802' });
@@ -3289,50 +3747,224 @@ describe('App shell and workflows', () => {
     await waitFor(() => expect(printSpy).toHaveBeenCalled());
     await user.click(screen.getByRole('button', { name: 'Close' }));
 
-    await user.click(openActions());
-    await user.click(screen.getByRole('menuitem', { name: 'Send to Pick Orders' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Select completed order 0802' }));
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Reprint selected' }));
+    await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Record selected as picked' }));
     await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => {
-      if (!String(url).endsWith('/api/orders/701/prepare-picking')) return false;
+      if (!String(url).endsWith('/api/orders/completed/bulk/record-picked')) return false;
       const body = JSON.parse(options.body);
       return options.method === 'POST'
-        && body.reason === 'Prepared for late picking from Completed Orders.'
+        && body.order_ids.join(',') === '701'
+        && body.reason === 'Recorded as picked manually from Completed Orders.'
         && Boolean(body.idempotency_key)
         && options.headers['Idempotency-Key'] === body.idempotency_key;
     })).toBe(true));
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/WooCommerce will remain completed/i));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/reduces Pongo stock.*WooCommerce orders remain completed/i));
     expect(fetch.mock.calls.some(([url]) => {
       const request = new URL(String(url));
       return request.pathname === '/api/orders/completed'
         && request.searchParams.get('customer_email') === 'avery@example.invalid'
         && request.searchParams.get('page') === '1';
     })).toBe(true);
-    await waitFor(() => expect(window.location.hash).toBe('#/orders/pick'));
+    expect(await screen.findByText(/1 of 1 selected order recorded as picked in Pongo/i)).toBeInTheDocument();
+    expect(screen.getByText(/WooCommerce stock update safely queued/i)).toBeInTheDocument();
+    expect(window.location.hash).toBe('#/orders/completed');
     confirmSpy.mockRestore();
     printSpy.mockRestore();
   });
 
-  it('keeps the original WooCommerce product on the customer invoice after an operational substitution', () => {
+  it('keeps failed completed orders selected and reports partial record-picked errors', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const secondOrder = {
+      ...mockOrder,
+      id: 702,
+      woo_order_id: 803,
+      woo_order_number: '0803',
+      customer_name: 'Remote Morgan',
+      customer_email: 'remote-morgan@example.invalid',
+      woo_status: 'completed',
+      local_status: 'completed',
+      completion_status: 'completed_without_picking',
+    };
+    mockCompletedOrdersFeed = pagedOrdersFeed([
+      { ...mockOrder, woo_status: 'completed', local_status: 'completed', completion_status: 'completed_without_picking' },
+      secondOrder,
+    ]);
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).endsWith('/api/orders/completed/bulk/record-picked')) return json({
+        status: 'partial',
+        requested_count: 2,
+        succeeded_count: 1,
+        failed_count: 1,
+        total_quantity_picked: 2,
+        results: [
+          { order_id: 701, status: 'completed', message: 'Recorded as picked.', woo_stock_sync_status: 'queued', woo_stock_sync_job_id: 91 },
+          { order_id: 702, status: 'rejected', message: 'No eligible unpicked lines.', woo_stock_sync_status: null },
+        ],
+        errors: [],
+      });
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/orders/completed';
+    render(<App />);
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Select all completed orders on this page' }));
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Record selected as picked' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Order 0803: No eligible unpicked lines.');
+    expect(screen.getByText(/1 of 2 selected orders recorded as picked in Pongo/i)).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Select completed order 0802' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Select completed order 0803' })).toBeChecked();
+    expect(window.location.hash).toBe('#/orders/completed');
+    confirmSpy.mockRestore();
+  });
+
+  it('keeps Woo stock queue failures selected and reuses the full idempotent request on retry', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const secondOrder = {
+      ...mockOrder,
+      id: 702,
+      woo_order_id: 803,
+      woo_order_number: '0803',
+      customer_name: 'Remote Morgan',
+      customer_email: 'remote-morgan@example.invalid',
+      woo_status: 'completed',
+      local_status: 'completed',
+      completion_status: 'completed_without_picking',
+    };
+    mockCompletedOrdersFeed = pagedOrdersFeed([
+      { ...mockOrder, woo_status: 'completed', local_status: 'completed', completion_status: 'completed_without_picking' },
+      secondOrder,
+    ]);
+    const mutationCalls = [];
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).endsWith('/api/orders/completed/bulk/record-picked')) {
+        mutationCalls.push({ body: JSON.parse(options.body), headers: options.headers });
+        if (mutationCalls.length === 1) return json({
+          status: 'partial',
+          requested_count: 2,
+          succeeded_count: 1,
+          failed_count: 1,
+          total_quantity_picked: 4,
+          results: [
+            { order_id: 701, status: 'completed', message: 'Recorded as picked.', woo_stock_sync_status: 'queued', woo_stock_sync_job_id: 91 },
+            { order_id: 702, status: 'pending_stock_sync', message: 'Pongo pick committed.', woo_stock_sync_status: 'queue_failed', woo_stock_sync_error: 'WooCommerce stock update could not be queued for SKU CAT-002.' },
+          ],
+          errors: [],
+        });
+        return json({
+          status: 'completed',
+          requested_count: 2,
+          succeeded_count: 2,
+          failed_count: 0,
+          total_quantity_picked: 4,
+          results: [
+            { order_id: 701, status: 'completed', message: 'Recorded as picked.', woo_stock_sync_status: 'queued', woo_stock_sync_job_id: 91, replayed: true },
+            { order_id: 702, status: 'completed', message: 'Recorded as picked.', woo_stock_sync_status: 'queued', woo_stock_sync_job_id: 92 },
+          ],
+          errors: [],
+        });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/orders/completed';
+    render(<App />);
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Select all completed orders on this page' }));
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Record selected as picked' }));
+
+    const firstError = await screen.findByRole('alert');
+    expect(firstError).toHaveTextContent('Order 0803: WooCommerce stock update could not be queued for SKU CAT-002.');
+    expect(firstError).toHaveTextContent('without deducting Pongo stock twice');
+    expect(screen.getByRole('checkbox', { name: 'Select completed order 0802' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Select completed order 0803' })).toBeChecked();
+    expect(screen.getByText('The saved operation key will be reused, so retrying cannot deduct Pongo stock twice.')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Retry Woo stock queue' }));
+    await waitFor(() => expect(mutationCalls).toHaveLength(2));
+    expect(mutationCalls[1].body.order_ids).toEqual([701, 702]);
+    expect(mutationCalls[1].body.idempotency_key).toBe(mutationCalls[0].body.idempotency_key);
+    expect(mutationCalls[1].headers['Idempotency-Key']).toBe(mutationCalls[0].headers['Idempotency-Key']);
+    expect(mutationCalls[1].headers['Idempotency-Key']).toBe(mutationCalls[1].body.idempotency_key);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry Woo stock queue' })).not.toBeInTheDocument());
+    expect(screen.getByRole('checkbox', { name: 'Select completed order 0802' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Select completed order 0803' })).not.toBeChecked();
+    expect(screen.getByText(/2 WooCommerce stock updates safely queued/i)).toBeInTheDocument();
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
+  });
+
+  it('shows the manual action note in Pick History detail', async () => {
+    const user = userEvent.setup();
+    const pickSummary = {
+      id: 44,
+      pick_number: 'PICK-0044',
+      status: 'posted',
+      woo_order_number: '0802',
+      total_lines: 1,
+      total_quantity_picked: 2,
+      created_by: 'admin',
+      created_at: '2026-07-08T12:00:00Z',
+      posted_at: '2026-07-08T12:01:00Z',
+    };
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/picks/44') return json({
+        ...pickSummary,
+        notes: 'Manually recorded as picked from Completed Orders by admin.',
+        lines: [{ id: 4401, sku: 'SMOKE-001', quantity_to_pick: 2, quantity_picked_after: 2, remaining_to_pick: 0, warehouse: 'Main Warehouse', inventory_location: 'Smoke Rack', status: 'picked' }],
+      });
+      if (request.pathname === '/api/picks') return json({ picks: [pickSummary], total: 1, page: 1, page_size: 20, total_pages: 1, returned_count: 1 });
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/orders/history';
+    render(<App />);
+
+    await user.click(await screen.findByText('PICK-0044'));
+    const note = await screen.findByRole('note', { name: 'Pick note' });
+    expect(note).toHaveTextContent('Manually recorded as picked from Completed Orders by admin.');
+  });
+
+  it('prints the effective Pongo product and adjusted invoice total after an operational substitution', () => {
+    const replacementName = 'Replacement Warehouse Product With A Very Long Customer-Facing Name That Must Wrap Before Quantity And Prices';
     const substitutedOrder = {
       ...mockOrderDetail,
       woo_status: 'completed',
+      invoice_subtotal: 40,
+      invoice_total: 42,
       lines: [{
         ...mockOrderDetail.lines[0],
         sku: 'ORIGINAL-001',
         name: 'Original Customer Product',
         barcode: 'ORIGINAL001',
         effective_sku: 'REPLACE-002',
-        effective_name: 'Replacement Warehouse Product',
+        effective_barcode: 'REPLACE002',
+        effective_name: replacementName,
         substituted_from_item_id: 1,
+        invoice_unit_price: 20,
+        invoice_line_total: 40,
       }],
     };
     render(<OrderInvoice order={substitutedOrder} />);
 
     const invoice = screen.getByLabelText('Invoice for order 0802');
     expect(within(invoice).getByText('Completed')).toBeInTheDocument();
-    expect(within(invoice).getByText('ORIGINAL-001')).toBeInTheDocument();
-    expect(within(invoice).getByText('Original Customer Product')).toBeInTheDocument();
-    expect(within(invoice).queryByText('REPLACE-002')).not.toBeInTheDocument();
-    expect(within(invoice).queryByText('Replacement Warehouse Product')).not.toBeInTheDocument();
+    expect(within(invoice).getByText('REPLACE-002')).toBeInTheDocument();
+    expect(within(invoice).getByText('REPLACE002')).toBeInTheDocument();
+    expect(within(invoice).getByText(replacementName)).toBeInTheDocument();
+    expect(within(invoice).queryByText('ORIGINAL-001')).not.toBeInTheDocument();
+    expect(within(invoice).queryByText('Original Customer Product')).not.toBeInTheDocument();
+    expect(within(invoice).getByText('Woo tax')).toBeInTheDocument();
+    expect(within(within(invoice).getByText(replacementName).closest('tr')).getByText('—')).toBeInTheDocument();
+    expect(within(invoice).getAllByText('$40.00')).toHaveLength(2);
+    expect(within(invoice).getByText('$42.00')).toBeInTheDocument();
   });
 
   it('keeps shared action menus above scrolled content and mobile-wide inside the viewport', async () => {
@@ -3724,7 +4356,7 @@ describe('App shell and workflows', () => {
 
     await user.click(screen.getByRole('menuitem', { name: 'Print' }));
     await waitFor(() => expect(printSpy).toHaveBeenCalledTimes(1));
-    expect(screen.getByLabelText('Selected customer invoices').parentElement).toBe(document.body);
+    await waitFor(() => expect(screen.queryByLabelText('Selected customer invoices')).not.toBeInTheDocument());
     expect(document.body).not.toHaveClass('bulk-order-printing');
 
     await user.click(screen.getByRole('button', { name: 'Actions' }));

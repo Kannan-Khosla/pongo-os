@@ -1,7 +1,93 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class OrderNoteCreate(BaseModel):
+    note: str = Field(min_length=1, max_length=4000)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+    @field_validator("note", "idempotency_key")
+    @classmethod
+    def strip_nonblank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Value must not be blank.")
+        return cleaned
+
+
+class OrderNoteRead(BaseModel):
+    id: int
+    order_id: int
+    note: str
+    note_type: str
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class OrderNoteListResponse(BaseModel):
+    notes: list[OrderNoteRead] = Field(default_factory=list)
+    total: int
+
+
+class OrderTagCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+
+    @field_validator("name")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("Tag name must not be blank.")
+        return cleaned
+
+    @field_validator("color")
+    @classmethod
+    def uppercase_color(cls, value: str) -> str:
+        return value.upper()
+
+
+class OrderTagRead(BaseModel):
+    id: int
+    name: str
+    color: str
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class OrderTagListResponse(BaseModel):
+    tags: list[OrderTagRead] = Field(default_factory=list)
+    total: int
+
+
+class OrderTagsUpdate(BaseModel):
+    tag_ids: list[int] = Field(default_factory=list, max_length=20)
+    highlight_tag_id: int | None = Field(default=None, gt=0)
+
+    @field_validator("tag_ids")
+    @classmethod
+    def validate_tag_ids(cls, values: list[int]) -> list[int]:
+        if any(value <= 0 for value in values):
+            raise ValueError("Tag IDs must be positive integers.")
+        if len(values) != len(set(values)):
+            raise ValueError("Tag IDs must not contain duplicates.")
+        return values
+
+    @model_validator(mode="after")
+    def validate_highlight(self):
+        if self.highlight_tag_id is not None and self.highlight_tag_id not in self.tag_ids:
+            raise ValueError("The highlighted tag must be included in tag_ids.")
+        return self
+
+
+class OrderTagsRead(BaseModel):
+    tags: list[OrderTagRead] = Field(default_factory=list)
+    highlight_tag_id: int | None = None
+    highlight_color: str | None = None
 
 
 class OpenOrderLineRead(BaseModel):
@@ -39,6 +125,8 @@ class OpenOrderLineRead(BaseModel):
     unit_price: float | None = None
     line_tax: float | None = None
     line_total: float | None = None
+    invoice_unit_price: float | None = None
+    invoice_line_total: float | None = None
     matched_status: str | None = None
     availability_status: str | None = None
     local_sellable: float
@@ -93,6 +181,11 @@ class OpenOrderRead(BaseModel):
     shows_in_pick_orders: bool = False
     shows_in_completed_orders: bool = False
     last_synced_at: datetime | None = None
+    tags: list[OrderTagRead] = Field(default_factory=list)
+    highlight_tag_id: int | None = None
+    highlight_color: str | None = None
+    note_count: int = 0
+    latest_note: OrderNoteRead | None = None
 
 
 class OpenOrderDetail(OpenOrderRead):
@@ -105,8 +198,11 @@ class OpenOrderDetail(OpenOrderRead):
     discount_total: float | None = None
     shipping_total: float | None = None
     tax_total: float | None = None
+    invoice_subtotal: float | None = None
+    invoice_total: float | None = None
     customer_note: str | None = None
     workflow_notes: str | None = None
+    internal_notes: list[OrderNoteRead] = Field(default_factory=list)
     lines: list[OpenOrderLineRead]
 
 
@@ -181,6 +277,11 @@ class CompletedOrderRead(BaseModel):
     pick_status: str | None = None
     completed_at: datetime | None = None
     closed_at: datetime | None = None
+    tags: list[OrderTagRead] = Field(default_factory=list)
+    highlight_tag_id: int | None = None
+    highlight_color: str | None = None
+    note_count: int = 0
+    latest_note: OrderNoteRead | None = None
 
 
 class CompletedOrderListResponse(BaseModel):
@@ -307,3 +408,57 @@ class CompletedOrderPickRecoveryResponse(BaseModel):
     allocation_status: str | None = None
     pick_status: str | None = None
     message: str
+
+
+class CompletedOrderRecordPickedRequest(BaseModel):
+    order_ids: list[int] = Field(min_length=1, max_length=100)
+    reason: str | None = Field(default=None, max_length=1000)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+    @field_validator("order_ids")
+    @classmethod
+    def validate_order_ids(cls, values: list[int]) -> list[int]:
+        if any(value <= 0 for value in values):
+            raise ValueError("Order IDs must be positive integers.")
+        return list(dict.fromkeys(values))
+
+    @field_validator("reason")
+    @classmethod
+    def strip_reason(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def strip_idempotency_key(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Idempotency key must not be blank.")
+        return cleaned
+
+
+class CompletedOrderRecordPickedResult(BaseModel):
+    order_id: int
+    status: str
+    message: str
+    pick_id: int | None = None
+    pick_number: str | None = None
+    total_quantity_picked: float = 0
+    created_stock_movements: int = 0
+    created_audit_events: int = 0
+    woo_stock_sync_status: str | None = None
+    woo_stock_sync_error: str | None = None
+    woo_stock_sync_job_id: int | None = None
+    replayed: bool = False
+
+
+class CompletedOrderRecordPickedResponse(BaseModel):
+    status: str
+    requested_count: int
+    succeeded_count: int
+    failed_count: int
+    total_quantity_picked: float = 0
+    created_stock_movements: int = 0
+    created_audit_events: int = 0
+    results: list[CompletedOrderRecordPickedResult] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)

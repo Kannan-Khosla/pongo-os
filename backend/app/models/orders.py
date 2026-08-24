@@ -12,6 +12,7 @@ from app.models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.inventory import InventoryItem
+    from app.models.order_metadata import OrderNote, OrderTagAssignment
     from app.models.routes import RouteStop
 
 
@@ -83,6 +84,16 @@ class Order(TimestampMixin, Base):
     raw_woo_payload: Mapped[dict | None] = mapped_column(JSON)
 
     items: Mapped[list["OrderItem"]] = relationship(back_populates="order", cascade="all, delete-orphan")
+    notes: Mapped[list["OrderNote"]] = relationship(
+        back_populates="order",
+        cascade="all, delete-orphan",
+        order_by="OrderNote.created_at.desc()",
+    )
+    tag_assignments: Mapped[list["OrderTagAssignment"]] = relationship(
+        back_populates="order",
+        cascade="all, delete-orphan",
+        order_by="OrderTagAssignment.position.asc()",
+    )
     route_stops: Mapped[list["RouteStop"]] = relationship(back_populates="order")
 
 
@@ -117,6 +128,7 @@ class OrderItem(TimestampMixin, Base):
     fulfilled_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=0, nullable=False)
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     unit_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    local_invoice_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     line_subtotal: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     line_total: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     line_tax: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))

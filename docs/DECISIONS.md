@@ -604,3 +604,27 @@ cursor advancement occurs only after a clean run, local stock starts at zero,
 opening stock uses the audited opening-balance workflow, and SKU becomes locked
 after stock activity. Metadata writeback is limited to explicit product fields
 and preserves the local save when WooCommerce is unavailable.
+
+## ADR-041: Catalog Reconciliation Is Durable And Identity-First
+
+Decision: replace the customer-facing preview/commit double fetch with one
+persisted `catalog` job. The existing single Woo worker reads one deterministic
+product/variation page or applies one local batch per cycle, checkpoints every
+boundary, then yields. A final modified-since pass covers catalog additions and
+changes during the full walk. Variable parents remain context; every variation
+is an inventory unit even when unavailable for purchase.
+
+Authoritative remote identity wins first, followed only by one normalized SKU.
+Barcode and name never merge records. Existing operational fields/history are
+preserved, new rows start at zero stock, and ambiguity or source absence becomes
+durable staff attention. One active mapping per local item, simple product, or
+global variation ID is enforced after a fail-closed legacy duplicate preflight.
+
+Reason: network latency and browser timeouts can no longer create an uncertain
+half-import or require Woo to be fetched twice. Resume continues from a product
+page and exact variation-parent/page cursor; replay is idempotent.
+
+Safety: enqueue writes before network, catalog sync performs no Woo writes or
+stock movements, bounded retries retain checkpoints, manual resolutions are
+revalidated and audited, and old automatic stage detail can be pruned without
+deleting attention or human decisions.

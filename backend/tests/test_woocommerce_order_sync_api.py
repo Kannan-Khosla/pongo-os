@@ -96,6 +96,24 @@ def woo_order(**overrides):
     return order
 
 
+def test_normalize_order_preserves_a_real_zero_subtotal():
+    normalized = order_service.normalize_order(
+        woo_order(
+            line_items=[
+                {
+                    **woo_order()["line_items"][0],
+                    "price": "0.00",
+                    "subtotal": "0.00",
+                    "total": "0.00",
+                    "total_tax": "0.00",
+                }
+            ]
+        )
+    )
+
+    assert normalized.subtotal == 0
+
+
 def test_commit_remote_order_records_can_leave_transaction_to_caller():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine)

@@ -18,6 +18,7 @@ from app.models.inventory import (
     StockMovement,
 )
 from app.models.orders import Order, OrderItem
+from app.models.order_metadata import OrderNote, OrderTag, OrderTagAssignment
 from app.models.performance import MetricCache, MetricVersion
 from app.models.picks import Pick, PickLine
 from app.models.receipts import Receipt, ReceiptItem
@@ -26,7 +27,7 @@ from app.models.routes import Route, RouteStop
 from app.models.scanner import ScannerEvent, ScannerSession
 from app.models.stock_mutations import StockMutationRequest
 from app.models.ui import UISavedView
-from app.models.woocommerce import WooCommerceAccessModeChange, WooCommerceConfiguration, WooCommerceOrderEvent, WooCommerceSyncError, WooCommerceSyncRun, WooCommerceWebhookDelivery, WooItemMapping, WooStockSyncJob, WooSubscriptionLineSnapshot, WooWritebackQueue
+from app.models.woocommerce import WooCatalogSyncRow, WooCommerceAccessModeChange, WooCommerceConfiguration, WooCommerceOrderEvent, WooCommerceSyncError, WooCommerceSyncRun, WooCommerceWebhookDelivery, WooItemMapping, WooStockSyncJob, WooSubscriptionLineSnapshot, WooWritebackQueue
 
 __all__ = [
     "Base",
@@ -55,6 +56,9 @@ __all__ = [
     "MovementType",
     "Order",
     "OrderItem",
+    "OrderNote",
+    "OrderTag",
+    "OrderTagAssignment",
     "MetricCache",
     "MetricVersion",
     "Pick",
@@ -75,6 +79,7 @@ __all__ = [
     "StockMutationRequest",
     "UISavedView",
     "WooCommerceAccessModeChange",
+    "WooCatalogSyncRow",
     "WooCommerceConfiguration",
     "WooCommerceSyncError",
     "WooCommerceSyncRun",

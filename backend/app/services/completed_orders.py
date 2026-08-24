@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.orders import Order, OrderItem
 from app.schemas.orders import CompletedOrderListResponse, CompletedOrderRead
+from app.services.order_metadata import metadata_load_options, order_metadata_fields
 
-COMPLETED_ORDER_STATUSES = {"completed", "closed", "fulfilled", "partially_fulfilled"}
+COMPLETED_ORDER_STATUSES = {"completed", "closed", "fulfilled", "partially_fulfilled", "cancelled", "refunded"}
 COMPLETED_ORDERS_CSV_COLUMNS = [
     "Woo Order Number",
     "Woo Order ID",
@@ -62,7 +63,10 @@ def list_completed_orders(
     orders = list(
         db.scalars(
             statement
-            .options(selectinload(Order.items).selectinload(OrderItem.inventory_item))
+            .options(
+                selectinload(Order.items).selectinload(OrderItem.inventory_item),
+                *metadata_load_options(),
+            )
             .order_by(
                 Order.closed_at.desc().nullslast(),
                 Order.completed_at.desc().nullslast(),
@@ -104,8 +108,9 @@ def export_completed_orders_csv(db: Session, filters: CompletedOrderFilters) -> 
     writer = csv.writer(output)
     writer.writerow(COMPLETED_ORDERS_CSV_COLUMNS)
     for order in orders:
+        include_unfulfilled = order.local_status in {"cancelled", "refunded"}
         for line in sorted(order.items, key=lambda item: item.line_number or item.id):
-            if line.quantity_fulfilled and line.quantity_fulfilled > 0:
+            if include_unfulfilled or (line.quantity_fulfilled and line.quantity_fulfilled > 0):
                 writer.writerow(completed_order_line_to_csv(order, line))
     return output.getvalue()
 
@@ -169,6 +174,7 @@ def escaped_ilike_pattern(value: str) -> str:
 
 def completed_order_to_read(order: Order) -> CompletedOrderRead:
     lines = list(order.items)
+    metadata = order_metadata_fields(order)
     return CompletedOrderRead(
         id=order.id,
         woo_order_id=order.woo_order_id,
@@ -194,6 +200,7 @@ def completed_order_to_read(order: Order) -> CompletedOrderRead:
         pick_status=order.pick_status,
         completed_at=order.completed_at,
         closed_at=order.closed_at,
+        **metadata,
     )
 
 

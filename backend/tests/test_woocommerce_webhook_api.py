@@ -221,7 +221,13 @@ def test_stale_supported_delivery_cannot_regress_newer_poll_data(client, monkeyp
     assert detail["date_modified"] == "2026-07-07T13:00:00"
     assert client.get("/api/integrations/woocommerce/webhooks/events").json()["events"] == []
 
-    equal_timestamp = woo_order(id=623, number="1623", total="31.00", date_modified_gmt="2026-07-07T13:00:00")
+    equal_timestamp = woo_order(
+        id=623,
+        number="1623",
+        status="cancelled",
+        total="31.00",
+        date_modified_gmt="2026-07-07T13:00:00",
+    )
     equal_response = post_delivery(
         client,
         equal_timestamp,
@@ -231,8 +237,92 @@ def test_stale_supported_delivery_cannot_regress_newer_poll_data(client, monkeyp
     )
 
     assert equal_response.status_code == 200
-    assert equal_response.json()["status"] == "ignored"
-    assert client.get(f"/api/orders/{order_id}").json()["total"] == 35
+    assert equal_response.json()["status"] == "processed"
+    equal_detail = client.get(f"/api/orders/{order_id}").json()
+    assert equal_detail["woo_status"] == "cancelled"
+    assert equal_detail["local_status"] == "cancelled"
+    assert equal_detail["total"] == 31
+
+    delayed_processing = woo_order(
+        id=623,
+        number="1623",
+        status="processing",
+        total="32.00",
+        date_modified_gmt="2026-07-07T13:00:00",
+    )
+    delayed_response = post_delivery(
+        client,
+        delayed_processing,
+        topic="order.updated",
+        event="updated",
+        delivery_id="equal-timestamp-delayed-processing",
+    )
+
+    assert delayed_response.status_code == 200
+    assert delayed_response.json()["status"] == "ignored"
+    terminal_detail = client.get(f"/api/orders/{order_id}").json()
+    assert terminal_detail["woo_status"] == "cancelled"
+    assert terminal_detail["local_status"] == "cancelled"
+    assert terminal_detail["total"] == 31
+
+
+def test_order_webhook_survives_pongo_only_added_and_removed_lines(client, monkeypatch):
+    patch_webhook_settings(monkeypatch)
+    seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 10, "Allocated": 0})
+    extra = seed_item(client, sku="EXTRA-SKU", Barcode="EXTRA-BAR", wooProductId=202, **{"In Stock": 10, "Allocated": 0})
+    remote = woo_order(id=624, number="1624", date_modified_gmt="2026-07-07T13:00:00")
+    created = post_delivery(client, remote, delivery_id="local-edit-created")
+    assert created.status_code == 200
+    order_id = created.json()["local_order_id"]
+    original_line = client.get(f"/api/orders/{order_id}").json()["lines"][0]
+
+    add_payload = {
+        "inventory_item_id": extra["id"],
+        "quantity": 1,
+        "idempotency_key": "webhook-local-add",
+    }
+    added = client.post(
+        f"/api/orders/{order_id}/lines",
+        json=add_payload,
+        headers={"Idempotency-Key": add_payload["idempotency_key"]},
+    )
+    assert added.status_code == 200, added.text
+    after_add = post_delivery(
+        client,
+        {**remote, "date_modified_gmt": "2026-07-07T13:01:00"},
+        topic="order.updated",
+        event="updated",
+        delivery_id="local-edit-after-add",
+    )
+    assert after_add.status_code == 200, after_add.text
+    assert after_add.json()["status"] == "processed"
+
+    remove_payload = {"idempotency_key": "webhook-local-remove"}
+    removed = client.post(
+        f"/api/orders/{order_id}/lines/{original_line['id']}/remove",
+        json=remove_payload,
+        headers={"Idempotency-Key": remove_payload["idempotency_key"]},
+    )
+    assert removed.status_code == 200, removed.text
+    after_remove = post_delivery(
+        client,
+        {**remote, "date_modified_gmt": "2026-07-07T13:02:00"},
+        topic="order.updated",
+        event="updated",
+        delivery_id="local-edit-after-remove",
+    )
+    assert after_remove.status_code == 200, after_remove.text
+    assert after_remove.json()["status"] == "processed"
+
+    after_woo_remove = post_delivery(
+        client,
+        {**remote, "line_items": [], "date_modified_gmt": "2026-07-07T13:03:00"},
+        topic="order.updated",
+        event="updated",
+        delivery_id="local-edit-after-woo-remove",
+    )
+    assert after_woo_remove.status_code == 200, after_woo_remove.text
+    assert after_woo_remove.json()["status"] == "processed"
 
 
 def test_missing_or_invalid_signature_fails_closed_without_mutation(client, monkeypatch):

@@ -117,7 +117,9 @@ def test_cancel_live_processing_order_writes_woo_releases_allocations_and_audits
     assert response.json()["woo_sync_status"] == "sent"
     assert response.json()["released_quantity"] == 2
     assert replay.json()["status"] == "already_applied"
-    assert [call[0] for call in fake.calls] == ["update_order_status"]
+    assert [call[0] for call in fake.calls] == ["update_order_status", "update_product_stock"]
+    assert fake.calls[-1][2] == "/wp-json/wc/v3/products/101"
+    assert fake.calls[-1][3]["stock_quantity"] == 8
     detail = client.get(f"/api/orders/{order['id']}").json()
     assert detail["woo_status"] == "cancelled"
     assert detail["lines"][0]["quantity_allocated"] == 0
@@ -127,8 +129,13 @@ def test_cancel_live_processing_order_writes_woo_releases_allocations_and_audits
         assert "idempotency='cancel-501'" in (stored.workflow_notes or "")
 
 
-def test_cancel_retry_same_key_moves_failed_writeback_to_sent_and_keeps_both_audit_states(client, monkeypatch):
+def test_cancel_retry_same_key_restores_picked_stock_once_and_moves_failed_writeback_to_sent(client, monkeypatch):
     _, order, _ = synced_order(client, monkeypatch, item_stock=8, item_allocated=0, quantity=2)
+    picked = client.post(
+        f"/api/picks/orders/{order['id']}/scan/commit",
+        json={"sku_or_barcode": "ORDER-BAR", "quantity": 2, "idempotency_key": "pick-before-cancel-retry"},
+    )
+    assert picked.status_code == 200, picked.text
     fake = patch_action_client(monkeypatch, woo_order())
     fake.fail_next_status = True
     payload = {
@@ -146,10 +153,53 @@ def test_cancel_retry_same_key_moves_failed_writeback_to_sent_and_keeps_both_aud
     assert failed.json()["local_status"] == "cancellation_pending"
     assert sent.json()["woo_sync_status"] == "sent"
     assert sent.json()["status"] == "cancelled"
+    detail = client.get(f"/api/orders/{order['id']}").json()
+    assert detail["lines"][0]["quantity_picked"] == 0
+    assert detail["lines"][0]["quantity_stock_reduced"] == 0
+    item = client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]
+    assert item["In Stock"] == 8
+    assert item["Allocated"] == 0
+    movements = client.get(
+        "/api/stock-movements",
+        params={"movement_type": "unpick_stock_restoration"},
+    ).json()
+    assert movements["total"] == 1
+    assert [call[0] for call in fake.calls] == [
+        "update_order_status",
+        "update_order_status",
+        "update_product_stock",
+    ]
     with Session(client.test_engine) as db:
         notes = db.get(Order, order["id"]).workflow_notes or ""
         assert "woo_writeback='failed'" in notes
         assert "woo_writeback='sent'" in notes
+
+
+def test_cancel_rejects_fulfilled_order_without_writing_woocommerce(client, monkeypatch):
+    _, order, _ = synced_order(client, monkeypatch, item_stock=8, item_allocated=0, quantity=2)
+    assert client.post(
+        f"/api/picks/orders/{order['id']}/scan/commit",
+        json={"sku_or_barcode": "ORDER-BAR", "quantity": 2, "idempotency_key": "pick-before-fulfill"},
+    ).status_code == 200
+    fulfilled = client.post(
+        "/api/fulfillments/commit",
+        json={"order_ids": [order["id"]], "allow_partial": True, "notes": "Already handed to customer"},
+    )
+    assert fulfilled.status_code == 200, fulfilled.text
+    fake = patch_action_client(monkeypatch, woo_order())
+
+    response = client.post(
+        "/api/orders/woocommerce/501/status",
+        json={
+            "target_status": "cancelled",
+            "reason": "Too late to cancel",
+            "idempotency_key": "cancel-fulfilled-501",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "fulfilled" in response.json()["detail"]
+    assert fake.calls == []
 
 
 def test_retry_confirms_timeout_after_remote_acceptance_as_sent(client, monkeypatch):
@@ -206,7 +256,7 @@ def test_local_completion_wins_and_blocks_later_cancellation_while_woo_is_still_
         assert stored.completion_status == "completed_without_picking"
 
 
-def test_cancellation_guard_wins_blocks_completion_and_survives_processing_resync(client, monkeypatch):
+def test_cancellation_guard_wins_blocks_completion_and_survives_nonterminal_resync(client, monkeypatch):
     _, order, _ = synced_order(client, monkeypatch, item_stock=8, item_allocated=0, quantity=2)
     fake = patch_action_client(monkeypatch, woo_order())
     fake.fail_next_status = True
@@ -220,12 +270,15 @@ def test_cancellation_guard_wins_blocks_completion_and_survives_processing_resyn
         },
     )
 
-    patch_woo_order_client(monkeypatch, [woo_order(status="processing")])
-    resync = client.post("/api/integrations/woocommerce/orders/commit", json={})
-    with Session(client.test_engine) as db:
-        guarded = db.get(Order, order["id"])
-        assert guarded.completion_status == "cancellation_pending"
-        assert guarded.local_status == "cancellation_pending"
+    for woo_status in ("processing", "on-hold", "pending"):
+        patch_woo_order_client(monkeypatch, [woo_order(status=woo_status)])
+        resync = client.post("/api/integrations/woocommerce/orders/commit", json={})
+        assert resync.status_code == 200
+        with Session(client.test_engine) as db:
+            guarded = db.get(Order, order["id"])
+            assert guarded.completion_status == "cancellation_pending"
+            assert guarded.local_status == "cancellation_pending"
+            assert guarded.items[0].quantity_allocated == 2
 
     completed = client.post(
         "/api/orders/woocommerce/501/status",
@@ -239,7 +292,6 @@ def test_cancellation_guard_wins_blocks_completion_and_survives_processing_resyn
 
     assert cancelled.status_code == 200
     assert cancelled.json()["woo_sync_status"] == "failed"
-    assert resync.status_code == 200
     assert completed.status_code == 409
     assert "cancellation is already pending" in completed.json()["detail"]
     assert [call[3]["status"] for call in fake.calls] == ["cancelled"]
@@ -341,7 +393,7 @@ def test_substitution_preserves_original_identity_uses_effective_scan_and_surviv
         Barcode="REPLACEMENT-BAR",
         wooProductId=202,
         Description="Replacement product",
-        **{"In Stock": 8, "Allocated": 0},
+        **{"Sales Price": 5, "In Stock": 8, "Allocated": 0},
     )
     payload = {
         "replacement_inventory_item_id": replacement["id"],
@@ -361,6 +413,14 @@ def test_substitution_preserves_original_identity_uses_effective_scan_and_surviv
     assert effective["sku"] == "ORDER-SKU"
     assert effective["effective_sku"] == "REPLACEMENT-SKU"
     assert effective["substituted_from_sku"] == "ORDER-SKU"
+    assert effective["invoice_unit_price"] == 5
+    assert effective["invoice_line_total"] == 10
+    assert effective["line_tax"] == 1
+    assert detail["invoice_subtotal"] == 10
+    assert detail["invoice_total"] == 16
+    assert detail["discount_total"] == 0
+    assert detail["shipping_total"] == 5
+    assert detail["tax_total"] == 1
     original_scan = client.post(
         f"/api/picks/orders/{order['id']}/scan/preview",
         json={"sku_or_barcode": "ORDER-BAR", "quantity": 1},
@@ -379,6 +439,8 @@ def test_substitution_preserves_original_identity_uses_effective_scan_and_surviv
     assert after["effective_sku"] == "REPLACEMENT-SKU"
     assert after["sync_status"] == "substituted"
     assert after["allocation_status"] != "exception"
+    assert after["invoice_unit_price"] == 5
+    assert client.get(f"/api/orders/{order['id']}").json()["invoice_total"] == 16
 
     changed = woo_order(line_items=[{**woo_order()["line_items"][0], "quantity": 3}])
     patch_woo_order_client(monkeypatch, [changed])
@@ -398,7 +460,7 @@ def test_order_product_edits_allow_blank_reasons_sync_stock_and_survive_woo_resy
         Barcode="LOCAL-ADD-BAR",
         wooProductId=202,
         Description="Locally added product",
-        **{"In Stock": 8, "Allocated": 0},
+        **{"Sales Price": 7.5, "In Stock": 8, "Allocated": 0},
     )
     fake = patch_action_client(monkeypatch, woo_order())
 
@@ -418,6 +480,12 @@ def test_order_product_edits_allow_blank_reasons_sync_stock_and_survive_woo_resy
     assert local_line["woo_line_item_id"] is None
     assert local_line["quantity_ordered"] == 2
     assert local_line["quantity_allocated"] == 2
+    assert local_line["invoice_unit_price"] == 7.5
+    assert local_line["invoice_line_total"] == 15
+    assert local_line["line_tax"] is None
+    assert detail["invoice_subtotal"] == 39
+    assert detail["invoice_total"] == 45
+    assert detail["tax_total"] == 1
     assert any(path == "/wp-json/wc/v3/products/202" and payload["stock_quantity"] == 6 for _, _, path, payload in fake.calls)
 
     removed_original = client.post(
@@ -426,7 +494,10 @@ def test_order_product_edits_allow_blank_reasons_sync_stock_and_survive_woo_resy
     )
     assert removed_original.status_code == 200, removed_original.text
     assert removed_original.json()["released_quantity"] == 2
-    assert [line["id"] for line in client.get(f"/api/orders/{order['id']}").json()["lines"]] == [local_line["id"]]
+    after_original_removal = client.get(f"/api/orders/{order['id']}").json()
+    assert [line["id"] for line in after_original_removal["lines"]] == [local_line["id"]]
+    assert after_original_removal["invoice_subtotal"] == 15
+    assert after_original_removal["invoice_total"] == 21
 
     patch_woo_order_client(monkeypatch, [woo_order()])
     assert client.post("/api/integrations/woocommerce/orders/commit", json={}).status_code == 200

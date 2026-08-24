@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -34,6 +34,12 @@ from app.schemas.woocommerce import (
     WooCommerceSyncRunRead,
     WooCommerceWebhookDeliveryResponse,
     WooCommerceWebhookEventListResponse,
+    WooCatalogSyncCreateRequest,
+    WooCatalogSyncCurrentResponse,
+    WooCatalogSyncResolveRequest,
+    WooCatalogSyncRowListResponse,
+    WooCatalogSyncRowRead,
+    WooCatalogSyncRunRead,
     WooWritebackOrderStatusPreviewRequest,
     WooWritebackPreviewResponse,
     WooWritebackQueueCreateRequest,
@@ -83,6 +89,17 @@ from app.services.woocommerce_writeback import (
     send_queue_item,
 )
 from app.services.woocommerce_stock_sync_jobs import cancel_stock_sync_job, create_stock_sync_job, list_stock_sync_jobs, resume_stock_sync_job, stock_sync_job_read
+from app.services.woocommerce_catalog_sync import (
+    cancel_catalog_sync,
+    catalog_row_read,
+    catalog_sync_run_read,
+    current_catalog_sync,
+    enqueue_catalog_sync,
+    get_catalog_sync,
+    list_catalog_rows,
+    resolve_catalog_row,
+    resume_catalog_sync,
+)
 
 router = APIRouter(prefix="/integrations/woocommerce", tags=["woocommerce"])
 
@@ -219,6 +236,114 @@ def import_new_woocommerce_products(
             status_code=503,
             detail="WooCommerce is temporarily unavailable. No products were changed. Try again.",
         ) from error
+
+
+@router.post("/catalog-syncs", response_model=WooCatalogSyncRunRead, status_code=202)
+def create_catalog_sync(
+    payload: WooCatalogSyncCreateRequest | None = None,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> WooCatalogSyncRunRead:
+    body_key = payload.idempotency_key if payload else None
+    if idempotency_key and body_key and idempotency_key != body_key:
+        raise HTTPException(status_code=409, detail="Idempotency-Key header and body value must match.")
+    try:
+        run, deduplicated = enqueue_catalog_sync(
+            db,
+            created_by=actor,
+            request_key=idempotency_key or body_key,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return catalog_sync_run_read(run, deduplicated=deduplicated)
+
+
+@router.get("/catalog-syncs/current", response_model=WooCatalogSyncCurrentResponse)
+def get_current_catalog_sync(db: Session = Depends(get_db)) -> WooCatalogSyncCurrentResponse:
+    run = current_catalog_sync(db)
+    return WooCatalogSyncCurrentResponse(run=catalog_sync_run_read(run) if run else None)
+
+
+@router.get("/catalog-syncs/{sync_run_id}", response_model=WooCatalogSyncRunRead)
+def get_catalog_sync_run(sync_run_id: int, db: Session = Depends(get_db)) -> WooCatalogSyncRunRead:
+    run = get_catalog_sync(db, sync_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Catalog sync run not found.")
+    return catalog_sync_run_read(run)
+
+
+@router.get("/catalog-syncs/{sync_run_id}/rows", response_model=WooCatalogSyncRowListResponse)
+def get_catalog_sync_rows(
+    sync_run_id: int,
+    status: str | None = None,
+    search: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> WooCatalogSyncRowListResponse:
+    if get_catalog_sync(db, sync_run_id) is None:
+        raise HTTPException(status_code=404, detail="Catalog sync run not found.")
+    allowed = {"staged", "created", "linked", "updated", "unchanged", "skipped", "needs_attention", "failed"}
+    if status and status not in allowed:
+        raise HTTPException(status_code=422, detail="Unsupported catalog row status.")
+    return list_catalog_rows(db, sync_run_id, status=status, search=search, page=page, page_size=page_size)
+
+
+@router.post("/catalog-syncs/{sync_run_id}/resume", response_model=WooCatalogSyncRunRead)
+def resume_catalog_sync_run(
+    sync_run_id: int,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> WooCatalogSyncRunRead:
+    del actor
+    try:
+        run = resume_catalog_sync(db, sync_run_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if run is None:
+        raise HTTPException(status_code=404, detail="Catalog sync run not found.")
+    return catalog_sync_run_read(run)
+
+
+@router.post("/catalog-syncs/{sync_run_id}/cancel", response_model=WooCatalogSyncRunRead)
+def cancel_catalog_sync_run(
+    sync_run_id: int,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> WooCatalogSyncRunRead:
+    del actor
+    try:
+        run = cancel_catalog_sync(db, sync_run_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if run is None:
+        raise HTTPException(status_code=404, detail="Catalog sync run not found.")
+    return catalog_sync_run_read(run)
+
+
+@router.post("/catalog-syncs/{sync_run_id}/rows/{row_id}/resolve", response_model=WooCatalogSyncRowRead)
+def resolve_catalog_sync_row(
+    sync_run_id: int,
+    row_id: int,
+    payload: WooCatalogSyncResolveRequest,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> WooCatalogSyncRowRead:
+    try:
+        row = resolve_catalog_row(
+            db,
+            sync_run_id,
+            row_id,
+            action=payload.action,
+            item_id=payload.item_id,
+            actor=actor,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if row is None:
+        raise HTTPException(status_code=404, detail="Catalog sync row not found.")
+    return catalog_row_read(row)
 
 
 @router.post("/orders/preview", response_model=WooCommerceOrderPreviewResponse)

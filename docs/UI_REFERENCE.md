@@ -545,8 +545,8 @@ Current Picking UI:
 Current Fulfillment/Completion UI:
 - Fulfillment is no longer a primary Orders sidebar page.
 - Open Orders exposes Complete and Complete Without Picking actions.
-- Completed Orders shows locally closed orders, including picked completions
-  and completed-without-picking exceptions.
+- Completed Orders shows locally closed orders, including picked completions,
+  completed-without-picking exceptions, Woo cancellations, and Woo refunds.
 - Order History shows allocation history, pick history, and legacy
   fulfillment/completion history.
 - Legacy fulfillment endpoints remain for compatibility and do not

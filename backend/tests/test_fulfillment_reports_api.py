@@ -1,8 +1,12 @@
 import csv
 from io import StringIO
 
+import pytest
+
+from tests.test_allocations_api import synced_order
 from tests.test_fulfillments_api import picked_order
 from tests.test_items_api import client  # noqa: F401
+from tests.test_woocommerce_order_sync_api import patch_woo_order_client, woo_order
 
 
 FULFILLMENT_CSV_HEADER = [
@@ -211,3 +215,28 @@ def test_completed_orders_includes_partially_fulfilled(client, monkeypatch):
     assert listing.status_code == 200
     assert listing.json()["total"] == 1
     assert listing.json()["orders"][0]["id"] == order["id"]
+
+
+@pytest.mark.parametrize("terminal_status", ["cancelled", "refunded"])
+def test_completed_orders_surfaces_terminal_woo_status_and_exports_unfulfilled_lines(client, monkeypatch, terminal_status):
+    _, order, _ = synced_order(client, monkeypatch, item_stock=8, item_allocated=0, quantity=2)
+    patch_woo_order_client(monkeypatch, [woo_order(status=terminal_status)])
+
+    synced = client.post(
+        "/api/integrations/woocommerce/orders/commit",
+        json={"include_statuses": [terminal_status]},
+    )
+    listing = client.get("/api/orders/completed", params={"local_status": terminal_status})
+    exported = client.get("/api/orders/completed/export", params={"local_status": terminal_status})
+
+    assert synced.status_code == 200
+    assert listing.status_code == 200
+    assert listing.json()["total"] == 1
+    assert listing.json()["orders"][0]["id"] == order["id"]
+    assert listing.json()["orders"][0]["woo_status"] == terminal_status
+    assert listing.json()["orders"][0]["local_status"] == terminal_status
+    assert client.get("/api/orders/open").json()["total"] == 0
+    rows = list(csv.DictReader(StringIO(exported.text)))
+    assert len(rows) == 1
+    assert rows[0]["Local Status"] == terminal_status
+    assert rows[0]["Quantity Fulfilled"] == "0.0"

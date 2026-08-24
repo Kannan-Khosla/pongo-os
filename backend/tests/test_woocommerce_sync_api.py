@@ -14,6 +14,7 @@ from app.models.woocommerce import WooCommerceConfiguration, WooCommerceSyncErro
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.woocommerce_configuration import save_woocommerce_configuration, settings_with_persisted_woocommerce_configuration
 from app.services.woocommerce_sync_errors import prune_sync_errors, store_sync_error_once
+from app.services.woocommerce_sync import normalize_remote_record
 from app.api.routes.woocommerce import woo_status_payload
 
 
@@ -33,6 +34,25 @@ class FakeWooClient:
 
     def check_connection(self):
         return None
+
+
+def test_normalize_remote_product_keeps_blank_regular_price_missing():
+    payload = {
+        "id": 101,
+        "type": "simple",
+        "name": "Price on request",
+        "status": "publish",
+        "purchasable": True,
+        "sku": "PRICE-REQUEST",
+        "regular_price": "",
+        "sale_price": "",
+        "price": "",
+    }
+    normalized = normalize_remote_record(payload)
+    explicit_zero = normalize_remote_record({**payload, "regular_price": "0"})
+
+    assert normalized.regular_price is None
+    assert explicit_zero.regular_price == 0
 
 
 class IncrementalWooClient:

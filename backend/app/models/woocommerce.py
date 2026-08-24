@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -43,6 +43,8 @@ class WooCommerceSyncRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     created_by: Mapped[str | None] = mapped_column(String(120), index=True)
+    request_key: Mapped[str | None] = mapped_column(String(120), index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_remote_records: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -52,8 +54,61 @@ class WooCommerceSyncRun(Base):
     error_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
     progress: Mapped[dict | None] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False, index=True)
 
     errors: Mapped[list["WooCommerceSyncError"]] = relationship(back_populates="sync_run", cascade="all, delete-orphan")
+    catalog_rows: Mapped[list["WooCatalogSyncRow"]] = relationship(back_populates="sync_run", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index(
+            "uq_woo_catalog_one_active",
+            "sync_type",
+            unique=True,
+            postgresql_where=text("sync_type = 'catalog' AND status IN ('queued', 'fetching_products', 'fetching_variations', 'matching', 'applying', 'waiting_retry', 'paused', 'cancelling')"),
+            sqlite_where=text("sync_type = 'catalog' AND status IN ('queued', 'fetching_products', 'fetching_variations', 'matching', 'applying', 'waiting_retry', 'paused', 'cancelling')"),
+        ),
+        Index(
+            "uq_woo_catalog_request_key",
+            "sync_type",
+            "request_key",
+            unique=True,
+            postgresql_where=text("sync_type = 'catalog' AND request_key IS NOT NULL"),
+            sqlite_where=text("sync_type = 'catalog' AND request_key IS NOT NULL"),
+        ),
+    )
+
+
+class WooCatalogSyncRow(Base):
+    __tablename__ = "woo_catalog_sync_rows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sync_run_id: Mapped[int] = mapped_column(ForeignKey("woocommerce_sync_runs.id", ondelete="CASCADE"), index=True, nullable=False)
+    remote_key: Mapped[str] = mapped_column(String(191), nullable=False)
+    remote_type: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    woo_product_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    woo_variation_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    sku: Mapped[str | None] = mapped_column(String(120), index=True)
+    normalized_sku: Mapped[str | None] = mapped_column(String(120), index=True)
+    barcode: Mapped[str | None] = mapped_column(String(120), index=True)
+    product_name: Mapped[str | None] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(40), default="staged", index=True, nullable=False)
+    action: Mapped[str] = mapped_column(String(40), default="pending", index=True, nullable=False)
+    local_item_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_items.id"), index=True)
+    message: Mapped[str | None] = mapped_column(Text)
+    resolution_action: Mapped[str | None] = mapped_column(String(40), index=True)
+    resolution_item_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_items.id"), index=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(120), index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False, index=True)
+
+    sync_run: Mapped[WooCommerceSyncRun] = relationship(back_populates="catalog_rows")
+
+    __table_args__ = (
+        UniqueConstraint("sync_run_id", "remote_key", name="uq_woo_catalog_row_run_remote"),
+        Index("ix_woo_catalog_row_run_status", "sync_run_id", "status"),
+    )
 
 
 class WooCommerceSyncError(Base):
@@ -130,6 +185,27 @@ class WooItemMapping(Base):
 
     __table_args__ = (
         UniqueConstraint("item_id", "woo_product_id", "woo_variation_id", "active", name="uq_woo_item_mappings_item_remote_active"),
+        Index(
+            "uq_woo_map_active_item",
+            "item_id",
+            unique=True,
+            postgresql_where=text("active = true"),
+            sqlite_where=text("active = 1"),
+        ),
+        Index(
+            "uq_woo_map_active_product",
+            "woo_product_id",
+            unique=True,
+            postgresql_where=text("active = true AND woo_variation_id IS NULL"),
+            sqlite_where=text("active = 1 AND woo_variation_id IS NULL"),
+        ),
+        Index(
+            "uq_woo_map_active_variation",
+            "woo_variation_id",
+            unique=True,
+            postgresql_where=text("active = true AND woo_variation_id IS NOT NULL"),
+            sqlite_where=text("active = 1 AND woo_variation_id IS NOT NULL"),
+        ),
     )
 
 
@@ -173,6 +249,7 @@ class WooStockSyncJob(Base):
     status: Mapped[str] = mapped_column(String(40), default="queued", index=True, nullable=False)
     force: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     requested_by: Mapped[str | None] = mapped_column(String(120), index=True)
+    target_item_ids: Mapped[list[int] | None] = mapped_column(JSON)
     chunk_size: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
     total_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     processed_items: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
