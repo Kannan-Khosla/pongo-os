@@ -3462,6 +3462,36 @@ describe('App shell and workflows', () => {
     confirmSpy.mockRestore();
   });
 
+  it('accepts a cancellation that only reconciles an order already refunded in WooCommerce', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).endsWith('/api/orders/woocommerce/802/status')) {
+        return json({
+          status: 'reconciled',
+          target_status: 'cancelled',
+          woo_order_id: 802,
+          local_order_id: 701,
+          local_status: 'refunded',
+          woo_sync_status: 'not_required',
+          released_quantity: 2,
+          message: 'WooCommerce already marked this order refunded. Pongo removed it from Open Orders.',
+        });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/orders/open';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Open Orders', level: 1 });
+    await user.click(screen.getByRole('button', { name: 'Open actions for order 0802' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Cancel order' }));
+
+    expect(await screen.findByText(/already marked this order refunded.*removed it from Open Orders/i)).toBeInTheDocument();
+    expect(screen.queryByText(/cancellation is not_required/i)).not.toBeInTheDocument();
+    confirmSpy.mockRestore();
+  });
+
   it('substitutes an unpicked Open Order line with a searched inventory item and an audited reason', async () => {
     const user = userEvent.setup();
     mockItemsFeed = {

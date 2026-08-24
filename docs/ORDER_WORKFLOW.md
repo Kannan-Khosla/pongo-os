@@ -173,8 +173,12 @@ non-processing snapshots remain reporting history and cannot reserve stock.
 
 The Dashboard live-order action is intentionally narrower than general sync:
 it first fetches the exact Woo order and accepts only a current `processing`
-record, then permits only `completed` or `cancelled`. Every action requires a
-reason and idempotency key. Completion mode is inferred and revalidated under
+record, then permits only `completed` or `cancelled`. Cancelling an order that
+Woo already reports as `cancelled`, `refunded`, or `failed` instead reconciles
+Pongo without another Woo status write: reversible unfulfilled picks are
+restored, remaining allocations are released, fulfilled history is preserved,
+and the terminal order leaves Open Orders. Every action requires a reason and
+idempotency key. Completion mode is inferred and revalidated under
 the order lock: a pristine order may complete without picking, a fully picked
 order completes as picked, and partial processing is rejected. Cancellation is
 revalidated under the same order/inventory lock scope. Reversible picked stock

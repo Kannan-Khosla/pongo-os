@@ -129,6 +129,49 @@ def test_cancel_live_processing_order_writes_woo_releases_allocations_and_audits
         assert "idempotency='cancel-501'" in (stored.workflow_notes or "")
 
 
+def test_cancel_reconciles_woo_refund_unpicks_and_removes_open_order_without_status_write(client, monkeypatch):
+    _, order, _ = synced_order(client, monkeypatch, item_stock=8, item_allocated=0, quantity=2)
+    picked = client.post(
+        f"/api/picks/orders/{order['id']}/scan/commit",
+        json={"sku_or_barcode": "ORDER-BAR", "quantity": 2, "idempotency_key": "pick-before-refund"},
+    )
+    assert picked.status_code == 200, picked.text
+    fake = patch_action_client(monkeypatch, woo_order(status="refunded"))
+    payload = {
+        "target_status": "cancelled",
+        "reason": "Woo refund cleanup",
+        "idempotency_key": "cancel-refunded-501",
+    }
+
+    response = client.post(
+        "/api/orders/woocommerce/501/status",
+        json=payload,
+        headers={"Idempotency-Key": payload["idempotency_key"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "reconciled"
+    assert response.json()["local_status"] == "refunded"
+    assert response.json()["woo_sync_status"] == "not_required"
+    assert response.json()["released_quantity"] == 2
+    assert "removed it from Open Orders" in response.json()["message"]
+    assert [call[0] for call in fake.calls] == ["update_product_stock"]
+    assert fake.calls[0][3]["stock_quantity"] == 8
+    detail = client.get(f"/api/orders/{order['id']}").json()
+    assert detail["lines"][0]["quantity_allocated"] == 0
+    assert detail["lines"][0]["quantity_picked"] == 0
+    assert detail["lines"][0]["quantity_stock_reduced"] == 0
+    assert order["id"] not in {row["id"] for row in client.get("/api/orders/open").json()["orders"]}
+    item = client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]
+    assert item["In Stock"] == 8
+    assert item["Allocated"] == 0
+    movements = client.get(
+        "/api/stock-movements",
+        params={"movement_type": "unpick_stock_restoration"},
+    ).json()
+    assert movements["total"] == 1
+
+
 def test_cancel_retry_same_key_restores_picked_stock_once_and_moves_failed_writeback_to_sent(client, monkeypatch):
     _, order, _ = synced_order(client, monkeypatch, item_stock=8, item_allocated=0, quantity=2)
     picked = client.post(

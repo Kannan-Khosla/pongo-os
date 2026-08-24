@@ -9618,7 +9618,7 @@ function OrdersPage({
         completion_mode: undefined,
         queue_woo_status_update: true,
       }, orderCancelMutationRef);
-      if (normalizeWooStatus(result.woo_sync_status) !== 'sent') {
+      if (normalizeWooStatus(result.woo_sync_status) !== 'sent' && normalizeWooStatus(result.status) !== 'reconciled') {
         const message = result.woo_sync_error || result.message || `WooCommerce cancellation is ${result.woo_sync_status || 'not confirmed'}.`;
         setBulkActionError(message);
         setOrderCancellation({ orderId: order.id, pending: false, error: message, retry: true });

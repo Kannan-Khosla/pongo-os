@@ -154,6 +154,85 @@ def change_live_woo_order_status(
     if existing_queue is not None:
         validate_status_queue_replay(existing_queue, woo_order_id, payload.target_status, reason)
 
+    if (
+        payload.target_status == "cancelled"
+        and remote_status in {"cancelled", "refunded", "failed"}
+        and not (remote_status == payload.target_status and existing_queue is not None)
+    ):
+        local_order = load_local_order_by_woo(db, woo_order_id)
+        before_allocated = total_allocated(local_order) if local_order is not None else Decimal("0")
+        restored_quantity = Decimal("0")
+        has_fulfilled_quantity = bool(
+            local_order
+            and any(to_decimal(line.quantity_fulfilled) > 0 for line in local_order.items)
+        )
+        if (
+            local_order is not None
+            and not has_fulfilled_quantity
+            and any(
+                to_decimal(value) > 0
+                for line in local_order.items
+                for value in (line.quantity_picked, line.quantity_stock_reduced)
+            )
+        ):
+            unpick_result = unpick_orders(
+                db,
+                [local_order.id],
+                created_by=actor,
+                reason=f"WooCommerce already {remote_status}: {reason}",
+                idempotency_key=idempotency_key,
+                commit=False,
+            )
+            if unpick_result.get("status") != "completed":
+                raise OrderActionConflict(
+                    "Pongo could not restore picked stock before closing this WooCommerce order. "
+                    + " ".join(unpick_result.get("errors") or [])
+                )
+            restored_quantity = to_decimal(unpick_result.get("total_quantity_restored"))
+
+        local_order = reconcile_one_remote_order(db, remote, remote_status, actor)
+        released_quantity = max(before_allocated - total_allocated(local_order), Decimal("0"))
+        if existing_queue is not None and existing_queue.status != "sent":
+            existing_queue.status = "sent"
+            existing_queue.sent_at = datetime.now(timezone.utc)
+            existing_queue.response_json = remote
+            existing_queue.error_message = None
+        stock_sync = sync_order_inventory_stock(db, settings, client, local_order.id, actor)
+        woo_sync_status = existing_queue.status if existing_queue is not None else "not_required"
+        record_status_action_audit(
+            db,
+            local_order,
+            remote_status,
+            reason,
+            actor,
+            idempotency_key,
+            woo_sync_status,
+        )
+        db.commit()
+        message = (
+            f"WooCommerce already marked this order {remote_status}. "
+            "Pongo removed it from Open Orders"
+        )
+        if restored_quantity > 0:
+            message += f", restored {restored_quantity} picked unit(s)"
+        if released_quantity > 0:
+            message += f", and released {released_quantity} allocated unit(s)"
+        message += "."
+        if has_fulfilled_quantity:
+            message += " Fulfilled stock history was preserved."
+        return WooOrderStatusActionResponse(
+            status="reconciled",
+            target_status=payload.target_status,
+            woo_order_id=woo_order_id,
+            local_order_id=local_order.id,
+            local_status=local_order.local_status,
+            released_quantity=float(released_quantity),
+            message=message,
+            woo_sync_status=woo_sync_status,
+            woo_writeback_queue_id=existing_queue.id if existing_queue is not None else None,
+            woo_sync_error=stock_sync_error(stock_sync),
+        )
+
     if remote_status == payload.target_status:
         if existing_queue is None:
             raise OrderActionConflict(

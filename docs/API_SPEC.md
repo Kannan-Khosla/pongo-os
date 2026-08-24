@@ -2776,7 +2776,10 @@ HTTP 409.
   `target_status` (`completed` or `cancelled`), `completion_mode` (`complete`,
   `complete_picked`, or `complete_without_picking`), `reason`, and
   `idempotency_key`. The backend re-fetches the exact Woo order and requires
-  live status `processing`. It infers and revalidates the safe completion path
+  live status `processing` for a new status change. If cancellation finds Woo
+  already `cancelled`, `refunded`, or `failed`, it performs only the audited
+  local unpick/allocation reconciliation and removes the order from Open Orders.
+  It infers and revalidates the safe completion path
   under the order lock; partial picking blocks completion. Cancellation
   reverses picked and stock-reduced quantities through the audited unpick path,
   blocks fulfilled quantities, creates a durable local cancellation guard,
