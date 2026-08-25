@@ -32,16 +32,16 @@ test('catalog sync survives the worker boundary, imports every variation, and re
   const simple = await findItem(page, 'E2E-CATALOG-SIMPLE');
   const smallVariation = await findItem(page, 'E2E-CATALOG-VAR-SMALL');
   const largeVariation = await findItem(page, 'E2E-CATALOG-VAR-LARGE');
-  expect(simple).toMatchObject({ SKU: 'E2E-CATALOG-SIMPLE', 'In Stock': 0 });
+  expect(simple).toMatchObject({ SKU: 'E2E-CATALOG-SIMPLE', 'In Stock': 17 });
   expect(smallVariation).toMatchObject({
     SKU: 'E2E-CATALOG-VAR-SMALL',
-    'In Stock': 0,
+    'In Stock': 4,
     wooProductId: 910_000_010,
     wooVariationId: 910_000_011,
   });
   expect(largeVariation).toMatchObject({
     SKU: 'E2E-CATALOG-VAR-LARGE',
-    'In Stock': 0,
+    'In Stock': 7,
     wooProductId: 910_000_010,
     wooVariationId: 910_000_012,
   });

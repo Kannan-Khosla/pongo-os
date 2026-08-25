@@ -2345,6 +2345,8 @@ describe('App shell and workflows', () => {
     expect(within(tabs).getByRole('link', { name: 'Products to review' })).toHaveAttribute('href', '#/settings/catalog?tab=attention');
     expect(within(tabs).getByRole('link', { name: 'Update history' })).toHaveAttribute('href', '#/settings/catalog?tab=runs');
     expect(screen.getByText(/You can leave this page while Pongo updates your products/i)).toBeInTheDocument();
+    expect(screen.getByText('New products start with WooCommerce stock')).toBeInTheDocument();
+    expect(screen.getByText('Existing Pongo stock stays unchanged')).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 

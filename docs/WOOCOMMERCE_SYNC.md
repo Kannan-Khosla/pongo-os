@@ -286,7 +286,11 @@ Barcode rule:
 
 Woo stock rule:
 - WooCommerce stock quantity is stored only as `woo_stock_quantity_snapshot`.
-- Local Pongo OS `In Stock` is not overwritten by WooCommerce product sync.
+- A newly created Pongo item starts with WooCommerce's current managed,
+  nonnegative stock quantity. The quantity is recorded as an audited opening
+  balance at the active default location, or Main Warehouse / UNASSIGNED when
+  no location exists yet.
+- Later WooCommerce product syncs never overwrite local Pongo OS `In Stock`.
 - Existing descriptions, categories, brands, prices, costs, locations, expiry
   records, and all other Pongo-owned fields are not overwritten.
 

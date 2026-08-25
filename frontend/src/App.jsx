@@ -13517,7 +13517,7 @@ function WooCatalogSyncWorkspace({ route, configured }) {
         <div>
           <span className="integration-eyebrow">WooCommerce products</span>
           <h2>Bring WooCommerce products into Pongo</h2>
-          <p>Pongo checks new and recently changed products, adds anything missing, and leaves your stock, costs, locations, and history unchanged. A periodic full check catches deletions and older changes.</p>
+          <p>Pongo checks new and recently changed products. Missing products are added with their current WooCommerce stock; existing Pongo stock, costs, locations, and history stay unchanged.</p>
         </div>
         <div className="catalog-hero-action">
           <div className={`integration-health ${configured ? 'is-connected' : ''}`} role="status"><span className="integration-health-pulse" aria-hidden="true" /><div><strong>{configured ? 'WooCommerce connected' : 'Connect WooCommerce first'}</strong></div></div>
@@ -13544,8 +13544,8 @@ function WooCatalogSyncWorkspace({ route, configured }) {
           {!initialLoading && !mutation && !selectedRun && (
             <section className="form-card empty-state settings-operation-panel catalog-empty-state">
               <span className="large-icon"><PackageSearch size={26} aria-hidden="true" /></span>
-              <div><h3>Ready for your first product update</h3><p>Pongo adds only products that are truly missing. For products with options, each sellable option becomes its own item; the main parent product is not counted as stock.</p></div>
-              <ul><li><CheckCircle2 size={17} />Local stock remains unchanged</li><li><CheckCircle2 size={17} />Costs and locations remain unchanged</li><li><CheckCircle2 size={17} />Ambiguity is never guessed</li></ul>
+              <div><h3>Ready for your first product update</h3><p>Pongo adds only products that are truly missing and starts them with their current WooCommerce stock. For products with options, each sellable option becomes its own item; the main parent product is not counted as stock.</p></div>
+              <ul><li><CheckCircle2 size={17} />New products start with WooCommerce stock</li><li><CheckCircle2 size={17} />Existing Pongo stock stays unchanged</li><li><CheckCircle2 size={17} />Existing costs and locations stay unchanged</li><li><CheckCircle2 size={17} />Ambiguity is never guessed</li></ul>
             </section>
           )}
           {selectedRun && (

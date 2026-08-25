@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
 import json
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.db.session import SessionLocal
-from app.models.inventory import InventoryItem
+from app.models.inventory import InventoryItem, InventoryLocation
 from app.models.woocommerce import WooCatalogSyncRow, WooCommerceSyncRun, WooItemMapping
 from app.schemas.woocommerce import (
     WooCatalogSyncRowListResponse,
@@ -23,6 +24,7 @@ from app.schemas.woocommerce import (
 )
 from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
+from app.services.location_inventory import set_opening_balance
 from app.services.woocommerce_sync import (
     NormalizedWooRecord,
     attach_woo_mapping,
@@ -890,9 +892,33 @@ def apply_catalog_row(db: Session, row: WooCatalogSyncRow, duplicate_remote_skus
         db.add(item)
         db.flush()
         ensure_mapping_record(db, item, record)
+        opening_stock = record.stock_quantity if record.manage_stock and record.stock_quantity is not None else Decimal("0")
+        if opening_stock < 0:
+            raise ValueError("WooCommerce stock is negative and cannot be used as Pongo opening stock.")
+        if opening_stock > 0:
+            location = db.scalar(
+                select(InventoryLocation)
+                .where(InventoryLocation.active.is_(True))
+                .order_by(InventoryLocation.is_default.desc(), InventoryLocation.id)
+            )
+            run = db.get(WooCommerceSyncRun, row.sync_run_id)
+            set_opening_balance(
+                db,
+                item.id,
+                in_stock=opening_stock,
+                allocated=Decimal("0"),
+                warehouse=(location.warehouse if location else None) or "Main Warehouse",
+                inventory_location=((location.location_code or location.location_name) if location else None) or "UNASSIGNED",
+                idempotency_key=f"woo-catalog:{row.sync_run_id}:{row.id}",
+                created_by=run.created_by if run else "system",
+                reference_type="woocommerce_catalog_sync",
+                reference_id=row.id,
+                reason="Opening stock imported from WooCommerce",
+                commit=False,
+            )
         row.status = "created"
         row.action = "created"
-        row.message = "Created as a zero-stock inventory item and mapped to WooCommerce."
+        row.message = f"Created with WooCommerce opening stock {opening_stock:g} and mapped to WooCommerce."
     else:
         seeded_barcode = not item.barcode and bool(record.barcode)
         changed = woo_snapshot_changed(item, record) or seeded_barcode

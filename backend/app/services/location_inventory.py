@@ -367,6 +367,7 @@ def set_opening_balance(
     reference_type: str = "opening_balance",
     reference_id: int | None = None,
     reason: str = "Explicit opening balance",
+    commit: bool = True,
 ) -> dict:
     payload = {
         "item_id": item_id,
@@ -449,7 +450,10 @@ def set_opening_balance(
         "sellable": float(item.sellable),
     }
     complete_stock_mutation(mutation, response)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return response
 
 

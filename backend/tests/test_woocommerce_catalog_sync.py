@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings
 from app.models.auth import User
-from app.models.inventory import InventoryItem, StockMovement
+from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation, InventoryLocation, StockMovement
 from app.models.woocommerce import WooCatalogSyncRow, WooCommerceSyncRun, WooItemMapping
 from app.services.woocommerce_catalog_sync import (
     catalog_sync_run_read,
@@ -230,6 +230,16 @@ def test_demo_catalog_enqueue_is_blocked_before_a_run_is_inserted(client):
 
 
 def test_catalog_sync_preserves_local_operations_and_covers_every_inventory_unit(client):
+    with Session(client.test_engine) as db:
+        db.add(InventoryLocation(
+            client="Pongo",
+            warehouse="Main Warehouse",
+            location_code="CATALOG-OPENING",
+            location_name="Catalog opening stock",
+            is_default=True,
+            active=True,
+        ))
+        db.commit()
     existing = seed_item(
         client,
         sku="KEEP-ME",
@@ -299,9 +309,20 @@ def test_catalog_sync_preserves_local_operations_and_covers_every_inventory_unit
 
         new_simple = db.scalar(select(InventoryItem).where(InventoryItem.sku == "NEW-SIMPLE"))
         assert new_simple.barcode == "001234567890"
-        assert new_simple.in_stock == 0
+        assert new_simple.in_stock == 17
         assert new_simple.allocated == 0
+        assert new_simple.sellable == 17
         assert new_simple.on_order == 0
+        opening_location = db.scalar(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == new_simple.id))
+        assert opening_location.warehouse == "Main Warehouse"
+        assert opening_location.inventory_location == "CATALOG-OPENING"
+        assert opening_location.in_stock == 17
+        opening_movement = db.scalar(select(StockMovement).where(StockMovement.inventory_item_id == new_simple.id))
+        assert opening_movement.quantity_change == 17
+        assert opening_movement.reference_type == "woocommerce_catalog_sync"
+        opening_audit = db.scalar(select(InventoryAuditEvent).where(InventoryAuditEvent.item_id == new_simple.id))
+        assert opening_audit.quantity_delta == 17
+        assert opening_audit.reference_type == "woocommerce_catalog_sync"
         assert db.scalar(select(InventoryItem).where(InventoryItem.sku == "PARENT")) is None
         out_of_stock = db.scalar(select(InventoryItem).where(InventoryItem.sku == "VAR-OOS"))
         assert out_of_stock is not None
@@ -309,7 +330,7 @@ def test_catalog_sync_preserves_local_operations_and_covers_every_inventory_unit
         assert out_of_stock.woo_variation_id == 201
         assert out_of_stock.in_stock == 0
         assert db.scalar(select(InventoryItem).where(InventoryItem.description == "Missing SKU")) is None
-        assert int(db.scalar(select(func.count(StockMovement.id))) or 0) == movement_count
+        assert int(db.scalar(select(func.count(StockMovement.id))) or 0) == movement_count + 1
 
         attention = list(db.scalars(select(WooCatalogSyncRow).where(
             WooCatalogSyncRow.sync_run_id == run_id,
