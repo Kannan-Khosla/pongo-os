@@ -2,17 +2,17 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-25T16:35:00Z
+LAST UPDATED: 2026-08-25T17:14:38Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Woo catalog opening-stock release; exact-SHA gate and production verification pending
-CURRENT RELEASE RECOMMENDATION: READY FOR AUTHORIZED DEPLOYMENT THROUGH THE NORMAL RELEASE GATE
+CURRENT PHASE: Woo catalog opening-stock release deployed and verified; normal production monitoring
+CURRENT RELEASE RECOMMENDATION: RELEASED ON HEROKU V64; MONITOR THE FIRST STAFF-INITIATED CATALOG UPDATE
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
 Pongo now keeps a normalized, read-only snapshot of active WooCommerce subscription lines, including each official next-payment date. The Dashboard shows renewals due in 30 days with current Pongo stock and sellable quantities; Sales by SKU visibly marks subscription products and includes renewal-demand and stock-risk columns in every export format.
 Subscription refresh is atomic and backend-only: a failed or partial Woo response leaves the last complete snapshot intact. Products match exact Woo variation/product identity first and unique SKU only as a fallback; missing mappings or stock remain explicitly unknown.
 Exact commit 013acf2 passed GitHub run 32178936003, restore-verified backup b016 preceded deployment, and Heroku v57 migrated production to 20260818_0039. The first worker refresh completed with 69 active subscriptions and 79 exact-mapped lines, zero skipped/errors, and the authenticated Dashboard/Insights plus read-only Sales by SKU builder showed current subscription stock and risk.
 The current authorized local patch replaces the Dashboard's misleading cached open-order preview with live WooCommerce processing rows, limits staff status changes to Processed (Woo completed) or Cancelled, adds a durable local product-substitution workflow, and lets staff explicitly recover a completed-without-picking order for inventory picking. Production remains unchanged until a separate deployment request and release gate.
-The current release candidate changes only first-time Woo catalog creation: a truly new Pongo item starts at Woo's current managed nonnegative stock through the existing audited opening-balance workflow. Existing Pongo item stock remains authoritative and is never overwritten by a later catalog update.
+Heroku v64 at exact commit cd741612 now changes only first-time Woo catalog creation: a truly new Pongo item starts at Woo's current managed nonnegative stock through the existing audited opening-balance workflow. Existing Pongo item stock remains authoritative and is never overwritten by a later catalog update.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -206,7 +206,7 @@ WI-SUB-001 / P0 / RELEASED / Atomic read-only active-subscription snapshot, upco
 WI-ORDER-LIVE-001 / P0 / IMPLEMENTED NOT DEPLOYED / Processing-only live Woo Dashboard rows, exact-row reconciliation, and guarded Processed/Cancelled writeback.
 WI-ORDER-SUB-001 / P0 / IMPLEMENTED NOT DEPLOYED / Audited durable local product substitution using one effective inventory item while retaining the original Woo line.
 WI-ORDER-RECOVERY-001 / P0 / IMPLEMENTED NOT DEPLOYED / Completed-order view/reprint plus explicit pristine completed-without-picking inventory recovery.
-WI-CATALOG-STOCK-001 / P0 / VERIFIED NOT DEPLOYED / New items created by the durable Woo catalog update receive audited Woo opening stock; existing local stock remains unchanged.
+WI-CATALOG-STOCK-001 / P0 / RELEASED / New items created by the durable Woo catalog update receive audited Woo opening stock; existing local stock remains unchanged; Heroku v64 at cd741612.
 
 WORK ITEM: WI-001
 TITLE: Complete fully picked orders that retain harmless Woo history lines
@@ -479,9 +479,9 @@ For subscription demand, reused the existing encrypted Woo client, pagination me
 For order operations, reused the existing Woo client, single-order reconciler, guarded writeback queue, stock-mutation idempotency ledger, allocation/pick/audit services, completed search, invoice, and responsive dialog. Migration 0040 adds only the original-item substitution metadata and queue idempotency needed to make those existing paths safe; no second order engine, job system, provider, or dependency was added.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Commit and push only the catalog opening-stock candidate, then require its exact SHA to pass the full PostgreSQL 16 release gate.
-THEN: Confirm production remains at schema 20260823_0043, deploy the exact green SHA to Heroku, verify web/worker/health/readiness, and perform read-only authenticated catalog-page smoke checks. Do not start a live catalog update as a smoke test.
-APPROVAL STATE: The user explicitly authorized production deployment on 2026-08-25. This authorizes candidate commit/push, exact-SHA CI, Heroku release, and non-destructive verification. It does not authorize importing a real Woo product solely for testing. Preserve unrelated PRODUCT_AUDIT/workbench/showcase changes.
+NEXT: Monitor the first staff-initiated Woo product update and confirm each newly created simple product or variation receives one audited opening balance equal to its current Woo managed stock.
+THEN: Resolve the pre-existing readiness gaps separately: 264 active stock items without a positive unit cost, 40 active items without an active location row, and the missing HTTPS operations alert webhook.
+APPROVAL STATE: The authorized production release completed on 2026-08-25 as Heroku v64. No live catalog update was started for release testing; preserve unrelated PRODUCT_AUDIT/workbench/showcase changes.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
 --- DELIVERY RUN: 2026-08-17T20:44:07Z ---
@@ -681,3 +681,9 @@ MODE: Release Readiness and Release
 SUMMARY: Woo catalog opening-stock behavior implemented, fully regression-tested, and explicitly authorized for production deployment.
 EVIDENCE: New catalog-created simple products and variations use the existing audited opening-balance workflow for Woo's managed nonnegative stock; matched items remain unchanged. Backend 603 passed/13 PostgreSQL-only skipped; frontend 178 passed; Vite build, compileall, JavaScript syntax, focused catalog tests, and diff check passed. No schema, dependency, configuration, credential, or Woo write change.
 NEXT ACTION: Commit and push the exact scoped candidate, require its full PostgreSQL 16 release gate, then deploy and verify non-destructively without starting a live catalog update.
+
+--- DELIVERY RUN: 2026-08-25T17:14:38Z ---
+MODE: Release Readiness and Release
+SUMMARY: Woo catalog opening-stock behavior released and verified on Pongo production as Heroku v64.
+EVIDENCE: Exact commit cd7416123f61009d075177afcf1453c05f9b3b59 passed GitHub release gate 32875852536, including vulnerability scans, PostgreSQL 16 migration and backup/restore checks, backend/frontend tests, production build, and browser contracts. Pre-release backup b020 completed. Heroku release v64 completed with schema 20260823_0043; web and worker are up; root and health returned 200; recent application logs contained no error matches; zero catalog jobs were active before or after deployment. No live catalog import or business-data mutation was performed during verification.
+NEXT ACTION: Monitor the first normal staff-run catalog update; address the three pre-existing readiness gaps separately.
