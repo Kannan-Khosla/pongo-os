@@ -841,6 +841,29 @@ describe('App shell and workflows', () => {
     expect(await screen.findByRole('dialog', { name: 'Item detail' })).toBeInTheDocument();
   });
 
+  it('shows the Woo product title instead of the long description in Item Detail', async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).match(/\/api\/items\/1\/detail$/)) {
+        return json({
+          item: { id: 1, sku: '', product_name: 'Royal Canin Aging Spayed/Neutered 7LB', description: 'Corn, Brewers Rice, Corn Gluten Meal' },
+          stock_by_location: [],
+          recent_activity: [],
+        });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#items';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    await user.click(screen.getByRole('button', { name: /SMOKE-001/i }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Item detail' });
+    expect(within(dialog).getByText('Royal Canin Aging Spayed/Neutered 7LB')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Corn, Brewers Rice, Corn Gluten Meal')).not.toBeInTheDocument();
+  });
+
   it('runs item search when a barcode scanner sends Enter in the search box', async () => {
     const user = userEvent.setup();
     window.location.hash = '#items';

@@ -14900,7 +14900,7 @@ function stockMovementFiltersToApi(search, filters = {}) {
 }
 
 function productTitle(item = {}) {
-  return decodeHtmlEntities(item?.wooName || item?.woo_name || item?.Description || item?.description || '');
+  return decodeHtmlEntities(item?.wooName || item?.woo_name || item?.product_name || item?.Description || item?.description || '');
 }
 
 function normalizeItem(item) {
