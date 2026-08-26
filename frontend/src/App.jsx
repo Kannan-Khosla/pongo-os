@@ -6537,6 +6537,16 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     await onLoadItems({ ...filters, page, pageSize });
   }
 
+  async function finishItemDelete(deletedItem) {
+    setDetailId(null);
+    setDetailData(null);
+    setSelectedIds((current) => current.filter((itemId) => itemId !== deletedItem.id));
+    setMessage(`Permanently deleted ${deletedItem.name}.`);
+    await onRefreshItemFacets();
+    await loadDataQuality();
+    await onLoadItems({ ...filters, page, pageSize });
+  }
+
   const filtersChanged = Boolean(filters.search || filters.category || filters.brand || filters.stockStatus || filters.latestWooImport || filters.dataQuality || filters.status !== 'active' || !filters.includeNonInventory);
   const topQualityIssues = (dataQuality?.issues || []).filter((issue) => issue.count > 0).sort((left, right) => right.count - left.count).slice(0, 5);
   const selectedQualityIssue = (dataQuality?.issues || []).find((issue) => issue.key === filters.dataQuality);
@@ -6651,7 +6661,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
       {message && <div className="api-success">{message}</div>}
       {loading && <div className="loading-strip">Loading backend items...</div>}
       <ItemsTable items={displayedItems} loading={loading} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: displayedItems.length, noun: 'items', onPageChange: changeItemsPage, onPageSizeChange: changeItemsPageSize }} visibleColumns={visibleColumns} selectedIds={selectedIds} onToggleSelected={toggleSelected} onToggleAll={toggleAllDisplayed} onOpenDetail={openDetail} />
-      {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onRefresh={() => openDetail(detailId, detailTab)} onRefreshItemFacets={onRefreshItemFacets} />}
+      {detailId && <ItemDetailDrawer detail={detailData} tab={detailTab} setTab={setDetailTab} onClose={() => setDetailId(null)} onDeleted={finishItemDelete} onRefresh={() => openDetail(detailId, detailTab)} onRefreshItemFacets={onRefreshItemFacets} />}
       {bulkOpen && <BulkEditModal selectedIds={selectedIds} onCommitted={finishBulkEdit} onClose={() => setBulkOpen(false)} />}
       <MobileCodeScanner open={cameraScannerOpen} onClose={() => setCameraScannerOpen(false)} onDetected={searchScannedCode} />
     </section>
@@ -7176,7 +7186,7 @@ function ItemsTable({ items, loading = false, pagination, visibleColumns, select
   );
 }
 
-function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh, onRefreshItemFacets, onSetupSaved, setupProgress }) {
+function ItemDetailDrawer({ detail, tab, setTab, onClose, onDeleted, onRefresh, onRefreshItemFacets, onSetupSaved, setupProgress }) {
   const item = detail?.item;
   const tabs = ['overview', 'stock', 'activity', 'history', 'edit'];
   return (
@@ -7200,7 +7210,7 @@ function ItemDetailDrawer({ detail, tab, setTab, onClose, onRefresh, onRefreshIt
             {tab === 'stock' && <ItemStockByLocation rows={detail.stock_by_location || []} item={item} />}
             {tab === 'activity' && <ItemActivityTimeline rows={detail.recent_activity || []} />}
             {tab === 'history' && <ItemHistoryPanel itemId={item.id} />}
-            {tab === 'edit' && <ItemMetadataPanel item={item} key={item.id} onSaved={onSetupSaved || onRefresh} onRefreshItemFacets={onRefreshItemFacets} setupProgress={setupProgress} />}
+            {tab === 'edit' && <ItemMetadataPanel item={item} key={item.id} onDeleted={onDeleted} onSaved={onSetupSaved || onRefresh} onRefreshItemFacets={onRefreshItemFacets} setupProgress={setupProgress} />}
           </>
         )}
       </aside>
@@ -7264,11 +7274,12 @@ function ItemHistoryPanel({ itemId }) {
   );
 }
 
-function ItemMetadataPanel({ item, onSaved, onRefreshItemFacets, setupProgress }) {
+function ItemMetadataPanel({ item, onDeleted, onSaved, onRefreshItemFacets, setupProgress }) {
   const [form, setForm] = useState({ sku: item.sku || '', barcode: item.barcode || '', description: item.description || '', category: item.category || '', brand: item.brand || '', manufacturer: item.manufacturer || '', unit_cost: item.unit_cost ?? '', sales_price: item.sales_price ?? '', warehouse: item.warehouse || '', inventory_location: item.inventory_location || '', opening_stock: '', active: item.active });
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   async function saveMetadata(event) {
     event.preventDefault();
@@ -7317,6 +7328,37 @@ function ItemMetadataPanel({ item, onSaved, onRefreshItemFacets, setupProgress }
       setSaving(false);
     }
   }
+
+  async function deleteItem() {
+    const name = productTitle(item) || item.sku || `item ${item.id}`;
+    const wooLinked = Boolean(item.woo_product_id || item.woo_variation_id);
+    const warning = wooLinked
+      ? `${name} is linked to WooCommerce. This deletes only the PongoOS item; the WooCommerce product will remain and may return on the next catalog sync. Permanently delete it from PongoOS?`
+      : `Permanently delete ${name} from PongoOS? This cannot be undone.`;
+    if (!window.confirm(warning)) return;
+
+    setDeleting(true);
+    setError('');
+    setMessage('');
+    try {
+      const query = wooLinked ? '?confirm_woo_link=true' : '';
+      const response = await apiFetch(`${API_BASE_URL}/api/items/${item.id}${query}`, { method: 'DELETE' });
+      if (!response.ok) {
+        let detail = '';
+        try {
+          detail = apiErrorDetail(await response.json());
+        } catch {
+          detail = await safeResponseText(response);
+        }
+        throw new Error(detail || `Delete API returned ${response.status}`);
+      }
+      await onDeleted({ id: item.id, name });
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to delete this item.');
+    } finally {
+      setDeleting(false);
+    }
+  }
   return (
     <form className="drawer-section operation-grid" onSubmit={saveMetadata}>
       <label className="field"><span>SKU {setupProgress ? '(required)' : ''}</span><input disabled={item.sku_locked} required={Boolean(setupProgress)} value={form.sku} onChange={(event) => setForm((current) => ({ ...current, sku: event.target.value }))} />{item.sku_locked && <small>Locked because stock activity has started.</small>}</label>
@@ -7329,6 +7371,7 @@ function ItemMetadataPanel({ item, onSaved, onRefreshItemFacets, setupProgress }
       <label className="field"><span>Opening stock</span><input min="0" step="0.001" type="number" value={form.opening_stock} onChange={(event) => setForm((current) => ({ ...current, opening_stock: event.target.value }))} /><small>Optional and available only before stock activity starts.</small></label>
       <label className="check-field"><input checked={form.active} onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))} type="checkbox" />Active</label>
       <button aria-busy={saving} className="primary-button" disabled={saving} type="submit"><Save size={16} />{saving ? 'Saving…' : setupProgress && setupProgress.current < setupProgress.total ? 'Save & next' : 'Save product'}</button>
+      {!setupProgress && <div className="item-delete-zone operation-grid-wide"><div><strong>Permanent deletion</strong><span>Available only when the item has no stock or operational history.</span></div><button aria-busy={deleting} className="danger-button" disabled={deleting || saving} onClick={deleteItem} type="button"><Trash2 size={16} />{deleting ? 'Deleting…' : 'Delete item permanently'}</button></div>}
       {error && <div className="api-error operation-grid-wide">{error}</div>}
       {message && <div className="api-success operation-grid-wide">{message}</div>}
     </form>

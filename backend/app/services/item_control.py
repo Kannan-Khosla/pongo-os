@@ -5,18 +5,20 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import case, func, or_, select, union_all
+from sqlalchemy import case, delete, func, or_, select, union_all, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.allocations import AllocationLine
 from app.models.cycle_counts import CycleCountLine
 from app.models.fulfillments import FulfillmentLine
 from app.models.item_notes import ItemNote
-from app.models.imports import ItemImportChange
+from app.models.imports import ImportPreviewRow, ItemImportChange
 from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation, InventoryLocation, InventoryTransferLine, MovementType, StockAdjustmentLine, StockMovement
 from app.models.orders import OrderItem
 from app.models.picks import PickLine
 from app.models.receipts import ReceiptItem
+from app.models.woocommerce import WooCatalogSyncRow, WooItemMapping
 from app.services.item_identifiers import barcode_scan_candidates
 from app.services.location_inventory import get_or_create_item_location, lock_inventory_stock, recalculate_item_location, recalculate_item_totals, to_decimal
 
@@ -176,6 +178,76 @@ def sku_is_locked(db: Session, item: InventoryItem) -> bool:
         or to_decimal(item.allocated) != 0
         or db.scalar(select(StockMovement.id).where(StockMovement.inventory_item_id == item.id).limit(1))
     )
+
+
+def delete_item_permanently(db: Session, item_id: int, *, confirm_woo_link: bool = False) -> dict[str, Any]:
+    item = db.get(InventoryItem, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    woo_linked = bool(
+        item.woo_product_id
+        or item.woo_variation_id
+        or db.scalar(select(WooItemMapping.id).where(WooItemMapping.item_id == item_id).limit(1))
+    )
+    if woo_linked and not confirm_woo_link:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "woo_confirmation_required",
+                "message": "This item is linked to WooCommerce. Deleting it removes only the PongoOS item; the WooCommerce product is not deleted and may return on the next catalog sync.",
+            },
+        )
+
+    blockers = []
+    if any(to_decimal(value) != 0 for value in (item.in_stock, item.allocated, item.on_order)) or db.scalar(
+        select(InventoryItemLocation.id).where(
+            InventoryItemLocation.inventory_item_id == item_id,
+            or_(
+                InventoryItemLocation.in_stock != 0,
+                InventoryItemLocation.allocated != 0,
+                InventoryItemLocation.on_order != 0,
+            ),
+        ).limit(1)
+    ):
+        blockers.append("current stock")
+
+    dependency_checks = [
+        ("stock movements", select(StockMovement.id).where(StockMovement.inventory_item_id == item_id)),
+        ("inventory audit history", select(InventoryAuditEvent.id).where(InventoryAuditEvent.item_id == item_id)),
+        ("orders", select(OrderItem.id).where(or_(OrderItem.inventory_item_id == item_id, OrderItem.substituted_from_inventory_item_id == item_id))),
+        ("receipts", select(ReceiptItem.id).where(ReceiptItem.inventory_item_id == item_id)),
+        ("cycle counts", select(CycleCountLine.id).where(CycleCountLine.item_id == item_id)),
+        ("allocations", select(AllocationLine.id).where(AllocationLine.item_id == item_id)),
+        ("picks", select(PickLine.id).where(PickLine.item_id == item_id)),
+        ("fulfillments", select(FulfillmentLine.id).where(FulfillmentLine.item_id == item_id)),
+        ("inventory transfers", select(InventoryTransferLine.id).where(InventoryTransferLine.inventory_item_id == item_id)),
+        ("stock adjustments", select(StockAdjustmentLine.id).where(StockAdjustmentLine.inventory_item_id == item_id)),
+    ]
+    blockers.extend(label for label, statement in dependency_checks if db.scalar(statement.limit(1)))
+    if blockers:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "item_has_inventory_history",
+                "message": f"This item cannot be permanently deleted because it has {', '.join(blockers)}.",
+                "dependencies": blockers,
+            },
+        )
+
+    db.execute(delete(ItemNote).where(ItemNote.inventory_item_id == item_id))
+    db.execute(delete(ItemImportChange).where(ItemImportChange.item_id == item_id))
+    db.execute(update(ImportPreviewRow).where(ImportPreviewRow.existing_item_id == item_id).values(existing_item_id=None))
+    db.execute(update(WooCatalogSyncRow).where(WooCatalogSyncRow.local_item_id == item_id).values(local_item_id=None))
+    db.execute(update(WooCatalogSyncRow).where(WooCatalogSyncRow.resolution_item_id == item_id).values(resolution_item_id=None))
+    db.execute(delete(WooItemMapping).where(WooItemMapping.item_id == item_id))
+    db.delete(item)
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This item is still used by inventory history and cannot be permanently deleted.") from error
+    return {"deleted": True, "id": item_id, "sku": item.sku, "woo_linked": woo_linked}
 
 
 def item_location_summary(row: InventoryItemLocation, item: InventoryItem | None = None) -> dict[str, Any]:

@@ -5964,6 +5964,25 @@ tbody tr:nth-child(even) .sticky-col {
   grid-column: 1 / -1;
 }
 
+.item-delete-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.item-delete-zone > div {
+  display: grid;
+  gap: 3px;
+}
+
+.item-delete-zone span {
+  color: #64748b;
+  font-size: 13px;
+}
+
 .item-overview-grid,
 .scanner-layout {
   display: grid;

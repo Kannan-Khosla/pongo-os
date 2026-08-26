@@ -865,6 +865,12 @@ Item Detail Control Center tabs:
 Stock quantities are visible in item detail but not directly editable there.
 Quantity changes must use receiving, cycle count, or adjustment.
 
+The Edit tab also offers permanent item deletion. Unlinked clean items receive
+the standard irreversible-action confirmation. Woo-linked items receive an
+additional warning that WooCommerce is not changed and that a later catalog
+sync may recreate the PongoOS item. Items with stock or operational history
+cannot be deleted.
+
 ## Current Receiving Page
 
 Receiving now has tabs:

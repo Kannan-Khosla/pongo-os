@@ -21,7 +21,7 @@ from app.schemas.items import InventoryItemBulkUpdateRequest, InventoryItemCreat
 from app.services.item_import import create_payload_from_row, parse_items_csv, preview_from_parsed, read_upload_text
 from app.services.auth import authenticated_actor
 from app.services.item_enrichment import commit_enrichment, enrichment_csv, parse_enrichment_csv, preview_enrichment
-from app.services.item_control import build_item_activity, build_item_detail, commit_bulk_item_update, item_keyword_predicates, preview_bulk_item_update, search_items, sku_is_locked
+from app.services.item_control import build_item_activity, build_item_detail, commit_bulk_item_update, delete_item_permanently, item_keyword_predicates, preview_bulk_item_update, search_items, sku_is_locked
 from app.services.item_identifiers import barcode_scan_candidates
 from app.services.item_import_workflow import field_specs_for, safe_csv_value
 from app.services.items import CANONICAL_ITEM_COLUMNS, apply_calculated_fields, apply_item_payload, item_to_csv_row
@@ -781,6 +781,11 @@ def update_item(item_id: int, payload: InventoryItemUpdate, db: Session = Depend
     db.refresh(item)
     sync_item_metadata_to_woo(db, item, payload.model_fields_set)
     return item
+
+
+@router.delete("/{item_id}")
+def delete_item(item_id: int, confirm_woo_link: bool = False, db: Session = Depends(get_db)) -> dict:
+    return delete_item_permanently(db, item_id, confirm_woo_link=confirm_woo_link)
 
 
 @router.post("/{item_id}/opening-balance")

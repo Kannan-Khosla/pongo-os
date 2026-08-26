@@ -2549,6 +2549,7 @@ Implemented endpoints:
 - `GET /api/items/{id}/fulfillments`
 - `GET /api/items/{id}/orders`
 - `GET /api/items/{id}/stock-movements`
+- `DELETE /api/items/{id}`
 - `GET/POST/PATCH/DELETE /api/items/{id}/notes`
 - `POST /api/items/bulk/preview`
 - `POST /api/items/bulk/commit`
@@ -2560,6 +2561,15 @@ optionally `make_default_location`). Adding a location creates a zero-quantity
 item/location assignment and never moves stock. SKU, barcode, direct location
 labels, stock quantities, derived values, WooCommerce identity, and unknown
 fields fail closed.
+
+Permanent item deletion is limited to catalog records with zero stock and no
+operational history. Notes, import-change metadata, empty item locations, and
+the local Woo mapping are removed with the item; durable order, receipt,
+movement, count, allocation, pick, fulfillment, transfer, adjustment, and
+inventory-audit history block deletion. A Woo-linked item returns `409` until
+`confirm_woo_link=true` is supplied. Confirmation deletes only the PongoOS
+record, never the WooCommerce product, which may return on a future catalog
+sync.
 
 ## UI Saved Views
 

@@ -864,6 +864,40 @@ describe('App shell and workflows', () => {
     expect(within(dialog).queryByText('Corn, Brewers Rice, Corn Gluten Meal')).not.toBeInTheDocument();
   });
 
+  it('warns before permanently deleting a Woo-linked item', async () => {
+    const user = userEvent.setup();
+    const confirmDelete = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fetch.mockImplementation((url, options = {}) => {
+      const target = String(url);
+      if (target.match(/\/api\/items\/1\/detail$/)) {
+        return json({
+          item: { id: 1, sku: 'SMOKE-001', product_name: 'Smoke Test Item', description: 'Long description', woo_product_id: 501, woo_variation_id: null, active: true },
+          stock_by_location: [],
+          recent_activity: [],
+          quick_stats: {},
+        });
+      }
+      if (target.includes('/api/items/1?confirm_woo_link=true')) {
+        expect(options.method).toBe('DELETE');
+        return json({ deleted: true, id: 1, sku: 'SMOKE-001', woo_linked: true });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#items';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    await user.click(screen.getByRole('button', { name: /SMOKE-001/i }));
+    const dialog = await screen.findByRole('dialog', { name: 'Item detail' });
+    await user.click(within(dialog).getByRole('button', { name: 'edit' }));
+    await user.click(within(dialog).getByRole('button', { name: /Delete item permanently/i }));
+
+    expect(confirmDelete).toHaveBeenCalledWith(expect.stringContaining('linked to WooCommerce'));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/api/items/1?confirm_woo_link=true'), expect.objectContaining({ method: 'DELETE' })));
+    expect(await screen.findByText('Permanently deleted Smoke Test Item.')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Item detail' })).not.toBeInTheDocument();
+  });
+
   it('runs item search when a barcode scanner sends Enter in the search box', async () => {
     const user = userEvent.setup();
     window.location.hash = '#items';

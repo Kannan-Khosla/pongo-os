@@ -12,6 +12,7 @@ from app.db.session import get_db
 from app.main import app
 from app.models import Base
 from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation
+from app.models.woocommerce import WooItemMapping
 from app.services.items import CANONICAL_ITEM_COLUMNS
 
 
@@ -451,6 +452,45 @@ def test_create_item_rejects_embedded_stock_quantities(client):
     response = client.post("/api/items", json={"SKU": "NO-HIDDEN-STOCK", "In Stock": 3})
 
     assert response.status_code == 422
+
+
+def test_delete_clean_unlinked_item_permanently(client):
+    created = seed_item(client, sku="DELETE-CLEAN", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+
+    response = client.delete(f"/api/items/{created['id']}")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"deleted": True, "id": created["id"], "sku": "DELETE-CLEAN", "woo_linked": False}
+    assert client.get(f"/api/items/{created['id']}").status_code == 404
+
+
+def test_delete_woo_linked_item_requires_confirmation(client):
+    created = seed_item(client, sku="DELETE-WOO", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+    with Session(client.test_engine) as db:
+        item_row = db.get(InventoryItem, created["id"])
+        item_row.woo_product_id = 501
+        db.add(WooItemMapping(item_id=created["id"], woo_product_id=501, woo_sku="DELETE-WOO", woo_name="Delete Woo", active=True))
+        db.commit()
+
+    warning = client.delete(f"/api/items/{created['id']}")
+    deleted = client.delete(f"/api/items/{created['id']}", params={"confirm_woo_link": True})
+
+    assert warning.status_code == 409
+    assert warning.json()["detail"]["code"] == "woo_confirmation_required"
+    assert deleted.status_code == 200, deleted.text
+    with Session(client.test_engine) as db:
+        assert db.get(InventoryItem, created["id"]) is None
+        assert db.scalar(select(WooItemMapping.id).where(WooItemMapping.item_id == created["id"])) is None
+
+
+def test_delete_item_with_stock_history_is_refused(client):
+    created = seed_item(client, sku="DELETE-BLOCKED")
+
+    response = client.delete(f"/api/items/{created['id']}")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "item_has_inventory_history"
+    assert client.get(f"/api/items/{created['id']}").status_code == 200
 
 
 def test_include_non_inventory_filter(client):
