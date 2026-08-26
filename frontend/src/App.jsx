@@ -1283,6 +1283,16 @@ function parseHashRoute() {
   }
   const [path, queryString = ''] = hash.split('?');
   const query = new URLSearchParams(queryString);
+  if (path === 'items') {
+    const requestedPage = Math.max(1, Number.parseInt(query.get('page') || '1', 10) || 1);
+    const requestedPageSize = Number.parseInt(query.get('page_size') || '50', 10);
+    return {
+      pageId: 'items',
+      itemSearch: query.get('search') || '',
+      itemPage: requestedPage,
+      itemPageSize: [20, 50, 100].includes(requestedPageSize) ? requestedPageSize : 50,
+    };
+  }
   if (path === 'items/categories') {
     return { pageId: 'items', itemView: 'categories' };
   }
@@ -5147,7 +5157,7 @@ function ItemsPage({ route, items, pagination, itemsLoading, itemsError, onLoadI
     );
   }
 
-  return <ItemsList items={items} pagination={pagination} loading={itemsLoading} error={itemsError} onLoadItems={onLoadItems} onRefreshItemFacets={onRefreshItemFacets} />;
+  return <ItemsList route={route} items={items} pagination={pagination} loading={itemsLoading} error={itemsError} onLoadItems={onLoadItems} onRefreshItemFacets={onRefreshItemFacets} />;
 }
 
 function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsLoading, summary, loading, error, onLoadItems, onRefreshItemFacets, onLoadSummary, stockMovements, stockMovementsPagination = emptyServerPagination(), stockMovementsLoading, stockMovementsError, onLoadStockMovements }) {
@@ -6346,7 +6356,7 @@ function ItemsCommandMenu({ label, align = 'start', children }) {
   );
 }
 
-function ItemsList({ items, pagination = emptyItemsPagination, loading, error, onLoadItems, onRefreshItemFacets }) {
+function ItemsList({ route, items, pagination = emptyItemsPagination, loading, error, onLoadItems, onRefreshItemFacets }) {
   const [cameraScannerOpen, setCameraScannerOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [visibleColumns, setVisibleColumns] = useState(ITEM_DEFAULT_VISIBLE_COLUMNS);
@@ -6362,7 +6372,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
   const [bulkDeleteError, setBulkDeleteError] = useState('');
   const [dataQuality, setDataQuality] = useState(null);
   const [filters, setFilters] = useState({
-    search: '',
+    search: route.itemSearch || '',
     category: '',
     brand: '',
     status: 'active',
@@ -6371,9 +6381,9 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     dataQuality: '',
     includeNonInventory: true,
   });
-  const [searchDraft, setSearchDraft] = useState('');
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [searchDraft, setSearchDraft] = useState(route.itemSearch || '');
+  const [page, setPage] = useState(route.itemPage || 1);
+  const [pageSize, setPageSize] = useState(route.itemPageSize || 50);
 
   const options = useMemo(
     () => ({
@@ -6387,6 +6397,15 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     setSelectedIds([]);
     onLoadItems({ ...filters, page, pageSize });
   }, [filters, page, pageSize]);
+
+  useEffect(() => {
+    const query = new URLSearchParams();
+    if (filters.search) query.set('search', filters.search);
+    if (page !== 1) query.set('page', String(page));
+    if (pageSize !== 50) query.set('page_size', String(pageSize));
+    const nextHash = `#/items${query.size ? `?${query}` : ''}`;
+    if (window.location.hash !== nextHash) window.history.replaceState(null, '', nextHash);
+  }, [filters.search, page, pageSize]);
 
   useEffect(() => {
     setSearchDraft(filters.search);

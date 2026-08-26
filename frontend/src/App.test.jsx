@@ -961,6 +961,18 @@ describe('App shell and workflows', () => {
     await waitFor(() => {
       expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/items') && String(url).includes('search=SMOKE001'))).toBe(true);
     });
+    expect(window.location.hash).toContain('search=SMOKE001');
+  });
+
+  it('restores item search results after a page refresh', async () => {
+    window.location.hash = '#/items?search=SMOKE001&page=1&page_size=50';
+    render(<App />);
+
+    expect(await screen.findByPlaceholderText('Search SKU, barcode, product title, or brand')).toHaveValue('SMOKE001');
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => {
+      const request = new URL(String(url));
+      return request.pathname === '/api/items' && request.searchParams.get('search') === 'SMOKE001';
+    })).toBe(true));
   });
 
   it('searches Items from the mobile camera scanner manual fallback', async () => {
