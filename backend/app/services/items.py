@@ -97,4 +97,6 @@ def apply_item_payload(item: InventoryItem, payload: InventoryItemCreate | Inven
 
 def item_to_csv_row(item: InventoryItem) -> dict[str, object]:
     apply_calculated_fields(item)
-    return {column: getattr(item, attr) for column, attr in CSV_FIELD_MAP.items()}
+    row = {column: getattr(item, attr) for column, attr in CSV_FIELD_MAP.items()}
+    row["Description"] = item.woo_name or item.description
+    return row

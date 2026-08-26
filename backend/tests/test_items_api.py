@@ -486,6 +486,18 @@ def test_csv_export_filtered_rows(client):
     assert rows[0]["SKU"] == "EXPORT-DOG"
 
 
+def test_csv_export_prefers_woo_item_name(client):
+    created = seed_item(client, sku="WOO-TITLE", Description="Long WooCommerce product description")
+    with Session(client.test_engine) as db:
+        db.get(InventoryItem, created["id"]).woo_name = "Concise WooCommerce item name"
+        db.commit()
+
+    response = client.get("/api/items/export", params={"sku": "WOO-TITLE"})
+
+    assert response.status_code == 200
+    assert next(csv.DictReader(StringIO(response.text)))["Description"] == "Concise WooCommerce item name"
+
+
 def test_csv_export_editable_quality_rows_are_safe_to_reimport(client):
     seed_item(client, sku="MISSING-COST", **{"Unit Cost": None})
     seed_item(client, sku="HAS-COST")
