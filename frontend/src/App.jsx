@@ -6358,6 +6358,8 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
   const [viewName, setViewName] = useState('');
   const [message, setMessage] = useState('');
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkDeleteError, setBulkDeleteError] = useState('');
   const [dataQuality, setDataQuality] = useState(null);
   const [filters, setFilters] = useState({
     search: '',
@@ -6547,6 +6549,46 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
     await onLoadItems({ ...filters, page, pageSize });
   }
 
+  async function requestBulkDelete(confirmWooLinks) {
+    const response = await apiFetch(`${API_BASE_URL}/api/items/bulk/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_ids: selectedIds, confirm_woo_links: confirmWooLinks }),
+    });
+    const body = await response.json();
+    if (response.status === 409 && body?.detail?.code === 'woo_confirmation_required' && !confirmWooLinks) {
+      if (!window.confirm(`${body.detail.message}\n\nContinue with permanent deletion from PongoOS?`)) return null;
+      return requestBulkDelete(true);
+    }
+    if (!response.ok) throw new Error(apiErrorDetail(body));
+    return body;
+  }
+
+  async function deleteSelectedItems() {
+    const selectedItems = displayedItems.filter((item) => selectedIds.includes(item.id));
+    const wooLinkedCount = selectedItems.filter((item) => item.wooProductId || item.woo_product_id || item.wooVariationId || item.woo_variation_id).length;
+    const warning = wooLinkedCount
+      ? `Permanently delete ${selectedIds.length} selected item(s)? ${wooLinkedCount} are linked to WooCommerce. WooCommerce products will not be deleted and may return on the next catalog sync.`
+      : `Permanently delete ${selectedIds.length} selected item(s) from PongoOS? This cannot be undone.`;
+    if (!window.confirm(warning)) return;
+
+    setBulkDeleting(true);
+    setBulkDeleteError('');
+    try {
+      const result = await requestBulkDelete(wooLinkedCount > 0);
+      if (!result) return;
+      setSelectedIds([]);
+      setMessage(`Permanently deleted ${result.deleted_count} item(s).`);
+      await onRefreshItemFacets();
+      await loadDataQuality();
+      await onLoadItems({ ...filters, page, pageSize });
+    } catch (deleteError) {
+      setBulkDeleteError(deleteError.message || 'Unable to delete the selected items.');
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   const filtersChanged = Boolean(filters.search || filters.category || filters.brand || filters.stockStatus || filters.latestWooImport || filters.dataQuality || filters.status !== 'active' || !filters.includeNonInventory);
   const topQualityIssues = (dataQuality?.issues || []).filter((issue) => issue.count > 0).sort((left, right) => right.count - left.count).slice(0, 5);
   const selectedQualityIssue = (dataQuality?.issues || []).find((issue) => issue.key === filters.dataQuality);
@@ -6578,6 +6620,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
                 <a href="#/settings/catalog?tab=attention"><TriangleAlert size={16} /><span><strong>Review product matches</strong><small>Choose what to do with products Pongo could not match</small></span></a>
             </ItemsCommandMenu>
             {!!selectedIds.length && <button className="action-button" disabled={loading} onClick={() => setBulkOpen(true)} type="button"><Edit3 size={17} /> Bulk edit {selectedIds.length}</button>}
+            {!!selectedIds.length && <button aria-busy={bulkDeleting} className="danger-button" disabled={loading || bulkDeleting} onClick={deleteSelectedItems} type="button"><Trash2 size={17} /> {bulkDeleting ? 'Deleting…' : `Bulk delete ${selectedIds.length}`}</button>}
             {filtersChanged && <button className="muted-button" onClick={clearFilters} type="button">Clear filters</button>}
           </div>
         </div>
@@ -6658,6 +6701,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
         </details>
       </div>
       {error && <div className="api-error">{error}</div>}
+      {bulkDeleteError && <div className="api-error" role="alert">{bulkDeleteError}</div>}
       {message && <div className="api-success">{message}</div>}
       {loading && <div className="loading-strip">Loading backend items...</div>}
       <ItemsTable items={displayedItems} loading={loading} pagination={{ page: pagination.page, pageSize: pagination.page_size, total: pagination.total, totalPages: pagination.total_pages, returnedCount: displayedItems.length, noun: 'items', onPageChange: changeItemsPage, onPageSizeChange: changeItemsPageSize }} visibleColumns={visibleColumns} selectedIds={selectedIds} onToggleSelected={toggleSelected} onToggleAll={toggleAllDisplayed} onOpenDetail={openDetail} />

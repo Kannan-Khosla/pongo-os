@@ -898,6 +898,29 @@ describe('App shell and workflows', () => {
     expect(screen.queryByRole('dialog', { name: 'Item detail' })).not.toBeInTheDocument();
   });
 
+  it('bulk deletes selected items with one WooCommerce warning', async () => {
+    const user = userEvent.setup();
+    const confirmDelete = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mockItemsFeed = { items: [{ ...item, woo_product_id: 501 }], page: 1, page_size: 20, total: 1, total_pages: 1, returned_count: 1 };
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).endsWith('/api/items/bulk/delete')) {
+        expect(options.method).toBe('POST');
+        expect(JSON.parse(options.body)).toEqual({ item_ids: [1], confirm_woo_links: true });
+        return json({ deleted: true, deleted_count: 1, deleted_item_ids: [1], woo_linked_count: 1 });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#items';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    await user.click(screen.getByRole('checkbox', { name: 'Select SMOKE-001' }));
+    await user.click(screen.getByRole('button', { name: 'Bulk delete 1' }));
+
+    expect(confirmDelete).toHaveBeenCalledWith(expect.stringContaining('linked to WooCommerce'));
+    expect(await screen.findByText('Permanently deleted 1 item(s).')).toBeInTheDocument();
+  });
+
   it('runs item search when a barcode scanner sends Enter in the search box', async () => {
     const user = userEvent.setup();
     window.location.hash = '#items';

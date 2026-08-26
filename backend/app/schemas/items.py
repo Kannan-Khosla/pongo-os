@@ -92,6 +92,11 @@ class InventoryItemBulkUpdateRequest(BaseModel):
     updates: dict[str, Any] = Field(min_length=1)
 
 
+class InventoryItemBulkDeleteRequest(BaseModel):
+    item_ids: list[int] = Field(min_length=1, max_length=100)
+    confirm_woo_links: bool = False
+
+
 class InventoryItemRead(InventoryItemBase):
     id: int
     image_url: str | None = Field(default=None, alias="imageUrl")

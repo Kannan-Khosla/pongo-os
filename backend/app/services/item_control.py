@@ -180,74 +180,121 @@ def sku_is_locked(db: Session, item: InventoryItem) -> bool:
     )
 
 
-def delete_item_permanently(db: Session, item_id: int, *, confirm_woo_link: bool = False) -> dict[str, Any]:
-    item = db.get(InventoryItem, item_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+def item_deletion_blockers(db: Session, items: list[InventoryItem]) -> dict[int, list[str]]:
+    item_ids = [item.id for item in items]
+    blockers = {item_id: [] for item_id in item_ids}
 
-    woo_linked = bool(
-        item.woo_product_id
-        or item.woo_variation_id
-        or db.scalar(select(WooItemMapping.id).where(WooItemMapping.item_id == item_id).limit(1))
+    for item in items:
+        if any(to_decimal(value) != 0 for value in (item.in_stock, item.allocated, item.on_order)):
+            blockers[item.id].append("current stock")
+    location_stock_ids = set(
+        db.scalars(
+            select(InventoryItemLocation.inventory_item_id)
+            .where(
+                InventoryItemLocation.inventory_item_id.in_(item_ids),
+                or_(
+                    InventoryItemLocation.in_stock != 0,
+                    InventoryItemLocation.allocated != 0,
+                    InventoryItemLocation.on_order != 0,
+                ),
+            )
+            .distinct()
+        ).all()
     )
-    if woo_linked and not confirm_woo_link:
+    for item_id in location_stock_ids:
+        if "current stock" not in blockers[item_id]:
+            blockers[item_id].append("current stock")
+
+    dependency_checks = [
+        ("stock movements", StockMovement.inventory_item_id),
+        ("inventory audit history", InventoryAuditEvent.item_id),
+        ("orders", OrderItem.inventory_item_id),
+        ("orders", OrderItem.substituted_from_inventory_item_id),
+        ("receipts", ReceiptItem.inventory_item_id),
+        ("cycle counts", CycleCountLine.item_id),
+        ("allocations", AllocationLine.item_id),
+        ("picks", PickLine.item_id),
+        ("fulfillments", FulfillmentLine.item_id),
+        ("inventory transfers", InventoryTransferLine.inventory_item_id),
+        ("stock adjustments", StockAdjustmentLine.inventory_item_id),
+    ]
+    for label, column in dependency_checks:
+        affected_ids = set(db.scalars(select(column).where(column.in_(item_ids)).distinct()).all())
+        for item_id in affected_ids:
+            if label not in blockers[item_id]:
+                blockers[item_id].append(label)
+    return {item_id: labels for item_id, labels in blockers.items() if labels}
+
+
+def delete_items_permanently(db: Session, item_ids: list[int], *, confirm_woo_links: bool = False) -> dict[str, Any]:
+    unique_ids = list(dict.fromkeys(item_ids))
+    if not unique_ids:
+        raise HTTPException(status_code=422, detail="Select at least one item to delete.")
+    if len(unique_ids) > 100:
+        raise HTTPException(status_code=422, detail="Delete at most 100 items at a time.")
+
+    items = list(db.scalars(select(InventoryItem).where(InventoryItem.id.in_(unique_ids))).all())
+    items_by_id = {item.id: item for item in items}
+    missing_ids = [item_id for item_id in unique_ids if item_id not in items_by_id]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail={"message": "One or more selected items no longer exist.", "missing_item_ids": missing_ids})
+
+    woo_linked_ids = {
+        item.id for item in items if item.woo_product_id or item.woo_variation_id
+    } | set(db.scalars(select(WooItemMapping.item_id).where(WooItemMapping.item_id.in_(unique_ids)).distinct()).all())
+    if woo_linked_ids and not confirm_woo_links:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "woo_confirmation_required",
-                "message": "This item is linked to WooCommerce. Deleting it removes only the PongoOS item; the WooCommerce product is not deleted and may return on the next catalog sync.",
+                "message": "Some selected items are linked to WooCommerce. Deleting them removes only the PongoOS items; the WooCommerce products are not deleted and may return on the next catalog sync.",
+                "woo_linked_items": [{"id": item_id, "sku": items_by_id[item_id].sku} for item_id in unique_ids if item_id in woo_linked_ids],
             },
         )
 
-    blockers = []
-    if any(to_decimal(value) != 0 for value in (item.in_stock, item.allocated, item.on_order)) or db.scalar(
-        select(InventoryItemLocation.id).where(
-            InventoryItemLocation.inventory_item_id == item_id,
-            or_(
-                InventoryItemLocation.in_stock != 0,
-                InventoryItemLocation.allocated != 0,
-                InventoryItemLocation.on_order != 0,
-            ),
-        ).limit(1)
-    ):
-        blockers.append("current stock")
-
-    dependency_checks = [
-        ("stock movements", select(StockMovement.id).where(StockMovement.inventory_item_id == item_id)),
-        ("inventory audit history", select(InventoryAuditEvent.id).where(InventoryAuditEvent.item_id == item_id)),
-        ("orders", select(OrderItem.id).where(or_(OrderItem.inventory_item_id == item_id, OrderItem.substituted_from_inventory_item_id == item_id))),
-        ("receipts", select(ReceiptItem.id).where(ReceiptItem.inventory_item_id == item_id)),
-        ("cycle counts", select(CycleCountLine.id).where(CycleCountLine.item_id == item_id)),
-        ("allocations", select(AllocationLine.id).where(AllocationLine.item_id == item_id)),
-        ("picks", select(PickLine.id).where(PickLine.item_id == item_id)),
-        ("fulfillments", select(FulfillmentLine.id).where(FulfillmentLine.item_id == item_id)),
-        ("inventory transfers", select(InventoryTransferLine.id).where(InventoryTransferLine.inventory_item_id == item_id)),
-        ("stock adjustments", select(StockAdjustmentLine.id).where(StockAdjustmentLine.inventory_item_id == item_id)),
-    ]
-    blockers.extend(label for label, statement in dependency_checks if db.scalar(statement.limit(1)))
-    if blockers:
+    blocker_map = item_deletion_blockers(db, items)
+    if blocker_map:
+        single_item = len(unique_ids) == 1
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "item_has_inventory_history",
-                "message": f"This item cannot be permanently deleted because it has {', '.join(blockers)}.",
-                "dependencies": blockers,
+                "code": "item_has_inventory_history" if single_item else "items_have_inventory_history",
+                "message": (
+                    f"This item cannot be permanently deleted because it has {', '.join(blocker_map[unique_ids[0]])}."
+                    if single_item
+                    else f"{len(blocker_map)} selected item(s) have stock or operational history. Nothing was deleted."
+                ),
+                "dependencies": blocker_map[unique_ids[0]] if single_item else None,
+                "blocked_items": [
+                    {"id": item_id, "sku": items_by_id[item_id].sku, "dependencies": blocker_map[item_id]}
+                    for item_id in unique_ids if item_id in blocker_map
+                ],
             },
         )
 
-    db.execute(delete(ItemNote).where(ItemNote.inventory_item_id == item_id))
-    db.execute(delete(ItemImportChange).where(ItemImportChange.item_id == item_id))
-    db.execute(update(ImportPreviewRow).where(ImportPreviewRow.existing_item_id == item_id).values(existing_item_id=None))
-    db.execute(update(WooCatalogSyncRow).where(WooCatalogSyncRow.local_item_id == item_id).values(local_item_id=None))
-    db.execute(update(WooCatalogSyncRow).where(WooCatalogSyncRow.resolution_item_id == item_id).values(resolution_item_id=None))
-    db.execute(delete(WooItemMapping).where(WooItemMapping.item_id == item_id))
-    db.delete(item)
+    db.execute(delete(ItemNote).where(ItemNote.inventory_item_id.in_(unique_ids)))
+    db.execute(delete(ItemImportChange).where(ItemImportChange.item_id.in_(unique_ids)))
+    db.execute(update(ImportPreviewRow).where(ImportPreviewRow.existing_item_id.in_(unique_ids)).values(existing_item_id=None))
+    db.execute(update(WooCatalogSyncRow).where(WooCatalogSyncRow.local_item_id.in_(unique_ids)).values(local_item_id=None))
+    db.execute(update(WooCatalogSyncRow).where(WooCatalogSyncRow.resolution_item_id.in_(unique_ids)).values(resolution_item_id=None))
+    db.execute(delete(WooItemMapping).where(WooItemMapping.item_id.in_(unique_ids)))
+    for item in items:
+        db.delete(item)
     try:
         db.commit()
     except IntegrityError as error:
         db.rollback()
-        raise HTTPException(status_code=409, detail="This item is still used by inventory history and cannot be permanently deleted.") from error
-    return {"deleted": True, "id": item_id, "sku": item.sku, "woo_linked": woo_linked}
+        raise HTTPException(status_code=409, detail="One or more selected items are still used by inventory history. Nothing was deleted.") from error
+    return {"deleted": True, "deleted_count": len(unique_ids), "deleted_item_ids": unique_ids, "woo_linked_count": len(woo_linked_ids)}
+
+
+def delete_item_permanently(db: Session, item_id: int, *, confirm_woo_link: bool = False) -> dict[str, Any]:
+    item = db.get(InventoryItem, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    sku = item.sku
+    result = delete_items_permanently(db, [item_id], confirm_woo_links=confirm_woo_link)
+    return {"deleted": True, "id": item_id, "sku": sku, "woo_linked": result["woo_linked_count"] == 1}
 
 
 def item_location_summary(row: InventoryItemLocation, item: InventoryItem | None = None) -> dict[str, Any]:

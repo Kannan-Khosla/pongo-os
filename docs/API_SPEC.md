@@ -2553,6 +2553,7 @@ Implemented endpoints:
 - `GET/POST/PATCH/DELETE /api/items/{id}/notes`
 - `POST /api/items/bulk/preview`
 - `POST /api/items/bulk/commit`
+- `POST /api/items/bulk/delete`
 
 Bulk edit uses a preview/commit flow with `{ item_ids, updates }`. It supports
 shared catalog metadata, costs/prices, replenishment fields, handling flags,
@@ -2569,7 +2570,9 @@ movement, count, allocation, pick, fulfillment, transfer, adjustment, and
 inventory-audit history block deletion. A Woo-linked item returns `409` until
 `confirm_woo_link=true` is supplied. Confirmation deletes only the PongoOS
 record, never the WooCommerce product, which may return on a future catalog
-sync.
+sync. Bulk deletion accepts up to 100 `item_ids` plus `confirm_woo_links`; it
+validates the complete selection before deleting anything, so a protected item
+blocks the entire request.
 
 ## UI Saved Views
 

@@ -17,11 +17,11 @@ from app.models.orders import Order, OrderItem
 from app.models.woocommerce import WooCatalogSyncRow, WooCommerceSyncRun
 from app.schemas.imports import ImportCommitResponse, ImportPreviewResponse
 from app.schemas.inventory import InventoryItemLocationCreate, InventoryItemLocationListResponse, InventoryItemLocationRead, InventoryItemLocationUpdate
-from app.schemas.items import InventoryItemBulkUpdateRequest, InventoryItemCreate, InventoryItemListResponse, InventoryItemRead, InventoryItemUpdate, InventoryOpeningBalanceRequest
+from app.schemas.items import InventoryItemBulkDeleteRequest, InventoryItemBulkUpdateRequest, InventoryItemCreate, InventoryItemListResponse, InventoryItemRead, InventoryItemUpdate, InventoryOpeningBalanceRequest
 from app.services.item_import import create_payload_from_row, parse_items_csv, preview_from_parsed, read_upload_text
 from app.services.auth import authenticated_actor
 from app.services.item_enrichment import commit_enrichment, enrichment_csv, parse_enrichment_csv, preview_enrichment
-from app.services.item_control import build_item_activity, build_item_detail, commit_bulk_item_update, delete_item_permanently, item_keyword_predicates, preview_bulk_item_update, search_items, sku_is_locked
+from app.services.item_control import build_item_activity, build_item_detail, commit_bulk_item_update, delete_item_permanently, delete_items_permanently, item_keyword_predicates, preview_bulk_item_update, search_items, sku_is_locked
 from app.services.item_identifiers import barcode_scan_candidates
 from app.services.item_import_workflow import field_specs_for, safe_csv_value
 from app.services.items import CANONICAL_ITEM_COLUMNS, apply_calculated_fields, apply_item_payload, item_to_csv_row
@@ -218,6 +218,11 @@ def preview_items_bulk_update(payload: InventoryItemBulkUpdateRequest, db: Sessi
 @router.post("/bulk/commit")
 def commit_items_bulk_update(payload: InventoryItemBulkUpdateRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
     return commit_bulk_item_update(db, payload.item_ids, payload.updates, created_by=actor)
+
+
+@router.post("/bulk/delete")
+def bulk_delete_items(payload: InventoryItemBulkDeleteRequest, db: Session = Depends(get_db)) -> dict:
+    return delete_items_permanently(db, payload.item_ids, confirm_woo_links=payload.confirm_woo_links)
 
 
 @router.get("", response_model=InventoryItemListResponse)

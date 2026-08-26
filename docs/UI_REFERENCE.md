@@ -853,6 +853,10 @@ Items now has:
   supports brands, categories, additive tags, locations, unit costs/prices,
   planning fields, dimensions, and handling flags; unique identifiers and
   stock quantities are not offered.
+- Selected rows on the Items page can be permanently bulk deleted. One
+  consolidated warning identifies WooCommerce-linked selections; WooCommerce
+  is never deleted. The action is atomic, so any selected item with stock or
+  operational history prevents the whole deletion.
 - Local remap candidate search that does not write WooCommerce.
 
 Item Detail Control Center tabs:

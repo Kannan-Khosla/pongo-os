@@ -493,6 +493,25 @@ def test_delete_item_with_stock_history_is_refused(client):
     assert client.get(f"/api/items/{created['id']}").status_code == 200
 
 
+def test_bulk_delete_is_atomic(client):
+    first = seed_item(client, sku="BULK-DELETE-1", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+    second = seed_item(client, sku="BULK-DELETE-2", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+    blocked = seed_item(client, sku="BULK-DELETE-BLOCKED")
+
+    refused = client.post("/api/items/bulk/delete", json={"item_ids": [first["id"], blocked["id"]]})
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == "items_have_inventory_history"
+    assert client.get(f"/api/items/{first['id']}").status_code == 200
+
+    deleted = client.post("/api/items/bulk/delete", json={"item_ids": [first["id"], second["id"]]})
+
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deleted_count"] == 2
+    assert client.get(f"/api/items/{first['id']}").status_code == 404
+    assert client.get(f"/api/items/{second['id']}").status_code == 404
+
+
 def test_include_non_inventory_filter(client):
     seed_item(client, sku="STOCK-001", nonInventory=False)
     seed_item(client, sku="SERVICE-001", nonInventory=True)
