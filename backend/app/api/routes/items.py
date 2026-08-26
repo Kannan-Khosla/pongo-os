@@ -24,7 +24,7 @@ from app.services.item_enrichment import commit_enrichment, enrichment_csv, pars
 from app.services.item_control import build_item_activity, build_item_detail, commit_bulk_item_update, delete_item_permanently, delete_items_permanently, item_keyword_predicates, preview_bulk_item_update, search_items, sku_is_locked
 from app.services.item_identifiers import barcode_scan_candidates
 from app.services.item_import_workflow import field_specs_for, safe_csv_value
-from app.services.items import CANONICAL_ITEM_COLUMNS, apply_calculated_fields, apply_item_payload, item_to_csv_row
+from app.services.items import ITEM_EXPORT_COLUMNS, apply_calculated_fields, apply_item_payload, item_to_csv_row
 from app.services.location_inventory import ensure_default_item_location_from_item, get_or_create_item_location, lock_inventory_stock, recalculate_item_location, recalculate_item_totals, set_default_item_location, set_opening_balance, to_decimal
 from app.services.stock_mutation_guard import IdempotencyConflict
 from app.services.woocommerce_catalog_sync import CATALOG_SYNC_TYPE
@@ -412,7 +412,7 @@ def export_items(
     items = list(db.scalars(statement).all())
     buffer = StringIO()
     specs = field_specs_for("update_items") if editable else None
-    writer = csv.DictWriter(buffer, fieldnames=[spec["label"] for spec in specs] if specs else CANONICAL_ITEM_COLUMNS)
+    writer = csv.DictWriter(buffer, fieldnames=[spec["label"] for spec in specs] if specs else ITEM_EXPORT_COLUMNS)
     writer.writeheader()
     for item in items:
         writer.writerow({spec["label"]: safe_csv_value(getattr(item, spec["attribute"], "")) for spec in specs} if specs else item_to_csv_row(item))

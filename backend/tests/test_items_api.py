@@ -13,7 +13,7 @@ from app.main import app
 from app.models import Base
 from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation
 from app.models.woocommerce import WooItemMapping
-from app.services.items import CANONICAL_ITEM_COLUMNS
+from app.services.items import ITEM_EXPORT_COLUMNS
 
 
 @pytest.fixture
@@ -530,7 +530,7 @@ def test_csv_export_header_order(client):
 
     assert response.status_code == 200
     header = response.text.splitlines()[0].split(",")
-    assert header == CANONICAL_ITEM_COLUMNS
+    assert header == ITEM_EXPORT_COLUMNS
 
 
 def test_csv_export_filtered_rows(client):
@@ -554,7 +554,7 @@ def test_csv_export_prefers_woo_item_name(client):
     response = client.get("/api/items/export", params={"sku": "WOO-TITLE"})
 
     assert response.status_code == 200
-    assert next(csv.DictReader(StringIO(response.text)))["Description"] == "Concise WooCommerce item name"
+    assert next(csv.DictReader(StringIO(response.text)))["Product Title"] == "Concise WooCommerce item name"
 
 
 def test_csv_export_editable_quality_rows_are_safe_to_reimport(client):

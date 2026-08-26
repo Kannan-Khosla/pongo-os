@@ -4092,6 +4092,19 @@ describe('App shell and workflows', () => {
     expect(within(invoice).getByText('$42.00')).toBeInTheDocument();
   });
 
+  it('prints the product title and never the product description on invoices', () => {
+    const productDescription = 'Long ingredients and marketing copy that must never appear on an invoice';
+    render(<OrderInvoice order={{
+      ...mockOrderDetail,
+      lines: [{ ...mockOrderDetail.lines[0], name: 'Woo Product Title', effective_name: 'Woo Product Title', description: productDescription }],
+    }} />);
+
+    const invoice = screen.getByLabelText('Invoice for order 0802');
+    expect(within(invoice).getByText('Product title')).toBeInTheDocument();
+    expect(within(invoice).getByText('Woo Product Title')).toBeInTheDocument();
+    expect(within(invoice).queryByText(productDescription)).not.toBeInTheDocument();
+  });
+
   it('keeps shared action menus above scrolled content and mobile-wide inside the viewport', async () => {
     const user = userEvent.setup();
     vi.stubGlobal('innerWidth', 360);

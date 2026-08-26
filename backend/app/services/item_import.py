@@ -44,6 +44,7 @@ BOOL_TRUE = {"true", "yes", "1", "y"}
 BOOL_FALSE = {"false", "no", "0", "n", ""}
 HEADER_ALIASES = {
     "Default Lead Time (Days)": "Default Lead Time Days",
+    "Product Title": "Description",
 }
 OPTIONAL_DEFAULT_COLUMNS = {
     "Manufacturer": "",

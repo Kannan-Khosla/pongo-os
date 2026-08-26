@@ -38,6 +38,7 @@ CANONICAL_ITEM_COLUMNS = [
     "Brand",
     "Tags",
 ]
+ITEM_EXPORT_COLUMNS = ["Product Title" if column == "Description" else column for column in CANONICAL_ITEM_COLUMNS]
 
 CSV_FIELD_MAP = {
     "Client": "client",
@@ -83,6 +84,10 @@ def apply_calculated_fields(item: InventoryItem) -> None:
     item.storage_volume = calculate_storage_volume(item.storage_length, item.storage_width, item.storage_height)
 
 
+def item_product_title(item: InventoryItem | None) -> str | None:
+    return (item.woo_name or item.description) if item else None
+
+
 def apply_item_payload(item: InventoryItem, payload: InventoryItemCreate | InventoryItemUpdate, partial: bool = False) -> InventoryItem:
     data = payload.model_dump(by_alias=False, exclude_unset=partial)
     for field, value in data.items():
@@ -98,5 +103,6 @@ def apply_item_payload(item: InventoryItem, payload: InventoryItemCreate | Inven
 def item_to_csv_row(item: InventoryItem) -> dict[str, object]:
     apply_calculated_fields(item)
     row = {column: getattr(item, attr) for column, attr in CSV_FIELD_MAP.items()}
-    row["Description"] = item.woo_name or item.description
+    row["Product Title"] = item_product_title(item)
+    row.pop("Description", None)
     return row

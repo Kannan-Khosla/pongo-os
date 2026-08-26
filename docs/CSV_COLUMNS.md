@@ -1,6 +1,7 @@
 # CSV Columns
 
-The inventory CSV column order is canonical and must be preserved in import/export unless the user provides a new real Zenventory CSV header.
+The inventory CSV column order is canonical. Imports accept the legacy
+`Description` header as Product Title; new item exports label it `Product Title`.
 
 The Items module, product import, product export, inventory export, item edit form, and future WooCommerce field mapping must be designed around this inventory CSV structure. Do not rename these columns in CSV import/export output unless a clear internal mapping is documented and approved.
 
@@ -15,7 +16,7 @@ Column source values:
 
 Synthetic reference: `docs/csv-reference/sample-items-import.csv`.
 
-Canonical header order:
+Legacy import header order:
 
 ```csv
 Client,SKU,Description,Category,Unit of Measurement,Warehouse,Inventory Location,Default Location,In Stock,Allocated,Sellable,Under Par,On Order,Barcode,Manufacturer,Manufacturer Website,Recommended Retail Price,Sales Price,Unit Cost,Weight,Default Econ Order,Default Lead Time Days,Par Level,Assembly,Serializable,Track Lot,Perishable,Re-Order,Storage Length,Storage Width,Storage Height,Storage Volume,Brand,Tags
@@ -25,7 +26,7 @@ Client,SKU,Description,Category,Unit of Measurement,Warehouse,Inventory Location
 | ---: | --- | --- | --- |
 | 1 | Client | Pongo OS/manual/CSV | Usually Pongo or a client/account value. |
 | 2 | SKU | WooCommerce/CSV | Required unique item identifier. |
-| 3 | Description | WooCommerce/CSV | Legacy CSV field containing the product title. The UI labels this as Product Title; Woo long descriptions are not imported or displayed. |
+| 3 | Description / Product Title | WooCommerce/CSV | Product title. `Description` remains an accepted legacy import alias; Woo long descriptions are not imported or displayed. |
 | 4 | Category | WooCommerce/CSV | Product category. |
 | 5 | Unit of Measurement | manual/CSV | Example: EA, bag, case, unit. |
 | 6 | Warehouse | manual/CSV/location | Example: Main Warehouse. |
@@ -63,7 +64,7 @@ Client,SKU,Description,Category,Unit of Measurement,Warehouse,Inventory Location
 Item-master fields:
 - Client
 - SKU
-- Description
+- Product Title (`Description` is accepted on legacy imports)
 - Category
 - Unit of Measurement
 - Barcode

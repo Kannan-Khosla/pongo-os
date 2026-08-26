@@ -342,6 +342,10 @@ compatibility, omitting both pagination parameters still returns the complete
 filtered list. A requested page beyond the filtered result is clamped to the
 last valid page (or page 1 for an empty result).
 
+`wooName` is the canonical displayed Product Title for Woo-linked items. The
+legacy `Description`/`description` fields contain that same concise title for
+API compatibility; WooCommerce long descriptions are not stored or displayed.
+
 ### GET /api/items/facets
 
 Return the distinct, sorted full-catalog category and brand filter values.
@@ -443,8 +447,9 @@ recomputed before save.
 
 Export inventory item CSV.
 
-Implemented. Exports filtered rows using the exact canonical inventory CSV
-header order from `docs/CSV_COLUMNS.md`. Internal fields are not included.
+Implemented. Exports filtered rows in canonical inventory order, with `Product
+Title` replacing the legacy `Description` header. Imports continue to accept
+both headers. Internal fields are not included.
 
 ## Guided Item Import Workspace
 
@@ -830,7 +835,7 @@ Preview row fields:
 - `woo_variation_id`
 - `sku`
 - `barcode`
-- `description`
+- `description` (compatibility field containing the concise Product Title)
 - `category`
 - `brand`
 - `price`

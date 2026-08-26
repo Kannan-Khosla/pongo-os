@@ -791,7 +791,7 @@ def test_woocommerce_commit_creates_new_local_item_from_simple_product(client, m
     assert item["wooStockQuantitySnapshot"] == 42
 
 
-def test_woocommerce_commit_keeps_long_product_description(client, monkeypatch):
+def test_woocommerce_commit_uses_product_title_not_long_description(client, monkeypatch):
     description = "Long Woo description " * 40
     patch_woo_client(monkeypatch, [simple_product(description=f"<p>{description}</p>")])
 
@@ -800,7 +800,7 @@ def test_woocommerce_commit_keeps_long_product_description(client, monkeypatch):
     assert response.status_code == 200
     assert response.json()["created_count"] == 1
     item = client.get("/api/items", params={"sku": "WOO-SIMPLE"}).json()["items"][0]
-    assert item["Description"] == description.strip()
+    assert item["Description"] == "Woo Simple Item"
 
 
 def test_woocommerce_commit_creates_new_local_item_from_variation(client, monkeypatch):
@@ -872,7 +872,7 @@ def test_batched_catalog_mapping_preserves_local_items_and_reports_duplicates(cl
     mapped_after = client.get("/api/items", params={"sku": "MAP-ME"}).json()["items"][0]
     assert mapped_after["id"] == mapped["id"]
     assert mapped_after["wooProductId"] == 501
-    assert mapped_after["Description"] == "Woo Simple Item"
+    assert mapped_after["Description"] == "Remote Name"
     assert mapped_after["Barcode"] == "KEEP-BAR"
     assert mapped_after["In Stock"] == 6
     assert mapped_after["Unit Cost"] == 7

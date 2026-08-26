@@ -20,6 +20,7 @@ from app.services.location_inventory import (
     recalculate_item_location,
     recalculate_item_totals,
 )
+from app.services.items import item_product_title
 
 ACTIVE_LOCAL_STATUSES = {"open", "allocated", "partially_allocated", "partially_picked", "picked", None}
 COMPLETED_LOCAL_STATUSES = {"completed", "closed", "fulfilled", "partially_fulfilled", "archived"}
@@ -912,11 +913,11 @@ def is_pickable(order: Order) -> bool:
 def operational_line_identity(line: OrderItem) -> tuple[str | None, str | None, str | None]:
     item = line.inventory_item
     if line.substituted_from_inventory_item_id is not None and item is not None:
-        return item.sku, item.barcode, item.description
+        return item.sku, item.barcode, item_product_title(item)
     return (
         line.sku or (item.sku if item else None),
         line.barcode or (item.barcode if item else None),
-        line.name or line.description or (item.description if item else None),
+        line.name or line.description or item_product_title(item),
     )
 
 

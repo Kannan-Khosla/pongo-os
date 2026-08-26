@@ -20,6 +20,7 @@ from app.models.picks import PickLine
 from app.models.receipts import ReceiptItem
 from app.models.woocommerce import WooCatalogSyncRow, WooItemMapping
 from app.services.item_identifiers import barcode_scan_candidates
+from app.services.items import item_product_title
 from app.services.location_inventory import get_or_create_item_location, lock_inventory_stock, recalculate_item_location, recalculate_item_totals, to_decimal
 
 
@@ -140,8 +141,8 @@ def item_summary(item: InventoryItem | None) -> dict[str, Any] | None:
         "client": item.client,
         "sku": item.sku,
         "barcode": item.barcode,
-        "product_name": item.woo_name or item.description,
-        "description": item.description,
+        "product_name": item_product_title(item),
+        "description": item_product_title(item),
         "category": item.category,
         "brand": item.brand,
         "tags": item.tags,

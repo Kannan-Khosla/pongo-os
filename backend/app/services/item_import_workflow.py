@@ -89,7 +89,7 @@ def field(
 METADATA_OUTCOMES = ["add_items", "update_items"]
 FIELD_SPECS = [
     field("sku", "SKU", "sku", "text", [*METADATA_OUTCOMES, "starting_inventory", "update_stock"], aliases=["Item SKU", "Product SKU", "Code"], required_for=["add_items", "update_items", "starting_inventory", "update_stock"], example="DOG-FOOD-001", description="The unique item code used to match products.", nullable=False, max_length=120),
-    field("product_name", "Product name", "description", "text", METADATA_OUTCOMES, aliases=["Description", "Product title", "Name", "Item name"], example="ACANA Adult Dog Recipe", description="The customer-facing product or item name."),
+    field("product_name", "Product title", "description", "text", METADATA_OUTCOMES, aliases=["Description", "Product name", "Name", "Item name"], example="ACANA Adult Dog Recipe", description="The customer-facing product or item name."),
     field("barcode", "Barcode", "barcode", "text", METADATA_OUTCOMES, aliases=["UPC", "EAN", "GTIN", "UPC code"], example="064992123456", description="A unique scannable barcode.", max_length=120),
     field("category", "Category", "category", "text", METADATA_OUTCOMES, aliases=["Product category", "Item category"], example="Dry Dog Food", max_length=200),
     field("brand", "Brand", "brand", "text", METADATA_OUTCOMES, aliases=["Vendor brand"], example="ACANA", max_length=200),
@@ -128,7 +128,7 @@ FIELD_SPECS = [
 REPAIR_FIELD_SPECS = [
     field("item_id", "Pongo Item ID", None, "integer", ["repair_items"], aliases=["Item ID", "Pongo ID"], example="123", description="The immutable Pongo OS item identifier. Use this or SKU to match an item.", editable=False),
     field("sku", "SKU", None, "text", ["repair_items"], aliases=["Item SKU", "Product SKU", "Code"], example="DOG-FOOD-001", description="An immutable fallback identifier when Pongo Item ID is unavailable.", editable=False, max_length=120),
-    field("product_name", "Product name", None, "text", ["repair_items"], aliases=["Description", "Product title", "Name", "Item name"], example="ACANA Adult Dog Recipe", description="Read-only context for reviewing the matched item.", editable=False),
+    field("product_name", "Product title", None, "text", ["repair_items"], aliases=["Description", "Product name", "Name", "Item name"], example="ACANA Adult Dog Recipe", description="Read-only context for reviewing the matched item.", editable=False),
     field("woo_product_id", "Woo product ID", None, "integer", ["repair_items"], aliases=["WooCommerce product ID", "Woo Product ID"], example="456", description="Read-only WooCommerce identity used to validate the match.", editable=False),
     field("woo_variation_id", "Woo variation ID", None, "integer", ["repair_items"], aliases=["WooCommerce variation ID", "Woo Variation ID"], example="0", description="Read-only WooCommerce variation identity used to validate the match.", editable=False),
     field("brand", "Brand", "brand", "text", ["repair_items"], aliases=["Vendor brand"], example="ACANA", max_length=200),

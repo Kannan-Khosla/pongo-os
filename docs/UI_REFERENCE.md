@@ -165,7 +165,7 @@ Reference structure:
 - Result count and pagination.
 - Dark teal table action band with Actions dropdown.
 - Grey table header row.
-- Items table with edit icon, image, SKU, description, category, UOM, unit cost, sales price, recommended retail price, and row checkbox/actions.
+- Items table with edit icon, image, SKU, Product Title, category, UOM, unit cost, sales price, recommended retail price, and row checkbox/actions.
 
 Pongo Items screen:
 - Page title: Items.
@@ -174,7 +174,7 @@ Pongo Items screen:
   Commodities may remain placeholders.
 - Items must be driven by the canonical Zenventory-compatible CSV columns in
   `docs/CSV_COLUMNS.md`.
-- Search should support SKU, barcode, description, category, brand,
+- Search should support SKU, barcode, Product Title, category, brand,
   manufacturer, warehouse, and inventory location.
 - Filters: search, category, warehouse, inventory location, brand,
   active/inactive, include non-inventory.
@@ -189,7 +189,7 @@ Pongo Items table columns:
 - Image
 - Client
 - SKU
-- Description
+- Product Title
 - Category
 - Unit of Measurement
 - Warehouse
@@ -229,7 +229,7 @@ Reference: `indvidual-item.png`.
 Reference structure:
 - Top tabs: Basic, Units, Warehouse, Supplier, Variants, Integration Mappings, Timeline.
 - Basic form laid out in columns.
-- Left column fields: SKU, barcode, description, manufacturer website, category, base UOM, default unit cost, sales price, recommended retail price, safety stock, weight.
+- Left column fields: SKU, barcode, Product Title, manufacturer website, category, base UOM, default unit cost, sales price, recommended retail price, safety stock, weight.
 - Large image upload area with Add Image button.
 - Checkbox stack: kit, assembly, non-inventory, serializable, perishable, track lot, active.
 - Notes field.
@@ -254,7 +254,7 @@ Reference structure:
 - Actions: Import, Export Report, Export Results.
 - Search and Reset buttons.
 - Result count and pagination.
-- Inventory table with image, SKU, category, description, UOM, in stock, allocated, sellable, par level, unit cost, actions, and row checkboxes.
+- Inventory table with image, SKU, category, Product Title, UOM, in stock, allocated, sellable, par level, unit cost, actions, and row checkboxes.
 - Circular row icon actions and product image placeholders.
 
 Pongo Inventory tabs:
@@ -271,7 +271,7 @@ Pongo Inventory columns:
 - Image
 - SKU
 - Category
-- Description
+- Product Title
 - UOM
 - In Stock
 - Allocated
@@ -380,7 +380,7 @@ Pongo Direct Receiving:
 
 Current Pongo Direct Receiving page:
 - Header fields: Warehouse, Reference Number, Notes.
-- Line fields: SKU/barcode scanner input, readonly description, inventory
+- Line fields: SKU/barcode scanner input, readonly Product Title, inventory
   location, quantity received, unit cost, notes, remove line.
 - Buttons: Add Line, Preview Receiving, Commit Receiving, Reset Form.
 - Preview shows line status, previous stock, new stock, total quantity, and
@@ -415,7 +415,7 @@ Current Pongo Cycle Count page:
 - Count Type options: Selected Items and Full Location.
 - Inventory Location is optional for selected item counts and required by the
   backend for full location counts.
-- Line fields: SKU/barcode scanner input, readonly description, system
+- Line fields: SKU/barcode scanner input, readonly Product Title, system
   quantity, counted quantity, notes, remove line.
 - Buttons: Add Line, Preview Count, Post Count, Reset Form.
 - Preview calls the backend and shows total lines, adjustment lines, positive
@@ -516,7 +516,7 @@ Current Allocation UI:
   Available, and Out of Stock. A failed-allocation alert links staff back to the
   shortage workspace.
 - Orders and Items tabs present the same unresolved lines by order or aggregated
-  item. The Items view shows SKU/barcode, description, affected orders,
+  item. The Items view shows SKU/barcode, Product Title, affected orders,
   ordered, allocated, unallocated, picked, available, and reason. The Orders
   view adds order number, placed date, and customer.
 - Filters support item/order/SKU/barcode, ordered date range, and Ship From.
@@ -532,7 +532,7 @@ Current Picking UI:
   scanner appears only after staff selects an order.
 - Preview Pick runs a local backend preview for the selected order.
 - Preview summary cards: Orders, Lines, Pickable, Partial, Skipped, Qty Pick.
-- Preview table columns: Order, SKU, Barcode, Description, Warehouse, Location,
+- Preview table columns: Order, SKU, Barcode, Product Title, Warehouse, Location,
   Ordered, Allocated, Previously Picked, Remaining To Pick, Recommended,
   Picked After, Status, Warnings, Errors.
 - Commit Pick posts a local pick, reduces local In Stock and Allocated at the
@@ -715,7 +715,7 @@ Current Pongo Settings > WooCommerce Product Sync:
 - Preview summary cards: Total Remote Records, Create, Update, Matched,
   Skipped, Conflicts, Errors.
 - Preview table columns: Action, Remote Type, Woo Product ID, Woo Variation ID,
-  SKU, Barcode, Description, Category, Brand, Price, Stock Status, Woo Stock
+  SKU, Barcode, Product Title, Category, Brand, Price, Stock Status, Woo Stock
   Snapshot, Local Item ID, Warnings, Errors.
 - Sync Run History table shows Started At, Completed At, Sync Type, Status,
   Total Records, Created, Updated, Matched, Skipped, Conflicts, Errors, and
@@ -748,7 +748,7 @@ Current Pongo Reports page:
   Category, Brand, Receipt Number, Reference Number, and Created By.
 - Actions: Apply Filters, Clear Filters, Refresh, Export CSV.
 - Main table columns: Receipt Number, Received At, Warehouse, Inventory
-  Location, SKU, Barcode, Description, Category, Brand, Quantity Received, Unit
+  Location, SKU, Barcode, Product Title, Category, Brand, Quantity Received, Unit
   Cost, Total Received Value, Reference Number, and Created By.
 - Grouped summary shows Warehouse, Inventory Location, Total Lines, Total
   Quantity Received, and Total Received Value.
@@ -764,7 +764,7 @@ Current Fulfillment Report:
   Status, and Created By.
 - Actions: Apply Filters, Clear Filters, Refresh, Export CSV.
 - Main table shows fulfillment number, posted date, Woo order number, local
-  status, customer, warehouse, inventory location, SKU, barcode, description,
+  status, customer, warehouse, inventory location, SKU, barcode, Product Title,
   category, brand, quantity fulfilled, unit cost, fulfilled value, stock
   before/after, allocated before/after, and created by.
 - Grouped summaries show fulfillment totals by Location and by SKU.
@@ -845,7 +845,7 @@ Items now has:
 - Rich filters for search, SKU, barcode, category, brand, warehouse, location,
   active status, stock status, Woo mapping status, and non-inventory inclusion.
 - Image-aware table rows.
-- Clickable SKU/description cells that open the Item Detail Control Center.
+- Clickable SKU/Product Title cells that open the Item Detail Control Center.
 - Column visibility controls.
 - Saved item views.
 - Shared bulk selection and audited metadata editing on Item Master, All

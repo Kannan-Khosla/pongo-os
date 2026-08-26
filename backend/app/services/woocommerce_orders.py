@@ -24,6 +24,7 @@ from app.schemas.woocommerce import (
 from app.services.woocommerce_client import WooCommerceClient, WooCommerceClientError
 from app.services.woocommerce_sync_errors import prune_sync_errors, store_sync_error_once
 from app.services.location_inventory import lock_inventory_stock
+from app.services.items import item_product_title
 from app.services.order_metadata import metadata_load_options, note_to_read, order_metadata_fields
 from app.services.order_workflow import (
     BLOCKING_ALLOCATION_EXCEPTION_REASONS,
@@ -1325,16 +1326,16 @@ def line_to_read(line: OrderItem) -> OpenOrderLineRead:
         item_id=line.inventory_item_id,
         substituted_from_item_id=line.substituted_from_inventory_item_id,
         substituted_from_sku=(line.substituted_from_item.sku if line.substituted_from_item else None),
-        substituted_from_name=(line.substituted_from_item.description if line.substituted_from_item else None),
+        substituted_from_name=item_product_title(line.substituted_from_item),
         substitution_reason=line.substitution_reason,
         substituted_by=line.substituted_by,
         substituted_at=line.substituted_at,
         sku=line.sku or (line.inventory_item.sku if line.inventory_item else None),
         barcode=line.barcode or (line.inventory_item.barcode if line.inventory_item else None),
-        name=line.name or line.description or (line.inventory_item.description if line.inventory_item else None),
+        name=line.name or line.description or item_product_title(line.inventory_item),
         effective_sku=(line.inventory_item.sku if line.inventory_item else None),
         effective_barcode=(line.inventory_item.barcode if line.inventory_item else None),
-        effective_name=(line.inventory_item.description if line.inventory_item else None),
+        effective_name=item_product_title(line.inventory_item),
         quantity_ordered=decimal_to_float(quantity_ordered) or 0,
         quantity_allocated=decimal_to_float(quantity_allocated) or 0,
         quantity_picked=decimal_to_float(quantity_picked) or 0,

@@ -2,6 +2,7 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.models import Base
+from app.models.inventory import InventoryItem
 from app.models.orders import Order
 from app.models.woocommerce import WooCommerceSyncRun
 from app.services import woocommerce_orders as order_service
@@ -242,7 +243,17 @@ def test_order_preview_fails_closed_for_duplicate_sku(client, monkeypatch):
 
 
 def test_order_commit_creates_local_order_lines_and_auto_allocates(client, monkeypatch):
-    created_item = seed_item(client, sku="ORDER-SKU", Barcode="ORDER-BAR", wooProductId=101, **{"In Stock": 6, "Allocated": 1})
+    created_item = seed_item(
+        client,
+        sku="ORDER-SKU",
+        Barcode="ORDER-BAR",
+        Description="Long ingredients and marketing copy that must never appear on an invoice",
+        wooProductId=101,
+        **{"In Stock": 6, "Allocated": 1},
+    )
+    with Session(client.test_engine) as db:
+        db.get(InventoryItem, created_item["id"]).woo_name = "Woo Product Title"
+        db.commit()
     fake = patch_woo_order_client(monkeypatch, [woo_order(customer_note="Please leave the order beside the garage.")])
 
     response = client.post("/api/integrations/woocommerce/orders/commit", json={"created_by": "pytest"})
@@ -268,6 +279,7 @@ def test_order_commit_creates_local_order_lines_and_auto_allocates(client, monke
     assert detail["lines"][0]["unit_price"] == 12
     assert detail["lines"][0]["line_tax"] == 1
     assert detail["lines"][0]["line_total"] == 24
+    assert detail["lines"][0]["effective_name"] == "Woo Product Title"
     item = client.get("/api/items", params={"sku": "ORDER-SKU"}).json()["items"][0]
     assert item["In Stock"] == 6
     assert item["Allocated"] == 3

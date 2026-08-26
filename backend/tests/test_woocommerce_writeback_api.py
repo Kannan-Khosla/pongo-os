@@ -338,7 +338,7 @@ def test_woocommerce_client_allows_only_explicit_product_metadata(monkeypatch):
         "update_product_metadata",
         "PATCH",
         "/wp-json/wc/v3/products/101",
-        {"sku": "SAFE-SKU", "global_unique_id": "SAFE-BAR", "description": "Safe description"},
+        {"sku": "SAFE-SKU", "global_unique_id": "SAFE-BAR", "name": "Safe product title"},
     )
 
     assert result["sku"] == "SAFE-SKU"

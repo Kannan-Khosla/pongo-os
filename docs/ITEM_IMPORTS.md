@@ -23,7 +23,7 @@ The five outcomes are deliberately separate:
 
 WooCommerce products do not require CSV. Items → **Import new products** scans
 for missing Woo simple products and purchasable variations, imports them in one
-step, then opens a short setup form. SKU and barcode are required; description,
+step, then opens a short setup form. SKU and barcode are required; product title,
 brand, prices, unit cost, warehouse/location, and opening stock are optional.
 Opening stock uses the audited opening-balance workflow. Full catalog mapping
 and connection repair remain under Items → More.

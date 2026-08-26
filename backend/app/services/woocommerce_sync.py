@@ -1,4 +1,3 @@
-import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -31,7 +30,7 @@ def sync_item_metadata_to_woo(db: Session, item: InventoryItem, changed_fields: 
     if "barcode" in changed_fields:
         payload["global_unique_id"] = item.barcode or ""
     if "description" in changed_fields:
-        payload["description"] = item.description or ""
+        payload["name"] = item.description or ""
     if "recommended_retail_price" in changed_fields:
         payload["regular_price"] = str(item.recommended_retail_price) if item.recommended_retail_price is not None else ""
     if "sales_price" in changed_fields:
@@ -373,7 +372,6 @@ def normalize_remote_record(product: dict[str, Any], variation: dict[str, Any] |
     remote_type = "variation" if variation else product.get("type", "simple")
     parent_name = product.get("name") or ""
     name = variation_name(parent_name, variation) if variation else parent_name
-    description = name if variation else strip_html(source.get("description") or product.get("short_description") or parent_name)
     dimensions = source.get("dimensions") or {}
     parent_dimensions = product.get("dimensions") or {}
     regular_price = to_decimal_or_none(source.get("regular_price"))
@@ -390,7 +388,7 @@ def normalize_remote_record(product: dict[str, Any], variation: dict[str, Any] |
         variation_attributes=list(variation.get("attributes") or []) if variation else [],
         parent_container=parent_container,
         purchasable=bool(source.get("purchasable", True)) and bool(source.get("status", product.get("status")) == "publish"),
-        description=description or name,
+        description=name,
         category=first_category(product),
         brand=extract_brand(product),
         regular_price=regular_price,
@@ -726,10 +724,6 @@ def first_image(record: dict[str, Any]) -> str:
         return image["src"]
     images = record.get("images") or []
     return images[0].get("src", "") if images else ""
-
-
-def strip_html(value: str) -> str:
-    return re.sub(r"<[^>]+>", "", value or "").strip()
 
 
 def to_decimal(value) -> Decimal:

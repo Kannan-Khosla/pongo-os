@@ -124,7 +124,7 @@ const BULK_ITEM_FIELD_GROUPS = [
     title: 'Classification',
     fields: [
       { key: 'client', label: 'Client / organization' },
-      { key: 'description', label: 'Description / local product title' },
+      { key: 'description', label: 'Product title' },
       { key: 'brand', label: 'Brand' },
       { key: 'category', label: 'Category' },
       { key: 'add_tags', label: 'Add tags', placeholder: 'Seasonal, freezer, priority' },
@@ -907,7 +907,7 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
   }
 
   function chooseSuggestion(item) {
-    const nextValue = item.sku || item.barcode || item.product_name || item.description || '';
+    const nextValue = item.sku || item.barcode || productTitle(item) || '';
     dismissedQueryRef.current = nextValue.trim();
     onChange(nextValue);
     onSelect?.(item);
@@ -993,7 +993,7 @@ function InventoryKeywordSearch({ value, onChange, onSearch = () => {}, onSelect
               type="button"
             >
               <span className="keyword-suggestion-copy">
-                <strong>{decodeHtmlEntities(item.product_name || item.description || 'Untitled inventory item')}</strong>
+                <strong>{productTitle(item) || 'Untitled inventory item'}</strong>
                 <small>{[item.brand, item.category].filter(Boolean).map(decodeHtmlEntities).join(' · ') || 'Inventory item'}</small>
               </span>
               <span className="keyword-suggestion-identifiers">
@@ -5055,7 +5055,7 @@ function InsightDashboard({ config, data }) {
         </div>
       )}
 
-      <TableShell caption="Insights" columns={columns.map(titleize)} pagination={{ page: currentPage, pageSize, total: tableRows.length, totalPages, returnedCount: visibleRows.length, noun: 'insights', onPageChange: setPage, onPageSizeChange: (size) => { setPageSize(size); setPage(1); } }}>
+      <TableShell caption="Insights" columns={columns.map(productColumnTitle)} pagination={{ page: currentPage, pageSize, total: tableRows.length, totalPages, returnedCount: visibleRows.length, noun: 'insights', onPageChange: setPage, onPageSizeChange: (size) => { setPageSize(size); setPage(1); } }}>
         {visibleRows.map((row, index) => (
           <tr key={`${config.id}-${index}`}>
             {columns.map((column) => <td key={column} className={column.includes('description') || column.includes('text') || column === 'product_name' ? 'description-cell' : ''}>{renderInsightCell(column, row[column])}</td>)}
@@ -7246,7 +7246,7 @@ function ItemDetailDrawer({ detail, tab, setTab, onClose, onDeleted, onRefresh, 
         {!detail && <div className="loading-strip">Loading item detail...</div>}
         {detail && (
           <>
-            {setupProgress && <div className="woo-import-setup-banner"><strong>Set up imported product {setupProgress.current} of {setupProgress.total}</strong><span>SKU and barcode are required. Location, opening stock, cost, brand, and description are optional.</span></div>}
+            {setupProgress && <div className="woo-import-setup-banner"><strong>Set up imported product {setupProgress.current} of {setupProgress.total}</strong><span>SKU and barcode are required. Location, opening stock, cost, brand, and product title are optional.</span></div>}
             <div className="tab-row">
               {tabs.map((name) => <button className={tab === name ? 'tab-button active' : 'tab-button'} key={name} onClick={() => setTab(name)} type="button">{name}</button>)}
             </div>
@@ -7407,7 +7407,7 @@ function ItemMetadataPanel({ item, onDeleted, onSaved, onRefreshItemFacets, setu
     <form className="drawer-section operation-grid" onSubmit={saveMetadata}>
       <label className="field"><span>SKU {setupProgress ? '(required)' : ''}</span><input disabled={item.sku_locked} required={Boolean(setupProgress)} value={form.sku} onChange={(event) => setForm((current) => ({ ...current, sku: event.target.value }))} />{item.sku_locked && <small>Locked because stock activity has started.</small>}</label>
       <label className="field"><span>Barcode {setupProgress ? '(required)' : ''}</span><input required={Boolean(setupProgress)} value={form.barcode} onChange={(event) => setForm((current) => ({ ...current, barcode: event.target.value }))} /></label>
-      <label className="field operation-grid-wide"><span>Description</span><textarea rows={3} value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></label>
+      <label className="field operation-grid-wide"><span>Product title</span><input value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></label>
       {['category', 'brand', 'manufacturer'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={form[field]} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
       {['unit_cost', 'sales_price'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input min="0" step="0.01" type="number" value={form[field]} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
       <label className="field"><span>Warehouse</span><input value={form.warehouse} onChange={(event) => setForm((current) => ({ ...current, warehouse: event.target.value }))} /></label>
@@ -7615,11 +7615,11 @@ function LocalRemapSearchModal({ onClose }) {
           </section>
           <section className="import-step"><h3>2. Choose local Pongo item</h3><div className="scanner-input-row"><input value={itemQuery} onChange={(event) => setItemQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && searchItems()} placeholder="Search SKU, barcode, product name, or brand" /><button className="primary-button" onClick={searchItems} type="button"><Search size={16} />Search Items</button></div>
             <TableShell caption={`${results.length} local candidate(s)`} columns={['SKU', 'Barcode', 'Product Title', 'Brand', 'Current Woo Mapping', 'Action']}>
-              {results.map((item) => <tr key={item.id}><td>{item.sku}</td><td>{item.barcode}</td><td className="description-cell"><ClampedText value={item.description} /></td><td>{decodeHtmlEntities(item.brand || '') || <DataQualityBadge kind="missing_brand" />}</td><td>{item.woo_mapping_summary?.mapped ? `${item.woo_mapping_summary.woo_product_id || ''}/${item.woo_mapping_summary.woo_variation_id || ''}` : <DataQualityBadge kind="unmapped" />}</td><td><button className={selectedItem?.id === item.id ? 'primary-button' : 'muted-button'} onClick={() => { setSelectedItem(item); setPreview(null); }} type="button">Select</button></td></tr>)}
+              {results.map((item) => <tr key={item.id}><td>{item.sku}</td><td>{item.barcode}</td><td className="description-cell"><ClampedText value={productTitle(item)} /></td><td>{decodeHtmlEntities(item.brand || '') || <DataQualityBadge kind="missing_brand" />}</td><td>{item.woo_mapping_summary?.mapped ? `${item.woo_mapping_summary.woo_product_id || ''}/${item.woo_mapping_summary.woo_variation_id || ''}` : <DataQualityBadge kind="unmapped" />}</td><td><button className={selectedItem?.id === item.id ? 'primary-button' : 'muted-button'} onClick={() => { setSelectedItem(item); setPreview(null); }} type="button">Select</button></td></tr>)}
               {!results.length && <tr><td colSpan={6}><div className="empty-table-row">Search for a local item to continue.</div></td></tr>}
             </TableShell>
           </section>
-          <section className="import-step"><h3>3. Preview and commit</h3><div className="button-row"><button className="primary-button" disabled={loading || !selectedRemote || !selectedItem} onClick={previewRemap} type="button">Preview Mapping</button><button className="action-button" disabled={loading || !preview || preview.errors?.length > 0} onClick={commitRemap} title={preview?.errors?.length ? 'Resolve preview conflicts before commit.' : ''} type="button">Commit Mapping</button></div>{preview && <div className={preview.errors?.length ? 'api-error' : 'api-success'}>{preview.errors?.length ? preview.errors.join(' ') : `Ready to map ${preview.remote.woo_sku || preview.remote.woo_name} to ${preview.item.sku || preview.item.description}.`} {(preview.warnings || []).join(' ')}</div>}</section>
+          <section className="import-step"><h3>3. Preview and commit</h3><div className="button-row"><button className="primary-button" disabled={loading || !selectedRemote || !selectedItem} onClick={previewRemap} type="button">Preview Mapping</button><button className="action-button" disabled={loading || !preview || preview.errors?.length > 0} onClick={commitRemap} title={preview?.errors?.length ? 'Resolve preview conflicts before commit.' : ''} type="button">Commit Mapping</button></div>{preview && <div className={preview.errors?.length ? 'api-error' : 'api-success'}>{preview.errors?.length ? preview.errors.join(' ') : `Ready to map ${preview.remote.woo_sku || preview.remote.woo_name} to ${preview.item.sku || productTitle(preview.item)}.`} {(preview.warnings || []).join(' ')}</div>}</section>
           {loading && <div className="loading-strip">Loading remap data...</div>}{error && <div className="api-error">{error}</div>}{message && <div className="api-success">{message}</div>}
         </div>
       </section>
@@ -8752,7 +8752,7 @@ function ScannerResult({ result }) {
   return (
     <div className="scanner-result-panel">
       <div className="panel-title compact-title"><div><h2>Scan Result</h2><p>{result.matched === false ? 'No matching item or location was found.' : 'Validated scanner response.'}</p></div></div>
-      {item && <div className="scanner-match"><strong>{item.sku}</strong><span>{item.barcode}</span><p>{decodeHtmlEntities(item.description || '')}</p></div>}
+      {item && <div className="scanner-match"><strong>{item.sku}</strong><span>{item.barcode}</span><p>{productTitle(item)}</p></div>}
       {result.stock_by_location && <ItemStockByLocation rows={result.stock_by_location} />}
       {result.items && <TableShell caption={`${result.items.length} location item(s)`} columns={['SKU', 'Product Title', 'Location', 'In Stock', 'Sellable']} >{result.items.map((row) => <tr key={row.id}><td>{row.sku}</td><td>{productTitle(row)}</td><td>{row.inventory_location}</td><td>{formatNumber(row.in_stock)}</td><td>{formatNumber(row.sellable)}</td></tr>)}</TableShell>}
       {!item && !result.stock_by_location && !result.items && <div className={result.matched === false ? 'api-error' : 'success-strip'}>{result.message || result.safe_message || 'Scan response received.'}</div>}
@@ -8982,7 +8982,7 @@ function ExpandedReportsPanel({ activeReport }) {
 function GenericReportTable({ rows }) {
   const columns = rows[0] ? Object.keys(rows[0]) : [];
   return (
-    <TableShell caption={`${rows.length} row(s)`} columns={columns.length ? columns.map((column) => column.replace(/_/g, ' ')) : ['Report']}>
+    <TableShell caption={`${rows.length} row(s)`} columns={columns.length ? columns.map(productColumnTitle) : ['Report']}>
       {rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column} className={column.includes('description') || column.includes('name') ? 'description-cell' : ''}>{renderReportCell(column, row[column])}</td>)}</tr>)}
       {!rows.length && <tr><td colSpan={Math.max(columns.length, 1)}><div className="empty-table-row">No report rows match the current filters.</div></td></tr>}
     </TableShell>
@@ -10858,7 +10858,7 @@ export function OrderInvoice({ order, className = '' }) {
 
       <table className="invoice-lines-table">
         <thead>
-          <tr><th>SKU / barcode</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Tax</th><th>Line total</th></tr>
+          <tr><th>SKU / barcode</th><th>Product title</th><th>Qty</th><th>Unit price</th><th>Tax</th><th>Line total</th></tr>
         </thead>
         <tbody>
           {(order.lines || []).map((line) => {
@@ -11324,7 +11324,7 @@ function orderLineSubstitution(line = {}) {
 
 function inventorySearchItemLabel(item = {}) {
   const candidate = item || {};
-  return candidate.product_name || candidate.description || candidate.Description || 'Untitled inventory item';
+  return productTitle(candidate) || 'Untitled inventory item';
 }
 
 function inventorySearchItemSku(item = {}) {
@@ -13379,7 +13379,7 @@ function CatalogAttentionResolution({ row, busy, canResolve, onResolve }) {
           placeholder="Search SKU, barcode, or product name"
           value={query}
         />
-        {selectedItem && <small>Selected: {selectedItem.sku || 'No SKU'} · {selectedItem.product_name || selectedItem.description || 'Untitled item'}</small>}
+        {selectedItem && <small>Selected: {selectedItem.sku || 'No SKU'} · {productTitle(selectedItem) || 'Untitled item'}</small>}
         <button className="muted-button" disabled={busy || !selectedItem?.id} onClick={() => onResolve(row.id, { action: 'link', item_id: selectedItem.id })} type="button"><Link2 size={16} />Link to this item</button>
       </div>
       <button className="action-button" disabled={busy} onClick={() => onResolve(row.id, { action: 'create' })} type="button"><Plus size={16} />Add as a new item</button>
@@ -14597,7 +14597,7 @@ function WooRemapPanel({ candidates, candidatePagination = emptyServerPagination
       <div className="receiving-form route-form">
         <div className="receiving-header-fields route-header-fields">
           <div className="field"><span>WooCommerce product</span><strong>{selectedCandidate ? `${selectedCandidate.remote.woo_name || selectedCandidate.remote.woo_sku} (${selectedCandidate.remote.woo_product_id}${selectedCandidate.remote.woo_variation_id ? `/${selectedCandidate.remote.woo_variation_id}` : ''})` : 'Choose a product below'}</strong></div>
-          <label className="field"><span>Pongo item</span><select value={selected.item_id} onChange={(event) => setSelected((current) => ({ ...current, item_id: event.target.value }))}><option value="">Choose a Pongo item</option>{(selectedCandidate?.suggested_items || []).map((item) => <option key={item.item_id} value={item.item_id}>{item.sku || item.description}</option>)}</select></label>
+          <label className="field"><span>Pongo item</span><select value={selected.item_id} onChange={(event) => setSelected((current) => ({ ...current, item_id: event.target.value }))}><option value="">Choose a Pongo item</option>{(selectedCandidate?.suggested_items || []).map((item) => <option key={item.item_id} value={item.item_id}>{item.sku || productTitle(item)}</option>)}</select></label>
           <label className="field wide-field"><span>Note (optional)</span><input value={selected.note} onChange={(event) => setSelected((current) => ({ ...current, note: event.target.value }))} /></label>
         </div>
         <div className="button-row">
@@ -14607,7 +14607,7 @@ function WooRemapPanel({ candidates, candidatePagination = emptyServerPagination
       </div>
       {preview && (
         <div className={preview.errors?.length ? 'api-error' : 'success-strip'}>
-          This will link WooCommerce product {preview.remote.woo_product_id}{preview.remote.woo_variation_id ? `/${preview.remote.woo_variation_id}` : ''} to {preview.item.sku || preview.item.description}. {(preview.warnings || []).join(' ')} {(preview.errors || []).join(' ')}
+          This will link WooCommerce product {preview.remote.woo_product_id}{preview.remote.woo_variation_id ? `/${preview.remote.woo_variation_id}` : ''} to {preview.item.sku || productTitle(preview.item)}. {(preview.warnings || []).join(' ')} {(preview.errors || []).join(' ')}
         </div>
       )}
       <TableShell caption={`${candidatePagination.total} WooCommerce product(s)`} columns={['WooCommerce product', 'Product option ID', 'SKU', 'Link status', 'Currently linked item', 'Suggested Pongo item', 'Action']} pagination={serverTablePagination(candidatePagination, 'WooCommerce products', (page) => onLoadCandidates({ page, page_size: candidatePagination.page_size }), (pageSize) => onLoadCandidates({ page: 1, page_size: pageSize }))}>
@@ -14618,7 +14618,7 @@ function WooRemapPanel({ candidates, candidatePagination = emptyServerPagination
             <td className="mono">{candidate.remote.woo_sku}</td>
             <td>{candidate.remote.reason === 'mapped' ? 'Linked' : titleize(candidate.remote.reason)}</td>
             <td>{candidate.current_mapping?.item_id || ''}</td>
-            <td className="description-cell">{(candidate.suggested_items || []).map((item) => `${item.item_id}:${item.sku || item.description}`).join(', ')}</td>
+            <td className="description-cell">{(candidate.suggested_items || []).map((item) => `${item.item_id}:${item.sku || productTitle(item)}`).join(', ')}</td>
             <td><button className="muted-button" onClick={() => selectCandidate(candidate)} type="button">Choose</button></td>
           </tr>
         ))}
@@ -15290,6 +15290,10 @@ function titleize(value) {
     .replace(/_/g, ' ')
     .replace(/-/g, ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function productColumnTitle(value) {
+  return value === 'description' ? 'Product Title' : titleize(value);
 }
 
 function markerPosition(marker) {

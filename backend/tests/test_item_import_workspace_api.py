@@ -129,7 +129,7 @@ def test_schema_and_templates_are_backend_owned_and_stock_safe(client):
     assert schema.headers["x-import-schema-version"] == add_template.headers["x-import-schema-version"]
     assert "On hand" not in add_template.text
     assert "Allocated" not in add_template.text
-    assert repair_template.text.splitlines()[0] == "Pongo Item ID,SKU,Product name,Woo product ID,Woo variation ID,Brand,Unit cost,Target warehouse,Target inventory location"
+    assert repair_template.text.splitlines()[0] == "Pongo Item ID,SKU,Product title,Woo product ID,Woo variation ID,Brand,Unit cost,Target warehouse,Target inventory location"
     assert "Barcode" not in repair_template.text.splitlines()[0]
     assert stock_template.text.splitlines()[0] == "SKU,In stock,Reference note"
     assert starting_template.text.splitlines()[0] == "SKU,Starting quantity,Warehouse,Inventory location,Reference note"
@@ -520,7 +520,7 @@ def test_repair_jobs_appear_in_import_history_and_failed_rows_use_repair_columns
     failed_rows = client.get(f"/api/import-jobs/{job_id}/failed-rows")
     assert failed_rows.status_code == 200, failed_rows.text
     assert failed_rows.text.splitlines()[0] == (
-        "Pongo Item ID,SKU,Product name,Woo product ID,Woo variation ID,Brand,Unit cost,Target warehouse,"
+            "Pongo Item ID,SKU,Product title,Woo product ID,Woo variation ID,Brand,Unit cost,Target warehouse,"
         "Target inventory location,Error Code,Error Field,Error Message,Suggested action"
     )
     assert "Barcode" not in failed_rows.text.splitlines()[0]

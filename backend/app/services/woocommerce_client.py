@@ -13,7 +13,7 @@ ALLOWED_WRITE_OPERATIONS = {"update_product_stock", "update_variation_stock", "u
 ALLOWED_WRITE_METHODS = {"PUT", "PATCH"}
 ALLOWED_STOCK_PAYLOAD_FIELDS = {"stock_quantity", "stock_status", "manage_stock"}
 ALLOWED_ORDER_STATUS_PAYLOAD_FIELDS = {"status"}
-ALLOWED_PRODUCT_METADATA_PAYLOAD_FIELDS = {"sku", "global_unique_id", "description", "regular_price", "sale_price"}
+ALLOWED_PRODUCT_METADATA_PAYLOAD_FIELDS = {"sku", "global_unique_id", "name", "regular_price", "sale_price"}
 
 
 @dataclass
