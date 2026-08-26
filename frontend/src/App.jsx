@@ -5996,7 +5996,7 @@ function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
         <div className="modal-header"><div><h2>Edit Current Stock</h2><p>{item.SKU || productTitle(item)}. This creates an audited stock adjustment.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close edit current stock" title="Close" type="button"><X size={20} /></button></div>
         <div className="form-grid">
           <label className="field wide-field"><span>Location</span><select value={form.itemLocationId} onChange={(event) => updateLocation(event.target.value)}>{locationRows.map((row) => <option key={row.id} value={row.id}>{row.warehouse || 'Unassigned'} / {row.inventory_location || 'Unassigned'} · {formatNumber(row.in_stock)} in stock</option>)}</select></label>
-          <label className="field"><span>Final Stock Quantity</span><input min="0" type="number" step="0.001" value={form.newQuantity} onChange={(event) => update('newQuantity', event.target.value)} /></label>
+          <label className="field"><span>Final Stock Quantity</span><input min="0" type="number" step="1" value={form.newQuantity} onChange={(event) => update('newQuantity', event.target.value)} /></label>
           <label className="field wide-field"><span>Reason (optional)</span><input value={form.reason} onChange={(event) => update('reason', event.target.value)} placeholder="Optional" /></label>
           <label className="field wide-field"><span>Notes</span><textarea value={form.notes} onChange={(event) => update('notes', event.target.value)} /></label>
         </div>

@@ -4427,6 +4427,7 @@ describe('App shell and workflows', () => {
     expect(dialog.closest('.app-overlay-root')?.parentElement).toBe(document.body);
     const newQuantity = within(dialog).getByRole('spinbutton', { name: 'Final Stock Quantity' });
     expect(newQuantity).toHaveValue(9);
+    expect(newQuantity).toHaveAttribute('step', '1');
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Location' }), '92');
     expect(newQuantity).toHaveValue(4);
     await user.clear(newQuantity);
