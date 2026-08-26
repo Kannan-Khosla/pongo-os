@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.db.session import get_db
 from app.main import app
 from app.models import Base
-from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation
+from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation, StockAdjustmentLine, StockMovement
 from app.models.woocommerce import WooItemMapping
 from app.services.items import ITEM_EXPORT_COLUMNS
 
@@ -483,33 +483,56 @@ def test_delete_woo_linked_item_requires_confirmation(client):
         assert db.scalar(select(WooItemMapping.id).where(WooItemMapping.item_id == created["id"])) is None
 
 
-def test_delete_item_with_stock_history_is_refused(client):
-    created = seed_item(client, sku="DELETE-BLOCKED")
+def test_delete_item_with_stock_history_preserves_audit_snapshots(client):
+    created = seed_item(client, sku="DELETE-WITH-HISTORY")
+    location = client.get("/api/inventory/locations", params={"item_id": created["id"]}).json()["rows"][0]
+    adjustment = client.post(
+        "/api/inventory/adjustments",
+        json={
+            "idempotency_key": "delete-with-history-adjustment",
+            "adjustment_type": "correction",
+            "reason": "Verify permanent deletion",
+            "lines": [{"item_id": created["id"], "inventory_item_location_id": location["id"], "new_quantity": 9}],
+        },
+    )
+    assert adjustment.status_code == 201, adjustment.text
 
     response = client.delete(f"/api/items/{created['id']}")
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "item_has_inventory_history"
-    assert client.get(f"/api/items/{created['id']}").status_code == 200
+    assert response.status_code == 200, response.text
+    assert client.get(f"/api/items/{created['id']}").status_code == 404
+    with Session(client.test_engine) as db:
+        movement = db.scalar(select(StockMovement).where(StockMovement.sku == "DELETE-WITH-HISTORY"))
+        adjustment_line = db.scalar(select(StockAdjustmentLine).where(StockAdjustmentLine.sku == "DELETE-WITH-HISTORY"))
+        deletion = db.scalar(
+            select(InventoryAuditEvent).where(
+                InventoryAuditEvent.sku == "DELETE-WITH-HISTORY",
+                InventoryAuditEvent.event_type == "item_deleted",
+            )
+        )
+        assert movement is not None
+        assert movement.inventory_item_id is None
+        assert adjustment_line is not None
+        assert adjustment_line.inventory_item_id is None
+        assert adjustment_line.inventory_item_location_id is None
+        assert deletion is not None
+        assert deletion.item_id is None
+        assert float(deletion.previous_in_stock) == 9
+        assert float(deletion.new_in_stock) == 0
 
 
-def test_bulk_delete_is_atomic(client):
+def test_bulk_delete_removes_items_with_operational_history(client):
     first = seed_item(client, sku="BULK-DELETE-1", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
     second = seed_item(client, sku="BULK-DELETE-2", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
-    blocked = seed_item(client, sku="BULK-DELETE-BLOCKED")
+    with_history = seed_item(client, sku="BULK-DELETE-HISTORY")
 
-    refused = client.post("/api/items/bulk/delete", json={"item_ids": [first["id"], blocked["id"]]})
-
-    assert refused.status_code == 409
-    assert refused.json()["detail"]["code"] == "items_have_inventory_history"
-    assert client.get(f"/api/items/{first['id']}").status_code == 200
-
-    deleted = client.post("/api/items/bulk/delete", json={"item_ids": [first["id"], second["id"]]})
+    deleted = client.post("/api/items/bulk/delete", json={"item_ids": [first["id"], second["id"], with_history["id"]]})
 
     assert deleted.status_code == 200, deleted.text
-    assert deleted.json()["deleted_count"] == 2
+    assert deleted.json()["deleted_count"] == 3
     assert client.get(f"/api/items/{first['id']}").status_code == 404
     assert client.get(f"/api/items/{second['id']}").status_code == 404
+    assert client.get(f"/api/items/{with_history['id']}").status_code == 404
 
 
 def test_include_non_inventory_filter(client):

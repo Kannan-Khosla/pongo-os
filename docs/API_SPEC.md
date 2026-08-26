@@ -2578,16 +2578,15 @@ item/location assignment and never moves stock. SKU, barcode, direct location
 labels, stock quantities, derived values, WooCommerce identity, and unknown
 fields fail closed.
 
-Permanent item deletion is limited to catalog records with zero stock and no
-operational history. Notes, import-change metadata, empty item locations, and
-the local Woo mapping are removed with the item; durable order, receipt,
-movement, count, allocation, pick, fulfillment, transfer, adjustment, and
-inventory-audit history block deletion. A Woo-linked item returns `409` until
-`confirm_woo_link=true` is supplied. Confirmation deletes only the PongoOS
-record, never the WooCommerce product, which may return on a future catalog
-sync. Bulk deletion accepts up to 100 `item_ids` plus `confirm_woo_links`; it
-validates the complete selection before deleting anything, so a protected item
-blocks the entire request.
+Confirmed permanent item deletion is available regardless of current stock or
+operational history. The PongoOS item, item locations, notes, import-change
+metadata, and local Woo mapping are removed. Existing order, receipt, movement,
+count, allocation, pick, fulfillment, transfer, adjustment, and inventory-audit
+rows remain as detached snapshots, and an `item_deleted` audit event records the
+discarded stock balance. A Woo-linked item returns `409` until
+`confirm_woo_link=true` is supplied. Confirmation never deletes the WooCommerce
+product, which may return on a future catalog sync. Bulk deletion accepts up to
+100 `item_ids` plus `confirm_woo_links` and applies the same behavior atomically.
 
 ## UI Saved Views
 

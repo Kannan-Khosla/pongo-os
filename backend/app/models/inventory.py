@@ -191,7 +191,7 @@ class StockMovement(Base):
     __tablename__ = "stock_movements"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    inventory_item_id: Mapped[int] = mapped_column(ForeignKey("inventory_items.id"), index=True, nullable=False)
+    inventory_item_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_items.id"), index=True)
     inventory_location_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_locations.id"), index=True)
     inventory_item_location_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_item_locations.id"), index=True)
     from_inventory_location_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_item_locations.id"), index=True)
@@ -223,7 +223,7 @@ class StockMovement(Base):
     created_by: Mapped[str | None] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
-    inventory_item: Mapped[InventoryItem] = relationship(back_populates="stock_movements")
+    inventory_item: Mapped[InventoryItem | None] = relationship(back_populates="stock_movements")
     location: Mapped[InventoryLocation | None] = relationship(back_populates="stock_movements")
 
 
@@ -231,7 +231,7 @@ class InventoryAuditEvent(Base):
     __tablename__ = "inventory_audit_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    item_id: Mapped[int] = mapped_column(ForeignKey("inventory_items.id"), index=True, nullable=False)
+    item_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_items.id"), index=True)
     sku: Mapped[str | None] = mapped_column(String(120), index=True)
     barcode: Mapped[str | None] = mapped_column(String(120), index=True)
     event_type: Mapped[str] = mapped_column(String(80), index=True, nullable=False)
@@ -275,12 +275,12 @@ class InventoryTransferLine(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     transfer_id: Mapped[int] = mapped_column(ForeignKey("inventory_transfers.id"), index=True, nullable=False)
-    inventory_item_id: Mapped[int] = mapped_column(ForeignKey("inventory_items.id"), index=True, nullable=False)
+    inventory_item_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_items.id"), index=True)
     sku: Mapped[str | None] = mapped_column(String(120), index=True)
     barcode: Mapped[str | None] = mapped_column(String(120), index=True)
     description: Mapped[str | None] = mapped_column(Text)
     quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)
-    from_inventory_item_location_id: Mapped[int] = mapped_column(ForeignKey("inventory_item_locations.id"), index=True, nullable=False)
+    from_inventory_item_location_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_item_locations.id"), index=True)
     to_inventory_item_location_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_item_locations.id"), index=True)
     from_warehouse: Mapped[str | None] = mapped_column(String(120), index=True)
     from_inventory_location: Mapped[str | None] = mapped_column(String(200), index=True)
@@ -312,8 +312,8 @@ class StockAdjustmentLine(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     adjustment_id: Mapped[int] = mapped_column(ForeignKey("stock_adjustments.id"), index=True, nullable=False)
-    inventory_item_id: Mapped[int] = mapped_column(ForeignKey("inventory_items.id"), index=True, nullable=False)
-    inventory_item_location_id: Mapped[int] = mapped_column(ForeignKey("inventory_item_locations.id"), index=True, nullable=False)
+    inventory_item_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_items.id"), index=True)
+    inventory_item_location_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_item_locations.id"), index=True)
     sku: Mapped[str | None] = mapped_column(String(120), index=True)
     barcode: Mapped[str | None] = mapped_column(String(120), index=True)
     description: Mapped[str | None] = mapped_column(Text)

@@ -6587,8 +6587,8 @@ function ItemsList({ route, items, pagination = emptyItemsPagination, loading, e
     const selectedItems = displayedItems.filter((item) => selectedIds.includes(item.id));
     const wooLinkedCount = selectedItems.filter((item) => item.wooProductId || item.woo_product_id || item.wooVariationId || item.woo_variation_id).length;
     const warning = wooLinkedCount
-      ? `Permanently delete ${selectedIds.length} selected item(s)? ${wooLinkedCount} are linked to WooCommerce. WooCommerce products will not be deleted and may return on the next catalog sync.`
-      : `Permanently delete ${selectedIds.length} selected item(s) from PongoOS? This cannot be undone.`;
+      ? `Permanently delete ${selectedIds.length} selected item(s)? ${wooLinkedCount} are linked to WooCommerce. Current local stock will be discarded, history snapshots will remain, and WooCommerce products will not be deleted.`
+      : `Permanently delete ${selectedIds.length} selected item(s) from PongoOS? Current stock will be discarded and history snapshots will remain. This cannot be undone.`;
     if (!window.confirm(warning)) return;
 
     setBulkDeleting(true);
@@ -7461,16 +7461,15 @@ function ItemMetadataPanel({ item, onDeleted, onSaved, onRefreshItemFacets, setu
     const name = productTitle(item) || item.sku || `item ${item.id}`;
     const wooLinked = Boolean(item.woo_product_id || item.woo_variation_id);
     const warning = wooLinked
-      ? `${name} is linked to WooCommerce. This deletes only the PongoOS item; the WooCommerce product will remain and may return on the next catalog sync. Permanently delete it from PongoOS?`
-      : `Permanently delete ${name} from PongoOS? This cannot be undone.`;
+      ? `${name} is linked to WooCommerce. This deletes the PongoOS item and discards its current local stock; history snapshots remain. The WooCommerce product is not deleted and may return on the next catalog sync. Continue?`
+      : `Permanently delete ${name} from PongoOS? Current stock will be discarded and history snapshots will remain. This cannot be undone.`;
     if (!window.confirm(warning)) return;
 
     setDeleting(true);
     setError('');
     setMessage('');
     try {
-      const query = wooLinked ? '?confirm_woo_link=true' : '';
-      const response = await apiFetch(`${API_BASE_URL}/api/items/${item.id}${query}`, { method: 'DELETE' });
+      const response = await apiFetch(`${API_BASE_URL}/api/items/${item.id}?confirm_woo_link=true`, { method: 'DELETE' });
       if (!response.ok) {
         let detail = '';
         try {
@@ -7515,7 +7514,7 @@ function ItemMetadataPanel({ item, onDeleted, onSaved, onRefreshItemFacets, setu
         </div>
       </section>
       <div className="item-edit-actions"><span>Review the details, then save your changes.</span><button aria-busy={saving} className="primary-button" disabled={saving} type="submit"><Save size={16} />{saving ? 'Saving…' : setupProgress && setupProgress.current < setupProgress.total ? 'Save & next' : 'Save product'}</button></div>
-      {!setupProgress && <section className="item-delete-zone"><div><strong>Permanent deletion</strong><span>Only available when the item has no stock or operational history.</span></div><button aria-busy={deleting} className="danger-button" disabled={deleting || saving} onClick={deleteItem} type="button"><Trash2 size={16} />{deleting ? 'Deleting…' : 'Delete item permanently'}</button></section>}
+      {!setupProgress && <section className="item-delete-zone"><div><strong>Permanent deletion</strong><span>Always available. Current stock is discarded; historical audit snapshots remain.</span></div><button aria-busy={deleting} className="danger-button" disabled={deleting || saving} onClick={deleteItem} type="button"><Trash2 size={16} />{deleting ? 'Deleting…' : 'Delete item permanently'}</button></section>}
       {error && <div className="api-error">{error}</div>}
       {message && <div className="api-success">{message}</div>}
     </form>

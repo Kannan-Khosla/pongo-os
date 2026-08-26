@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 class StockMovementRead(BaseModel):
     id: int
-    item_id: int
+    item_id: int | None = None
     inventory_item_location_id: int | None = None
     sku: str | None = None
     barcode: str | None = None

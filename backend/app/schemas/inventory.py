@@ -102,12 +102,12 @@ class InventoryTransferRequest(BaseModel):
 
 class InventoryTransferLineRead(BaseModel):
     id: int
-    item_id: int
+    item_id: int | None = None
     sku: str | None = None
     barcode: str | None = None
     description: str | None = None
     quantity: float
-    from_inventory_item_location_id: int
+    from_inventory_item_location_id: int | None = None
     to_inventory_item_location_id: int | None = None
     from_warehouse: str | None = None
     from_inventory_location: str | None = None
@@ -167,8 +167,8 @@ class StockAdjustmentRequest(BaseModel):
 
 class StockAdjustmentLineRead(BaseModel):
     id: int
-    item_id: int
-    inventory_item_location_id: int
+    item_id: int | None = None
+    inventory_item_location_id: int | None = None
     sku: str | None = None
     barcode: str | None = None
     description: str | None = None

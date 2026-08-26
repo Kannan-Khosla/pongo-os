@@ -181,52 +181,6 @@ def sku_is_locked(db: Session, item: InventoryItem) -> bool:
     )
 
 
-def item_deletion_blockers(db: Session, items: list[InventoryItem]) -> dict[int, list[str]]:
-    item_ids = [item.id for item in items]
-    blockers = {item_id: [] for item_id in item_ids}
-
-    for item in items:
-        if any(to_decimal(value) != 0 for value in (item.in_stock, item.allocated, item.on_order)):
-            blockers[item.id].append("current stock")
-    location_stock_ids = set(
-        db.scalars(
-            select(InventoryItemLocation.inventory_item_id)
-            .where(
-                InventoryItemLocation.inventory_item_id.in_(item_ids),
-                or_(
-                    InventoryItemLocation.in_stock != 0,
-                    InventoryItemLocation.allocated != 0,
-                    InventoryItemLocation.on_order != 0,
-                ),
-            )
-            .distinct()
-        ).all()
-    )
-    for item_id in location_stock_ids:
-        if "current stock" not in blockers[item_id]:
-            blockers[item_id].append("current stock")
-
-    dependency_checks = [
-        ("stock movements", StockMovement.inventory_item_id),
-        ("inventory audit history", InventoryAuditEvent.item_id),
-        ("orders", OrderItem.inventory_item_id),
-        ("orders", OrderItem.substituted_from_inventory_item_id),
-        ("receipts", ReceiptItem.inventory_item_id),
-        ("cycle counts", CycleCountLine.item_id),
-        ("allocations", AllocationLine.item_id),
-        ("picks", PickLine.item_id),
-        ("fulfillments", FulfillmentLine.item_id),
-        ("inventory transfers", InventoryTransferLine.inventory_item_id),
-        ("stock adjustments", StockAdjustmentLine.inventory_item_id),
-    ]
-    for label, column in dependency_checks:
-        affected_ids = set(db.scalars(select(column).where(column.in_(item_ids)).distinct()).all())
-        for item_id in affected_ids:
-            if label not in blockers[item_id]:
-                blockers[item_id].append(label)
-    return {item_id: labels for item_id, labels in blockers.items() if labels}
-
-
 def delete_items_permanently(db: Session, item_ids: list[int], *, confirm_woo_links: bool = False) -> dict[str, Any]:
     unique_ids = list(dict.fromkeys(item_ids))
     if not unique_ids:
@@ -253,25 +207,64 @@ def delete_items_permanently(db: Session, item_ids: list[int], *, confirm_woo_li
             },
         )
 
-    blocker_map = item_deletion_blockers(db, items)
-    if blocker_map:
-        single_item = len(unique_ids) == 1
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "item_has_inventory_history" if single_item else "items_have_inventory_history",
-                "message": (
-                    f"This item cannot be permanently deleted because it has {', '.join(blocker_map[unique_ids[0]])}."
-                    if single_item
-                    else f"{len(blocker_map)} selected item(s) have stock or operational history. Nothing was deleted."
-                ),
-                "dependencies": blocker_map[unique_ids[0]] if single_item else None,
-                "blocked_items": [
-                    {"id": item_id, "sku": items_by_id[item_id].sku, "dependencies": blocker_map[item_id]}
-                    for item_id in unique_ids if item_id in blocker_map
-                ],
-            },
+    item_location_ids = list(
+        db.scalars(select(InventoryItemLocation.id).where(InventoryItemLocation.inventory_item_id.in_(unique_ids))).all()
+    )
+    for item in items:
+        db.add(
+            InventoryAuditEvent(
+                item_id=None,
+                sku=item.sku,
+                barcode=item.barcode,
+                event_type="item_deleted",
+                quantity_delta=-to_decimal(item.in_stock),
+                previous_in_stock=to_decimal(item.in_stock),
+                new_in_stock=0,
+                previous_allocated=to_decimal(item.allocated),
+                new_allocated=0,
+                previous_sellable=to_decimal(item.sellable),
+                new_sellable=0,
+                warehouse=item.warehouse,
+                inventory_location=item.inventory_location,
+                reference_type="inventory_item_deletion",
+                reference_id=item.id,
+                notes="Permanent local deletion; operational history retained as snapshots.",
+                created_by="system",
+            )
         )
+
+    item_references = [
+        (StockMovement, StockMovement.inventory_item_id),
+        (InventoryAuditEvent, InventoryAuditEvent.item_id),
+        (OrderItem, OrderItem.inventory_item_id),
+        (OrderItem, OrderItem.substituted_from_inventory_item_id),
+        (ReceiptItem, ReceiptItem.inventory_item_id),
+        (CycleCountLine, CycleCountLine.item_id),
+        (AllocationLine, AllocationLine.item_id),
+        (PickLine, PickLine.item_id),
+        (FulfillmentLine, FulfillmentLine.item_id),
+        (InventoryTransferLine, InventoryTransferLine.inventory_item_id),
+        (StockAdjustmentLine, StockAdjustmentLine.inventory_item_id),
+    ]
+    for model, column in item_references:
+        db.execute(update(model).where(column.in_(unique_ids)).values(**{column.key: None}))
+
+    if item_location_ids:
+        location_references = [
+            (StockMovement, StockMovement.inventory_item_location_id),
+            (StockMovement, StockMovement.from_inventory_location_id),
+            (StockMovement, StockMovement.to_inventory_location_id),
+            (ReceiptItem, ReceiptItem.inventory_item_location_id),
+            (CycleCountLine, CycleCountLine.inventory_item_location_id),
+            (AllocationLine, AllocationLine.inventory_item_location_id),
+            (PickLine, PickLine.inventory_item_location_id),
+            (FulfillmentLine, FulfillmentLine.inventory_item_location_id),
+            (InventoryTransferLine, InventoryTransferLine.from_inventory_item_location_id),
+            (InventoryTransferLine, InventoryTransferLine.to_inventory_item_location_id),
+            (StockAdjustmentLine, StockAdjustmentLine.inventory_item_location_id),
+        ]
+        for model, column in location_references:
+            db.execute(update(model).where(column.in_(item_location_ids)).values(**{column.key: None}))
 
     db.execute(delete(ItemNote).where(ItemNote.inventory_item_id.in_(unique_ids)))
     db.execute(delete(ItemImportChange).where(ItemImportChange.item_id.in_(unique_ids)))
@@ -279,13 +272,13 @@ def delete_items_permanently(db: Session, item_ids: list[int], *, confirm_woo_li
     db.execute(update(WooCatalogSyncRow).where(WooCatalogSyncRow.local_item_id.in_(unique_ids)).values(local_item_id=None))
     db.execute(update(WooCatalogSyncRow).where(WooCatalogSyncRow.resolution_item_id.in_(unique_ids)).values(resolution_item_id=None))
     db.execute(delete(WooItemMapping).where(WooItemMapping.item_id.in_(unique_ids)))
-    for item in items:
-        db.delete(item)
+    db.execute(delete(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id.in_(unique_ids)))
+    db.execute(delete(InventoryItem).where(InventoryItem.id.in_(unique_ids)))
     try:
         db.commit()
     except IntegrityError as error:
         db.rollback()
-        raise HTTPException(status_code=409, detail="One or more selected items are still used by inventory history. Nothing was deleted.") from error
+        raise HTTPException(status_code=409, detail="One or more selected items could not be deleted. Nothing was deleted.") from error
     return {"deleted": True, "deleted_count": len(unique_ids), "deleted_item_ids": unique_ids, "woo_linked_count": len(woo_linked_ids)}
 
 

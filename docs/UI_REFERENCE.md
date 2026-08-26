@@ -855,8 +855,9 @@ Items now has:
   stock quantities are not offered.
 - Selected rows on the Items page can be permanently bulk deleted. One
   consolidated warning identifies WooCommerce-linked selections; WooCommerce
-  is never deleted. The action is atomic, so any selected item with stock or
-  operational history prevents the whole deletion.
+  is never deleted. Confirmed deletion is available even when an item has stock
+  or operational history. Current local stock is discarded, while historical
+  order and inventory rows remain as detached snapshots.
 - Local remap candidate search that does not write WooCommerce.
 
 Item Detail Control Center tabs:

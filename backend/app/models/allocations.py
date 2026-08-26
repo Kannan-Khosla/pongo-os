@@ -42,7 +42,7 @@ class AllocationLine(TimestampMixin, Base):
     allocation_id: Mapped[int] = mapped_column(ForeignKey("allocations.id"), index=True, nullable=False)
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True, nullable=False)
     order_line_id: Mapped[int] = mapped_column(ForeignKey("order_items.id"), index=True, nullable=False)
-    item_id: Mapped[int] = mapped_column(ForeignKey("inventory_items.id"), index=True, nullable=False)
+    item_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_items.id"), index=True)
     inventory_item_location_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_item_locations.id"), index=True)
     sku: Mapped[str | None] = mapped_column(String(120), index=True)
     barcode: Mapped[str | None] = mapped_column(String(120), index=True)
