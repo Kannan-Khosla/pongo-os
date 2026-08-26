@@ -6605,8 +6605,10 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
           <div className="button-row items-actions">
             <a className="primary-button" href="#/items/new"><Plus size={17} /> Add item</a>
             <a className="action-button items-import-new-button" href="#/settings/catalog"><RefreshCw size={17} /> Update from WooCommerce</a>
-            <a className="action-button items-import-button" href="#/items/import"><Upload size={17} /> Import items</a>
-            <a className="action-button" href="#/items/import?outcome=update_stock"><RefreshCw size={17} /> Update stock CSV</a>
+            <ItemsCommandMenu label="Import">
+                <a href="#/items/import"><Upload size={16} /><span><strong>Import items</strong><small>Add or update products from CSV</small></span></a>
+                <a href="#/items/import?outcome=update_stock"><RefreshCw size={16} /><span><strong>Update stock CSV</strong><small>Apply audited stock changes</small></span></a>
+            </ItemsCommandMenu>
             <ItemsCommandMenu label="Export">
                 <button onClick={() => exportItemsCsv(filters)} type="button"><Download size={16} /><span><strong>Current view</strong><small>Export the current filters</small></span></button>
                 <button onClick={() => exportItemsCsv({})} type="button"><Download size={16} /><span><strong>All items</strong><small>Export the complete item list</small></span></button>
@@ -6619,11 +6621,18 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
                 <a href="#/settings/catalog"><Link2 size={16} /><span><strong>Update products from WooCommerce</strong><small>Add missing products and refresh product links</small></span></a>
                 <a href="#/settings/catalog?tab=attention"><TriangleAlert size={16} /><span><strong>Review product matches</strong><small>Choose what to do with products Pongo could not match</small></span></a>
             </ItemsCommandMenu>
-            {!!selectedIds.length && <button className="action-button" disabled={loading} onClick={() => setBulkOpen(true)} type="button"><Edit3 size={17} /> Bulk edit {selectedIds.length}</button>}
-            {!!selectedIds.length && <button aria-busy={bulkDeleting} className="danger-button" disabled={loading || bulkDeleting} onClick={deleteSelectedItems} type="button"><Trash2 size={17} /> {bulkDeleting ? 'Deleting…' : `Bulk delete ${selectedIds.length}`}</button>}
-            {filtersChanged && <button className="muted-button" onClick={clearFilters} type="button">Clear filters</button>}
           </div>
         </div>
+        {!!selectedIds.length && (
+          <section aria-label="Selected item actions" className="items-selection-bar">
+            <div><strong>{formatNumber(selectedIds.length)} selected</strong><span>Changes apply only to the checked items on this page.</span></div>
+            <div className="button-row">
+              <button className="muted-button" disabled={loading} onClick={() => setSelectedIds([])} type="button">Clear selection</button>
+              <button className="action-button" disabled={loading} onClick={() => setBulkOpen(true)} type="button"><Edit3 size={17} /> Bulk edit {selectedIds.length}</button>
+              <button aria-busy={bulkDeleting} className="danger-button" disabled={loading || bulkDeleting} onClick={deleteSelectedItems} type="button"><Trash2 size={17} /> {bulkDeleting ? 'Deleting…' : `Bulk delete ${selectedIds.length}`}</button>
+            </div>
+          </section>
+        )}
         <div className="items-filter-grid-pro">
           <div className="items-camera-search">
             <InventoryKeywordSearch className="field" value={searchDraft} onChange={setSearchDraft} onSearch={(search) => updateFilter('search', search)} label="SKU / Barcode / Product Title" placeholder="Search SKU, barcode, product title, or brand" />
@@ -6654,6 +6663,7 @@ function ItemsList({ items, pagination = emptyItemsPagination, loading, error, o
             Include Non-Inventory
           </label>
         </div>
+        {filtersChanged && <div className="items-filter-footer"><span>Filters are narrowing the catalog.</span><button className="muted-button" onClick={clearFilters} type="button">Clear filters</button></div>}
       </div>
       {dataQuality && (
         <div className="items-quality-card">
@@ -7236,9 +7246,10 @@ function ItemDetailDrawer({ detail, tab, setTab, onClose, onDeleted, onRefresh, 
   return (
     <BodyPortal><div className="drawer-backdrop" role="presentation">
       <aside className="detail-drawer" role="dialog" aria-modal="true" aria-label="Item detail">
-        <div className="modal-header">
-          <div>
-            <h2>{item?.sku || 'Item Detail'}</h2>
+        <div className="modal-header item-drawer-header">
+          <div className="item-drawer-title">
+            <span>Inventory item</span>
+            <div><h2>{item?.sku || 'Item Detail'}</h2>{item && <span className={item.active ? 'item-state active' : 'item-state'}>{item.active ? 'Active' : 'Inactive'}</span>}</div>
             <p>{item ? productTitle(item) || 'Item control center' : 'Loading item control center...'}</p>
           </div>
           <button className="icon-button modal-close" onClick={onClose} aria-label="Close item detail" type="button"><X size={20} /></button>
@@ -7247,14 +7258,16 @@ function ItemDetailDrawer({ detail, tab, setTab, onClose, onDeleted, onRefresh, 
         {detail && (
           <>
             {setupProgress && <div className="woo-import-setup-banner"><strong>Set up imported product {setupProgress.current} of {setupProgress.total}</strong><span>SKU and barcode are required. Location, opening stock, cost, brand, and product title are optional.</span></div>}
-            <div className="tab-row">
-              {tabs.map((name) => <button className={tab === name ? 'tab-button active' : 'tab-button'} key={name} onClick={() => setTab(name)} type="button">{name}</button>)}
+            <nav aria-label="Item sections" className="tab-row item-drawer-tabs">
+              {tabs.map((name) => <button aria-current={tab === name ? 'page' : undefined} className={tab === name ? 'tab-button active' : 'tab-button'} key={name} onClick={() => setTab(name)} type="button">{name}</button>)}
+            </nav>
+            <div className="item-drawer-content">
+              {tab === 'overview' && <ItemOverview detail={detail} onRefresh={onRefresh} />}
+              {tab === 'stock' && <ItemStockTab rows={detail.stock_by_location || []} item={item} />}
+              {tab === 'activity' && <ItemActivityPanel rows={detail.recent_activity || []} />}
+              {tab === 'history' && <ItemHistoryPanel itemId={item.id} />}
+              {tab === 'edit' && <ItemMetadataPanel item={item} key={item.id} onDeleted={onDeleted} onSaved={onSetupSaved || onRefresh} onRefreshItemFacets={onRefreshItemFacets} setupProgress={setupProgress} />}
             </div>
-            {tab === 'overview' && <ItemOverview detail={detail} onRefresh={onRefresh} />}
-            {tab === 'stock' && <ItemStockByLocation rows={detail.stock_by_location || []} item={item} />}
-            {tab === 'activity' && <ItemActivityTimeline rows={detail.recent_activity || []} />}
-            {tab === 'history' && <ItemHistoryPanel itemId={item.id} />}
-            {tab === 'edit' && <ItemMetadataPanel item={item} key={item.id} onDeleted={onDeleted} onSaved={onSetupSaved || onRefresh} onRefreshItemFacets={onRefreshItemFacets} setupProgress={setupProgress} />}
           </>
         )}
       </aside>
@@ -7262,44 +7275,94 @@ function ItemDetailDrawer({ detail, tab, setTab, onClose, onDeleted, onRefresh, 
   );
 }
 
+function ItemTabHeader({ icon: Icon, eyebrow, title, description, children }) {
+  return (
+    <header className="item-tab-header">
+      <span className="item-tab-icon"><Icon size={20} /></span>
+      <div><span>{eyebrow}</span><h3>{title}</h3><p>{description}</p></div>
+      {children && <div className="item-tab-header-actions">{children}</div>}
+    </header>
+  );
+}
+
 function ItemOverview({ detail, onRefresh }) {
   const item = detail.item || {};
   const stats = detail.quick_stats || {};
+  const facts = [
+    ['SKU', item.sku || '—'],
+    ['Barcode', item.barcode || '—'],
+    ['Brand', item.brand || '—'],
+    ['Category', item.category || '—'],
+    ['Unit cost', formatCurrency(item.unit_cost)],
+    ['Sales price', formatCurrency(item.sales_price)],
+    ['WooCommerce', item.woo_product_id || item.woo_variation_id ? `Linked · ${item.woo_product_id || item.woo_variation_id}` : 'Not linked'],
+    ['Last received', formatDateTime(stats.last_received_at) || 'No receipts yet'],
+    ['Last counted', formatDateTime(stats.last_counted_at) || 'No counts yet'],
+  ];
   return (
-    <div className="drawer-section">
-      <div className="item-overview-grid">
-        <div className="item-photo">{item.image_url ? <img alt="" src={item.image_url} loading="lazy" decoding="async" /> : <PackageSearch size={42} />}</div>
-        <div className="summary-strip">
-          <Metric label="In Stock" value={formatNumber(item.in_stock)} />
+    <section className="drawer-section item-tab-page item-overview-page">
+      <ItemTabHeader description="The essential stock, catalog, and WooCommerce details for this item." eyebrow="Overview" icon={PackageSearch} title="Item overview">
+        <button className="muted-button" onClick={onRefresh} type="button"><RefreshCw size={16} />Refresh</button>
+      </ItemTabHeader>
+      <div className="item-overview-card">
+        <div className="item-overview-visual">
+          <div className="item-photo">{item.image_url ? <img alt={productTitle(item) || item.sku || 'Inventory item'} src={item.image_url} loading="lazy" decoding="async" /> : <><PackageSearch size={38} /><span>No product image</span></>}</div>
+          <div><span>Product title</span><strong>{productTitle(item) || 'Untitled item'}</strong><small>{item.manufacturer || 'Manufacturer not set'}</small></div>
+        </div>
+        <div className="item-tab-metrics">
+          <Metric label="In stock" value={formatNumber(item.in_stock)} />
           <Metric label="Allocated" value={formatNumber(item.allocated)} />
           <Metric label="Sellable" value={formatNumber(item.sellable)} />
-          <Metric label="Value" value={formatCurrency(stats.inventory_value)} />
+          <Metric label="Inventory value" value={formatCurrency(stats.inventory_value)} />
         </div>
       </div>
-      <TableShell caption="Item" columns={['Field', 'Value']}>
-        {[
-          ['SKU', item.sku], ['Barcode', item.barcode], ['Brand', item.brand], ['Category', item.category], ['Unit Cost', formatCurrency(item.unit_cost)], ['Sales Price', formatCurrency(item.sales_price)], ['Woo Mapping', item.woo_product_id || item.woo_variation_id ? `${item.woo_product_id || ''}/${item.woo_variation_id || ''}` : 'Unmapped'], ['Last Received', formatDateTime(stats.last_received_at)], ['Last Counted', formatDateTime(stats.last_counted_at)],
-        ].map(([label, value]) => <tr key={label}><td>{label}</td><td>{value || ''}</td></tr>)}
-      </TableShell>
-      <div className="button-row"><button className="muted-button" onClick={onRefresh} type="button"><RefreshCw size={16} />Refresh Detail</button><a className="action-button" href="#receiving">Receive</a><a className="action-button" href="#/inventory/all">Inventory</a><a className="action-button" href="#cycle-count">Cycle Count</a></div>
-    </div>
+      <section className="item-facts-card" aria-labelledby="item-facts-title">
+        <div className="item-data-heading"><div><span>Catalog record</span><h4 id="item-facts-title">Item details</h4></div><small>{facts.length} fields</small></div>
+        <dl className="item-facts-grid">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || '—'}</dd></div>)}</dl>
+      </section>
+      <nav aria-label="Item workflow shortcuts" className="item-quick-actions"><span>Continue to</span><a className="primary-button" href="#receiving"><PackagePlus size={16} />Receive stock</a><a className="action-button" href="#/inventory/all"><Boxes size={16} />Inventory</a><a className="action-button" href="#cycle-count"><ClipboardCheck size={16} />Cycle count</a></nav>
+    </section>
+  );
+}
+
+function ItemStockTab({ rows, item = {} }) {
+  return (
+    <section className="drawer-section item-tab-page item-stock-page">
+      <ItemTabHeader description="See where stock is held and whether each location needs attention." eyebrow="Stock" icon={Warehouse} title="Stock by location" />
+      <div className="item-tab-metrics">
+        <Metric label="Locations" value={formatNumber(rows.length)} />
+        <Metric label="In stock" value={formatNumber(item.in_stock)} />
+        <Metric label="Allocated" value={formatNumber(item.allocated)} />
+        <Metric label="Sellable" value={formatNumber(item.sellable)} />
+      </div>
+      <ItemStockByLocation rows={rows} />
+    </section>
   );
 }
 
 function ItemStockByLocation({ rows }) {
   return (
-    <TableShell caption={`${rows.length} stock location(s)`} columns={['Warehouse', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Under Par', 'Par', 'Default', 'Updated']}>
-      {rows.map((row) => <tr key={row.id}><td>{row.warehouse}</td><td>{row.inventory_location}</td><td>{formatNumber(row.in_stock)}</td><td>{formatNumber(row.allocated)}</td><td>{formatNumber(row.sellable)}</td><td>{row.under_par ? 'Yes' : 'No'}</td><td>{formatNumber(row.par_level)}</td><td>{row.is_default_location ? 'Yes' : 'No'}</td><td>{formatDateTime(row.updated_at)}</td></tr>)}
-      {!rows.length && <tr><td colSpan={9}><div className="empty-table-row">No stock locations yet.</div></td></tr>}
+    <TableShell caption={`${rows.length} stock location(s)`} className="item-stock-table" columns={['Warehouse', 'Location', 'In Stock', 'Allocated', 'Sellable', 'Par', 'Status', 'Default', 'Updated']} showActionBand={false}>
+      {rows.map((row) => <tr key={row.id}><td><strong>{row.warehouse || 'Unassigned'}</strong></td><td>{row.inventory_location || 'Unassigned'}</td><td>{formatNumber(row.in_stock)}</td><td>{formatNumber(row.allocated)}</td><td><strong>{formatNumber(row.sellable)}</strong></td><td>{formatNumber(row.par_level)}</td><td><span className={row.under_par ? 'item-stock-status attention' : 'item-stock-status'}>{row.under_par ? 'Under par' : 'Healthy'}</span></td><td>{row.is_default_location ? <span className="item-default-badge">Default</span> : '—'}</td><td>{formatDateTime(row.updated_at) || '—'}</td></tr>)}
+      {!rows.length && <tr><td colSpan={9}><div className="item-tab-empty compact"><Warehouse size={26} /><strong>No stock locations yet</strong><span>Add a location before receiving stock for this item.</span></div></td></tr>}
     </TableShell>
   );
 }
 
-function ItemActivityTimeline({ rows }) {
+function ItemActivityPanel({ rows }) {
+  return (
+    <section className="drawer-section item-tab-page item-activity-page">
+      <ItemTabHeader description="A live view of the latest receipts, counts, allocations, and stock changes." eyebrow="Activity" icon={ClipboardList} title="Recent activity"><span className="item-tab-count">{formatNumber(rows.length)} events</span></ItemTabHeader>
+      <ItemActivityTimeline rows={rows} />
+    </section>
+  );
+}
+
+function ItemActivityTimeline({ rows, emptyMessage = 'Receipts, counts, and stock changes will appear here.' }) {
   return (
     <div className="activity-timeline">
-      {rows.map((row) => <div className={`activity-row ${row.severity}`} key={row.id}><strong>{row.title}</strong><span>{formatDateTime(row.created_at)} · {row.warehouse || ''} {row.inventory_location || ''}</span><p>{row.description || row.reference_number || ''}</p><b>{row.quantity_change == null ? '' : formatNumber(row.quantity_change)}</b></div>)}
-      {!rows.length && <div className="empty-table-row">No item activity yet.</div>}
+      {rows.map((row) => <article className={`activity-row ${row.severity || ''}`} key={row.id}><span className="activity-marker" /><div className="activity-copy"><header><div><strong>{row.title || 'Inventory activity'}</strong><time dateTime={row.created_at || undefined}>{formatDateTime(row.created_at) || 'Time unavailable'}</time></div>{row.quantity_change != null && <b className={Number(row.quantity_change) < 0 ? 'negative' : 'positive'}>{Number(row.quantity_change) > 0 ? '+' : ''}{formatNumber(row.quantity_change)}</b>}</header><p>{row.description || row.reference_number || 'No additional details.'}</p><footer>{(row.warehouse || row.inventory_location) && <span><MapPin size={13} />{[row.warehouse, row.inventory_location].filter(Boolean).join(' · ')}</span>}{row.reference_number && row.description && <span>Ref {row.reference_number}</span>}</footer></div></article>)}
+      {!rows.length && <div className="item-tab-empty"><ClipboardList size={30} /><strong>No activity yet</strong><span>{emptyMessage}</span></div>}
     </div>
   );
 }
@@ -7310,11 +7373,13 @@ function ItemHistoryPanel({ itemId }) {
   useEffect(() => {
     apiFetch(`${API_BASE_URL}/api/items/${itemId}/history?section=${section}`).then((response) => response.json()).then(setHistory).catch(() => setHistory({ rows: [], total: 0 }));
   }, [itemId, section]);
+  const sectionLabel = section.split('-').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
   return (
-    <div className="drawer-section">
-      <FilterSelect label="History" value={section} options={['receipts', 'cycle-counts', 'adjustments', 'allocations', 'picks', 'fulfillments', 'orders', 'stock-movements']} onChange={setSection} />
-      <ItemActivityTimeline rows={history.rows || []} />
-    </div>
+    <section className="drawer-section item-tab-page item-history-page">
+      <ItemTabHeader description="Review operational records by workflow without leaving the item." eyebrow="History" icon={History} title="Item history"><span className="item-tab-count">{formatNumber(history.total || 0)} records</span></ItemTabHeader>
+      <div className="item-history-controls"><FilterSelect label="History type" value={section} options={['receipts', 'cycle-counts', 'adjustments', 'allocations', 'picks', 'fulfillments', 'orders', 'stock-movements']} onChange={setSection} /><div><span>Viewing</span><strong>{sectionLabel}</strong><small>Newest records appear first</small></div></div>
+      <ItemActivityTimeline emptyMessage={`No ${sectionLabel.toLowerCase()} have been recorded for this item.`} rows={history.rows || []} />
+    </section>
   );
 }
 
@@ -7404,20 +7469,36 @@ function ItemMetadataPanel({ item, onDeleted, onSaved, onRefreshItemFacets, setu
     }
   }
   return (
-    <form className="drawer-section operation-grid" onSubmit={saveMetadata}>
-      <label className="field"><span>SKU {setupProgress ? '(required)' : ''}</span><input disabled={item.sku_locked} required={Boolean(setupProgress)} value={form.sku} onChange={(event) => setForm((current) => ({ ...current, sku: event.target.value }))} />{item.sku_locked && <small>Locked because stock activity has started.</small>}</label>
-      <label className="field"><span>Barcode {setupProgress ? '(required)' : ''}</span><input required={Boolean(setupProgress)} value={form.barcode} onChange={(event) => setForm((current) => ({ ...current, barcode: event.target.value }))} /></label>
-      <label className="field operation-grid-wide"><span>Product title</span><input value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></label>
-      {['category', 'brand', 'manufacturer'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={form[field]} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
-      {['unit_cost', 'sales_price'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input min="0" step="0.01" type="number" value={form[field]} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
-      <label className="field"><span>Warehouse</span><input value={form.warehouse} onChange={(event) => setForm((current) => ({ ...current, warehouse: event.target.value }))} /></label>
-      <label className="field"><span>Inventory location</span><input value={form.inventory_location} onChange={(event) => setForm((current) => ({ ...current, inventory_location: event.target.value }))} /></label>
-      <label className="field"><span>Opening stock</span><input min="0" step="0.001" type="number" value={form.opening_stock} onChange={(event) => setForm((current) => ({ ...current, opening_stock: event.target.value }))} /><small>Optional and available only before stock activity starts.</small></label>
-      <label className="check-field"><input checked={form.active} onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))} type="checkbox" />Active</label>
-      <button aria-busy={saving} className="primary-button" disabled={saving} type="submit"><Save size={16} />{saving ? 'Saving…' : setupProgress && setupProgress.current < setupProgress.total ? 'Save & next' : 'Save product'}</button>
-      {!setupProgress && <div className="item-delete-zone operation-grid-wide"><div><strong>Permanent deletion</strong><span>Available only when the item has no stock or operational history.</span></div><button aria-busy={deleting} className="danger-button" disabled={deleting || saving} onClick={deleteItem} type="button"><Trash2 size={16} />{deleting ? 'Deleting…' : 'Delete item permanently'}</button></div>}
-      {error && <div className="api-error operation-grid-wide">{error}</div>}
-      {message && <div className="api-success operation-grid-wide">{message}</div>}
+    <form className="drawer-section item-edit-form" onSubmit={saveMetadata}>
+      <ItemTabHeader description="Update catalog details, placement, pricing, and item availability." eyebrow="Edit" icon={Edit3} title="Edit item details" />
+      <section className="item-form-card">
+        <div className="item-form-heading"><span>01</span><div><h3>Product identity</h3><p>The identifiers staff use to find and scan this item.</p></div></div>
+        <div className="operation-grid item-form-grid">
+          <label className="field"><span>SKU {setupProgress ? '(required)' : ''}</span><input disabled={item.sku_locked} required={Boolean(setupProgress)} value={form.sku} onChange={(event) => setForm((current) => ({ ...current, sku: event.target.value }))} />{item.sku_locked && <small>Locked because stock activity has started.</small>}</label>
+          <label className="field"><span>Barcode {setupProgress ? '(required)' : ''}</span><input required={Boolean(setupProgress)} value={form.barcode} onChange={(event) => setForm((current) => ({ ...current, barcode: event.target.value }))} /></label>
+          <label className="field operation-grid-wide"><span>Product title</span><textarea rows="3" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></label>
+        </div>
+      </section>
+      <section className="item-form-card">
+        <div className="item-form-heading"><span>02</span><div><h3>Catalog details</h3><p>Classification and pricing used across the inventory catalog.</p></div></div>
+        <div className="operation-grid item-form-grid">
+          {['category', 'brand', 'manufacturer'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={form[field]} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
+          {['unit_cost', 'sales_price'].map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input min="0" step="0.01" type="number" value={form[field]} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))} /></label>)}
+        </div>
+      </section>
+      <section className="item-form-card">
+        <div className="item-form-heading"><span>03</span><div><h3>Placement and status</h3><p>Where the item lives and whether staff can use it.</p></div></div>
+        <div className="operation-grid item-form-grid">
+          <label className="field"><span>Warehouse</span><input value={form.warehouse} onChange={(event) => setForm((current) => ({ ...current, warehouse: event.target.value }))} /></label>
+          <label className="field"><span>Inventory location</span><input value={form.inventory_location} onChange={(event) => setForm((current) => ({ ...current, inventory_location: event.target.value }))} /></label>
+          <label className="field"><span>Opening stock</span><input min="0" step="0.001" type="number" value={form.opening_stock} onChange={(event) => setForm((current) => ({ ...current, opening_stock: event.target.value }))} /><small>Available only before stock activity starts.</small></label>
+          <label className="item-active-toggle"><input checked={form.active} onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))} type="checkbox" /><span><strong>Active item</strong><small>Available in inventory workflows</small></span></label>
+        </div>
+      </section>
+      <div className="item-edit-actions"><span>Review the details, then save your changes.</span><button aria-busy={saving} className="primary-button" disabled={saving} type="submit"><Save size={16} />{saving ? 'Saving…' : setupProgress && setupProgress.current < setupProgress.total ? 'Save & next' : 'Save product'}</button></div>
+      {!setupProgress && <section className="item-delete-zone"><div><strong>Permanent deletion</strong><span>Only available when the item has no stock or operational history.</span></div><button aria-busy={deleting} className="danger-button" disabled={deleting || saving} onClick={deleteItem} type="button"><Trash2 size={16} />{deleting ? 'Deleting…' : 'Delete item permanently'}</button></section>}
+      {error && <div className="api-error">{error}</div>}
+      {message && <div className="api-success">{message}</div>}
     </form>
   );
 }

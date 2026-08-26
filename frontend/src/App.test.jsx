@@ -842,6 +842,28 @@ describe('App shell and workflows', () => {
     expect(await screen.findByRole('dialog', { name: 'Item detail' })).toBeInTheDocument();
   });
 
+  it('gives every item-detail tab its own structured page', async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).match(/\/api\/items\/1\/detail$/)) {
+        return json({ item: { id: 1, sku: 'SMOKE-001', product_name: 'Smoke Test Item', active: true, in_stock: 9, allocated: 2, sellable: 7 }, stock_by_location: [], recent_activity: [], quick_stats: {} });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#items';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    await user.click(screen.getByRole('button', { name: /SMOKE-001/i }));
+    const dialog = await screen.findByRole('dialog', { name: 'Item detail' });
+    expect(within(dialog).getByRole('heading', { name: 'Item overview' })).toBeInTheDocument();
+
+    for (const [tab, heading] of [['stock', 'Stock by location'], ['activity', 'Recent activity'], ['history', 'Item history'], ['edit', 'Edit item details']]) {
+      await user.click(within(dialog).getByRole('button', { name: tab }));
+      expect(within(dialog).getByRole('heading', { name: heading })).toBeInTheDocument();
+    }
+  });
+
   it('shows the Woo product title instead of the long description in Item Detail', async () => {
     const user = userEvent.setup();
     fetch.mockImplementation((url, options = {}) => {
@@ -861,7 +883,7 @@ describe('App shell and workflows', () => {
     await user.click(screen.getByRole('button', { name: /SMOKE-001/i }));
 
     const dialog = await screen.findByRole('dialog', { name: 'Item detail' });
-    expect(within(dialog).getByText('Royal Canin Aging Spayed/Neutered 7LB')).toBeInTheDocument();
+    expect(within(dialog).getAllByText('Royal Canin Aging Spayed/Neutered 7LB')).not.toHaveLength(0);
     expect(within(dialog).queryByText('Corn, Brewers Rice, Corn Gluten Meal')).not.toBeInTheDocument();
   });
 
@@ -1074,8 +1096,9 @@ describe('App shell and workflows', () => {
 
     await screen.findByText('Smoke Test Item');
     expect(screen.getByRole('link', { name: 'Add item' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Import items' })).toHaveAttribute('href', '#/items/import');
-    expect(screen.getByRole('link', { name: 'Update stock CSV' })).toHaveAttribute('href', '#/items/import?outcome=update_stock');
+    await user.click(screen.getByRole('button', { name: 'Import' }));
+    expect(screen.getByRole('link', { name: /Import items/i })).toHaveAttribute('href', '#/items/import');
+    expect(screen.getByRole('link', { name: /Update stock CSV/i })).toHaveAttribute('href', '#/items/import?outcome=update_stock');
     expect(screen.getByText('Export')).toBeInTheDocument();
     expect(screen.getByText('More')).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Item data quality' })).toHaveTextContent('Missing image');
@@ -1093,7 +1116,8 @@ describe('App shell and workflows', () => {
     render(<App />);
 
     await screen.findByText('Smoke Test Item');
-    await user.click(screen.getByRole('link', { name: 'Update stock CSV' }));
+    await user.click(screen.getByRole('button', { name: 'Import' }));
+    await user.click(screen.getByRole('link', { name: /Update stock CSV/i }));
 
     expect(await screen.findByRole('heading', { name: 'Upload your CSV' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Export editable current stock/i })).toHaveAttribute('href', expect.stringContaining('/templates/update_stock?include_existing=true'));
