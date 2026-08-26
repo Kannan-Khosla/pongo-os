@@ -170,17 +170,18 @@ def test_worker_keeps_live_subscriptions_ahead_of_one_catalog_step(monkeypatch):
     monkeypatch.setattr(worker, "ensure_daily_full_stock_sync_job", lambda *_args: None)
     monkeypatch.setattr(worker, "process_next_order_sync_job", lambda *_args: calls.append("order"))
     monkeypatch.setattr(worker, "process_next_stock_sync_job", lambda *_args: calls.append("stock"))
+    monkeypatch.setattr(worker, "process_next_item_import_job", lambda: calls.append("item-import"))
     monkeypatch.setattr(worker, "process_subscription_sync_if_due", lambda *_args: calls.append("subscriptions") or True)
     monkeypatch.setattr(worker, "process_next_catalog_sync", lambda *_args, **_kwargs: calls.append("catalog") or object())
     monkeypatch.setattr(worker, "process_next_report_job", lambda: calls.append("report"))
 
     assert worker.run_cycle() is True
-    assert calls == ["order", "stock", "subscriptions"]
+    assert calls == ["order", "stock", "item-import", "subscriptions"]
 
     calls.clear()
     monkeypatch.setattr(worker, "process_subscription_sync_if_due", lambda *_args: calls.append("subscriptions") or False)
     assert worker.run_cycle() is True
-    assert calls == ["order", "stock", "subscriptions", "catalog"]
+    assert calls == ["order", "stock", "item-import", "subscriptions", "catalog"]
     assert worker._catalog_step_completed is True
 
 

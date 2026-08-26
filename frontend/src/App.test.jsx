@@ -331,6 +331,7 @@ const mockImportSchema = {
   outcomes: [
     { key: 'add_items', label: 'Add new items', description: 'Create products that do not yet exist.', changes: 'Creates item records and metadata.', does_not_change: 'Inventory quantities and movement history will not change.', required_fields: ['sku'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['add_items'] }, { key: 'product_name', label: 'Product name', type: 'text', required_for: [] }] },
     { key: 'update_items', label: 'Update item details', description: 'Update existing products by SKU.', changes: 'Updates approved metadata.', does_not_change: 'On hand, allocated, available, and movement history will not change.', required_fields: ['sku'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_items'] }, { key: 'product_name', label: 'Product name', type: 'text', required_for: [] }] },
+    { key: 'repair_items', label: 'Repair item data & locations', description: 'Repair data and consolidate item locations.', changes: 'Updates Brand and Unit cost, sets Store/default, and moves unallocated stock.', does_not_change: 'Product totals and WooCommerce stock do not change.', required_fields: ['warehouse', 'inventory_location'], fields: [{ key: 'item_id', label: 'Pongo Item ID', type: 'integer', editable: false, required_for: [] }, { key: 'sku', label: 'SKU', type: 'text', editable: false, required_for: [] }, { key: 'warehouse', label: 'Warehouse', type: 'text', required_for: ['repair_items'] }, { key: 'inventory_location', label: 'Inventory location', type: 'text', required_for: ['repair_items'] }] },
     { key: 'update_stock', label: 'Override stock levels', description: 'Set exact stock by location.', changes: 'Creates one audited stock adjustment.', does_not_change: 'Allocated and sellable remain system-managed.', required_fields: ['sku', 'stock_quantity'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_stock'] }, { key: 'warehouse', label: 'Warehouse', type: 'text', required_for: [] }, { key: 'inventory_location', label: 'Inventory location', type: 'text', required_for: [] }, { key: 'stock_quantity', label: 'In stock', type: 'decimal', required_for: ['update_stock'] }] },
     { key: 'starting_inventory', label: 'Set starting inventory', description: 'Record physical stock at onboarding.', changes: 'Creates audited starting-inventory movements.', does_not_change: 'Existing operational inventory is never overwritten.', required_fields: ['sku', 'starting_quantity', 'starting_warehouse', 'starting_location'], fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_quantity', label: 'Starting quantity', type: 'decimal', required_for: ['starting_inventory'] }, { key: 'starting_warehouse', label: 'Warehouse', type: 'text', required_for: ['starting_inventory'] }, { key: 'starting_location', label: 'Inventory location', type: 'text', required_for: ['starting_inventory'] }] },
   ],
@@ -1096,6 +1097,15 @@ describe('App shell and workflows', () => {
 
     expect(await screen.findByRole('heading', { name: 'Upload your CSV' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Export editable current stock/i })).toHaveAttribute('href', expect.stringContaining('/templates/update_stock?include_existing=true'));
+  });
+
+  it('accepts the repair outcome in the item-import route', async () => {
+    window.location.hash = '#/items/import?outcome=repair_items';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Upload your CSV' })).toBeInTheDocument();
+    expect(screen.getByText(/Repair item data & locations:/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Export repair-ready catalog/i })).toHaveAttribute('href', expect.stringContaining('/templates/repair_items?include_existing=true'));
   });
 
   it('keeps sign out in the top-right account menu', async () => {
@@ -3802,9 +3812,12 @@ describe('App shell and workflows', () => {
     expect(within(dialog).getByRole('heading', { name: 'Notes & tags' })).toBeInTheDocument();
     expect(within(dialog).getByText('Call before loading the van.')).toBeInTheDocument();
 
-    await user.type(within(dialog).getByRole('textbox', { name: 'Add a Pongo note' }), 'Packed with the red tote.');
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Add a Pongo note' }), { target: { value: 'Packed with the red tote.' } });
     await user.click(within(dialog).getByRole('button', { name: 'Save note' }));
-    expect(await within(dialog).findByText('Packed with the red tote.', {}, { timeout: 5000 })).toBeInTheDocument();
+    await waitFor(() => {
+      const currentDialog = screen.getByRole('dialog', { name: 'View Customer Order' });
+      expect(within(currentDialog).getByText('Packed with the red tote.')).toBeInTheDocument();
+    }, { timeout: 3000 });
     expect(fetch.mock.calls.some(([url, options = {}]) => {
       if (!String(url).endsWith('/api/orders/701/notes') || options.method !== 'POST') return false;
       const body = JSON.parse(options.body);

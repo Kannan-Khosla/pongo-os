@@ -16,6 +16,7 @@ from app.services.item_import_workflow import (
     create_mapping_profile,
     create_preview,
     delete_mapping_profile,
+    enqueue_repair_commit,
     get_preview,
     list_mapping_profiles,
     mapping_profile_dict,
@@ -154,8 +155,14 @@ def post_revalidate(preview_id: str, db: Session = Depends(get_db), actor: str =
 
 
 @router.post("/previews/{preview_id}/commit")
-def post_commit(preview_id: str, payload: CommitRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict[str, Any]:
-    return commit_preview(get_preview(db, preview_id, actor), db, actor=actor, idempotency_key=payload.idempotency_key)
+def post_commit(preview_id: str, payload: CommitRequest, response: Response, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict[str, Any]:
+    preview = get_preview(db, preview_id, actor)
+    if preview.outcome == "repair_items":
+        result = enqueue_repair_commit(preview, db, actor=actor, idempotency_key=payload.idempotency_key)
+        if result.get("status") in {"queued", "running"}:
+            response.status_code = 202
+        return result
+    return commit_preview(preview, db, actor=actor, idempotency_key=payload.idempotency_key)
 
 
 @router.post("/previews/{preview_id}/cancel")

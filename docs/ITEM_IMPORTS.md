@@ -11,12 +11,13 @@ Items → Import items opens a full-page, six-step workflow:
 5. Confirm the exact changes.
 6. Review results and recovery actions.
 
-The four outcomes are deliberately separate:
+The five outcomes are deliberately separate:
 
 | Outcome | Allowed effect | Explicitly protected |
 | --- | --- | --- |
 | Add new items | Creates new item records and approved metadata. Existing SKUs are blocked. | On hand, allocated, available, on order, stock movement history. |
 | Update item details | Matches by SKU and changes approved item metadata. Blank cells preserve current values unless “clear blank values” is enabled. | On hand, allocated, available, on order, stock movement history. |
+| Repair item data and locations | Matches by Pongo Item ID, with SKU fallback, updates nonblank Brand/Unit cost, and consolidates unallocated stock plus on-order quantities into one required active location. | Barcode, SKU, Woo identity, item totals, allocations, and WooCommerce stock. Allocated units remain reserved at their source and are reported as deferred. |
 | Override stock levels | Matches by exact SKU, sums location rows into one exact total per SKU, skips matching totals and unknown SKUs, and applies every matched change through one audited adjustment. | CSV locations never reassign stock; invalid quantities, allocation conflicts, and stale stock block every matched change. Allocated and sellable stay system-managed. |
 | Set starting inventory | For an existing, zero-stock item with no stock movement history, creates one audited opening-balance movement at an active location. | Any item with operational stock or stock history; allocated always starts at zero. |
 
@@ -31,13 +32,14 @@ and connection repair remain under Items → More.
 
 `GET /api/items/import/schema` is the source of truth for supported outcomes,
 field labels, types, aliases, requirements, examples, the maximum upload size,
-and preview lifetime. The current schema version is `2026-08-10.3`.
+and preview lifetime. The current schema version is `2026-08-26.1`.
 
 Templates are generated from that same schema:
 
 - `GET /api/items/import/templates/add_items`
 - `GET /api/items/import/templates/update_items`
 - `GET /api/items/import/templates/update_items?include_existing=true`
+- `GET /api/items/import/templates/repair_items?include_existing=true`
 - `GET /api/items/import/templates/update_stock`
 - `GET /api/items/import/templates/update_stock?include_existing=true`
 - `GET /api/items/import/templates/starting_inventory`
@@ -70,6 +72,7 @@ uses the guided workspace endpoints.
 - Require one destination per source and prevent the same destination from
   being mapped twice.
 - Match update, stock-override, and starting-inventory rows by normalized exact SKU only.
+- Match repair rows by immutable Pongo Item ID when present, otherwise by exact SKU. When both are present they must identify the same item. Product name and Woo IDs are read-only identity context; Barcode is not part of the repair schema and an unrelated Barcode column is ignored.
 - Never fall back to barcode for an update. This prevents a mistyped SKU from
   renaming the wrong item.
 - Detect duplicate SKUs and barcodes in the file and database. Stock override
@@ -118,6 +121,26 @@ WooCommerce stock writeback is enabled, the existing chunked stock-sync worker
 is queued so a large CSV does not hold the browser request open for one remote
 call per item. Stock movements are intentionally not customer-rollbackable.
 
+Repairs are also all-or-nothing. Commit locks every matched item, assignment,
+and physical location before comparing the item fields and complete assignment
+snapshot captured by preview. It moves only unallocated stock through audited
+location transfers, moves current on-order quantities, makes the target the
+default, and deactivates only zero-balance sources. A source containing allocated
+stock stays active with exactly its reserved quantity and appears in the result
+as deferred. Item-level In stock, Allocated, Sellable, and On order totals must
+be identical before and after the transaction. Repair does not queue a
+WooCommerce stock sync because those totals do not change.
+
+Repair confirmation itself returns `202` after idempotently creating one
+`queued` import job. The existing worker dyno claims that job with a locked,
+skip-locked query and runs the complete repair transaction outside the web
+request. The UI polls `GET /api/import-jobs/{id}` until `completed` or `failed`.
+A worker crash rolls back the transaction and leaves the job queued for retry.
+A validation or application failure records a failed job, saves no repair
+changes, and reopens the preview for a new confirmation. Other item-import
+outcomes remain synchronous. A repair cannot be cancelled after it has been
+queued, and its running preview does not expire while it waits for the worker.
+
 ## History, audit, and recovery
 
 Items → More → Import history shows the outcome, original filename, status,
@@ -135,6 +158,8 @@ Completed item-detail updates support guarded rollback at
 runs when every imported field still equals the imported value. It restores
 metadata and records zero-quantity audit events. It never deletes newly added
 items and never reverses stock movements.
+Repair jobs do not offer automatic rollback; their paired transfer movements and
+zero-quantity audit event are the permanent operational record.
 
 Item detail activity includes the imported field, before/after values, original
 filename, actor, and import job reference.
@@ -174,6 +199,12 @@ one transaction on local SQLite. This proves the requested file-level behavior,
 not Heroku/PostgreSQL capacity; production timing must still be observed on the
 first controlled Pongo import.
 
+On 2026-08-26, the repair regression previewed 1,500 items with two assignments
+each in 0.242 seconds, queued the repair in 0.005 seconds, and completed 1,500
+audited consolidations in the worker in 0.888 seconds on local SQLite (1,511
+preview statements, 8 web-queue statements, and 12,019 worker statements).
+This is a local regression ceiling, not a Heroku/PostgreSQL latency guarantee.
+
 The statement counts are dominated by required per-row persistence and audit
 writes; catalog matching is set-based rather than one lookup per row. These are
 local SQLite measurements, not PostgreSQL production capacity claims. Run the
@@ -203,5 +234,8 @@ Before release:
 13. Download original and failed-row files from history.
 14. Roll back an update, then modify an imported field and verify a second or
     stale rollback is refused safely.
+15. Preview a repair with `001` plus `UNASSIGNED`, confirm the summed item total
+    is unchanged, allocated sources are deferred, and a post-preview assignment
+    change blocks the entire commit.
 
 No production database or live WooCommerce connection is needed for this QA.

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ItemImportHistory, ItemImportWorkspace } from './ItemImportWorkspace';
@@ -14,6 +14,10 @@ const schema = {
     {
       key: 'update_items', label: 'Update item details', description: 'Update products.', changes: 'Updates approved metadata.', does_not_change: 'On hand, allocated, available, and stock history will not change.', required_fields: ['sku'],
       fields: [{ key: 'sku', label: 'SKU', type: 'text', required_for: ['update_items'] }],
+    },
+    {
+      key: 'repair_items', label: 'Repair item data & locations', description: 'Repair product data and consolidate stock locations.', changes: 'Updates Brand and Unit cost, sets the Store/default target, and moves unallocated stock.', does_not_change: 'Product stock totals and WooCommerce stock do not change; reserved units stay deferred.', required_fields: ['warehouse', 'inventory_location'],
+      fields: [{ key: 'item_id', label: 'Pongo Item ID', type: 'integer', editable: false, required_for: [] }, { key: 'sku', label: 'SKU', type: 'text', editable: false, required_for: [] }, { key: 'brand', label: 'Brand', type: 'text', required_for: [] }, { key: 'unit_cost', label: 'Unit cost', type: 'decimal', required_for: [] }, { key: 'warehouse', label: 'Warehouse', type: 'text', required_for: ['repair_items'] }, { key: 'inventory_location', label: 'Inventory location', type: 'text', required_for: ['repair_items'] }],
     },
     {
       key: 'update_stock', label: 'Override stock levels', description: 'Set exact stock.', changes: 'Creates one audited stock adjustment.', does_not_change: 'Allocated and sellable remain system-managed.', required_fields: ['sku', 'stock_quantity'],
@@ -41,7 +45,7 @@ function preview(summary) {
 
 function stockPreview(summary, overrides = {}) {
   return {
-    preview_id: 'stock-preview', outcome: 'update_stock', outcome_content: schema.outcomes[2],
+    preview_id: 'stock-preview', outcome: 'update_stock', outcome_content: schema.outcomes.find((candidate) => candidate.key === 'update_stock'),
     file: { name: 'inventory.csv', size: 80, row_count: 1, header_count: 4 }, status: 'ready',
     source_columns: [
       { source: 'SKU', destination: 'sku', confidence: 'exact', samples: ['STOCK-1'] },
@@ -54,7 +58,25 @@ function stockPreview(summary, overrides = {}) {
   };
 }
 
+function repairPreview(summary, overrides = {}) {
+  return {
+    preview_id: 'repair-preview', outcome: 'repair_items', outcome_content: schema.outcomes.find((candidate) => candidate.key === 'repair_items'),
+    file: { name: 'repair.csv', size: 90, row_count: 1, header_count: 6 }, status: 'ready',
+    source_columns: [
+      { source: 'Pongo Item ID', destination: 'item_id', confidence: 'exact', samples: ['101'] },
+      { source: 'SKU', destination: 'sku', confidence: 'exact', samples: ['REPAIR-1'] },
+      { source: 'Brand', destination: 'brand', confidence: 'exact', samples: ['Open Farm'] },
+      { source: 'Unit cost', destination: 'unit_cost', confidence: 'exact', samples: ['12.50'] },
+      { source: 'Warehouse', destination: 'warehouse', confidence: 'exact', samples: ['Main Warehouse'] },
+      { source: 'Inventory location', destination: 'inventory_location', confidence: 'exact', samples: ['001'] },
+    ],
+    mapping: { 'Pongo Item ID': 'item_id', SKU: 'sku', Brand: 'brand', 'Unit cost': 'unit_cost', Warehouse: 'warehouse', 'Inventory location': 'inventory_location' },
+    options: { allow_blank_clears: false }, summary, ...overrides,
+  };
+}
+
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   window.sessionStorage.clear();
   window.location.hash = '';
@@ -71,6 +93,75 @@ it('offers an audited stock override with a current-stock export', async () => {
   expect(screen.getByRole('heading', { name: 'Upload your CSV' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: /Download template/i })).toHaveAttribute('href', expect.stringContaining('/templates/update_stock'));
   expect(screen.getByRole('link', { name: /Export editable current stock/i })).toHaveAttribute('href', expect.stringContaining('/templates/update_stock?include_existing=true'));
+});
+
+it('offers the repair workflow with a repair-ready catalog export', async () => {
+  vi.stubGlobal('fetch', vi.fn((url) => String(url).endsWith('/schema') ? response(schema) : response({})));
+
+  render(<ItemImportWorkspace initialOutcome="repair_items" />);
+
+  expect(await screen.findByRole('heading', { name: 'Upload your CSV' })).toBeInTheDocument();
+  expect(screen.getByText(/Repair item data & locations:/i)).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: /Export repair-ready catalog/i })).toHaveAttribute('href', expect.stringContaining('/templates/repair_items?include_existing=true'));
+});
+
+it('blocks the whole repair and never offers row exclusion when one row is invalid', async () => {
+  const summary = { total_rows: 1, ready_count: 0, update_count: 0, no_changes_count: 0, blocking_count: 1, consolidate_count: 0, deferred_location_count: 0, units_relocated: 0 };
+  const row = { id: 1, row_number: 2, sku: 'REPAIR-1', barcode: null, product_name: 'Repair item', normalized_data: {}, proposed_changes: {}, issues: [{ code: 'invalid_location', message: 'Store target is invalid.' }], state: 'needs_attention', excluded: false };
+  vi.stubGlobal('fetch', vi.fn((url) => {
+    const target = String(url);
+    if (target.endsWith('/schema')) return response(schema);
+    if (target.includes('/rows?')) return response({ rows: [row], total: 1, page: 1, page_size: 50, total_pages: 1 });
+    if (target.endsWith('/repair-preview')) return response(repairPreview(summary));
+    return response({});
+  }));
+
+  render(<ItemImportWorkspace initialPreviewId="repair-preview" />);
+
+  expect(await screen.findByText(/1 issue.*block this repair/i)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Exclude row 2/i })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Review repair/i })).toBeDisabled();
+});
+
+it('summarizes safe repair moves and requires REPAIR confirmation', async () => {
+  const user = userEvent.setup();
+  const summary = { total_rows: 1, ready_count: 1, update_count: 1, no_changes_count: 0, blocking_count: 0, consolidate_count: 1, deferred_location_count: 1, units_relocated: 3 };
+  const row = {
+    id: 1, row_number: 2, existing_item_id: 101, sku: 'REPAIR-1', barcode: null, product_name: 'Repair item', normalized_data: { item_id: 101 },
+    proposed_changes: {
+      brand: { field: 'brand', label: 'Brand', before: null, after: 'Open Farm' },
+      location: { field: 'inventory_location', label: 'Inventory location', before: 'UNASSIGNED', after: '001' },
+    },
+    issues: [{ code: 'reserved_stock_deferred', message: 'Two reserved units remain at their source location.', blocking: false }], state: 'will_update', excluded: false,
+  };
+  vi.stubGlobal('fetch', vi.fn((url) => {
+    const target = String(url);
+    if (target.endsWith('/schema')) return response(schema);
+    if (target.includes('/rows?')) return response({ rows: [row], total: 1, page: 1, page_size: target.includes('page_size=25') ? 25 : 50, total_pages: 1 });
+    if (target.endsWith('/repair-preview')) return response(repairPreview(summary));
+    return response({});
+  }));
+
+  render(<ItemImportWorkspace initialPreviewId="repair-preview" />);
+
+  expect(await screen.findByText('All item repairs are ready')).toBeInTheDocument();
+  expect(screen.getByText('Locations consolidated').nextElementSibling).toHaveTextContent('1');
+  expect(screen.getByText('Location moves deferred').nextElementSibling).toHaveTextContent('1');
+  expect(screen.getByText('Units relocated').nextElementSibling).toHaveTextContent('3');
+  expect(screen.getByRole('columnheader', { name: 'Pongo ID / SKU' })).toBeInTheDocument();
+  expect(await screen.findByText('101')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Exclude row 2/i })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Edit row 2' }));
+  expect(screen.getByRole('spinbutton', { name: 'Pongo Item ID' })).toHaveAttribute('readonly');
+  await user.click(screen.getByRole('button', { name: 'Close row editor' }));
+  await user.click(screen.getByRole('button', { name: /Review repair/i }));
+
+  expect(await screen.findByText(/Product totals and WooCommerce stock do not change/i)).toBeInTheDocument();
+  const submit = screen.getByRole('button', { name: /Repair 1 item/i });
+  expect(submit).toBeDisabled();
+  await user.type(screen.getByRole('textbox', { name: 'Type REPAIR to confirm' }), 'repair');
+  await user.click(screen.getByRole('checkbox', { name: /I reviewed every item repair/i }));
+  expect(submit).toBeEnabled();
 });
 
 it('auto-validates mapped stock CSVs and reviews the whole file as one transaction', async () => {
@@ -266,6 +357,104 @@ it('shows skipped stock SKUs and their download in completed results', async () 
   expect(screen.getByRole('link', { name: /Download skipped\/failed rows/i })).toHaveAttribute('href', expect.stringContaining('/api/import-jobs/19/failed-rows'));
 });
 
+it('shows location consolidation, deferrals, and relocated units in repair results', async () => {
+  const completed = repairPreview({}, {
+    status: 'committed',
+    result: { status: 'completed', outcome: 'repair_items', import_job_id: 29, updated_count: 7, unchanged_count: 2, failed_count: 0, duration_ms: 31, consolidate_count: 5, deferred_location_count: 2, units_relocated: 14 },
+  });
+  vi.stubGlobal('fetch', vi.fn((url) => String(url).endsWith('/schema') ? response(schema) : response(completed)));
+
+  render(<ItemImportWorkspace initialPreviewId="repair-preview" />);
+
+  expect(await screen.findByRole('heading', { name: 'Repair completed' })).toBeInTheDocument();
+  expect(screen.getByText('Locations consolidated').nextElementSibling).toHaveTextContent('5');
+  expect(screen.getByText('Location moves deferred').nextElementSibling).toHaveTextContent('2');
+  expect(screen.getByText('Units relocated').nextElementSibling).toHaveTextContent('14');
+  expect(screen.getByText(/Product totals and WooCommerce stock unchanged/i)).toBeInTheDocument();
+});
+
+it('queues a repair, polls its durable job, and shows the completed metrics', async () => {
+  const user = userEvent.setup();
+  const onCommitted = vi.fn();
+  const summary = { total_rows: 1, ready_count: 1, update_count: 1, no_changes_count: 0, blocking_count: 0, consolidate_count: 1, deferred_location_count: 0, units_relocated: 3 };
+  const row = { id: 1, row_number: 2, existing_item_id: 101, sku: 'REPAIR-1', product_name: 'Repair item', normalized_data: { item_id: 101 }, proposed_changes: { brand: { field: 'brand', label: 'Brand', before: null, after: 'Open Farm' } }, issues: [], state: 'will_update', excluded: false };
+  const completedResult = { status: 'completed', outcome: 'repair_items', import_job_id: 41, updated_count: 1, unchanged_count: 0, failed_count: 0, duration_ms: 820, consolidate_count: 1, deferred_location_count: 0, units_relocated: 3 };
+  let completed = false;
+  const fetchMock = vi.fn((url, init = {}) => {
+    const target = String(url);
+    if (target.endsWith('/schema')) return response(schema);
+    if (target.includes('/rows?')) return response({ rows: [row], total: 1, page: 1, page_size: target.includes('page_size=25') ? 25 : 50, total_pages: 1 });
+    if (target.endsWith('/commit') && init.method === 'POST') return response({ import_job_id: 41, preview_id: 'repair-preview', outcome: 'repair_items', status: 'queued', total_rows: 1 }, { status: 202 });
+    if (target.endsWith('/api/import-jobs/41')) { completed = true; return response({ id: 41, preview_id: 'repair-preview', outcome: 'repair_items', status: 'completed', result_json: completedResult }); }
+    if (target.endsWith('/repair-preview')) return response(repairPreview(summary, completed ? { status: 'committed', result: completedResult, import_job_id: 41 } : {}));
+    return response({});
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<ItemImportWorkspace initialPreviewId="repair-preview" onCommitted={onCommitted} />);
+
+  await user.click(await screen.findByRole('button', { name: /Review repair/i }));
+  await user.type(screen.getByRole('textbox', { name: 'Type REPAIR to confirm' }), 'REPAIR');
+  await user.click(screen.getByRole('checkbox', { name: /I reviewed every item repair/i }));
+  await user.click(screen.getByRole('button', { name: /Repair 1 item/i }));
+
+  expect(await screen.findByRole('heading', { name: 'Repair queued' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Cancel import/i })).not.toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'Repair completed' }, { timeout: 2500 })).toBeInTheDocument();
+  expect(screen.getByText('Units relocated').nextElementSibling).toHaveTextContent('3');
+  expect(onCommitted).toHaveBeenCalledTimes(1);
+});
+
+it('resumes a running repair after reload and reopens a safely failed preview for retry', async () => {
+  const user = userEvent.setup();
+  const summary = { total_rows: 1, ready_count: 1, update_count: 1, no_changes_count: 0, blocking_count: 0, consolidate_count: 1, deferred_location_count: 0, units_relocated: 3 };
+  const refreshedSummary = { ...summary, ready_count: 0, update_count: 0, blocking_count: 1, consolidate_count: 0, units_relocated: 0 };
+  const row = { id: 1, row_number: 2, existing_item_id: 101, sku: 'REPAIR-1', product_name: 'Repair item', normalized_data: { item_id: 101 }, proposed_changes: {}, issues: [{ code: 'stale_item', message: 'This item changed and needs attention.' }], state: 'needs_attention', excluded: false };
+  const failedResult = { import_job_id: 42, preview_id: 'repair-preview', outcome: 'repair_items', status: 'failed', message: 'A database timeout stopped the repair.', total_rows: 1, successful_count: 0, failed_count: 1 };
+  let failed = false;
+  let revalidated = false;
+  const fetchMock = vi.fn((url, init = {}) => {
+    const target = String(url);
+    if (target.endsWith('/schema')) return response(schema);
+    if (target.endsWith('/api/import-jobs/42')) { failed = true; return response({ id: 42, preview_id: 'repair-preview', outcome: 'repair_items', status: 'failed', result_json: failedResult }); }
+    if (target.endsWith('/revalidate') && init.method === 'POST') { revalidated = true; return response(repairPreview(refreshedSummary)); }
+    if (target.includes('/rows?')) return response({ rows: [row], total: 1, page: 1, page_size: 50, total_pages: 1 });
+    if (target.endsWith('/repair-preview')) return response(repairPreview(revalidated ? refreshedSummary : summary, failed ? {} : { status: 'running', import_job_id: 42, result: null }));
+    return response({});
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  render(<ItemImportWorkspace initialPreviewId="repair-preview" />);
+
+  expect(await screen.findByRole('heading', { name: 'Repair in progress' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'Repair failed safely' }, { timeout: 2500 })).toBeInTheDocument();
+  expect(screen.getByText(/database timeout stopped the repair/i)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Review and retry' }));
+  expect(await screen.findByRole('heading', { name: 'Review and fix issues' })).toBeInTheDocument();
+  expect(fetchMock.mock.calls.some(([url, init = {}]) => String(url).endsWith('/revalidate') && init.method === 'POST')).toBe(true);
+  expect(await screen.findByText(/1 issue.*block this repair/i)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Review repair/i })).toBeDisabled();
+});
+
+it('stops repair polling when the workspace unmounts', async () => {
+  vi.useFakeTimers();
+  const fetchMock = vi.fn((url) => {
+    const target = String(url);
+    if (target.endsWith('/schema')) return response(schema);
+    if (target.endsWith('/repair-preview')) return response(repairPreview({}, { status: 'running', import_job_id: 43, result: null }));
+    if (target.endsWith('/api/import-jobs/43')) return response({ id: 43, status: 'queued', result_json: null });
+    return response({});
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const rendered = render(<ItemImportWorkspace initialPreviewId="repair-preview" />);
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+  rendered.unmount();
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/import-jobs/43'))).toHaveLength(0);
+});
+
 it('makes every confirmation row reachable instead of showing a capped sample', async () => {
   const user = userEvent.setup();
   const rows = Array.from({ length: 26 }, (_, index) => ({
@@ -319,6 +508,7 @@ it('labels completed import jobs as completed in history', async () => {
 
   expect(within(await screen.findByRole('cell', { name: 'Completed' })).getByText('Completed')).toHaveClass('import-status-completed');
   expect(screen.getByRole('option', { name: 'Override stock levels' })).toHaveValue('update_stock');
+  expect(screen.getByRole('option', { name: 'Repair item data & locations' })).toHaveValue('repair_items');
   expect(screen.queryByText('Will update')).not.toBeInTheDocument();
   await user.click(screen.getByRole('link', { name: 'New import' }));
   expect(sessionStorage.getItem('pongo.item-import.preview')).toBeNull();

@@ -7,6 +7,7 @@ import time
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal
+from app.services.item_import_workflow import process_next_item_import_job
 from app.services.metric_warming import warm_next_requested_metric, warm_next_standard_metric
 from app.services.report_jobs import process_next_report_job
 from app.services.woocommerce_order_reconciliation import (
@@ -63,6 +64,8 @@ def run_cycle() -> bool:
     # sit behind a large PDF/CSV run in the queue.
     stock_job = process_next_stock_sync_job(settings)
     if stock_job is not None:
+        return True
+    if process_next_item_import_job() is not None:
         return True
     if process_subscription_sync_if_due(settings):
         return True

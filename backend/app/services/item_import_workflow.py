@@ -19,11 +19,23 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
+from app.db.session import SessionLocal
 from app.models.imports import ImportError, ImportJob, ImportMappingProfile, ImportPreview, ImportPreviewRow, ItemImportChange
 from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation, InventoryLocation, StockMovement
 from app.schemas.woocommerce import WooStockSyncRequest
 from app.services.items import apply_calculated_fields
-from app.services.location_inventory import StaleStockQuantityError, create_committed_adjustment_batch, get_or_create_item_location, lock_inventory_stock, set_opening_balance
+from app.services.location_inventory import (
+    StaleStockQuantityError,
+    assert_item_invariants,
+    assert_location_invariants,
+    create_committed_adjustment_batch,
+    get_or_create_item_location,
+    lock_inventory_stock,
+    recalculate_item_location,
+    recalculate_item_totals,
+    set_opening_balance,
+    transfer_between_locations,
+)
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
 from app.services.woocommerce_access import effective_woocommerce_settings
 from app.services.woocommerce_stock_sync_jobs import create_stock_sync_job
@@ -31,8 +43,8 @@ from app.services.woocommerce_writeback import stock_writeback_enabled
 
 
 logger = logging.getLogger("pongo.item_import")
-SCHEMA_VERSION = "2026-08-10.3"
-OUTCOMES = {"add_items", "update_items", "starting_inventory", "update_stock"}
+SCHEMA_VERSION = "2026-08-26.1"
+OUTCOMES = {"add_items", "update_items", "repair_items", "starting_inventory", "update_stock"}
 READY_STATES = {"will_create", "will_update"}
 ISSUE_STATES = {"needs_attention", "duplicate", "unmatched", "blocked"}
 ALLOWED_MIME_TYPES = {"", "text/csv", "text/plain", "application/csv", "application/vnd.ms-excel", "application/octet-stream"}
@@ -113,7 +125,30 @@ FIELD_SPECS = [
     field("note", "Reference note", None, "text", ["starting_inventory", "update_stock"], aliases=["Reference", "Notes", "Reason"], example="Physical count", max_length=500),
 ]
 
-FIELD_BY_KEY = {spec["key"]: spec for spec in FIELD_SPECS}
+REPAIR_FIELD_SPECS = [
+    field("item_id", "Pongo Item ID", None, "integer", ["repair_items"], aliases=["Item ID", "Pongo ID"], example="123", description="The immutable Pongo OS item identifier. Use this or SKU to match an item.", editable=False),
+    field("sku", "SKU", None, "text", ["repair_items"], aliases=["Item SKU", "Product SKU", "Code"], example="DOG-FOOD-001", description="An immutable fallback identifier when Pongo Item ID is unavailable.", editable=False, max_length=120),
+    field("product_name", "Product name", None, "text", ["repair_items"], aliases=["Description", "Product title", "Name", "Item name"], example="ACANA Adult Dog Recipe", description="Read-only context for reviewing the matched item.", editable=False),
+    field("woo_product_id", "Woo product ID", None, "integer", ["repair_items"], aliases=["WooCommerce product ID", "Woo Product ID"], example="456", description="Read-only WooCommerce identity used to validate the match.", editable=False),
+    field("woo_variation_id", "Woo variation ID", None, "integer", ["repair_items"], aliases=["WooCommerce variation ID", "Woo Variation ID"], example="0", description="Read-only WooCommerce variation identity used to validate the match.", editable=False),
+    field("brand", "Brand", "brand", "text", ["repair_items"], aliases=["Vendor brand"], example="ACANA", max_length=200),
+    field("unit_cost", "Unit cost", "unit_cost", "decimal", ["repair_items"], aliases=["Cost", "Wholesale", "Wholesale cost"], example="42.50"),
+    field("warehouse", "Target warehouse", None, "text", ["repair_items"], aliases=["Warehouse", "Warehouse name"], required_for=["repair_items"], example="Main Warehouse", description="The active warehouse that should hold this item after repair.", nullable=False, max_length=120),
+    field("inventory_location", "Target inventory location", None, "text", ["repair_items"], aliases=["Inventory location", "Location", "Bin", "Location code"], required_for=["repair_items"], example="001", description="The one active physical location to keep for this item.", nullable=False, max_length=200),
+]
+REPAIR_HASH_ATTRIBUTES = (
+    "active",
+    "brand",
+    "default_location",
+    "inventory_location",
+    "non_inventory",
+    "sku",
+    "unit_cost",
+    "warehouse",
+    "woo_product_id",
+    "woo_variation_id",
+)
+
 SPEC_BY_ATTRIBUTE = {spec["attribute"]: spec for spec in FIELD_SPECS if spec["attribute"]}
 OUTCOME_CONTENT = {
     "add_items": {
@@ -127,6 +162,12 @@ OUTCOME_CONTENT = {
         "description": "Update existing products by SKU.",
         "changes": "Updates approved metadata and shows every before-and-after value.",
         "does_not_change": "On hand, allocated, available, and stock history will not change.",
+    },
+    "repair_items": {
+        "label": "Repair item data and locations",
+        "description": "Update brand and unit cost while consolidating unallocated inventory into one active location.",
+        "changes": "Moves unallocated stock and on-order quantities into the selected location with an audit trail. Allocated units stay reserved at their source until the order releases them.",
+        "does_not_change": "Barcodes, SKUs, WooCommerce identity, item totals, allocations, and WooCommerce stock are not edited.",
     },
     "starting_inventory": {
         "label": "Set starting inventory",
@@ -176,7 +217,7 @@ def safe_filename(value: str | None) -> str:
 def schema_fields(outcome: str) -> list[dict[str, Any]]:
     if outcome not in OUTCOMES:
         raise HTTPException(status_code=404, detail="Unknown item import outcome.")
-    return [{key: value for key, value in spec.items() if key != "attribute"} for spec in FIELD_SPECS if outcome in spec["outcomes"]]
+    return [{key: value for key, value in spec.items() if key != "attribute"} for spec in field_specs_for(outcome)]
 
 
 def schema_document() -> dict[str, Any]:
@@ -192,14 +233,16 @@ def schema_document() -> dict[str, Any]:
                 "key": outcome,
                 **OUTCOME_CONTENT[outcome],
                 "fields": schema_fields(outcome),
-                "required_fields": [spec["key"] for spec in FIELD_SPECS if outcome in spec["required_for"]],
+                "required_fields": [spec["key"] for spec in field_specs_for(outcome) if outcome in spec["required_for"]],
             }
-            for outcome in ["add_items", "update_items", "update_stock", "starting_inventory"]
+            for outcome in ["add_items", "update_items", "repair_items", "update_stock", "starting_inventory"]
         ],
     }
 
 
 def field_specs_for(outcome: str) -> list[dict[str, Any]]:
+    if outcome == "repair_items":
+        return REPAIR_FIELD_SPECS
     return [spec for spec in FIELD_SPECS if outcome in spec["outcomes"]]
 
 
@@ -221,6 +264,24 @@ def template_csv(outcome: str, db: Session, *, include_existing: bool = False) -
     if include_existing and outcome == "update_items":
         for item in db.scalars(select(InventoryItem).order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())).all():
             writer.writerow({spec["label"]: safe_csv_value(getattr(item, spec["attribute"], "")) for spec in specs})
+    elif include_existing and outcome == "repair_items":
+        for item in db.scalars(
+            select(InventoryItem)
+            .where(InventoryItem.active.is_(True), InventoryItem.non_inventory.is_(False))
+            .order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())
+        ).all():
+            values = {
+                "item_id": item.id,
+                "sku": item.sku,
+                "product_name": item.woo_name or item.description,
+                "woo_product_id": item.woo_product_id,
+                "woo_variation_id": item.woo_variation_id,
+                "brand": item.brand,
+                "unit_cost": item.unit_cost,
+                "warehouse": item.warehouse,
+                "inventory_location": item.inventory_location or item.default_location,
+            }
+            writer.writerow({spec["label"]: safe_csv_value(values.get(spec["key"], "")) for spec in specs})
     elif include_existing and outcome == "update_stock":
         for item in db.scalars(select(InventoryItem).order_by(InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc())).all():
             values = {"sku": item.sku, "stock_quantity": item.in_stock, "note": ""}
@@ -256,6 +317,7 @@ def header_aliases(outcome: str) -> dict[str, list[str]]:
 
 def suggest_mapping(headers: list[str], outcome: str) -> tuple[dict[str, str | None], list[dict[str, Any]]]:
     aliases = header_aliases(outcome)
+    fields_by_key = {spec["key"]: spec for spec in field_specs_for(outcome)}
     mapping: dict[str, str | None] = {}
     suggestions: list[dict[str, Any]] = []
     used: set[str] = set()
@@ -265,7 +327,7 @@ def suggest_mapping(headers: list[str], outcome: str) -> tuple[dict[str, str | N
         if destination:
             used.add(destination)
         mapping[header] = destination
-        suggestions.append({"source": header, "destination": destination, "confidence": "exact" if destination and normalize_header(header) in {normalize_header(destination), normalize_header(FIELD_BY_KEY[destination]["label"])} else ("alias" if destination else "unmatched"), "ambiguous_matches": matches if len(matches) > 1 else []})
+        suggestions.append({"source": header, "destination": destination, "confidence": "exact" if destination and normalize_header(header) in {normalize_header(destination), normalize_header(fields_by_key[destination]["label"])} else ("alias" if destination else "unmatched"), "ambiguous_matches": matches if len(matches) > 1 else []})
     return mapping, suggestions
 
 
@@ -356,7 +418,7 @@ def replace_stock_preview_rows(preview: ImportPreview, db: Session, mapping: dic
 
 async def create_preview(file: UploadFile, outcome: str, db: Session, *, actor: str) -> ImportPreview:
     if outcome not in OUTCOMES:
-        raise HTTPException(status_code=422, detail={"code": "invalid_outcome", "message": "Choose Add new items, Update item details, Override stock levels, or Set starting inventory."})
+        raise HTTPException(status_code=422, detail={"code": "invalid_outcome", "message": "Choose Add new items, Update item details, Repair item data and locations, Override stock levels, or Set starting inventory."})
     filename = safe_filename(file.filename)
     if Path(filename).suffix.casefold() != ".csv":
         raise HTTPException(status_code=400, detail={"code": "invalid_file_type", "message": "Choose a CSV file ending in .csv."})
@@ -417,7 +479,7 @@ def get_preview(db: Session, preview_id: str, actor: str, *, with_rows: bool = F
         raise HTTPException(status_code=404, detail={"code": "preview_not_found", "message": "This import preview could not be found."})
     if preview.created_by != actor:
         raise HTTPException(status_code=403, detail={"code": "preview_access_denied", "message": "This import preview belongs to another user."})
-    if preview.status not in {"committed", "cancelled", "expired"} and aware(preview.expires_at) <= utcnow():
+    if preview.status in {"draft", "ready"} and aware(preview.expires_at) <= utcnow():
         preview.status = "expired"
         db.commit()
     return preview
@@ -498,6 +560,58 @@ def active_location_map(db: Session) -> dict[tuple[str, str], list[InventoryLoca
     return locations
 
 
+def location_snapshot(
+    item: InventoryItem,
+    item_locations: list[InventoryItemLocation],
+    physical_locations: dict[int, InventoryLocation],
+) -> dict[str, Any]:
+    return {
+        "item_totals": {
+            "in_stock": serializable(item.in_stock or 0),
+            "allocated": serializable(item.allocated or 0),
+            "sellable": serializable(item.sellable or 0),
+            "on_order": serializable(item.on_order or 0),
+        },
+        "locations": [
+            {
+                "id": row.id,
+                "location_id": row.location_id,
+                "warehouse": row.warehouse,
+                "inventory_location": row.inventory_location,
+                "location_code": row.location_code,
+                "location_name": row.location_name,
+                "active": bool(row.active),
+                "is_default_location": bool(row.is_default_location),
+                "physical_active": bool(physical_locations.get(row.location_id).active) if row.location_id in physical_locations else False,
+                "physical_warehouse": physical_locations.get(row.location_id).warehouse if row.location_id in physical_locations else None,
+                "physical_location_code": physical_locations.get(row.location_id).location_code if row.location_id in physical_locations else None,
+                "physical_location_name": physical_locations.get(row.location_id).location_name if row.location_id in physical_locations else None,
+                "in_stock": serializable(row.in_stock or 0),
+                "allocated": serializable(row.allocated or 0),
+                "sellable": serializable(row.sellable or 0),
+                "on_order": serializable(row.on_order or 0),
+            }
+            for row in sorted(item_locations, key=lambda candidate: candidate.id)
+        ],
+    }
+
+
+def physical_location_snapshot(location: InventoryLocation | None) -> dict[str, Any] | None:
+    if location is None:
+        return None
+    return {
+        "id": location.id,
+        "warehouse": location.warehouse,
+        "location_code": location.location_code,
+        "location_name": location.location_name,
+        "active": bool(location.active),
+    }
+
+
+def has_location_balances(row: InventoryItemLocation) -> bool:
+    return any(Decimal(value or 0) != 0 for value in (row.in_stock, row.allocated, row.sellable, row.on_order))
+
+
 def stock_total_targets(candidates: list[InventoryItemLocation], quantity: Decimal) -> list[dict[str, Any]]:
     current = {candidate.id: Decimal(candidate.in_stock or 0) for candidate in candidates}
     delta = quantity - sum(current.values(), Decimal("0"))
@@ -535,11 +649,7 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
     mapped_rows = {row.id: destination_values(row, preview) for row in rows}
     sku_counts = Counter(normalize_identifier(values.get("sku")) for values in mapped_rows.values() if normalize_identifier(values.get("sku")))
     stock_scope_counts = Counter(
-        (
-            normalize_identifier(values.get("sku")),
-            normalize_identifier(values.get("warehouse")),
-            normalize_identifier(values.get("inventory_location")),
-        )
+        (normalize_identifier(values.get("sku")), normalize_identifier(values.get("warehouse")), normalize_identifier(values.get("inventory_location")))
         for values in mapped_rows.values()
         if normalize_identifier(values.get("sku"))
     )
@@ -547,11 +657,23 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
 
     sku_keys = {normalize_identifier(values.get("sku")) for values in mapped_rows.values() if normalize_identifier(values.get("sku"))}
     barcode_keys = {normalize_identifier(values.get("barcode")) for values in mapped_rows.values() if normalize_identifier(values.get("barcode"))}
+    item_ids: set[int] = set()
+    if outcome == "repair_items":
+        for values in mapped_rows.values():
+            try:
+                raw_item_id = Decimal(str(values.get("item_id") or "").strip())
+                item_id = int(raw_item_id)
+            except (InvalidOperation, ValueError):
+                continue
+            if raw_item_id == raw_item_id.to_integral_value() and item_id > 0:
+                item_ids.add(item_id)
     item_matchers = []
     if sku_keys:
         item_matchers.append(func.lower(func.trim(InventoryItem.sku)).in_(sku_keys))
     if barcode_keys:
         item_matchers.append(func.lower(func.trim(InventoryItem.barcode)).in_(barcode_keys))
+    if item_ids:
+        item_matchers.append(InventoryItem.id.in_(item_ids))
     items = list(db.scalars(select(InventoryItem).where(or_(*item_matchers))).all()) if item_matchers else []
     items_by_id = {item.id: item for item in items}
     by_sku: dict[str, list[InventoryItem]] = defaultdict(list)
@@ -561,14 +683,24 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
             by_sku[normalize_identifier(item.sku)].append(item)
         if item.barcode:
             by_barcode[normalize_identifier(item.barcode)].append(item)
-    item_locations_by_item: dict[int, dict[int, InventoryItemLocation]] = defaultdict(dict)
-    if outcome == "update_stock" and items:
-        for item_location in db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id.in_([item.id for item in items]), InventoryItemLocation.active.is_(True))).all():
-            item_locations_by_item[item_location.inventory_item_id][item_location.id] = item_location
-    physical_location_ids = {item_location.location_id for locations_by_item in item_locations_by_item.values() for item_location in locations_by_item.values() if item_location.location_id}
-    active_physical_location_ids = set(db.scalars(select(InventoryLocation.id).where(InventoryLocation.id.in_(physical_location_ids), InventoryLocation.active.is_(True))).all()) if physical_location_ids else set()
+
+    item_locations_by_item: dict[int, list[InventoryItemLocation]] = defaultdict(list)
+    if outcome in {"update_stock", "repair_items"} and items:
+        statement = select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id.in_([item.id for item in items]))
+        if outcome == "update_stock":
+            statement = statement.where(InventoryItemLocation.active.is_(True))
+        for item_location in db.scalars(statement).all():
+            item_locations_by_item[item_location.inventory_item_id].append(item_location)
+    physical_locations = {location.id: location for location in db.scalars(select(InventoryLocation)).all()}
+    active_physical_location_ids = {location.id for location in physical_locations.values() if location.active}
+    locations: dict[tuple[str, str], list[InventoryLocation]] = defaultdict(list)
+    for location in physical_locations.values():
+        if not location.active:
+            continue
+        for name in {location.location_code, location.location_name}:
+            if name:
+                locations[(normalize_identifier(location.warehouse), normalize_identifier(name))].append(location)
     movement_item_ids = set(db.scalars(select(StockMovement.inventory_item_id).where(StockMovement.inventory_item_id.in_([item.id for item in items])).distinct()).all()) if outcome == "starting_inventory" and items else set()
-    locations = active_location_map(db)
     allow_blank_clears = bool((preview.options_json or {}).get("allow_blank_clears"))
 
     for row in rows:
@@ -587,19 +719,49 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
         stock_scope = (sku_key, normalize_identifier(parsed.get("warehouse")), normalize_identifier(parsed.get("inventory_location")))
         if outcome == "update_stock" and sku_key and stock_scope_counts[stock_scope] > 1:
             row_issues.append(issue("duplicate_stock_location_in_file", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} and this inventory location appear more than once in this file.", parsed.get("sku"), "Keep one stock value for each SKU and inventory location."))
-        elif outcome != "update_stock" and sku_key and sku_counts[sku_key] > 1:
-            row_issues.append(issue("duplicate_sku_in_file", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} appears more than once in this file.", parsed.get("sku"), "Keep one row for this SKU or give each item a unique SKU."))
+        elif outcome != "update_stock" and sku_key and sku_counts[sku_key] > 1 and not (outcome == "repair_items" and parsed.get("item_id") is not None):
+            row_issues.append(issue("duplicate_sku_in_file", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} appears more than once in this file.", parsed.get("sku"), "Keep one row for this item."))
         if barcode_key and barcode_counts[barcode_key] > 1:
             row_issues.append(issue("duplicate_barcode_in_file", "barcode", f"Row {row.row_number}: Barcode {parsed.get('barcode')!r} appears more than once in this file.", parsed.get("barcode"), "Correct or remove the duplicate barcode."))
 
         matches = by_sku.get(sku_key, []) if sku_key else []
         item = matches[0] if len(matches) == 1 else None
-        if len(matches) > 1:
-            row_issues.append(issue("ambiguous_sku", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} matches multiple existing items.", parsed.get("sku"), "Resolve the duplicate SKU in Items before importing."))
-        if outcome == "add_items" and item is not None:
-            row_issues.append(issue("sku_already_exists", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} already exists in Pongo OS.", parsed.get("sku"), "Exclude this row or use Update item details."))
-        if outcome in {"update_items", "starting_inventory", "update_stock"} and sku_key and not matches:
-            row_issues.append(issue("sku_not_found", "sku", f"SKU {parsed.get('sku')!r} was not found in Pongo OS.", parsed.get("sku"), "This SKU will be skipped; add it to Items first if Pongo should manage it.", blocking=outcome != "update_stock"))
+        match_method = "sku" if item is not None else None
+        if outcome == "repair_items":
+            item_id = parsed.get("item_id")
+            if item_id is not None and item_id <= 0:
+                row_issues.append(issue("invalid_item_id", "item_id", f"Row {row.row_number}: Pongo Item ID must be greater than zero.", item_id, "Use a valid Pongo Item ID or leave it blank and provide SKU."))
+                item = None
+            elif item_id is not None:
+                item = items_by_id.get(item_id)
+                match_method = "pongo_item_id" if item is not None else None
+                if item is None:
+                    row_issues.append(issue("item_id_not_found", "item_id", f"Pongo Item ID {item_id!r} was not found.", item_id, "Export a fresh repair template and use its Pongo Item ID."))
+                elif sku_key and normalize_identifier(item.sku) != sku_key:
+                    row_issues.append(issue("identity_mismatch", "sku", f"Row {row.row_number}: Pongo Item ID {item_id} belongs to SKU {item.sku!r}, not {parsed.get('sku')!r}.", parsed.get("sku"), "Use the SKU exported for this Pongo Item ID."))
+            elif not sku_key:
+                item = None
+                row_issues.append(issue("item_identity_required", "item_id", f"Row {row.row_number}: Pongo Item ID or SKU is required.", None, "Provide Pongo Item ID or SKU."))
+            elif len(matches) > 1:
+                item = None
+                row_issues.append(issue("ambiguous_sku", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} matches multiple existing items.", parsed.get("sku"), "Use Pongo Item ID to identify this item."))
+            elif not matches:
+                item = None
+                row_issues.append(issue("sku_not_found", "sku", f"SKU {parsed.get('sku')!r} was not found in Pongo OS.", parsed.get("sku"), "Export a fresh repair template and use Pongo Item ID."))
+            if item is not None:
+                for key, attribute, label in (
+                    ("woo_product_id", "woo_product_id", "Woo product ID"),
+                    ("woo_variation_id", "woo_variation_id", "Woo variation ID"),
+                ):
+                    if parsed.get(key) is not None and parsed.get(key) != getattr(item, attribute):
+                        row_issues.append(issue("woo_identity_mismatch", key, f"Row {row.row_number}: {label} does not match Pongo Item ID {item.id}.", parsed.get(key), "Export a fresh repair template and keep its identity columns unchanged."))
+        else:
+            if len(matches) > 1:
+                row_issues.append(issue("ambiguous_sku", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} matches multiple existing items.", parsed.get("sku"), "Resolve the duplicate SKU in Items before importing."))
+            if outcome == "add_items" and item is not None:
+                row_issues.append(issue("sku_already_exists", "sku", f"Row {row.row_number}: SKU {parsed.get('sku')!r} already exists in Pongo OS.", parsed.get("sku"), "Exclude this row or use Update item details."))
+            if outcome in {"update_items", "starting_inventory", "update_stock"} and sku_key and not matches:
+                row_issues.append(issue("sku_not_found", "sku", f"SKU {parsed.get('sku')!r} was not found in Pongo OS.", parsed.get("sku"), "This SKU will be skipped; add it to Items first if Pongo should manage it.", blocking=outcome != "update_stock"))
 
         if barcode_key:
             barcode_matches = by_barcode.get(barcode_key, [])
@@ -608,7 +770,93 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
 
         changes: dict[str, dict[str, Any]] = {}
         relevant_attributes: list[str] = []
-        if outcome in METADATA_OUTCOMES:
+        if outcome == "repair_items":
+            relevant_attributes = list(REPAIR_HASH_ATTRIBUTES)
+            if item is not None:
+                if not item.active or item.non_inventory:
+                    row_issues.append(issue("repair_item_ineligible", "item_id", f"Row {row.row_number}: only active inventory items can be repaired.", item.id, "Remove inactive or non-inventory items from the repair file."))
+                for key, attribute, label in (("brand", "brand", "Brand"), ("unit_cost", "unit_cost", "Unit cost")):
+                    if str(raw_values.get(key, "") or "").strip() and not values_equal(getattr(item, attribute), parsed.get(key)):
+                        changes[attribute] = {"field": key, "label": label, "before": serializable(getattr(item, attribute)), "after": serializable(parsed.get(key))}
+
+                warehouse = parsed.get("warehouse")
+                location_name = parsed.get("inventory_location")
+                target_matches = locations.get((normalize_identifier(warehouse), normalize_identifier(location_name)), []) if warehouse and location_name else []
+                if warehouse and location_name and len(target_matches) != 1:
+                    row_issues.append(issue("invalid_location", "inventory_location", f"Row {row.row_number}: {warehouse} / {location_name} does not match one active inventory location.", location_name, "Choose one active physical location from Pongo OS."))
+                if len(target_matches) == 1:
+                    target = target_matches[0]
+                    assignments = item_locations_by_item.get(item.id, [])
+                    active_assignments = [candidate for candidate in assignments if candidate.active]
+                    inactive_with_balances = [candidate for candidate in assignments if not candidate.active and has_location_balances(candidate)]
+                    if inactive_with_balances:
+                        row_issues.append(issue("inactive_location_has_inventory", "inventory_location", f"Row {row.row_number}: this item has inventory on an inactive assignment.", None, "Reconcile the inactive assignment before running repair."))
+                    invalid_assignment = next(
+                        (
+                            candidate
+                            for candidate in active_assignments
+                            if candidate.location_id not in active_physical_location_ids
+                            or Decimal(candidate.in_stock or 0) < 0
+                            or Decimal(candidate.allocated or 0) < 0
+                            or Decimal(candidate.allocated or 0) > Decimal(candidate.in_stock or 0)
+                            or Decimal(candidate.sellable or 0) != Decimal(candidate.in_stock or 0) - Decimal(candidate.allocated or 0)
+                            or Decimal(candidate.on_order or 0) < 0
+                        ),
+                        None,
+                    )
+                    if invalid_assignment is not None:
+                        row_issues.append(issue("invalid_location_inventory", "inventory_location", f"Row {row.row_number}: an active assignment is missing an active physical location or has inconsistent balances.", invalid_assignment.inventory_location, "Reconcile this item before running repair."))
+                    if active_assignments:
+                        active_totals = {
+                            key: sum((Decimal(getattr(candidate, key) or 0) for candidate in active_assignments), Decimal("0"))
+                            for key in ("in_stock", "allocated", "sellable", "on_order")
+                        }
+                        if any(active_totals[key] != Decimal(getattr(item, key) or 0) for key in active_totals):
+                            row_issues.append(issue("location_total_mismatch", "inventory_location", f"Row {row.row_number}: item totals do not equal its active location totals.", None, "Reconcile this item before running repair."))
+                    elif Decimal(item.allocated or 0) > Decimal(item.in_stock or 0) or Decimal(item.sellable or 0) != Decimal(item.in_stock or 0) - Decimal(item.allocated or 0) or Decimal(item.on_order or 0) < 0:
+                        row_issues.append(issue("item_total_mismatch", "inventory_location", f"Row {row.row_number}: item totals are internally inconsistent.", None, "Reconcile this item before running repair."))
+
+                    target_assignment = next((candidate for candidate in assignments if candidate.location_id == target.id), None)
+                    sources = [candidate for candidate in active_assignments if candidate.id != getattr(target_assignment, "id", None)]
+                    deferred_units = sum((Decimal(candidate.allocated or 0) for candidate in sources), Decimal("0"))
+                    movable_units = sum((Decimal(candidate.in_stock or 0) - Decimal(candidate.allocated or 0) for candidate in sources), Decimal("0"))
+                    on_order_units = sum((Decimal(candidate.on_order or 0) for candidate in sources), Decimal("0"))
+                    deferred_count = sum(1 for candidate in sources if Decimal(candidate.allocated or 0) > 0)
+                    target_name = target.location_code or target.location_name
+                    if not values_equal(item.warehouse, target.warehouse):
+                        changes["warehouse"] = {"field": "warehouse", "label": "Target warehouse", "before": item.warehouse, "after": target.warehouse}
+                    if not values_equal(item.inventory_location, target_name):
+                        changes["inventory_location"] = {"field": "inventory_location", "label": "Target inventory location", "before": item.inventory_location, "after": target_name}
+                    needs_consolidation = bool(
+                        target_assignment is None
+                        or not target_assignment.active
+                        or not target_assignment.is_default_location
+                        or sources
+                    )
+                    if needs_consolidation:
+                        changes["location_repair"] = {
+                            "field": "inventory_location",
+                            "label": "Location consolidation",
+                            "before": f"{len(active_assignments)} active assignment(s)",
+                            "after": f"{target.warehouse} / {target_name}",
+                        }
+                    if deferred_units:
+                        row_issues.append(issue("allocated_stock_deferred", "inventory_location", f"Row {row.row_number}: {serializable(deferred_units)} allocated unit(s) will remain reserved at {deferred_count} source location(s).", deferred_units, "Run repair again after those orders release or consume their allocations.", blocking=False))
+                    parsed["_repair_plan"] = {
+                        "target_location_id": target.id,
+                        "target_warehouse": target.warehouse,
+                        "target_inventory_location": target_name,
+                        "target_assignment_id": target_assignment.id if target_assignment else None,
+                        "source_assignment_ids": [candidate.id for candidate in sources],
+                        "location_snapshot": location_snapshot(item, assignments, physical_locations),
+                        "target_location_snapshot": physical_location_snapshot(target),
+                        "needs_consolidation": needs_consolidation,
+                        "units_relocated": serializable(movable_units),
+                        "on_order_units_relocated": serializable(on_order_units),
+                        "deferred_location_count": deferred_count,
+                        "deferred_units": serializable(deferred_units),
+                    }
+        elif outcome in METADATA_OUTCOMES:
             for spec in fields:
                 attribute = spec["attribute"]
                 if not attribute or spec["key"] == "sku" and outcome == "update_items":
@@ -654,7 +902,7 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
             if quantity is not None and quantity < 0:
                 row_issues.append(issue("negative_stock", "stock_quantity", f"Row {row.row_number}: In stock cannot be negative.", quantity, "Enter zero or a positive physical count."))
             if item is not None and quantity is not None:
-                candidates = list(item_locations_by_item.get(item.id, {}).values())
+                candidates = item_locations_by_item.get(item.id, [])
                 current = sum((Decimal(candidate.in_stock or 0) for candidate in candidates), Decimal("0")) if candidates else Decimal(item.in_stock or 0)
                 allocated = sum((Decimal(candidate.allocated or 0) for candidate in candidates), Decimal("0")) if candidates else Decimal(item.allocated or 0)
                 targets: list[dict[str, Any]] = []
@@ -681,13 +929,16 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
                     }
                 relevant_attributes = ["in_stock", "allocated"]
 
+        blocking_issues = [candidate for candidate in row_issues if candidate.get("blocking", True)]
         if row.excluded:
             state = "excluded"
-        elif row_issues and not any(candidate.get("blocking", True) for candidate in row_issues):
-            state = "skipped"
+        elif blocking_issues:
+            codes = {candidate["code"] for candidate in blocking_issues}
+            state = "duplicate" if any("duplicate" in code or "already_exists" in code or "ambiguous" in code for code in codes) else ("unmatched" if codes & {"sku_not_found", "item_id_not_found", "item_identity_required"} else ("blocked" if "starting_inventory_ineligible" in codes else "needs_attention"))
+        elif outcome == "repair_items":
+            state = "will_update" if changes else "no_changes"
         elif row_issues:
-            codes = {candidate["code"] for candidate in row_issues}
-            state = "duplicate" if any("duplicate" in code or "already_exists" in code or "ambiguous" in code for code in codes) else ("unmatched" if "sku_not_found" in codes else ("blocked" if "starting_inventory_ineligible" in codes else "needs_attention"))
+            state = "skipped"
         elif outcome == "add_items":
             state = "will_create"
         elif outcome in {"update_items", "update_stock"}:
@@ -695,16 +946,16 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
         else:
             state = "will_update"
 
-        row.sku = str(parsed.get("sku") or "") or None
-        row.barcode = str(parsed.get("barcode") or "") or None
-        row.product_name = (str(parsed.get("product_name") or (item.description if item is not None else "") or "")[:500] or None)
+        row.sku = str(parsed.get("sku") or getattr(item, "sku", "") or "") or None
+        row.barcode = None if outcome == "repair_items" else (str(parsed.get("barcode") or "") or None)
+        row.product_name = (str(parsed.get("product_name") or (item.woo_name if item is not None else "") or (item.description if item is not None else "") or "")[:500] or None)
         row.normalized_data = {key: serializable(value) for key, value in parsed.items()}
         row.existing_item_id = item.id if item is not None else None
         row.source_item_hash = item_value_hash(item, relevant_attributes) if item is not None else None
         row.proposed_changes = changes
         row.issues_json = row_issues
         row.state = state
-        row.match_method = "sku" if item is not None else None
+        row.match_method = match_method if item is not None else None
 
     if outcome == "update_stock":
         rows_by_target: dict[int, list[ImportPreviewRow]] = defaultdict(list)
@@ -719,11 +970,25 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
                 row.proposed_changes = {}
                 if not row.excluded:
                     row.state = "duplicate"
+    elif outcome == "repair_items":
+        rows_by_item: dict[int, list[ImportPreviewRow]] = defaultdict(list)
+        for row in rows:
+            if row.existing_item_id:
+                rows_by_item[row.existing_item_id].append(row)
+        for matched_rows in rows_by_item.values():
+            if len(matched_rows) < 2:
+                continue
+            for row in matched_rows:
+                row.issues_json = [*(row.issues_json or []), issue("duplicate_item_in_file", "item_id", f"Row {row.row_number}: another CSV row resolves to the same Pongo item.", row.existing_item_id, "Keep one repair row per Pongo item.")]
+                row.proposed_changes = {}
+                if not row.excluded:
+                    row.state = "duplicate"
 
     counts = Counter(row.state for row in rows)
     starting_units = sum((Decimal(str(row.normalized_data.get("starting_quantity") or 0)) for row in rows if row.state == "will_update" and outcome == "starting_inventory"), Decimal("0"))
     valuation = sum((Decimal(str(row.normalized_data.get("starting_quantity") or 0)) * Decimal(str((items_by_id.get(row.existing_item_id).unit_cost if items_by_id.get(row.existing_item_id) else 0) or 0)) for row in rows if row.state == "will_update" and outcome == "starting_inventory"), Decimal("0"))
     stock_units_delta = sum((Decimal(str((row.proposed_changes or {}).get("variance", {}).get("after") or 0)) for row in rows if row.state == "will_update" and outcome == "update_stock"), Decimal("0"))
+    repair_plans = [(row.normalized_data or {}).get("_repair_plan") or {} for row in rows if row.state in {"will_update", "no_changes"} and outcome == "repair_items"]
     preview.summary_json = {
         **(preview.summary_json or {}),
         "total_rows": len(rows),
@@ -738,12 +1003,16 @@ def revalidate_preview(preview: ImportPreview, db: Session) -> ImportPreview:
         "unmatched_count": counts["unmatched"],
         "skipped_count": counts["skipped"],
         "blocked_count": counts["blocked"],
-        "blocking_count": sum(counts[state] for state in ISSUE_STATES) + (counts["excluded"] if outcome == "update_stock" else 0),
+        "blocking_count": sum(counts[state] for state in ISSUE_STATES) + (counts["excluded"] if outcome in {"update_stock", "repair_items"} else 0),
         "excluded_count": counts["excluded"],
         "missing_required_mappings": missing_mapping,
         "starting_units": serializable(starting_units),
         "estimated_valuation": serializable(valuation),
         "stock_units_delta": serializable(stock_units_delta),
+        "consolidate_count": sum(1 for plan in repair_plans if plan.get("needs_consolidation")),
+        "deferred_location_count": sum(int(plan.get("deferred_location_count") or 0) for plan in repair_plans),
+        "deferred_units": serializable(sum((Decimal(str(plan.get("deferred_units") or 0)) for plan in repair_plans), Decimal("0"))),
+        "units_relocated": serializable(sum((Decimal(str(plan.get("units_relocated") or 0)) for plan in repair_plans), Decimal("0"))),
     }
     preview.status = "draft" if missing_mapping else "ready"
     db.flush()
@@ -852,8 +1121,16 @@ def update_preview_row(preview: ImportPreview, row_number: int, db: Session, *, 
 
 
 def cancel_preview(preview: ImportPreview, db: Session) -> ImportPreview:
+    preview = db.scalar(
+        select(ImportPreview)
+        .where(ImportPreview.id == preview.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if preview.status == "committed":
         raise HTTPException(status_code=409, detail={"code": "preview_already_committed", "message": "A completed import cannot be cancelled."})
+    if preview.status == "running":
+        raise HTTPException(status_code=409, detail={"code": "preview_commit_running", "message": "This repair is already queued and cannot be cancelled while the worker is applying it."})
     preview.status = "cancelled"
     db.commit()
     return preview
@@ -978,6 +1255,148 @@ def job_result(job: ImportJob) -> dict[str, Any]:
     }
 
 
+def enqueue_repair_commit(
+    preview: ImportPreview,
+    db: Session,
+    *,
+    actor: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    if not idempotency_key or len(idempotency_key) > 120:
+        raise HTTPException(status_code=422, detail={"code": "idempotency_key_required", "message": "A valid commit idempotency key is required."})
+    if preview.outcome != "repair_items":
+        raise ValueError("Only item repairs are queued by this workflow.")
+
+    preview = db.scalar(
+        select(ImportPreview)
+        .where(ImportPreview.id == preview.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if preview is None:
+        raise HTTPException(status_code=404, detail={"code": "preview_not_found", "message": "This import preview could not be found."})
+    if preview.status == "committed":
+        return preview.result_json or job_result(db.get(ImportJob, preview.import_job_id))
+    if preview.status in {"cancelled", "expired"}:
+        raise HTTPException(status_code=409, detail={"code": f"preview_{preview.status}", "message": f"This import preview is {preview.status}. Create a new preview before importing."})
+    if preview.import_job_id:
+        existing_job = db.get(ImportJob, preview.import_job_id)
+        if existing_job is not None:
+            return job_result(existing_job)
+    if preview.status != "ready":
+        raise HTTPException(status_code=409, detail={"code": "preview_not_ready", "message": "Finish matching the required columns before importing."})
+
+    blocking_count = int((preview.summary_json or {}).get("blocking_count") or 0)
+    if blocking_count:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "repair_import_not_ready",
+                "message": "No item was changed. Fix every blocked repair row, then preview the whole file again.",
+                "blocking_count": blocking_count,
+            },
+        )
+    existing_key = db.scalar(select(ImportJob).where(ImportJob.idempotency_key == idempotency_key))
+    if existing_key is not None:
+        if existing_key.preview_id == preview.id:
+            return job_result(existing_key)
+        raise HTTPException(status_code=409, detail={"code": "idempotency_key_conflict", "message": "This commit key was already used for another import."})
+
+    job = ImportJob(
+        file_name=preview.file_name,
+        import_type="items_repair_items",
+        file_sha256=preview.file_sha256,
+        preview_id=preview.id,
+        outcome=preview.outcome,
+        idempotency_key=idempotency_key,
+        options_json=preview.options_json,
+        total_rows=int((preview.summary_json or {}).get("total_rows") or 0),
+        successful_rows=0,
+        failed_rows=0,
+        status="queued",
+        created_by=actor,
+    )
+    db.add(job)
+    db.flush()
+    preview.import_job_id = job.id
+    preview.commit_idempotency_key = idempotency_key
+    preview.status = "running"
+    db.commit()
+    logger.info(json.dumps({"event": "item_repair_commit_queued", "preview_id": preview.id, "import_job_id": job.id, "rows": job.total_rows}))
+    return job_result(job)
+
+
+def failed_repair_job_result(job: ImportJob, *, code: str, message: str, duration_ms: int) -> dict[str, Any]:
+    return {
+        "import_job_id": job.id,
+        "preview_id": job.preview_id,
+        "outcome": "repair_items",
+        "status": "failed",
+        "total_rows": job.total_rows,
+        "successful_count": 0,
+        "created_count": 0,
+        "updated_count": 0,
+        "unchanged_count": 0,
+        "excluded_count": 0,
+        "failed_count": job.total_rows,
+        "starting_units": 0,
+        "duration_ms": duration_ms,
+        "code": code,
+        "message": message,
+    }
+
+
+def process_next_item_import_job(*, db_factory=SessionLocal) -> dict[str, Any] | None:
+    with db_factory() as db:
+        job = db.scalar(
+            select(ImportJob)
+            .where(ImportJob.outcome == "repair_items", ImportJob.status == "queued")
+            .order_by(ImportJob.created_at, ImportJob.id)
+            .with_for_update(skip_locked=True)
+        )
+        if job is None:
+            return None
+        started = perf_counter()
+        preview = db.scalar(select(ImportPreview).where(ImportPreview.id == job.preview_id).with_for_update())
+        if preview is not None and preview.import_job_id == job.id:
+            try:
+                with db.begin_nested():
+                    result = commit_preview(
+                        preview,
+                        db,
+                        actor=job.created_by or "system",
+                        idempotency_key=job.idempotency_key or f"repair-job:{job.id}",
+                        commit_transaction=False,
+                    )
+                db.commit()
+                return result
+            except Exception as exc:
+                detail = exc.detail if isinstance(exc, HTTPException) else None
+                code = str(detail.get("code") or "repair_worker_failed") if isinstance(detail, dict) else "repair_worker_failed"
+                message = str(detail.get("message") or "The repair could not be completed. No item or location changes were saved.") if isinstance(detail, dict) else "The repair could not be completed. No item or location changes were saved."
+                logger.exception(json.dumps({"event": "item_repair_worker_failed", "preview_id": preview.id, "import_job_id": job.id, "code": code}))
+        else:
+            code = "repair_preview_unavailable"
+            message = "The queued repair preview is no longer available. No item or location changes were saved."
+
+        duration_ms = round((perf_counter() - started) * 1000)
+        job.status = "failed"
+        job.successful_rows = 0
+        job.failed_rows = job.total_rows
+        job.duration_ms = duration_ms
+        job.completed_at = utcnow()
+        result = failed_repair_job_result(job, code=code, message=message, duration_ms=duration_ms)
+        job.result_json = result
+        if preview is not None and preview.import_job_id == job.id:
+            if preview.status not in {"cancelled", "expired"}:
+                preview.status = "ready"
+            preview.import_job_id = None
+            preview.commit_idempotency_key = None
+            preview.result_json = None
+        db.commit()
+        return result
+
+
 def stock_targets(row: ImportPreviewRow) -> list[dict[str, Any]]:
     data = row.normalized_data or {}
     targets = data.get("_stock_targets")
@@ -1020,6 +1439,8 @@ def stale_rows(preview: ImportPreview, rows: list[ImportPreviewRow], db: Session
 
     items_by_id: dict[int, InventoryItem] = {}
     locations_by_id: dict[int, InventoryItemLocation] = {}
+    locations_by_item: dict[int, list[InventoryItemLocation]] = defaultdict(list)
+    physical_locations: dict[int, InventoryLocation] = {}
     active_location_ids_by_item: dict[int, set[int]] = defaultdict(set)
     active_physical_location_ids: set[int] = set()
     if ready_rows:
@@ -1032,6 +1453,17 @@ def stale_rows(preview: ImportPreview, rows: list[ImportPreviewRow], db: Session
             active_physical_location_ids = set(db.scalars(select(InventoryLocation.id).where(InventoryLocation.id.in_(physical_location_ids), InventoryLocation.active.is_(True))).all()) if physical_location_ids else set()
             for location in active_locations:
                 active_location_ids_by_item[location.inventory_item_id].add(location.id)
+        elif preview.outcome == "repair_items":
+            item_locations = list(db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id.in_(item_ids))).all()) if item_ids else []
+            for location in item_locations:
+                locations_by_item[location.inventory_item_id].append(location)
+            physical_ids = {location.location_id for location in item_locations if location.location_id}
+            physical_ids.update(
+                int(plan["target_location_id"])
+                for row in ready_rows
+                if (plan := (row.normalized_data or {}).get("_repair_plan") or {}).get("target_location_id")
+            )
+            physical_locations = {location.id: location for location in db.scalars(select(InventoryLocation).where(InventoryLocation.id.in_(physical_ids))).all()} if physical_ids else {}
 
     for row in ready_rows:
         item = items_by_id.get(row.existing_item_id)
@@ -1067,8 +1499,18 @@ def stale_rows(preview: ImportPreview, rows: list[ImportPreviewRow], db: Session
                     stale.append(row.row_number)
                     break
             continue
+        if preview.outcome == "repair_items":
+            plan = (row.normalized_data or {}).get("_repair_plan") or {}
+            if (
+                plan.get("location_snapshot") != location_snapshot(item, locations_by_item.get(item.id, []), physical_locations)
+                or plan.get("target_location_snapshot") != physical_location_snapshot(physical_locations.get(plan.get("target_location_id")))
+            ):
+                stale.append(row.row_number)
+                continue
         attributes = [attribute for attribute in row.proposed_changes if attribute in SPEC_BY_ATTRIBUTE]
-        if preview.outcome == "starting_inventory":
+        if preview.outcome == "repair_items":
+            attributes = list(REPAIR_HASH_ATTRIBUTES)
+        elif preview.outcome == "starting_inventory":
             attributes = ["in_stock", "allocated"]
         if row.source_item_hash != item_value_hash(item, attributes):
             stale.append(row.row_number)
@@ -1147,6 +1589,174 @@ def apply_metadata_row(preview: ImportPreview, row: ImportPreviewRow, job: Impor
     return item
 
 
+def apply_repair_row(
+    preview: ImportPreview,
+    row: ImportPreviewRow,
+    job: ImportJob,
+    db: Session,
+    *,
+    actor: str,
+    repair_context: dict[str, dict[int, Any]] | None = None,
+) -> dict[str, Any]:
+    item = repair_context["items"].get(row.existing_item_id) if repair_context is not None else db.get(InventoryItem, row.existing_item_id)
+    if item is None:
+        raise ValueError("The matched item no longer exists.")
+    plan = (row.normalized_data or {}).get("_repair_plan") or {}
+    target_location_id = plan.get("target_location_id")
+    target_physical = repair_context["physical_locations"].get(target_location_id) if repair_context is not None else None
+    target_physical = target_physical or db.get(InventoryLocation, target_location_id)
+    if target_physical is None or not target_physical.active:
+        raise ValueError("The repair target physical location is missing or inactive.")
+
+    before_totals = (
+        Decimal(item.in_stock or 0),
+        Decimal(item.allocated or 0),
+        Decimal(item.sellable or 0),
+        Decimal(item.on_order or 0),
+    )
+    before_quantities = before_totals[:3]
+    assignments = (
+        list(repair_context["assignments"].get(item.id, []))
+        if repair_context is not None
+        else list(db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == item.id).order_by(InventoryItemLocation.id)).all())
+    )
+    had_active_assignment = any(candidate.active for candidate in assignments)
+
+    for attribute in ("brand", "unit_cost"):
+        change = (row.proposed_changes or {}).get(attribute)
+        if change is not None:
+            setattr(item, attribute, coerce_attribute(attribute, change.get("after")))
+
+    target = next((candidate for candidate in assignments if candidate.location_id == target_physical.id and candidate.active), None)
+    if target is None:
+        target = get_or_create_item_location(
+            db,
+            item,
+            target_physical.warehouse,
+            target_physical.location_code or target_physical.location_name,
+            location_id=target_physical.id,
+            is_default_location=True,
+            create_physical_location=False,
+        )
+        if target not in assignments:
+            assignments.append(target)
+        if not had_active_assignment:
+            target.in_stock, target.allocated, target.sellable, target.on_order = before_totals
+            recalculate_item_location(target, item)
+            recalculate_item_totals(db, item.id)
+    target.client = item.client
+    target.warehouse = target_physical.warehouse
+    target.inventory_location = target_physical.location_code or target_physical.location_name
+    target.location_code = target_physical.location_code
+    target.location_name = target_physical.location_name
+    target.active = True
+
+    assignment_ids = {int(value) for value in plan.get("source_assignment_ids") or []}
+    sources = [candidate for candidate in assignments if candidate.id in assignment_ids]
+    if {candidate.id for candidate in sources} != assignment_ids:
+        raise ValueError("A planned source assignment no longer exists.")
+
+    units_relocated = Decimal("0")
+    on_order_units_relocated = Decimal("0")
+    for source in sources:
+        if not source.active:
+            raise ValueError("A planned source assignment is no longer active.")
+        movable = Decimal(source.in_stock or 0) - Decimal(source.allocated or 0)
+        if movable < 0:
+            raise ValueError("A source location has more allocated units than stock.")
+        if movable:
+            transfer_between_locations(
+                db,
+                item,
+                source,
+                target_physical.warehouse or "",
+                target_physical.location_code or target_physical.location_name or "",
+                movable,
+                reference_number=str(job.id),
+                reference_id=job.id,
+                notes=f"Location repair imported from {preview.file_name}",
+                created_by=actor,
+                destination_row=target,
+                locations_already_validated=True,
+                recalculate_totals=False,
+            )
+            units_relocated += movable
+        source_on_order = Decimal(source.on_order or 0)
+        if source_on_order:
+            source.on_order = Decimal("0")
+            target.on_order = Decimal(target.on_order or 0) + source_on_order
+            on_order_units_relocated += source_on_order
+        recalculate_item_location(source, item)
+        recalculate_item_location(target, item)
+        assert_location_invariants(source)
+        assert_location_invariants(target)
+        if Decimal(source.in_stock or 0) == 0 and Decimal(source.allocated or 0) == 0 and Decimal(source.on_order or 0) == 0:
+            source.active = False
+            source.is_default_location = False
+
+    for assignment in assignments:
+        assignment.is_default_location = assignment.id == target.id
+    active_assignments = [assignment for assignment in assignments if assignment.active]
+    for assignment in active_assignments:
+        recalculate_item_location(assignment, item)
+        assert_location_invariants(assignment)
+    item.in_stock = sum((Decimal(assignment.in_stock or 0) for assignment in active_assignments), Decimal("0"))
+    item.allocated = sum((Decimal(assignment.allocated or 0) for assignment in active_assignments), Decimal("0"))
+    item.sellable = sum((Decimal(assignment.sellable or 0) for assignment in active_assignments), Decimal("0"))
+    item.on_order = sum((Decimal(assignment.on_order or 0) for assignment in active_assignments), Decimal("0"))
+    item.under_par = bool(item.par_level is not None and item.in_stock <= item.par_level)
+    item.warehouse = target_physical.warehouse
+    item.inventory_location = target_physical.location_code or target_physical.location_name
+    item.default_location = item.inventory_location
+    assert_location_invariants(target)
+    assert_item_invariants(item)
+    after_totals = (
+        Decimal(item.in_stock or 0),
+        Decimal(item.allocated or 0),
+        Decimal(item.sellable or 0),
+        Decimal(item.on_order or 0),
+    )
+    if after_totals != before_totals:
+        raise ValueError("Location repair was stopped because item inventory totals would change.")
+
+    audit_metadata_item(item, job, preview, row, db, actor=actor, before_quantities=before_quantities)
+    deferred_sources = [candidate for candidate in sources if candidate.active and Decimal(candidate.allocated or 0) > 0]
+    deferred_units = sum((Decimal(candidate.allocated or 0) for candidate in deferred_sources), Decimal("0"))
+    db.add(
+        InventoryAuditEvent(
+            item_id=item.id,
+            sku=item.sku,
+            barcode=item.barcode,
+            event_type="item_location_repair",
+            quantity_delta=Decimal("0"),
+            previous_in_stock=before_totals[0],
+            new_in_stock=after_totals[0],
+            previous_allocated=before_totals[1],
+            new_allocated=after_totals[1],
+            previous_sellable=before_totals[2],
+            new_sellable=after_totals[2],
+            warehouse=item.warehouse,
+            inventory_location=item.inventory_location,
+            reference_type="import_job",
+            reference_id=job.id,
+            reference_number=str(job.id),
+            notes=(
+                f"Consolidated {serializable(units_relocated)} unallocated and "
+                f"{serializable(on_order_units_relocated)} on-order unit(s) from {preview.file_name}; "
+                f"{serializable(deferred_units)} allocated unit(s) deferred."
+            ),
+            created_by=actor,
+        )
+    )
+    return {
+        "consolidated": bool(plan.get("needs_consolidation")),
+        "units_relocated": units_relocated,
+        "on_order_units_relocated": on_order_units_relocated,
+        "deferred_location_count": len(deferred_sources),
+        "deferred_units": deferred_units,
+    }
+
+
 def finalize_job(job: ImportJob, preview: ImportPreview, *, created: int, updated: int, unchanged: int, excluded: int, failed: int, starting_units: Decimal, started: float, extra_result: dict[str, Any] | None = None) -> dict[str, Any]:
     successful = created + updated + unchanged
     status = "failed" if successful == 0 and failed else ("completed_with_errors" if failed else "completed")
@@ -1185,7 +1795,14 @@ def finalize_job(job: ImportJob, preview: ImportPreview, *, created: int, update
     return result
 
 
-def commit_preview(preview: ImportPreview, db: Session, *, actor: str, idempotency_key: str) -> dict[str, Any]:
+def commit_preview(
+    preview: ImportPreview,
+    db: Session,
+    *,
+    actor: str,
+    idempotency_key: str,
+    commit_transaction: bool = True,
+) -> dict[str, Any]:
     if not idempotency_key or len(idempotency_key) > 120:
         raise HTTPException(status_code=422, detail={"code": "idempotency_key_required", "message": "A valid commit idempotency key is required."})
     if preview.status == "committed":
@@ -1196,19 +1813,42 @@ def commit_preview(preview: ImportPreview, db: Session, *, actor: str, idempoten
         raise HTTPException(status_code=409, detail={"code": "preview_not_ready", "message": "Finish matching the required columns before importing."})
 
     rows = list(db.scalars(select(ImportPreviewRow).where(ImportPreviewRow.preview_id == preview.id).order_by(ImportPreviewRow.row_number)).all())
-    if preview.outcome == "update_stock":
-        blockers = [row for row in rows if row.state not in {"will_update", "no_changes", "skipped"}]
+    if preview.outcome in {"update_stock", "repair_items"}:
+        allowed_states = {"will_update", "no_changes", "skipped"} if preview.outcome == "update_stock" else {"will_update", "no_changes"}
+        blockers = [row for row in rows if row.state not in allowed_states]
         if blockers:
+            is_repair = preview.outcome == "repair_items"
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "code": "stock_import_not_ready",
-                    "message": "No stock was changed. Fix the blocking SKU issues before all matched stock totals can be applied together.",
+                    "code": "repair_import_not_ready" if is_repair else "stock_import_not_ready",
+                    "message": (
+                        "No item was changed. Fix or remove every blocked repair row, then preview the whole file again."
+                        if is_repair
+                        else "No stock was changed. Fix the blocking SKU issues before all matched stock totals can be applied together."
+                    ),
                     "blocking_count": len(blockers),
                     "row_numbers": [row.row_number for row in blockers[:100]],
                 },
             )
         lock_inventory_stock(db, {row.existing_item_id for row in rows if row.existing_item_id})
+        if preview.outcome == "repair_items":
+            physical_location_ids: set[int] = set()
+            for row in rows:
+                plan = (row.normalized_data or {}).get("_repair_plan") or {}
+                if plan.get("target_location_id"):
+                    physical_location_ids.add(int(plan["target_location_id"]))
+                for snapshot_row in (plan.get("location_snapshot") or {}).get("locations", []):
+                    if snapshot_row.get("location_id"):
+                        physical_location_ids.add(int(snapshot_row["location_id"]))
+            if physical_location_ids:
+                db.scalars(
+                    select(InventoryLocation)
+                    .where(InventoryLocation.id.in_(physical_location_ids))
+                    .order_by(InventoryLocation.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                ).all()
     stale = stale_rows(preview, rows, db)
     if stale:
         logger.info(json.dumps({"event": "item_import_stale_preview", "preview_id": preview.id, "rows": stale[:20]}))
@@ -1257,7 +1897,56 @@ def commit_preview(preview: ImportPreview, db: Session, *, actor: str, idempoten
         for issue_data in row.issues_json or [issue("sku_not_found", "sku", f"SKU {row.sku!r} was not found in Pongo OS.", row.sku, "Add it to Items first if Pongo should manage it.", blocking=False)]:
             record_job_error(job, row, db, issue_data)
 
-    if preview.outcome in METADATA_OUTCOMES:
+    if preview.outcome == "repair_items":
+        try:
+            unchanged = sum(1 for row in rows if row.state == "no_changes")
+            repair_item_ids = {row.existing_item_id for row in rows if row.existing_item_id}
+            repair_items = {item.id: item for item in db.scalars(select(InventoryItem).where(InventoryItem.id.in_(repair_item_ids))).all()}
+            repair_assignments: dict[int, list[InventoryItemLocation]] = defaultdict(list)
+            all_repair_assignments = list(db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id.in_(repair_item_ids)).order_by(InventoryItemLocation.inventory_item_id, InventoryItemLocation.id)).all())
+            for assignment in all_repair_assignments:
+                repair_assignments[assignment.inventory_item_id].append(assignment)
+            repair_physical_ids = {assignment.location_id for assignment in all_repair_assignments if assignment.location_id}
+            repair_physical_locations = {location.id: location for location in db.scalars(select(InventoryLocation).where(InventoryLocation.id.in_(repair_physical_ids))).all()}
+            repair_context = {"items": repair_items, "assignments": repair_assignments, "physical_locations": repair_physical_locations}
+            metrics = {
+                "consolidate_count": 0,
+                "deferred_location_count": 0,
+                "deferred_units": Decimal("0"),
+                "units_relocated": Decimal("0"),
+                "on_order_units_relocated": Decimal("0"),
+            }
+            for row in rows:
+                if row.state != "will_update":
+                    continue
+                row_metrics = apply_repair_row(preview, row, job, db, actor=actor, repair_context=repair_context)
+                updated += 1
+                metrics["consolidate_count"] += int(row_metrics["consolidated"])
+                metrics["deferred_location_count"] += int(row_metrics["deferred_location_count"])
+                for key in ("deferred_units", "units_relocated", "on_order_units_relocated"):
+                    metrics[key] += Decimal(row_metrics[key] or 0)
+            result = finalize_job(
+                job,
+                preview,
+                created=0,
+                updated=updated,
+                unchanged=unchanged,
+                excluded=0,
+                failed=0,
+                starting_units=starting_units,
+                started=started,
+                extra_result={key: serializable(value) for key, value in metrics.items()},
+            )
+            if commit_transaction:
+                db.commit()
+            else:
+                db.flush()
+        except Exception as exc:
+            if commit_transaction:
+                db.rollback()
+            logger.exception(json.dumps({"event": "item_import_commit_failed", "preview_id": preview.id, "outcome": preview.outcome}))
+            raise HTTPException(status_code=500, detail={"code": "import_transaction_failed", "message": "The repair could not be completed. No item or location changes were saved."}) from exc
+    elif preview.outcome in METADATA_OUTCOMES:
         try:
             for row in rows:
                 if row.state == "no_changes":

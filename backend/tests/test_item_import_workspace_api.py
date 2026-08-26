@@ -1,13 +1,15 @@
 import tracemalloc
+from datetime import timedelta
 from decimal import Decimal
 from io import BytesIO
 from time import perf_counter
 from uuid import uuid4
 
 from sqlalchemy import event, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
-from app.models.inventory import InventoryItem, InventoryItemLocation, InventoryLocation, StockAdjustmentLine
+from app.models.imports import ImportError, ImportJob, ImportPreview
+from app.models.inventory import InventoryItem, InventoryItemLocation, InventoryLocation, StockAdjustmentLine, StockMovement
 from app.services import item_import_workflow
 from tests.test_items_api import client, seed_item  # noqa: F401
 
@@ -20,27 +22,143 @@ def upload(client, outcome: str, csv_text: str, filename: str = "items.csv"):
     )
 
 
-def commit(client, preview_id: str, key: str | None = None):
+def raw_commit(client, preview_id: str, key: str):
     return client.post(
         f"/api/items/import/previews/{preview_id}/commit",
-        json={"idempotency_key": key or str(uuid4())},
+        json={"idempotency_key": key},
     )
+
+
+def process_repair_job(client):
+    return item_import_workflow.process_next_item_import_job(
+        db_factory=sessionmaker(bind=client.test_engine, autoflush=False, autocommit=False)
+    )
+
+
+def commit(client, preview_id: str, key: str | None = None):
+    key = key or str(uuid4())
+    response = raw_commit(client, preview_id, key)
+    if response.status_code == 202:
+        result = process_repair_job(client)
+        if result and result.get("status") == "completed":
+            return raw_commit(client, preview_id, key)
+    return response
+
+
+def configure_repair_assignments(
+    client,
+    item_id: int,
+    *,
+    first_stock: Decimal = Decimal("2"),
+    second_stock: Decimal = Decimal("3"),
+    second_allocated: Decimal = Decimal("0"),
+    first_on_order: Decimal = Decimal("1"),
+    second_on_order: Decimal = Decimal("2"),
+):
+    with Session(client.test_engine) as db:
+        item = db.get(InventoryItem, item_id)
+        assignment = db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == item_id)).one()
+        location_001 = InventoryLocation(client="Pongo", warehouse="Main Warehouse", location_code="001", location_name="Store", active=True)
+        unassigned = InventoryLocation(client="Pongo", warehouse="Main Warehouse", location_code="UNASSIGNED", location_name="UNASSIGNED", active=True)
+        db.add_all([location_001, unassigned])
+        db.flush()
+        assignment.location_id = location_001.id
+        assignment.warehouse = "Main Warehouse"
+        assignment.inventory_location = "001"
+        assignment.location_code = "001"
+        assignment.location_name = "Store"
+        assignment.is_default_location = True
+        assignment.in_stock = first_stock
+        assignment.allocated = Decimal("0")
+        assignment.sellable = first_stock
+        assignment.on_order = first_on_order
+        assignment.active = True
+        second = InventoryItemLocation(
+            inventory_item_id=item_id,
+            location_id=unassigned.id,
+            client="Pongo",
+            warehouse="Main Warehouse",
+            inventory_location="UNASSIGNED",
+            location_code="UNASSIGNED",
+            location_name="UNASSIGNED",
+            is_default_location=False,
+            in_stock=second_stock,
+            allocated=second_allocated,
+            sellable=second_stock - second_allocated,
+            on_order=second_on_order,
+            under_par=False,
+            active=True,
+        )
+        db.add(second)
+        item.warehouse = "Main Warehouse"
+        item.inventory_location = "001"
+        item.default_location = "001"
+        item.in_stock = first_stock + second_stock
+        item.allocated = second_allocated
+        item.sellable = item.in_stock - item.allocated
+        item.on_order = first_on_order + second_on_order
+        db.commit()
+        return {"target_id": assignment.id, "second_id": second.id, "target_location_id": location_001.id}
+
+
+def attach_items_to_rack(client, *item_ids: int) -> None:
+    with Session(client.test_engine) as db:
+        location = InventoryLocation(client="Pongo", warehouse="Main Warehouse", location_code="RACK-1", location_name="Rack 1", active=True)
+        db.add(location)
+        db.flush()
+        for item_id in item_ids:
+            assignment = db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == item_id)).one()
+            assignment.location_id = location.id
+            assignment.warehouse = "Main Warehouse"
+            assignment.inventory_location = "Rack 1"
+            assignment.location_code = "RACK-1"
+            assignment.location_name = "Rack 1"
+        db.commit()
 
 
 def test_schema_and_templates_are_backend_owned_and_stock_safe(client):
     schema = client.get("/api/items/import/schema")
     add_template = client.get("/api/items/import/templates/add_items")
+    repair_template = client.get("/api/items/import/templates/repair_items", params={"include_existing": True})
     stock_template = client.get("/api/items/import/templates/update_stock")
     starting_template = client.get("/api/items/import/templates/starting_inventory")
 
     assert schema.status_code == 200
-    assert [outcome["key"] for outcome in schema.json()["outcomes"]] == ["add_items", "update_items", "update_stock", "starting_inventory"]
+    assert [outcome["key"] for outcome in schema.json()["outcomes"]] == ["add_items", "update_items", "repair_items", "update_stock", "starting_inventory"]
     assert next(outcome for outcome in schema.json()["outcomes"] if outcome["key"] == "update_stock")["required_fields"] == ["sku", "stock_quantity"]
     assert schema.headers["x-import-schema-version"] == add_template.headers["x-import-schema-version"]
     assert "On hand" not in add_template.text
     assert "Allocated" not in add_template.text
+    assert repair_template.text.splitlines()[0] == "Pongo Item ID,SKU,Product name,Woo product ID,Woo variation ID,Brand,Unit cost,Target warehouse,Target inventory location"
+    assert "Barcode" not in repair_template.text.splitlines()[0]
     assert stock_template.text.splitlines()[0] == "SKU,In stock,Reference note"
     assert starting_template.text.splitlines()[0] == "SKU,Starting quantity,Warehouse,Inventory location,Reference note"
+
+
+def test_repair_template_exports_only_active_inventory_items(client):
+    active = seed_item(client, sku="REPAIR-TEMPLATE-ACTIVE", **{"In Stock": 0, "Allocated": 0})
+    inactive = seed_item(client, sku="REPAIR-TEMPLATE-INACTIVE", active=False, **{"In Stock": 0, "Allocated": 0})
+    service = seed_item(client, sku="REPAIR-TEMPLATE-SERVICE", nonInventory=True, **{"In Stock": 0, "Allocated": 0})
+
+    template = client.get("/api/items/import/templates/repair_items", params={"include_existing": True})
+    exported_ids = {int(line.split(",", 1)[0]) for line in template.text.splitlines()[1:] if line}
+    assert active["id"] in exported_ids
+    assert inactive["id"] not in exported_ids
+    assert service["id"] not in exported_ids
+
+    attach_items_to_rack(client, inactive["id"], service["id"])
+    preview = upload(
+        client,
+        "repair_items",
+        (
+            "Pongo Item ID,Warehouse,Inventory location\n"
+            f"{inactive['id']},Main Warehouse,Rack 1\n"
+            f"{service['id']},Main Warehouse,Rack 1\n"
+        ),
+    ).json()
+    rows = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()["rows"]
+    assert preview["summary"]["blocking_count"] == 2
+    assert all(any(entry["code"] == "repair_item_ineligible" for entry in row["issues"]) for row in rows)
 
 
 def test_add_items_preview_is_persisted_paginated_and_idempotent(client):
@@ -115,6 +233,320 @@ def test_update_metadata_never_changes_quantities_or_stock_history(client):
     assert restored["Unit Cost"] == 2
     assert restored["In Stock"] == 17
     assert client.get("/api/stock-movements", params={"item_id": original["id"]}).json()["total"] == movements_before
+
+
+def test_repair_commit_queues_once_and_worker_applies_it(client):
+    item = seed_item(client, sku="REPAIR-QUEUED", Brand="Before", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+    attach_items_to_rack(client, item["id"])
+    preview = upload(
+        client,
+        "repair_items",
+        "SKU,Brand,Warehouse,Inventory location\nREPAIR-QUEUED,After,Main Warehouse,Rack 1\n",
+    ).json()
+
+    first = raw_commit(client, preview["preview_id"], str(uuid4()))
+    replay = raw_commit(client, preview["preview_id"], str(uuid4()))
+
+    assert first.status_code == replay.status_code == 202
+    assert first.json()["status"] == replay.json()["status"] == "queued"
+    assert first.json()["import_job_id"] == replay.json()["import_job_id"]
+    with Session(client.test_engine) as db:
+        queued_preview = db.get(ImportPreview, preview["preview_id"])
+        queued_preview.expires_at = item_import_workflow.utcnow() - timedelta(seconds=1)
+        db.commit()
+    resumed = client.get(f"/api/items/import/previews/{preview['preview_id']}").json()
+    assert resumed["status"] == "running"
+    assert resumed["import_job_id"] == first.json()["import_job_id"]
+    assert client.post(f"/api/items/import/previews/{preview['preview_id']}/cancel").status_code == 409
+    assert client.get(f"/api/items/{item['id']}").json()["Brand"] == "Before"
+    with Session(client.test_engine) as db:
+        assert db.scalar(select(func.count(ImportJob.id)).where(ImportJob.preview_id == preview["preview_id"])) == 1
+
+    completed = process_repair_job(client)
+
+    assert completed["status"] == "completed"
+    assert completed["updated_count"] == 1
+    assert client.get(f"/api/items/{item['id']}").json()["Brand"] == "After"
+    job = client.get(f"/api/import-jobs/{first.json()['import_job_id']}").json()
+    assert job["status"] == "completed"
+    assert job["result_json"]["updated_count"] == 1
+
+
+def test_repair_worker_crash_leaves_the_job_queued_for_retry(client, monkeypatch):
+    item = seed_item(client, sku="REPAIR-CRASH", Brand="Before", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+    attach_items_to_rack(client, item["id"])
+    preview = upload(
+        client,
+        "repair_items",
+        "SKU,Brand,Warehouse,Inventory location\nREPAIR-CRASH,After,Main Warehouse,Rack 1\n",
+    ).json()
+    queued = raw_commit(client, preview["preview_id"], str(uuid4())).json()
+    original_commit = item_import_workflow.commit_preview
+
+    def crash(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(item_import_workflow, "commit_preview", crash)
+
+    crashed = False
+    try:
+        process_repair_job(client)
+    except KeyboardInterrupt:
+        crashed = True
+
+    assert crashed is True
+    assert client.get(f"/api/import-jobs/{queued['import_job_id']}").json()["status"] == "queued"
+    assert client.get(f"/api/items/{item['id']}").json()["Brand"] == "Before"
+    monkeypatch.setattr(item_import_workflow, "commit_preview", original_commit)
+    assert process_repair_job(client)["status"] == "completed"
+    assert client.get(f"/api/items/{item['id']}").json()["Brand"] == "After"
+
+
+def test_repair_items_merges_001_and_unassigned_into_one_store_location(client):
+    item = seed_item(client, sku="REPAIR-MERGE", Brand="Old", **{"Unit Cost": 1, "In Stock": 5, "Allocated": 0, "On Order": 3})
+    location_ids = configure_repair_assignments(client, item["id"])
+    movements_before = client.get("/api/stock-movements", params={"item_id": item["id"]}).json()["total"]
+    preview_response = upload(
+        client,
+        "repair_items",
+        "SKU,Brand,Unit cost,Warehouse,Inventory location\nREPAIR-MERGE,Open Farm,7.25,Main Warehouse,001\n",
+    )
+
+    assert preview_response.status_code == 201, preview_response.text
+    preview = preview_response.json()
+    assert preview["summary"]["blocking_count"] == 0
+    assert preview["summary"]["consolidate_count"] == 1
+    assert preview["summary"]["units_relocated"] == 3
+    assert preview["summary"]["deferred_units"] == 0
+    result = commit(client, preview["preview_id"])
+    assert result.status_code == 200, result.text
+    assert result.json()["consolidate_count"] == 1
+    assert result.json()["units_relocated"] == 3
+    assert result.json()["on_order_units_relocated"] == 2
+
+    with Session(client.test_engine) as db:
+        model = db.get(InventoryItem, item["id"])
+        assignments = {row.id: row for row in db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == item["id"])).all()}
+        target = assignments[location_ids["target_id"]]
+        assert (model.in_stock, model.allocated, model.sellable, model.on_order) == (Decimal("5"), Decimal("0"), Decimal("5"), Decimal("3"))
+        assert (model.brand, model.unit_cost, model.warehouse, model.inventory_location) == ("Open Farm", Decimal("7.25"), "Main Warehouse", "001")
+        assert target.active is True
+        assert target.is_default_location is True
+        assert (target.in_stock, target.allocated, target.sellable, target.on_order) == (Decimal("5"), Decimal("0"), Decimal("5"), Decimal("3"))
+        assert assignments[location_ids["second_id"]].active is False
+        transfer_movements = db.scalar(select(func.count(StockMovement.id)).where(StockMovement.inventory_item_id == item["id"]))
+        assert transfer_movements == movements_before + 2
+
+
+def test_repair_items_moves_only_unallocated_stock_and_reports_deferred_reservations(client):
+    item = seed_item(client, sku="REPAIR-DEFER", **{"In Stock": 5, "Allocated": 2, "On Order": 3})
+    location_ids = configure_repair_assignments(client, item["id"], second_allocated=Decimal("2"))
+    preview = upload(
+        client,
+        "repair_items",
+        "SKU,Warehouse,Inventory location\nREPAIR-DEFER,Main Warehouse,001\n",
+    ).json()
+
+    assert preview["summary"]["units_relocated"] == 1
+    assert preview["summary"]["deferred_location_count"] == 1
+    assert preview["summary"]["deferred_units"] == 2
+    row = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()["rows"][0]
+    assert row["state"] == "will_update"
+    assert [entry["code"] for entry in row["issues"]] == ["allocated_stock_deferred"]
+
+    result = commit(client, preview["preview_id"])
+    assert result.status_code == 200, result.text
+    assert result.json()["units_relocated"] == 1
+    assert result.json()["deferred_units"] == 2
+    assert result.json()["deferred_location_count"] == 1
+    with Session(client.test_engine) as db:
+        assignments = {row.id: row for row in db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == item["id"])).all()}
+        target = assignments[location_ids["target_id"]]
+        reserved = assignments[location_ids["second_id"]]
+        assert (target.in_stock, target.allocated, target.sellable, target.on_order) == (Decimal("3"), Decimal("0"), Decimal("3"), Decimal("3"))
+        assert reserved.active is True
+        assert (reserved.in_stock, reserved.allocated, reserved.sellable, reserved.on_order) == (Decimal("2"), Decimal("2"), Decimal("0"), Decimal("0"))
+
+
+def test_repair_items_reactivates_only_a_zero_balance_target_without_losing_item_totals(client):
+    item = seed_item(client, sku="REPAIR-INACTIVE", **{"In Stock": 4, "Allocated": 1, "On Order": 2})
+    with Session(client.test_engine) as db:
+        model = db.get(InventoryItem, item["id"])
+        assignment = db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == item["id"])).one()
+        target = InventoryLocation(client="Pongo", warehouse="Main Warehouse", location_code="001", location_name="Store", active=True)
+        db.add(target)
+        db.flush()
+        assignment.location_id = target.id
+        assignment.warehouse = "Main Warehouse"
+        assignment.inventory_location = "001"
+        assignment.location_code = "001"
+        assignment.location_name = "Store"
+        assignment.in_stock = assignment.allocated = assignment.sellable = assignment.on_order = Decimal("0")
+        assignment.active = False
+        model.warehouse = "Main Warehouse"
+        model.inventory_location = "001"
+        model.default_location = "001"
+        db.commit()
+
+    preview = upload(client, "repair_items", "SKU,Warehouse,Inventory location\nREPAIR-INACTIVE,Main Warehouse,001\n").json()
+    assert preview["summary"]["blocking_count"] == 0
+    result = commit(client, preview["preview_id"])
+    assert result.status_code == 200, result.text
+    with Session(client.test_engine) as db:
+        model = db.get(InventoryItem, item["id"])
+        assignment = db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == item["id"])).one()
+        assert assignment.active is True
+        assert assignment.is_default_location is True
+        assert (assignment.in_stock, assignment.allocated, assignment.sellable, assignment.on_order) == (Decimal("4"), Decimal("1"), Decimal("3"), Decimal("2"))
+        assert (model.in_stock, model.allocated, model.sellable, model.on_order) == (Decimal("4"), Decimal("1"), Decimal("3"), Decimal("2"))
+
+
+def test_repair_items_matches_pongo_id_without_sku_and_ignores_barcode_columns(client):
+    first = seed_item(client, sku="REPAIR-ID-1", Brand="Old", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+    second = seed_item(client, sku="REPAIR-ID-2", Brand="Old", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+    with Session(client.test_engine) as db:
+        db.get(InventoryItem, first["id"]).sku = None
+        db.commit()
+    attach_items_to_rack(client, first["id"], second["id"])
+    csv_text = (
+        "Pongo Item ID,SKU,Barcode,Brand,Unit cost,Warehouse,Inventory location\n"
+        f"{first['id']},,DUPLICATE-SOURCE,First Brand,2.50,Main Warehouse,Rack 1\n"
+        f"{second['id']},REPAIR-ID-2,DUPLICATE-SOURCE,Second Brand,3.50,Main Warehouse,Rack 1\n"
+    )
+    response = upload(client, "repair_items", csv_text)
+
+    assert response.status_code == 201, response.text
+    preview = response.json()
+    barcode_column = next(column for column in preview["source_columns"] if column["source"] == "Barcode")
+    assert barcode_column["destination"] is None
+    assert preview["summary"]["duplicate_count"] == 0
+    assert preview["summary"]["update_count"] == 2
+    rows = client.get(f"/api/items/import/previews/{preview['preview_id']}/rows").json()["rows"]
+    assert {row["match_method"] for row in rows} == {"pongo_item_id"}
+
+    result = commit(client, preview["preview_id"])
+    assert result.status_code == 200, result.text
+    assert client.get(f"/api/items/{first['id']}").json()["Brand"] == "First Brand"
+    assert client.get(f"/api/items/{second['id']}").json()["Brand"] == "Second Brand"
+
+    mismatch = upload(
+        client,
+        "repair_items",
+        f"Pongo Item ID,SKU,Warehouse,Inventory location\n{second['id']},WRONG-SKU,Main Warehouse,Rack 1\n",
+    ).json()
+    mismatch_row = client.get(f"/api/items/import/previews/{mismatch['preview_id']}/rows").json()["rows"][0]
+    assert mismatch_row["state"] == "needs_attention"
+    assert mismatch_row["issues"][0]["code"] == "identity_mismatch"
+
+
+def test_repair_items_blocks_the_whole_file_and_rejects_stale_location_snapshots(client):
+    valid = seed_item(client, sku="REPAIR-ATOMIC", Brand="Before", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+    invalid = seed_item(client, sku="REPAIR-BLOCKED", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+    attach_items_to_rack(client, valid["id"], invalid["id"])
+    blocked_preview = upload(
+        client,
+        "repair_items",
+        "SKU,Brand,Warehouse,Inventory location\nREPAIR-ATOMIC,After,Main Warehouse,Rack 1\nREPAIR-BLOCKED,After,Missing,Nowhere\n",
+    ).json()
+
+    blocked = commit(client, blocked_preview["preview_id"])
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "repair_import_not_ready"
+    assert client.get(f"/api/items/{valid['id']}").json()["Brand"] == "Before"
+    assert client.get(f"/api/items/{invalid['id']}").json()["Brand"] == "Test Brand"
+
+    stale_preview = upload(
+        client,
+        "repair_items",
+        "SKU,Brand,Warehouse,Inventory location\nREPAIR-ATOMIC,After,Main Warehouse,Rack 1\n",
+    ).json()
+    with Session(client.test_engine) as db:
+        assignment = db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == valid["id"], InventoryItemLocation.active.is_(True))).one()
+        assignment.on_order = Decimal("1")
+        db.get(InventoryItem, valid["id"]).on_order = Decimal("1")
+        db.commit()
+
+    stale = raw_commit(client, stale_preview["preview_id"], str(uuid4()))
+    assert stale.status_code == 202
+    failed = process_repair_job(client)
+    assert failed["status"] == "failed"
+    assert failed["code"] == "stale_preview"
+    assert client.get(f"/api/items/{valid['id']}").json()["Brand"] == "Before"
+    reopened = client.get(f"/api/items/import/previews/{stale_preview['preview_id']}").json()
+    assert reopened["status"] == "ready"
+    assert reopened["import_job_id"] is None
+
+    refreshed = client.post(f"/api/items/import/previews/{stale_preview['preview_id']}/revalidate")
+    assert refreshed.status_code == 200, refreshed.text
+    retry = commit(client, stale_preview["preview_id"])
+    assert retry.status_code == 200, retry.text
+    assert client.get(f"/api/items/{valid['id']}").json()["Brand"] == "After"
+
+
+def test_repair_jobs_appear_in_import_history_and_failed_rows_use_repair_columns(client):
+    item = seed_item(client, sku="REPAIR-HISTORY", Brand="Before", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+    attach_items_to_rack(client, item["id"])
+    preview = upload(
+        client,
+        "repair_items",
+        f"Pongo Item ID,Brand,Warehouse,Inventory location\n{item['id']},After,Main Warehouse,Rack 1\n",
+    ).json()
+    result = commit(client, preview["preview_id"])
+    assert result.status_code == 200, result.text
+    job_id = result.json()["import_job_id"]
+
+    legacy_history = client.get("/api/import-jobs", params={"item_imports_only": True}).json()
+    paged_history = client.get("/api/import-jobs", params={"item_imports_only": True, "page": 1, "page_size": 20}).json()
+    assert job_id in {job["id"] for job in legacy_history}
+    assert job_id in {job["id"] for job in paged_history["jobs"]}
+
+    with Session(client.test_engine) as db:
+        db.add(
+            ImportError(
+                import_job_id=job_id,
+                row_number=2,
+                sku="REPAIR-HISTORY",
+                error_message="Unit cost could not be repaired.",
+                error_code="repair_test_error",
+                field_name="unit_cost",
+                invalid_value="bad",
+                blocking=True,
+                suggested_action="Enter a non-negative unit cost.",
+                raw_row={"Pongo Item ID": item["id"], "SKU": "REPAIR-HISTORY", "Unit cost": "bad", "Barcode": "SHOULD-NOT-EXPORT"},
+            )
+        )
+        db.commit()
+
+    failed_rows = client.get(f"/api/import-jobs/{job_id}/failed-rows")
+    assert failed_rows.status_code == 200, failed_rows.text
+    assert failed_rows.text.splitlines()[0] == (
+        "Pongo Item ID,SKU,Product name,Woo product ID,Woo variation ID,Brand,Unit cost,Target warehouse,"
+        "Target inventory location,Error Code,Error Field,Error Message,Suggested action"
+    )
+    assert "Barcode" not in failed_rows.text.splitlines()[0]
+    assert "repair_test_error" in failed_rows.text
+
+
+def test_repair_commit_rejects_item_location_metadata_changed_after_preview(client):
+    item = seed_item(client, sku="REPAIR-METADATA-STALE", Brand="Before", **{"In Stock": 0, "Allocated": 0, "On Order": 0})
+    attach_items_to_rack(client, item["id"])
+    preview = upload(
+        client,
+        "repair_items",
+        "SKU,Brand,Warehouse,Inventory location\nREPAIR-METADATA-STALE,After,Main Warehouse,Rack 1\n",
+    ).json()
+    with Session(client.test_engine) as db:
+        db.get(InventoryItem, item["id"]).default_location = "Changed after preview"
+        db.commit()
+
+    response = raw_commit(client, preview["preview_id"], str(uuid4()))
+    assert response.status_code == 202
+    failed = process_repair_job(client)
+    assert failed["status"] == "failed"
+    assert failed["code"] == "stale_preview"
+    updated = client.get(f"/api/items/{item['id']}").json()
+    assert updated["Brand"] == "Before"
+    assert updated["Default Location"] == "Changed after preview"
 
 
 def test_stock_csv_sets_exact_sku_total_with_one_audited_adjustment(client):
@@ -487,6 +919,116 @@ def test_1500_stock_rows_commit_in_one_adjustment(client):
     with Session(client.test_engine) as db:
         assert db.scalar(select(func.count()).select_from(StockAdjustmentLine).where(StockAdjustmentLine.adjustment_id == result.json()["stock_adjustment_id"])) == 1500
         assert db.scalar(select(func.count()).select_from(InventoryItem).where(InventoryItem.sku.like("BULK-STOCK-%"), InventoryItem.in_stock == 2)) == 1500
+
+
+def test_1500_repair_rows_have_bounded_queries_and_complete_atomically(client):
+    with Session(client.test_engine) as db:
+        target = InventoryLocation(client="Pongo", warehouse="Main Warehouse", location_code="001", location_name="Store", active=True)
+        unassigned = InventoryLocation(client="Pongo", warehouse="Main Warehouse", location_code="UNASSIGNED", location_name="UNASSIGNED", active=True)
+        db.add_all([target, unassigned])
+        db.flush()
+        items = [
+            InventoryItem(
+                client="Pongo",
+                sku=f"BULK-REPAIR-{index:04d}",
+                description="Bulk repair test",
+                brand="Old",
+                warehouse="Main Warehouse",
+                inventory_location="001",
+                default_location="001",
+                in_stock=Decimal("3"),
+                allocated=Decimal("0"),
+                sellable=Decimal("3"),
+                on_order=Decimal("0"),
+                active=True,
+                non_inventory=False,
+            )
+            for index in range(1500)
+        ]
+        db.add_all(items)
+        db.flush()
+        db.add_all([
+            assignment
+            for item in items
+            for assignment in (
+                InventoryItemLocation(
+                    inventory_item_id=item.id,
+                    location_id=target.id,
+                    client="Pongo",
+                    warehouse="Main Warehouse",
+                    inventory_location="001",
+                    location_code="001",
+                    location_name="Store",
+                    is_default_location=True,
+                    in_stock=Decimal("1"),
+                    allocated=Decimal("0"),
+                    sellable=Decimal("1"),
+                    on_order=Decimal("0"),
+                    active=True,
+                ),
+                InventoryItemLocation(
+                    inventory_item_id=item.id,
+                    location_id=unassigned.id,
+                    client="Pongo",
+                    warehouse="Main Warehouse",
+                    inventory_location="UNASSIGNED",
+                    location_code="UNASSIGNED",
+                    location_name="UNASSIGNED",
+                    is_default_location=False,
+                    in_stock=Decimal("2"),
+                    allocated=Decimal("0"),
+                    sellable=Decimal("2"),
+                    on_order=Decimal("0"),
+                    active=True,
+                ),
+            )
+        ])
+        db.commit()
+        item_ids = [item.id for item in items]
+
+    csv_text = "Pongo Item ID,Brand,Unit cost,Warehouse,Inventory location\n" + "".join(
+        f"{item_id},Repaired Brand,2.50,Main Warehouse,001\n" for item_id in item_ids
+    )
+    query_count = 0
+
+    def count_query(*_args):
+        nonlocal query_count
+        query_count += 1
+
+    event.listen(client.test_engine, "before_cursor_execute", count_query)
+    started = perf_counter()
+    preview = upload(client, "repair_items", csv_text)
+    preview_seconds = perf_counter() - started
+    preview_query_count = query_count
+    started = perf_counter()
+    queued = raw_commit(client, preview.json()["preview_id"], str(uuid4()))
+    queue_seconds = perf_counter() - started
+    queue_query_count = query_count - preview_query_count
+    started = perf_counter()
+    result = process_repair_job(client)
+    worker_seconds = perf_counter() - started
+    worker_query_count = query_count - preview_query_count - queue_query_count
+    event.remove(client.test_engine, "before_cursor_execute", count_query)
+
+    print({
+        "repair_rows": len(item_ids),
+        "preview_seconds": round(preview_seconds, 3),
+        "queue_seconds": round(queue_seconds, 3),
+        "worker_seconds": round(worker_seconds, 3),
+        "preview_database_queries": preview_query_count,
+        "queue_database_queries": queue_query_count,
+        "worker_database_queries": worker_query_count,
+    })
+    assert preview.status_code == 201, preview.text
+    assert preview.json()["summary"]["blocking_count"] == 0
+    assert preview.json()["summary"]["units_relocated"] == 3000
+    assert queued.status_code == 202, queued.text
+    assert queued.json()["status"] == "queued"
+    assert result["updated_count"] == 1500
+    assert result["units_relocated"] == 3000
+    assert preview_query_count <= 1_600
+    assert queue_query_count <= 10
+    assert worker_query_count <= 15_000
 
 
 def test_duplicate_can_be_corrected_inline_before_commit(client):

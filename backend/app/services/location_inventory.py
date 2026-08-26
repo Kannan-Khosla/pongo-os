@@ -140,15 +140,8 @@ def get_or_create_item_location(
     inventory_location = (inventory_location or item.inventory_location or item.default_location or "UNASSIGNED").strip() or "UNASSIGNED"
     physical_location = resolve_or_create_physical_location(db, item.client, warehouse, inventory_location, location_id, create=create_physical_location)
 
-    row = db.scalars(
-        select(InventoryItemLocation).where(
-            InventoryItemLocation.inventory_item_id == item.id,
-            InventoryItemLocation.warehouse == warehouse,
-            InventoryItemLocation.inventory_location == inventory_location,
-            InventoryItemLocation.active.is_(True),
-        )
-    ).first()
-    if row is None and physical_location is not None:
+    row = None
+    if physical_location is not None:
         row = db.scalars(
             select(InventoryItemLocation).where(
                 InventoryItemLocation.inventory_item_id == item.id,
@@ -156,6 +149,29 @@ def get_or_create_item_location(
                 InventoryItemLocation.active.is_(True),
             )
         ).first()
+    if row is None:
+        text_row = db.scalars(
+            select(InventoryItemLocation).where(
+                InventoryItemLocation.inventory_item_id == item.id,
+                InventoryItemLocation.warehouse == warehouse,
+                InventoryItemLocation.inventory_location == inventory_location,
+                InventoryItemLocation.active.is_(True),
+            )
+        ).first()
+        if text_row is not None and physical_location is not None and text_row.location_id not in {None, physical_location.id}:
+            raise ValueError("The item location text is mapped to a different physical location.")
+        row = text_row
+    if row is None and physical_location is not None:
+        row = db.scalars(
+            select(InventoryItemLocation).where(
+                InventoryItemLocation.inventory_item_id == item.id,
+                InventoryItemLocation.location_id == physical_location.id,
+            )
+        ).first()
+        if row is not None and not row.active:
+            balances = (row.in_stock, row.allocated, row.sellable, row.on_order)
+            if any(to_decimal(balance) != 0 for balance in balances):
+                raise ValueError("An inactive item location with inventory balances cannot be reactivated.")
     if row is None:
         existing_rows = db.scalar(select(func.count(InventoryItemLocation.id)).where(InventoryItemLocation.inventory_item_id == item.id)) or 0
         row = InventoryItemLocation(
@@ -190,6 +206,7 @@ def get_or_create_item_location(
     if is_default_location:
         set_default_item_location(db, item.id, row)
     recalculate_item_location(row, item)
+    db.flush()
     recalculate_item_totals(db, item.id)
     return row
 
@@ -721,15 +738,24 @@ def transfer_between_locations(
     reference_id: int | None = None,
     notes: str | None = None,
     created_by: str | None = "system",
+    destination_row: InventoryItemLocation | None = None,
+    locations_already_validated: bool = False,
+    recalculate_totals: bool = True,
 ) -> tuple[LocationStockChange, LocationStockChange]:
     quantity = to_decimal(quantity)
     if quantity <= 0:
         raise ValueError("Transfer quantity must be greater than zero.")
     if from_row.inventory_item_id != item.id:
         raise ValueError("Transfer source location does not belong to the item.")
-    assert_stock_location_active(db, from_row)
-    to_row = get_or_create_item_location(db, item, to_warehouse, to_inventory_location)
-    assert_stock_location_active(db, to_row)
+    if not locations_already_validated:
+        assert_stock_location_active(db, from_row)
+    to_row = destination_row or get_or_create_item_location(db, item, to_warehouse, to_inventory_location)
+    if to_row.inventory_item_id != item.id or to_row.id == from_row.id:
+        raise ValueError("Transfer destination must be a different location for this item.")
+    if not to_row.active:
+        raise ValueError("Transfer destination location is inactive.")
+    if not locations_already_validated:
+        assert_stock_location_active(db, to_row)
     old_item_stock = item.in_stock or Decimal("0")
     from_old_stock, from_old_allocated = from_row.in_stock or Decimal("0"), from_row.allocated or Decimal("0")
     to_old_stock, to_old_allocated = to_row.in_stock or Decimal("0"), to_row.allocated or Decimal("0")
@@ -739,7 +765,8 @@ def transfer_between_locations(
     recalculate_item_location(to_row, item)
     assert_location_invariants(from_row)
     assert_location_invariants(to_row)
-    item = recalculate_item_totals(db, item.id)
+    if recalculate_totals:
+        item = recalculate_item_totals(db, item.id)
     assert_item_invariants(item)
     movement_group_id = str(uuid4())
     create_stock_movement(db, item, MovementType.transfer_out, -quantity, from_row, from_old_stock, from_row.in_stock, old_item_stock, item.in_stock, reference_number=reference_number, reference_type="transfer", reference_id=reference_id, notes=notes, created_by=created_by, movement_group_id=movement_group_id, to_row=to_row)

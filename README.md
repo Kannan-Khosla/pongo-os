@@ -287,8 +287,9 @@ existing staff account.
 
 ## Item Import And WooCommerce Catalog Workflows
 
-Items → **Import items** is a dedicated six-step workspace for four explicit
-outcomes: Add new items, Update item details, Override stock levels, or Set starting inventory. The
+Items → **Import items** is a dedicated six-step workspace for five explicit
+outcomes: Add new items, Update item details, Repair item data and locations,
+Override stock levels, or Set starting inventory. The
 backend owns the field schema and templates, persists resumable previews,
 suggests and saves column mappings, supports row-level correction/exclusion,
 stops stale commits, records field-level audit history, and produces original
@@ -300,7 +301,13 @@ into one exact SKU total. Matching totals are skipped, unknown SKUs remain
 unchanged, and every matched difference is applied in one audited transaction.
 Invalid quantities, allocation conflicts, or stale stock block every matched
 change. Allocated and Sellable remain system-managed. Starting inventory
-remains limited to pre-operational stock.
+remains limited to pre-operational stock. Repair matches by Pongo Item ID or
+SKU, ignores Barcode, updates Brand/Unit cost, and atomically consolidates
+unallocated stock into one active target location without changing item totals
+or queuing WooCommerce stock writeback. Allocated source stock is reported and
+deferred until its order releases it. Repair confirmation queues one durable
+local import job and returns immediately; the existing worker applies the full
+atomic repair while the import workspace polls its result.
 
 The dedicated **WooCommerce Catalog** page is the normal catalog workflow. One
 click queues a durable background reconciliation and returns immediately. The

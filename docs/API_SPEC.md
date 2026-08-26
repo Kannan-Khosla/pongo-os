@@ -459,9 +459,10 @@ required fields, examples, upload limit, and preview lifetime.
 ### GET /api/items/import/templates/{outcome}
 
 Returns an outcome-specific CSV. `outcome` is `add_items`, `update_items`,
-`update_stock`, or `starting_inventory`. `include_existing=true` is supported
-for `update_items` and `update_stock`; the latter exports one exact current total
-per SKU. Metadata templates never include quantities.
+`repair_items`, `update_stock`, or `starting_inventory`.
+`include_existing=true` is supported for `update_items`, `repair_items`, and
+`update_stock`; the latter exports one exact current total per SKU. Metadata
+templates never include quantities.
 
 ### POST /api/items/import/previews
 
@@ -507,6 +508,15 @@ stale check, including unchanged rows. It returns `stock_adjustment_id`,
 `stock_units_delta`, `skipped_count`, `source_row_count`, and `sku_count`. When live writeback is enabled it also returns
 `woo_stock_sync_job_id` for the queued chunked sync. Starting inventory delegates
 to the guarded opening-balance mutation and creates audited movement rows.
+
+`repair_items` is the one asynchronous commit outcome. A valid confirmation
+idempotently creates or reuses one import job and returns `202` with
+`status=queued`, `import_job_id`, and `preview_id`; the preview reports
+`status=running`, the same `import_job_id`, and no result while queued. Poll
+`GET /api/import-jobs/{import_job_id}` until `completed` or `failed`. Completion
+stores the normal repair result in `result_json`. Failure stores a safe error
+result, rolls back every repair mutation, and reopens the preview for a new
+confirmation. Repeating confirmation while queued returns the same job.
 
 ### POST /api/items/import/previews/{preview_id}/cancel
 

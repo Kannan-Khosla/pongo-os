@@ -1294,7 +1294,7 @@ function parseHashRoute() {
   }
   if (path === 'items/import') {
     const importOutcome = query.get('outcome') || '';
-    return { pageId: 'items', itemView: 'import', importPreviewId: query.get('preview') || '', importOutcome: ['add_items', 'update_items', 'update_stock', 'starting_inventory'].includes(importOutcome) ? importOutcome : '' };
+    return { pageId: 'items', itemView: 'import', importPreviewId: query.get('preview') || '', importOutcome: ['add_items', 'update_items', 'repair_items', 'update_stock', 'starting_inventory'].includes(importOutcome) ? importOutcome : '' };
   }
   if (path === 'items/imports') {
     return { pageId: 'items', itemView: 'import-history' };
