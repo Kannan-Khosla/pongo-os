@@ -1394,10 +1394,12 @@ describe('App shell and workflows', () => {
   it('removes hidden inventory selections after a successful same-page refresh', async () => {
     const user = userEvent.setup();
     let rows = [item];
+    let stockSyncPayload;
     mockItemsFeed = (target) => pagedItemsFeed(rows)(target);
     fetch.mockImplementation((url, options = {}) => {
       if (String(url).includes('/api/integrations/woocommerce/writeback/stock/sync')) {
-        return json({ status: 'no_changes', skipped_unmapped_count: 0 });
+        stockSyncPayload = JSON.parse(options.body);
+        return json({ status: 'queued', total_items: 1 });
       }
       return mockFetch(url, options);
     });
@@ -1411,6 +1413,13 @@ describe('App shell and workflows', () => {
     rows = [{ ...item, id: 2, SKU: 'CURRENT-002', Description: 'Current Item' }];
     await user.click(screen.getByRole('button', { name: 'Update Stock' }));
 
+    await waitFor(() => expect(stockSyncPayload).toMatchObject({
+      force: false,
+      requested_by: 'inventory-update-changed',
+      chunk_size: 50,
+      idempotency_key: expect.stringMatching(/^woo-stock-sync-/),
+    }));
+    expect(screen.getByText('Stock update queued for 1 item(s). You can leave this page safely.')).toBeInTheDocument();
     expect(await screen.findByText('Current Item')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Bulk Edit' })).toBeDisabled());
     expect(screen.getByText('Select items to bulk edit')).toBeInTheDocument();
@@ -1430,6 +1439,39 @@ describe('App shell and workflows', () => {
     expect(within(dialog).getByRole('spinbutton', { name: 'Unit cost' })).toBeInTheDocument();
     expect(within(dialog).getByRole('combobox', { name: 'Inventory location' })).toBeInTheDocument();
     expect(within(dialog).queryByRole('textbox', { name: 'SKU' })).not.toBeInTheDocument();
+  });
+
+  it('saves product info when optional numeric fields are blank', async () => {
+    const user = userEvent.setup();
+    mockItemsFeed = {
+      items: [{ ...item, id: 11, SKU: 'BLANK-META', 'Unit Cost': null, 'Sales Price': 0, 'Par Level': null }],
+      page: 1,
+      page_size: 20,
+      total: 1,
+      total_pages: 1,
+      returned_count: 1,
+    };
+    window.location.hash = '#/inventory/all?page=1&page_size=20';
+    render(<App />);
+
+    await screen.findByText('BLANK-META');
+    await user.click(screen.getByRole('button', { name: 'Open inventory actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Edit Product Info' }));
+    const dialog = screen.getByRole('dialog', { name: 'Edit product info' });
+    const unitCost = within(dialog).getByRole('spinbutton', { name: 'Unit Cost' });
+    const parLevel = within(dialog).getByRole('spinbutton', { name: 'Par Level' });
+    await user.clear(unitCost);
+    await user.clear(parLevel);
+    expect(unitCost).toHaveValue(null);
+    expect(within(dialog).getByRole('spinbutton', { name: 'Sales Price' })).toHaveValue(0);
+    expect(parLevel).toHaveValue(null);
+    await user.click(within(dialog).getByRole('button', { name: 'Save Product Info' }));
+
+    await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => {
+      if (new URL(String(url)).pathname !== '/api/items/11' || options.method !== 'PATCH') return false;
+      const payload = JSON.parse(options.body);
+      return payload['Unit Cost'] === null && payload['Sales Price'] === 0 && payload['Par Level'] === null;
+    })).toBe(true));
   });
 
   it('uses full-catalog raw facets while presenting decoded filter labels', async () => {

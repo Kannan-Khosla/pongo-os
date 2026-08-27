@@ -5180,6 +5180,7 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
   const [message, setMessage] = useState('');
   const [stockSyncError, setStockSyncError] = useState('');
   const [stockSyncMode, setStockSyncMode] = useState('');
+  const stockSyncMutationRef = useRef(null);
   const [editingItem, setEditingItem] = useState(null);
   const [adjustingItem, setAdjustingItem] = useState(null);
   const [parItem, setParItem] = useState(null);
@@ -5364,25 +5365,14 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
     setStockSyncError('');
     setMessage('');
     try {
-      const result = await postJson('/api/integrations/woocommerce/writeback/stock/sync', {
+      const payload = withMutationIdempotency(stockSyncMutationRef, 'woo-stock-sync', {
         force,
         requested_by: force ? 'inventory-update-all' : 'inventory-update-changed',
+        chunk_size: 50,
       });
-      if (result.status === 'disabled' || result.status === 'failed') {
-        setStockSyncError((result.errors || []).join(' ') || 'WooCommerce stock writeback failed.');
-      } else if (result.status === 'no_changes') {
-        if (result.skipped_unmapped_count) {
-          setStockSyncError(`No stock was sent. ${result.skipped_unmapped_count} local item(s) are not linked to WooCommerce.`);
-        } else {
-          setMessage(force ? 'No WooCommerce-mapped inventory items were available to update.' : 'WooCommerce stock is already up to date.');
-        }
-      } else if (result.status === 'dry_run') {
-        setMessage(`${result.dry_run_count} stock level(s) passed through dry-run; WooCommerce was not changed.`);
-      } else {
-        const skipped = result.skipped_unmapped_count ? ` ${result.skipped_unmapped_count} unmapped local item(s) were skipped.` : '';
-        setMessage(`${result.sent_count} stock level(s) updated in WooCommerce.${skipped}`);
-        if (result.failed_count) setStockSyncError(`${result.failed_count} stock level(s) failed. ${(result.errors || []).join(' ')}`);
-      }
+      const result = await postJson('/api/integrations/woocommerce/writeback/stock/sync', payload);
+      resetMutationIdempotency(stockSyncMutationRef);
+      setMessage(`Stock update queued for ${result.total_items} item(s). You can leave this page safely.`);
       await refreshInventory();
     } catch (syncError) {
       setStockSyncError(syncError.message || 'Unable to update WooCommerce stock.');
@@ -5884,11 +5874,11 @@ function ProductInfoModal({ item, onClose, onSave }) {
     Barcode: item.Barcode || '',
     Brand: item.Brand || '',
     Category: item.Category || '',
-    'Unit Cost': item['Unit Cost'] || '',
-    'Sales Price': item['Sales Price'] || '',
+    'Unit Cost': item['Unit Cost'] ?? '',
+    'Sales Price': item['Sales Price'] ?? '',
     Manufacturer: item.Manufacturer || '',
     'Manufacturer Website': item['Manufacturer Website'] || '',
-    'Par Level': item['Par Level'] || '',
+    'Par Level': item['Par Level'] ?? '',
     active: Boolean(item.active),
   }));
   const [error, setError] = useState('');
@@ -5905,11 +5895,11 @@ function ProductInfoModal({ item, onClose, onSave }) {
         Barcode: form.Barcode,
         Brand: form.Brand,
         Category: form.Category,
-        'Unit Cost': form['Unit Cost'],
-        'Sales Price': form['Sales Price'],
+        'Unit Cost': form['Unit Cost'] === '' ? null : Number(form['Unit Cost']),
+        'Sales Price': form['Sales Price'] === '' ? null : Number(form['Sales Price']),
         Manufacturer: form.Manufacturer,
         'Manufacturer Website': form['Manufacturer Website'],
-        'Par Level': form['Par Level'],
+        'Par Level': form['Par Level'] === '' ? null : Number(form['Par Level']),
         active: Boolean(form.active),
       });
     } catch (saveError) {
@@ -5925,7 +5915,7 @@ function ProductInfoModal({ item, onClose, onSave }) {
           {['Description', 'Barcode', 'Brand', 'Category', 'Manufacturer', 'Manufacturer Website', 'Unit Cost', 'Sales Price', 'Par Level'].map((field) => (
             <label className={`field ${field === 'Description' || field === 'Manufacturer Website' ? 'wide-field' : ''}`} key={field}>
               <span>{field === 'Description' ? 'Product Title' : field}</span>
-              <input value={form[field]} onChange={(event) => update(field, event.target.value)} />
+              <input type={['Unit Cost', 'Sales Price', 'Par Level'].includes(field) ? 'number' : 'text'} step={['Unit Cost', 'Sales Price', 'Par Level'].includes(field) ? 'any' : undefined} value={form[field]} onChange={(event) => update(field, event.target.value)} />
             </label>
           ))}
           <label className="check-field"><input checked={form.active} onChange={(event) => update('active', event.target.checked)} type="checkbox" />Active</label>
