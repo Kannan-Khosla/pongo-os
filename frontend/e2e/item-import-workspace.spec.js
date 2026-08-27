@@ -73,7 +73,7 @@ test('repairs, imports, audits, and updates items without changing stock', async
   await uploadAndValidate(page, 'guided-update.csv', `SKU,Product name\n${sku},Updated product`);
   await expect(page.getByText('Every row is ready')).toBeVisible();
   await page.getByRole('button', { name: 'Review import' }).click();
-  await expect(page.getByRole('row', { name: `${sku} Product name Original product Updated product` })).toBeVisible();
+  await expect(page.getByRole('row', { name: `${sku} Product title Original product Updated product` })).toBeVisible();
   await page.getByRole('checkbox', { name: /I reviewed the outcome/ }).check();
   await page.getByRole('button', { name: /Import \d+ ready items?/ }).click();
   await expect(page.getByRole('heading', { name: 'Import completed' })).toBeVisible();
