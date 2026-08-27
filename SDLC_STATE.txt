@@ -737,3 +737,9 @@ MODE: Release Readiness and Release
 SUMMARY: Woo catalog opening-stock behavior released and verified on Pongo production as Heroku v64.
 EVIDENCE: Exact commit cd7416123f61009d075177afcf1453c05f9b3b59 passed GitHub release gate 32875852536, including vulnerability scans, PostgreSQL 16 migration and backup/restore checks, backend/frontend tests, production build, and browser contracts. Pre-release backup b020 completed. Heroku release v64 completed with schema 20260823_0043; web and worker are up; root and health returned 200; recent application logs contained no error matches; zero catalog jobs were active before or after deployment. No live catalog import or business-data mutation was performed during verification.
 NEXT ACTION: Monitor the first normal staff-run catalog update; address the three pre-existing readiness gaps separately.
+
+--- DELIVERY RUN: 2026-08-27T21:01:00Z ---
+MODE: Stabilize and Repair; Release Readiness and Release
+SUMMARY: Global Inventory-page WooCommerce stock-update requests and blank numeric item edits released and verified on Pongo production as Heroku v75.
+EVIDENCE: Exact commit 203ce36f8d8a4673da41786dffd07a6926e02dd4 passed GitHub release gate 33115355102, including vulnerability scans, PostgreSQL 16 migration/recovery and backup/restore checks, backend concurrency tests, 193 frontend tests/build, and three browser contracts. Heroku release v75 completed at unchanged schema 20260826_0045; web and worker are up; origin /health returned 200; migrations, Woo credentials, reconciliation, stock worker, stock authority, and write guards passed readiness. The overall /ready 503 contains only pre-existing catalog-quality and alert-webhook failures. No live stock update was triggered during deployment verification.
+NEXT ACTION: Staff may use Update Stock or Update Stock All; confirm the queued background job completes, then separately resolve the pre-existing readiness data-quality and alert-webhook items.
