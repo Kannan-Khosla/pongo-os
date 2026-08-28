@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DirectReceiptLineInput(BaseModel):
@@ -42,6 +42,11 @@ class BulkReceiptLineInput(BaseModel):
     quantity_received: float | None = None
     unit_cost: float | None = None
     notes: str | None = None
+
+    @field_validator("unit_cost", mode="before")
+    @classmethod
+    def blank_unit_cost_uses_saved_cost(cls, value):
+        return None if isinstance(value, str) and not value.strip() else value
 
 
 class BulkReceiptRequest(BaseModel):

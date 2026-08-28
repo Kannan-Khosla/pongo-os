@@ -230,6 +230,7 @@ WI-ORDER-RECOVERY-001 / P0 / IMPLEMENTED NOT DEPLOYED / Completed-order view/rep
 WI-CATALOG-STOCK-001 / P0 / RELEASED / New items created by the durable Woo catalog update receive audited Woo opening stock; existing local stock remains unchanged; Heroku v64 at cd741612.
 WI-ITEMREPAIR-001 / P0 / RELEASED / Stable-ID metadata repair plus audited one-location consolidation for all 1,348 active items; duplicate/missing barcodes and item stock totals remain untouched; Heroku v69 at 1283f9f.
 WI-RECEIVING-UX-001 / P0 / RELEASED / Bulk receiving defaults to Main Warehouse / 001, fills each item's current Unit Cost, provides click-and-type quantity/cost fields, and applies an explicitly changed positive cost as the item's new audited current Unit Cost; Heroku v78 at 8a34c5e.
+WI-RECEIVING-UX-002 / P0 / VERIFIED NOT DEPLOYED / Bulk receiving validates every typed or scanned SKU/barcode through the exact inventory resolver before adding it, blocks unknown products, displays product identity/current stock/cost, supports per-line notes, keeps the scanner sticky, and treats blank cost as use-the-saved-cost; local backend 620 passed and frontend 196 passed.
 
 WORK ITEM: WI-001
 TITLE: Complete fully picked orders that retain harmless Woo history lines
@@ -774,3 +775,9 @@ MODE: Release Readiness and Release
 SUMMARY: The streamlined bulk-receiving workflow and audited last-received-cost rule were released and verified on Pongo production as Heroku v78.
 EVIDENCE: Exact commit 8a34c5e5ddfe2f3f77b36cc2bdbb401957a34692 passed GitHub release gate 33208677618, including security scans, PostgreSQL 16 migration/recovery and backup/restore, backend/frontend tests, production build, and browser contracts. Fresh backup b024 completed before Heroku v78. Release migration stayed at 20260826_0045; web and worker are up; origin health and app shell returned 200; authenticated Receiving rendered Main Warehouse / 001 / Store, click-and-type quantity, automatic Unit Cost guidance, and disabled mutation actions with an empty cart; browser logs were clean. No receipt, stock, Unit Cost, order, or WooCommerce record changed during deployment verification.
 NEXT ACTION: Monitor normal receiving use; separately resolve the existing 26 missing positive costs, five duplicate-barcode groups, and missing operations alert webhook.
+
+--- DELIVERY RUN: 2026-08-28T21:25:17Z ---
+MODE: Stabilize and Repair
+SUMMARY: Repaired the v78 bulk-receiving scan regression locally; production remains unchanged.
+EVIDENCE: Every scanned or typed SKU/barcode now uses the shared exact inventory resolver before entering the receipt, unknown products are blocked with an Add product path, matched rows show product name/SKU/barcode/current stock/current cost and editable quantity/cost/notes, the scanner stays visible while scrolling, blank costs use the saved item cost, and validation errors are human-readable. Backend 620 passed with 13 PostgreSQL-only skips; frontend 196 passed; production build, compileall, focused regressions, and diff check passed.
+NEXT ACTION: Commit and push only the five-file repair plus this state record, require its exact green release gate, then request explicit production deployment approval.

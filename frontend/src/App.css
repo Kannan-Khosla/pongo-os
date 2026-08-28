@@ -4338,6 +4338,9 @@ tbody tr:nth-child(even) .sticky-col {
 }
 
 .bulk-receiving-entry {
+  position: sticky;
+  top: 0;
+  z-index: 25;
   display: grid;
   grid-template-columns: minmax(280px, 1.8fr) minmax(110px, 0.5fr) minmax(200px, 0.8fr) auto;
   gap: 12px;
@@ -4346,6 +4349,11 @@ tbody tr:nth-child(even) .sticky-col {
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   background: var(--white);
+  box-shadow: 0 8px 18px rgba(17, 24, 39, 0.08);
+}
+
+.bulk-session {
+  overflow: visible;
 }
 
 .bulk-receiving-entry .keyword-item-search > span {
@@ -4397,6 +4405,15 @@ tbody tr:nth-child(even) .sticky-col {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0 10px;
+}
+
+.bulk-cart-note {
+  width: 180px;
+  min-height: 38px;
+}
+
+.bulk-receiving-cart .data-table {
+  min-width: 1120px;
 }
 
 .receiving-header-fields > *,

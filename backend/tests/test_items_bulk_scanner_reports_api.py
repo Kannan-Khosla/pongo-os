@@ -195,6 +195,13 @@ def test_bulk_receiving_preview_commit_detail_export(client, monkeypatch):
     )
     assert default_cost_preview.json()["lines"][0]["unit_cost"] == 2
 
+    blank_cost_preview = client.post(
+        "/api/receipts/bulk/preview",
+        json={**payload, "lines": [{"sku": "BULK-001", "quantity": 1, "unit_cost": "", "inventory_location": "BULK-01"}]},
+    )
+    assert blank_cost_preview.status_code == 200
+    assert blank_cost_preview.json()["lines"][0]["unit_cost"] == 2
+
     commit = client.post("/api/receipts/bulk/commit", json=payload)
     assert commit.status_code == 200, commit.text
     body = commit.json()

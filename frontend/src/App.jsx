@@ -8618,7 +8618,7 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsPagina
         )}
         {preview && <ReceivingPreview preview={preview} />}
       </div>}
-      {mode === 'bulk' && <BulkReceivingSession items={items} locations={locations} onCommitted={() => onLoadInventorySummary()} />}
+      {mode === 'bulk' && <BulkReceivingSession locations={locations} onCommitted={() => onLoadInventorySummary()} />}
       {mode === 'history' && <div className="wide-panel">
         <div className="panel-title">
           <div>
@@ -8653,7 +8653,7 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsPagina
   );
 }
 
-function BulkReceivingSession({ items, locations, onCommitted }) {
+function BulkReceivingSession({ locations, onCommitted }) {
   const mutationRef = useRef(null);
   const [header, setHeader] = useState({ warehouse: 'Main Warehouse', notes: '' });
   const [scanInput, setScanInput] = useState('');
@@ -8684,9 +8684,9 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
     setUnitCost('');
   }
 
-  function addLine() {
-    const item = selectedItem || findReceivingItem(items, scanInput);
-    if (!String(scanInput).trim()) {
+  async function addLine() {
+    const scannedValue = String(scanInput).trim();
+    if (!scannedValue) {
       setError('Scan or choose a product first.');
       return;
     }
@@ -8694,12 +8694,40 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
       setError('Main Warehouse location 001 is unavailable.');
       return;
     }
-    const resolvedCost = unitCost === '' ? (item?.unit_cost ?? item?.['Unit Cost'] ?? '') : unitCost;
-    setLines((current) => [...current, { localId: crypto.randomUUID?.() || String(Date.now()), item_id: operationalItemId(item), scan_input: scanInput, sku: operationalItemSku(item), barcode: operationalItemBarcode(item), product_name: productTitle(item), quantity: toNumber(quantity) || 1, warehouse: header.warehouse, inventory_location: receivingLocation.code, unit_cost: resolvedCost, ...optional }]);
-    clearEntry();
+    setLoading(true);
     setError('');
-    setPreview(null);
-    setSummary(null);
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/api/scanner/inventory/lookup?scan_input=${encodeURIComponent(scannedValue)}`);
+      const lookup = await response.json();
+      if (!response.ok) throw new Error(apiErrorDetail(lookup) || `Product lookup returned ${response.status}.`);
+      if (!lookup.matched || !lookup.item?.id) {
+        setError(`No Pongo product matches ${scannedValue}. Add the product first, then scan it again.`);
+        return;
+      }
+      const item = lookup.item;
+      const resolvedCost = unitCost === '' ? (item.unit_cost ?? '') : unitCost;
+      setLines((current) => [...current, {
+        localId: crypto.randomUUID?.() || String(Date.now()),
+        item_id: operationalItemId(item),
+        scan_input: scannedValue,
+        sku: operationalItemSku(item),
+        barcode: operationalItemBarcode(item),
+        product_name: productTitle(item),
+        current_stock: operationalItemStock(item),
+        quantity: toNumber(quantity) || 1,
+        warehouse: header.warehouse,
+        inventory_location: receivingLocation.code,
+        unit_cost: resolvedCost,
+        ...optional,
+      }]);
+      clearEntry();
+      setPreview(null);
+      setSummary(null);
+    } catch (lookupError) {
+      setError(lookupError.message || 'Unable to check this product. Try scanning it again.');
+    } finally {
+      setLoading(false);
+    }
   }
 
   function updateLine(localId, field, value) {
@@ -8713,7 +8741,7 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
     setError('');
     setSummary(null);
     try {
-      setPreview(await postJson('/api/receipts/bulk/preview', { ...header, lines }));
+      setPreview(await postJson('/api/receipts/bulk/preview', bulkReceivingPayload(header, lines)));
     } catch (apiError) {
       setError(apiError.message || 'Unable to preview bulk receipt.');
     } finally {
@@ -8725,7 +8753,7 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
     setLoading(true);
     setError('');
     try {
-      const payload = { ...header, source: 'manual', lines };
+      const payload = { ...bulkReceivingPayload(header, lines), source: 'manual' };
       const result = await postJson('/api/receipts/bulk/commit', withMutationIdempotency(mutationRef, 'bulk-receipt', payload));
       setSummary(result);
       setLines([]);
@@ -8766,18 +8794,18 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
         />
         <label className="field"><span>Quantity</span><input aria-label="Quantity" value={quantity} onChange={(event) => setQuantity(event.target.value)} onFocus={(event) => event.target.select()} onKeyDown={(event) => event.key === 'Enter' && addLine()} inputMode="decimal" type="text" /></label>
         <label className="field"><span>Unit cost</span><input aria-label="Unit cost" value={unitCost} onChange={(event) => setUnitCost(event.target.value)} onFocus={(event) => event.target.select()} onKeyDown={(event) => event.key === 'Enter' && addLine()} placeholder="Filled automatically" inputMode="decimal" type="text" /><small>{selectedItem && unitCost !== '' ? `Current item cost: ${formatCurrency(selectedItem?.unit_cost ?? selectedItem?.['Unit Cost'])}` : 'Uses the item’s current cost. A changed value becomes the new default.'}</small></label>
-        <button className="primary-button bulk-add-button" onClick={addLine} type="button"><Plus size={16} />Add product</button>
+        <button className="primary-button bulk-add-button" disabled={loading} onClick={() => addLine()} type="button"><Plus size={16} />Add product</button>
       </div>
       <details className="optional-fields"><summary>Optional receiving fields</summary><div className="operation-grid">{Object.keys(optional).map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={optional[field]} onChange={(event) => setOptional((current) => ({ ...current, [field]: event.target.value }))} type={field === 'expiration_date' ? 'date' : 'text'} /></label>)}</div></details>
       <div className="bulk-cart-summary" aria-live="polite"><strong>{lines.length} product{lines.length === 1 ? '' : 's'}</strong><span>{formatNumber(totalUnits)} units</span><span>{formatCurrency(totalValue)} estimated value</span></div>
-      <TableShell caption="Products in this receipt" columns={['Product', 'SKU', 'Quantity', 'Unit Cost', 'Location', 'Notes', 'Remove']}>
-        {lines.map((line, index) => <tr key={line.localId}><td>{line.product_name || line.scan_input}</td><td>{line.sku || <DataQualityBadge kind="missing_sku" />}</td><td><input className="bulk-cart-input" aria-label={`Product ${index + 1} quantity`} value={line.quantity} onChange={(event) => updateLine(line.localId, 'quantity', event.target.value)} onFocus={(event) => event.target.select()} inputMode="decimal" type="text" /></td><td><input className="bulk-cart-input" aria-label={`Product ${index + 1} unit cost`} value={line.unit_cost} onChange={(event) => updateLine(line.localId, 'unit_cost', event.target.value)} onFocus={(event) => event.target.select()} placeholder="Current cost" inputMode="decimal" type="text" /></td><td><LocationPresentation value={line.inventory_location} /></td><td>{line.notes}</td><td className="receiving-action-cell"><button className="pager-button" aria-label={`Remove bulk receiving line ${index + 1}`} onClick={() => { setLines((current) => current.filter((candidate) => candidate.localId !== line.localId)); setPreview(null); }} type="button"><X size={17} aria-hidden="true" /></button></td></tr>)}
-        {!lines.length && <tr><td colSpan={7}><div className="empty-table-row">Scan your first product above.</div></td></tr>}
+      <TableShell className="bulk-receiving-cart" caption="Products in this receipt" columns={['Product', 'SKU', 'Barcode', 'Current Stock', 'Quantity', 'Unit Cost', 'Location', 'Notes', 'Remove']}>
+        {lines.map((line, index) => <tr key={line.localId}><td className="description-cell">{line.product_name}</td><td>{line.sku || <DataQualityBadge kind="missing_sku" />}</td><td className="mono">{line.barcode || 'Not set'}</td><td>{formatNumber(line.current_stock)}</td><td><input className="bulk-cart-input" aria-label={`Product ${index + 1} quantity`} value={line.quantity} onChange={(event) => updateLine(line.localId, 'quantity', event.target.value)} onFocus={(event) => event.target.select()} inputMode="decimal" type="text" /></td><td><input className="bulk-cart-input" aria-label={`Product ${index + 1} unit cost`} value={line.unit_cost} onChange={(event) => updateLine(line.localId, 'unit_cost', event.target.value)} onFocus={(event) => event.target.select()} placeholder="Not set" inputMode="decimal" type="text" /></td><td><LocationPresentation value={line.inventory_location} /></td><td><input className="bulk-cart-note" aria-label={`Product ${index + 1} notes`} value={line.notes || ''} onChange={(event) => updateLine(line.localId, 'notes', event.target.value)} placeholder="Optional note" type="text" /></td><td className="receiving-action-cell"><button className="pager-button" aria-label={`Remove bulk receiving line ${index + 1}`} onClick={() => { setLines((current) => current.filter((candidate) => candidate.localId !== line.localId)); setPreview(null); }} type="button"><X size={17} aria-hidden="true" /></button></td></tr>)}
+        {!lines.length && <tr><td colSpan={9}><div className="empty-table-row">Scan your first product above.</div></td></tr>}
       </TableShell>
       <div className="detail-actions"><button className="muted-button" disabled={!lines.length || loading} onClick={previewSession} type="button">Check receipt</button><button className="primary-button" aria-describedby={commitReason ? 'bulk-receiving-commit-reason' : undefined} disabled={Boolean(commitReason)} onClick={commitSession} type="button">Receive stock</button></div>
       {commitReason && <p className="receiving-disabled-reason" id="bulk-receiving-commit-reason" role="status">Receive stock is unavailable: {commitReason}</p>}
       {loading && <div className="loading-strip">Checking receiving details...</div>}
-      {error && <div className="api-error">{error}</div>}
+      {error && <div className="api-error">{error} {error.startsWith('No Pongo product matches') && <a href="#/items/new">Add product</a>}</div>}
       {summary && <div className="success-strip">Receipt {summary.receipt_number} committed. <a href={`${API_BASE_URL}/api/receipts/${summary.id}/export`}>Export CSV</a></div>}
       {preview && <BulkReceivingPreview preview={preview} />}
     </div>
@@ -15936,6 +15964,7 @@ async function patchJson(path, payload) {
 function apiErrorDetail(body) {
   const detail = body?.detail ?? body;
   if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) return detail.map((error) => error?.msg || error?.message || 'Invalid value.').join(' ');
   if (Array.isArray(detail?.errors)) return detail.errors.join(' ');
   if (typeof detail?.message === 'string') return detail.message;
   return JSON.stringify(detail);
@@ -16355,6 +16384,17 @@ function receivingPayload(form, items) {
         notes: line.notes,
       };
     }),
+  };
+}
+
+function bulkReceivingPayload(header, lines) {
+  return {
+    ...header,
+    lines: lines.map((line) => ({
+      ...line,
+      quantity: toNumber(line.quantity),
+      unit_cost: line.unit_cost === '' ? null : toNumber(line.unit_cost),
+    })),
   };
 }
 

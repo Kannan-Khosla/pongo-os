@@ -688,7 +688,11 @@ function mockFetch(url, options = {}) {
   if (target.includes('/api/reports/fulfillments')) return json([]);
   if (target.includes('/api/reports/sku-orders/summary')) return json({ total_skus: 0 });
   if (target.includes('/api/reports/sku-orders')) return json([]);
-  if (target.includes('/api/scanner/inventory/lookup')) return json({ matched: false, message: 'No item matched that scan.' });
+  if (target.includes('/api/scanner/inventory/lookup')) {
+    const scan = new URL(target).searchParams.get('scan_input');
+    if (scan === 'missing') return json({ matched: false, item: null, message: 'No item matched that scan.', warnings: ['No matching item found.'] });
+    return json({ matched: true, item: { id: 1, sku: 'SMOKE-001', barcode: 'SMOKE001', product_name: 'Smoke Test Item', in_stock: 9, unit_cost: 4.25 }, stock_by_location: [] });
+  }
   if (target.includes('/api/scanner/receiving/scan/commit')) return json({ matched: true, status: 'committed', message: 'Received.' });
   if (target.includes('/api/scanner/adjustments/commit')) return json({ matched: true, status: 'committed', message: 'Adjusted.' });
   return json({});
@@ -1853,6 +1857,45 @@ describe('App shell and workflows', () => {
       const commitCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/receipts/bulk/commit'));
       expect(JSON.parse(commitCall[1].body)).toMatchObject({ idempotency_key: expect.any(String) });
     });
+  });
+
+  it('validates a scanned barcode and adds the complete product to bulk receiving', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/receiving/bulk';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Bulk Receiving Session' });
+    const scan = screen.getByPlaceholderText('Scan or type SKU/barcode');
+    await user.type(scan, 'SMOKE001{Enter}');
+
+    expect(await screen.findByText('Smoke Test Item')).toBeInTheDocument();
+    expect(screen.getByText('SMOKE-001')).toBeInTheDocument();
+    expect(screen.getByText('SMOKE001')).toBeInTheDocument();
+    expect(screen.getByText('9')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Product 1 unit cost' })).toHaveValue('4.25');
+    expect(screen.getByRole('textbox', { name: 'Product 1 notes' })).toBeInTheDocument();
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/scanner/inventory/lookup?scan_input=SMOKE001'))).toBe(true);
+
+    await user.clear(screen.getByRole('textbox', { name: 'Product 1 unit cost' }));
+    await user.click(screen.getByRole('button', { name: 'Check receipt' }));
+    await waitFor(() => {
+      const previewCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/receipts/bulk/preview'));
+      expect(JSON.parse(previewCall[1].body).lines[0].unit_cost).toBeNull();
+    });
+  });
+
+  it('blocks unknown scans and sends staff to add the product', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/receiving/bulk';
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Bulk Receiving Session' });
+    await user.type(screen.getByPlaceholderText('Scan or type SKU/barcode'), 'missing{Enter}');
+
+    expect(await screen.findByText(/No Pongo product matches missing/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Add product' })).toHaveAttribute('href', '#/items/new');
+    expect(screen.getByText('Scan your first product above.')).toBeInTheDocument();
+    expect(screen.getByText('0 products')).toBeInTheDocument();
   });
 
   it('uses route-backed report categories, scoped secondary navigation, and contextual filters', async () => {
