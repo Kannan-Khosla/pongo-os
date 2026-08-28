@@ -26,6 +26,18 @@ cookie is never sent over plaintext transport.
 
 Keep encrypted backups outside the application host, apply a retention policy, and run a restore verification at least monthly and before every schema release.
 
+## One-location consolidation
+
+The operator command below consolidates every current item-location balance into one existing physical location, creates normal transfer movements and item audit events, and retires the other physical/item-location records without deleting their history. It aborts if any allocated stock exists outside the target.
+
+Run the read-only preview first:
+
+`python scripts/consolidate_locations.py --target-location-id <id>`
+
+After a fresh verified backup, apply the same plan once:
+
+`python scripts/consolidate_locations.py --target-location-id <id> --actor <staff-email> --idempotency-key <unique-key> --apply`
+
 The GitHub release gate runs on a pinned Ubuntu 24.04 image with PostgreSQL 16
 server and client tools. Browser-contract retries are disabled so a flaky first
 attempt cannot be hidden by a retry. A failed browser run retains the

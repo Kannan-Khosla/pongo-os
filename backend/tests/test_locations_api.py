@@ -1,10 +1,14 @@
 import csv
+from decimal import Decimal
 from io import StringIO
 from pathlib import Path
 
+from sqlalchemy import func, select
+
 from app.db.session import get_db
 from app.main import app
-from app.models.inventory import InventoryItemLocation, InventoryLocation
+from app.models.inventory import InventoryItem, InventoryItemLocation, InventoryLocation, StockMovement
+from app.services.location_consolidation import consolidate_locations
 from app.services.locations import CANONICAL_LOCATION_COLUMNS
 from tests.test_items_api import client, seed_item  # noqa: F401
 
@@ -96,6 +100,68 @@ def test_update_location(client):
     body = response.json()
     assert body["name"] == "Updated Location"
     assert body["isDefault"] is True
+
+
+def test_location_consolidation_preserves_totals_and_retires_sources(client):
+    item = seed_item(client, sku="MERGE-001", **{"In Stock": 5, "Allocated": 1, "On Order": 0})
+    target = seed_location(client, code="001", name="Store", isDefault=True)
+    source = seed_location(client, code="BACK", name="Back Room")
+    db_override = app.dependency_overrides[get_db]()
+    db = next(db_override)
+    try:
+        model = db.get(InventoryItem, item["id"])
+        existing = db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == model.id)).one()
+        existing.location_id = target["id"]
+        existing.warehouse = "Main Warehouse"
+        existing.inventory_location = "001"
+        existing.location_code = "001"
+        existing.location_name = "Store"
+        source_row = InventoryItemLocation(
+            inventory_item_id=model.id,
+            location_id=source["id"],
+            warehouse="Main Warehouse",
+            inventory_location="BACK",
+            location_code="BACK",
+            location_name="Back Room",
+            in_stock=Decimal("2"),
+            allocated=Decimal("0"),
+            sellable=Decimal("2"),
+            on_order=Decimal("3"),
+            active=True,
+        )
+        existing.in_stock = Decimal("3")
+        existing.allocated = Decimal("1")
+        existing.sellable = Decimal("2")
+        existing.on_order = Decimal("0")
+        model.in_stock = Decimal("5")
+        model.allocated = Decimal("1")
+        model.sellable = Decimal("4")
+        model.on_order = Decimal("3")
+        db.add(source_row)
+        db.commit()
+
+        result = consolidate_locations(db, target["id"], actor="pytest", idempotency_key="merge-test", apply=True)
+        db.commit()
+
+        rows = list(db.scalars(select(InventoryItemLocation).where(InventoryItemLocation.inventory_item_id == model.id)).all())
+        merged = next(row for row in rows if row.location_id == target["id"])
+        retired = next(row for row in rows if row.location_id == source["id"])
+        db.refresh(model)
+        assert result["stock_to_move"] == "2.000"
+        assert (model.in_stock, model.allocated, model.sellable, model.on_order) == (
+            Decimal("5.000"), Decimal("1.000"), Decimal("4.000"), Decimal("3.000")
+        )
+        assert (merged.in_stock, merged.allocated, merged.on_order, merged.active) == (
+            Decimal("5.000"), Decimal("1.000"), Decimal("3.000"), True
+        )
+        assert (retired.in_stock, retired.allocated, retired.on_order, retired.active) == (
+            Decimal("0.000"), Decimal("0.000"), Decimal("0.000"), False
+        )
+        assert db.get(InventoryLocation, source["id"]).active is False
+        assert db.scalar(select(func.count(StockMovement.id)).where(StockMovement.inventory_item_id == model.id)) >= 3
+        assert consolidate_locations(db, target["id"], actor="pytest", idempotency_key="merge-test", apply=True) == result
+    finally:
+        db_override.close()
 
 
 def test_list_locations_filters(client):
