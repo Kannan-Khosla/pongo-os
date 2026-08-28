@@ -15,7 +15,7 @@ from app.models.receipts import Receipt, ReceiptItem
 from app.services.business_dashboard import admin_today
 from app.services.calculations import calculate_inventory_value
 from app.services.item_identifiers import barcode_scan_candidates
-from app.services.location_inventory import find_item_location, get_or_create_item_location, lock_inventory_stock, receive_to_location, to_decimal
+from app.services.location_inventory import find_item_location, get_or_create_item_location, lock_inventory_stock, receive_to_location, receiving_unit_cost, to_decimal
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
 from app.services.receiving import receipt_to_detail
 from app.services.stock_mutation_guard import begin_stock_mutation, complete_stock_mutation
@@ -71,7 +71,7 @@ def preview_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]
         line = raw_line or {}
         item, match_error = resolve_receiving_item(db, line)
         quantity = to_decimal(line.get("quantity", line.get("quantity_received")))
-        unit_cost = to_decimal(line.get("unit_cost"))
+        unit_cost = receiving_unit_cost(item, line.get("unit_cost"))
         warehouse = (line.get("warehouse") or default_warehouse).strip() or default_warehouse
         inventory_location = (line.get("inventory_location") or "").strip()
         errors = []
@@ -80,8 +80,12 @@ def preview_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]
             errors.append(match_error or "No matching item was found.")
         if quantity <= 0:
             errors.append("Quantity must be greater than zero.")
+        if item is not None and unit_cost <= 0:
+            errors.append("Unit Cost is missing. Enter the current cost before receiving this item.")
         if not inventory_location:
             errors.append("Inventory Location is required.")
+        if item is not None and line.get("unit_cost") not in (None, "") and unit_cost != to_decimal(item.unit_cost):
+            warnings.append("This cost will become the item's new default Unit Cost.")
         item_location = find_item_location(db, item.id, warehouse, inventory_location) if item is not None and inventory_location else None
         old_location_stock = item_location.in_stock if item_location is not None else Decimal("0")
         old_item_stock = item.in_stock if item is not None else Decimal("0")
@@ -101,6 +105,7 @@ def preview_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]
                     "brand": item.brand,
                     "category": item.category,
                     "image_url": item.image_url,
+                    "unit_cost": float(to_decimal(item.unit_cost)),
                 }
                 if item
                 else None,
@@ -188,7 +193,7 @@ def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
         if item is None:
             raise ValueError(match_error or "No matching item was found.")
         quantity = to_decimal(line.get("quantity", line.get("quantity_received")))
-        unit_cost = to_decimal(line.get("unit_cost"))
+        unit_cost = receiving_unit_cost(item, line.get("unit_cost"))
         warehouse = (line.get("warehouse") or default_warehouse).strip() or default_warehouse
         inventory_location = (line.get("inventory_location") or "").strip()
         get_or_create_item_location(db, item, warehouse, inventory_location)

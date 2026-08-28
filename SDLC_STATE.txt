@@ -2,10 +2,10 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-26T18:48:16Z
+LAST UPDATED: 2026-08-28T18:00:00Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Item-repair workflow released and verified on production as Heroku v69; live repair import not run
-CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
+CURRENT PHASE: Bulk-receiving usability and last-received-cost release authorized; production deployment pending exact-SHA gate
+CURRENT RELEASE RECOMMENDATION: READY FOR AUTHORIZED DEPLOYMENT
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
 Pongo now keeps a normalized, read-only snapshot of active WooCommerce subscription lines, including each official next-payment date. The Dashboard shows renewals due in 30 days with current Pongo stock and sellable quantities; Sales by SKU visibly marks subscription products and includes renewal-demand and stock-risk columns in every export format.
@@ -229,6 +229,7 @@ WI-ORDER-SUB-001 / P0 / IMPLEMENTED NOT DEPLOYED / Audited durable local product
 WI-ORDER-RECOVERY-001 / P0 / IMPLEMENTED NOT DEPLOYED / Completed-order view/reprint plus explicit pristine completed-without-picking inventory recovery.
 WI-CATALOG-STOCK-001 / P0 / RELEASED / New items created by the durable Woo catalog update receive audited Woo opening stock; existing local stock remains unchanged; Heroku v64 at cd741612.
 WI-ITEMREPAIR-001 / P0 / RELEASED / Stable-ID metadata repair plus audited one-location consolidation for all 1,348 active items; duplicate/missing barcodes and item stock totals remain untouched; Heroku v69 at 1283f9f.
+WI-RECEIVING-UX-001 / P0 / VERIFIED / Bulk receiving defaults to Main Warehouse / 001, fills each item's current Unit Cost, provides click-and-type quantity/cost fields, and applies an explicitly changed positive cost as the item's new audited current Unit Cost; production deployment authorized.
 
 WORK ITEM: WI-001
 TITLE: Complete fully picked orders that retain harmless Woo history lines
@@ -761,3 +762,9 @@ MODE: Stabilize and Repair; Release Readiness and Release
 SUMMARY: All Pongo inventory balances were safely consolidated into the single active location `Main Warehouse / 001 / Store` on production.
 EVIDENCE: Exact commit 74d63b20845b231cda2d8512bcbc77bbeebaf071 passed GitHub release gate 33135055207 and deployed as Heroku v77 after completed backup b023. Dry-run found 9 units outside target, zero allocated, and zero on-order; audited transfer TR-20260828-0001 moved SKU 64607 (7) and SKU 728274 (2). Production now has one active/default physical location, zero active source rows, zero stock outside target, and all 1,344 items have an active target row. A repeat dry-run reports zero remaining work; the inventory-location readiness check improved from 22 missing items to 0.
 NEXT ACTION: Use `Main Warehouse / 001 / Store` for all stock operations; monitor normal staff use and address the remaining independent cost, duplicate-barcode, and alert-webhook readiness items separately.
+
+--- DELIVERY RUN: 2026-08-28T18:00:00Z ---
+MODE: Release Readiness and Release
+SUMMARY: The verified bulk-receiving usability and last-received-cost patch is explicitly authorized for production deployment.
+EVIDENCE: Full backend suite passed 620 tests with 13 PostgreSQL-only skips; full frontend suite passed 194 tests; the production frontend build and diff check passed. The release changes no schema, dependency, credential, WooCommerce configuration, or existing stock during deployment. Unrelated PRODUCT_AUDIT and generated workbench/showcase files remain excluded.
+NEXT ACTION: Commit and push the exact scoped candidate, require its exact green GitHub release gate, deploy to Heroku, and verify health, processes, logs, and the read-only receiving page without posting a receipt.

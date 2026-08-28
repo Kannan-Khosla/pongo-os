@@ -4315,6 +4315,90 @@ tbody tr:nth-child(even) .sticky-col {
   background: var(--surface-muted);
 }
 
+.bulk-receiving-destination {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #b9dcca;
+  border-radius: 8px;
+  background: #edf8f2;
+  color: #287251;
+}
+
+.bulk-receiving-destination span {
+  display: grid;
+  gap: 2px;
+}
+
+.bulk-receiving-destination small {
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.bulk-receiving-entry {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.8fr) minmax(110px, 0.5fr) minmax(200px, 0.8fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 18px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--white);
+}
+
+.bulk-receiving-entry .keyword-item-search > span {
+  display: block;
+  margin-bottom: 6px;
+  color: #77858b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.bulk-receiving-entry input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--white);
+  padding: 0 12px;
+}
+
+.bulk-receiving-entry .field small {
+  min-height: 16px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.bulk-add-button {
+  min-height: 44px;
+  margin-top: 22px;
+}
+
+.bulk-cart-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  align-items: center;
+  padding: 14px 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.bulk-cart-summary strong {
+  color: var(--ink);
+}
+
+.bulk-cart-input {
+  width: 110px;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 10px;
+}
+
 .receiving-header-fields > *,
 .receiving-form .scanner-input-row > * {
   min-width: 0;
@@ -5435,6 +5519,15 @@ tbody tr:nth-child(even) .sticky-col {
 }
 
 @media (max-width: 760px) {
+  .bulk-receiving-entry {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bulk-add-button {
+    width: 100%;
+    margin-top: 0;
+  }
+
   .route-planner-heading,
   .driver-map-link {
     align-items: stretch;

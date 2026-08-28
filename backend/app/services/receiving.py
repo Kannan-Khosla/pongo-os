@@ -20,7 +20,7 @@ from app.services.business_dashboard import admin_today
 from app.services.calculations import calculate_inventory_value
 from app.services.item_identifiers import barcode_scan_candidates
 from app.services.items import apply_calculated_fields
-from app.services.location_inventory import find_item_location, lock_inventory_stock, receive_to_location
+from app.services.location_inventory import find_item_location, lock_inventory_stock, receive_to_location, receiving_unit_cost
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
 from app.services.stock_mutation_guard import begin_stock_mutation, complete_stock_mutation
 
@@ -70,12 +70,15 @@ def validate_direct_receipt(payload: DirectReceiptRequest, db: Session) -> tuple
 
         item, item_errors = find_receiving_item(db, line.item_id, line.sku, line.barcode)
         line_errors.extend(item_errors)
+        unit_cost = receiving_unit_cost(item, line.unit_cost)
         location = find_active_location(db, warehouse, inventory_location) if warehouse and inventory_location else None
         item_location = find_item_location(db, item.id, warehouse, inventory_location) if item is not None else None
         if warehouse and inventory_location and location is None:
             line_errors.append("Inventory Location must exist and be active for the selected warehouse.")
-        if item is not None and item.unit_cost in (None, Decimal("0")) and unit_cost > 0:
-            line_warnings.append("Receipt unit cost is stored on the receipt line and movement; item Unit Cost is not overwritten.")
+        if item is not None and unit_cost <= 0:
+            line_errors.append("Unit Cost is missing. Enter the current cost before receiving this item.")
+        elif item is not None and line.unit_cost is not None and unit_cost != to_decimal(item.unit_cost):
+            line_warnings.append("This cost will become the item's new default Unit Cost.")
 
         lines.append(
             ValidatedReceivingLine(

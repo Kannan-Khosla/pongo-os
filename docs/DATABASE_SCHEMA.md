@@ -631,8 +631,10 @@ Direct receiving behavior:
   movement row.
 - Item In Stock is increased; Allocated is unchanged.
 - Sellable, Under Par, and Storage Volume are recalculated on the item.
-- Unit Cost on the receipt line and stock movement does not overwrite item Unit
-  Cost in this phase.
+- A blank receiving Unit Cost uses the item's current Unit Cost.
+- A positive Unit Cost entered on a committed receipt becomes the item's new
+  current Unit Cost. This is a last-received-cost rule, not weighted average
+  costing; existing on-hand inventory is valued with the new current cost.
 
 ## Received Inventory Report
 

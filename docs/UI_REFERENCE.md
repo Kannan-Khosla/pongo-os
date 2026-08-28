@@ -885,13 +885,14 @@ Receiving now has tabs:
 
 Bulk Receiving Session includes:
 - Large scan/search input.
-- Quantity default.
-- Warehouse and location selectors.
-- Unit cost.
+- Click-and-type quantity defaulting to 1, without number-input scroll controls.
+- Fixed receiving destination, preferring Main Warehouse / 001.
+- Unit cost filled from the item and editable before posting; cart quantity and
+  cost remain editable without removing the line.
 - Optional lot, expiration, pallet, package, item number, sales price, weight,
   and notes fields.
 - Multi-row receiving cart.
-- Preview and commit actions.
+- Plain-language check and receive actions.
 - Receipt number and CSV export after commit.
 
 ## Current Scanner Page

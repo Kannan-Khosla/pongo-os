@@ -8659,36 +8659,70 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
   const [scanInput, setScanInput] = useState('');
   const [selectedItem, setSelectedItem] = useState(null);
   const [quantity, setQuantity] = useState(1);
-  const [inventoryLocation, setInventoryLocation] = useState('');
   const [unitCost, setUnitCost] = useState('');
   const [optional, setOptional] = useState({ lot_number: '', expiration_date: '', pallet_number: '', pkg_number: '', item_number: '', sales_price: '', weight: '', notes: '' });
   const [lines, setLines] = useState([]);
   const [preview, setPreview] = useState(null);
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const activeLocations = locations.filter((location) => location.isActive && (!header.warehouse || location.warehouse === header.warehouse));
-  const commitReason = !lines.length ? 'add at least one receiving line.' : !preview ? 'preview the session before committing.' : !preview.can_commit ? 'resolve the validation errors shown below.' : '';
+  const receivingLocation = activeLocations.find((location) => location.code === '001') || activeLocations[0] || null;
+  const totalUnits = lines.reduce((total, line) => total + toNumber(line.quantity), 0);
+  const totalValue = lines.reduce((total, line) => total + (toNumber(line.quantity) * toNumber(line.unit_cost)), 0);
+  const commitReason = !lines.length ? 'add at least one product.' : !preview ? 'check the receipt first.' : !preview.can_commit ? 'fix the errors shown below.' : loading ? 'wait for the current action to finish.' : '';
 
-  function addLine() {
-    const item = selectedItem || findReceivingItem(items, scanInput);
-    setLines((current) => [...current, { localId: crypto.randomUUID?.() || String(Date.now()), item_id: operationalItemId(item), scan_input: scanInput, sku: operationalItemSku(item), barcode: operationalItemBarcode(item), quantity: toNumber(quantity) || 1, warehouse: header.warehouse, inventory_location: inventoryLocation, unit_cost: unitCost, ...optional }]);
+  function selectItem(item) {
+    setSelectedItem(item);
+    setUnitCost(item?.unit_cost ?? item?.['Unit Cost'] ?? '');
+  }
+
+  function clearEntry() {
     setScanInput('');
     setSelectedItem(null);
     setQuantity(1);
+    setUnitCost('');
+  }
+
+  function addLine() {
+    const item = selectedItem || findReceivingItem(items, scanInput);
+    if (!String(scanInput).trim()) {
+      setError('Scan or choose a product first.');
+      return;
+    }
+    if (!receivingLocation) {
+      setError('Main Warehouse location 001 is unavailable.');
+      return;
+    }
+    const resolvedCost = unitCost === '' ? (item?.unit_cost ?? item?.['Unit Cost'] ?? '') : unitCost;
+    setLines((current) => [...current, { localId: crypto.randomUUID?.() || String(Date.now()), item_id: operationalItemId(item), scan_input: scanInput, sku: operationalItemSku(item), barcode: operationalItemBarcode(item), product_name: productTitle(item), quantity: toNumber(quantity) || 1, warehouse: header.warehouse, inventory_location: receivingLocation.code, unit_cost: resolvedCost, ...optional }]);
+    clearEntry();
+    setError('');
     setPreview(null);
+    setSummary(null);
+  }
+
+  function updateLine(localId, field, value) {
+    setLines((current) => current.map((line) => (line.localId === localId ? { ...line, [field]: value } : line)));
+    setPreview(null);
+    setSummary(null);
   }
 
   async function previewSession() {
+    setLoading(true);
     setError('');
     setSummary(null);
     try {
       setPreview(await postJson('/api/receipts/bulk/preview', { ...header, lines }));
     } catch (apiError) {
       setError(apiError.message || 'Unable to preview bulk receipt.');
+    } finally {
+      setLoading(false);
     }
   }
 
   async function commitSession() {
+    setLoading(true);
     setError('');
     try {
       const payload = { ...header, source: 'manual', lines };
@@ -8696,47 +8730,53 @@ function BulkReceivingSession({ items, locations, onCommitted }) {
       setSummary(result);
       setLines([]);
       setPreview(null);
+      clearEntry();
       await onCommitted();
       resetMutationIdempotency(mutationRef);
     } catch (apiError) {
       setError(apiError.message || 'Unable to commit bulk receipt.');
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
     <div className="receiving-form bulk-session">
-      <div className="section-heading"><div><h2>Bulk Receiving Session</h2><p>Multi-row receiving cart committed as one receipt.</p></div><button className="muted-button" onClick={() => { resetMutationIdempotency(mutationRef); setLines([]); setPreview(null); setSummary(null); }} type="button">Clear Session</button></div>
+      <div className="section-heading"><div><h2>Bulk Receiving Session</h2><p>Scan products, enter quantities, then post everything as one receipt.</p></div><button className="muted-button" onClick={() => { resetMutationIdempotency(mutationRef); setLines([]); setPreview(null); setSummary(null); clearEntry(); }} type="button">Clear Session</button></div>
       <div className="receiving-header-fields">
-        <FilterSelect label="Warehouse" value={header.warehouse} options={uniqueOptions(locations, 'warehouse')} onChange={(value) => setHeader((current) => ({ ...current, warehouse: value || 'Main Warehouse' }))} />
+        <div className="bulk-receiving-destination" role="status"><MapPin aria-hidden="true" size={18} /><span><small>Receiving into</small><strong>{receivingLocation ? `${receivingLocation.warehouse} / ${receivingLocation.code}${receivingLocation.name && receivingLocation.name !== receivingLocation.code ? ` / ${receivingLocation.name}` : ''}` : 'Location unavailable'}</strong></span></div>
         <label className="field wide-field"><span>Notes</span><input value={header.notes} onChange={(event) => setHeader((current) => ({ ...current, notes: event.target.value }))} /></label>
       </div>
-      <div className="scanner-input-row">
+      <div className="bulk-receiving-entry">
         <InventoryKeywordSearch
           autoFocus
           className="operational-item-lookup"
-          hideLabel
-          label="Bulk receiving SKU, barcode, or product"
+          label="Product"
           onChange={(value) => {
             setScanInput(value);
-            if (!operationalItemMatchesQuery(selectedItem, value)) setSelectedItem(null);
+            if (!operationalItemMatchesQuery(selectedItem, value)) {
+              setSelectedItem(null);
+              setUnitCost('');
+            }
           }}
-          onSelect={setSelectedItem}
+          onSelect={selectItem}
           onSubmit={addLine}
           placeholder="Scan or type SKU/barcode"
           value={scanInput}
         />
-        <input value={quantity} onChange={(event) => setQuantity(event.target.value)} inputMode="decimal" />
-        <select value={inventoryLocation} onChange={(event) => setInventoryLocation(event.target.value)}><option value="">Location</option>{activeLocations.map((location) => <option key={location.id} value={location.code}>{location.warehouse} / {location.code}</option>)}</select>
-        <input value={unitCost} onChange={(event) => setUnitCost(event.target.value)} placeholder="Unit cost" inputMode="decimal" />
-        <button className="primary-button" onClick={addLine} type="button"><Plus size={16} />Add Line</button>
+        <label className="field"><span>Quantity</span><input aria-label="Quantity" value={quantity} onChange={(event) => setQuantity(event.target.value)} onFocus={(event) => event.target.select()} onKeyDown={(event) => event.key === 'Enter' && addLine()} inputMode="decimal" type="text" /></label>
+        <label className="field"><span>Unit cost</span><input aria-label="Unit cost" value={unitCost} onChange={(event) => setUnitCost(event.target.value)} onFocus={(event) => event.target.select()} onKeyDown={(event) => event.key === 'Enter' && addLine()} placeholder="Filled automatically" inputMode="decimal" type="text" /><small>{selectedItem && unitCost !== '' ? `Current item cost: ${formatCurrency(selectedItem?.unit_cost ?? selectedItem?.['Unit Cost'])}` : 'Uses the item’s current cost. A changed value becomes the new default.'}</small></label>
+        <button className="primary-button bulk-add-button" onClick={addLine} type="button"><Plus size={16} />Add product</button>
       </div>
       <details className="optional-fields"><summary>Optional receiving fields</summary><div className="operation-grid">{Object.keys(optional).map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={optional[field]} onChange={(event) => setOptional((current) => ({ ...current, [field]: event.target.value }))} type={field === 'expiration_date' ? 'date' : 'text'} /></label>)}</div></details>
-      <TableShell caption={`${lines.length} cart line(s)`} columns={['Scan', 'SKU', 'Location', 'Qty', 'Unit Cost', 'Notes', 'Remove']}>
-        {lines.map((line, index) => <tr key={line.localId}><td>{line.scan_input}</td><td>{line.sku || <DataQualityBadge kind="missing_sku" />}</td><td><LocationPresentation value={line.inventory_location} /></td><td>{formatNumber(line.quantity)}</td><td>{isMissingValue(line.unit_cost) ? <DataQualityBadge kind="missing_cost" /> : formatCurrency(line.unit_cost)}</td><td>{line.notes}</td><td className="receiving-action-cell"><button className="pager-button" aria-label={`Remove bulk receiving line ${index + 1}`} onClick={() => { setLines((current) => current.filter((candidate) => candidate.localId !== line.localId)); setPreview(null); }} type="button"><X size={17} aria-hidden="true" /></button></td></tr>)}
-        {!lines.length && <tr><td colSpan={7}><div className="empty-table-row">Scan or add lines to begin.</div></td></tr>}
+      <div className="bulk-cart-summary" aria-live="polite"><strong>{lines.length} product{lines.length === 1 ? '' : 's'}</strong><span>{formatNumber(totalUnits)} units</span><span>{formatCurrency(totalValue)} estimated value</span></div>
+      <TableShell caption="Products in this receipt" columns={['Product', 'SKU', 'Quantity', 'Unit Cost', 'Location', 'Notes', 'Remove']}>
+        {lines.map((line, index) => <tr key={line.localId}><td>{line.product_name || line.scan_input}</td><td>{line.sku || <DataQualityBadge kind="missing_sku" />}</td><td><input className="bulk-cart-input" aria-label={`Product ${index + 1} quantity`} value={line.quantity} onChange={(event) => updateLine(line.localId, 'quantity', event.target.value)} onFocus={(event) => event.target.select()} inputMode="decimal" type="text" /></td><td><input className="bulk-cart-input" aria-label={`Product ${index + 1} unit cost`} value={line.unit_cost} onChange={(event) => updateLine(line.localId, 'unit_cost', event.target.value)} onFocus={(event) => event.target.select()} placeholder="Current cost" inputMode="decimal" type="text" /></td><td><LocationPresentation value={line.inventory_location} /></td><td>{line.notes}</td><td className="receiving-action-cell"><button className="pager-button" aria-label={`Remove bulk receiving line ${index + 1}`} onClick={() => { setLines((current) => current.filter((candidate) => candidate.localId !== line.localId)); setPreview(null); }} type="button"><X size={17} aria-hidden="true" /></button></td></tr>)}
+        {!lines.length && <tr><td colSpan={7}><div className="empty-table-row">Scan your first product above.</div></td></tr>}
       </TableShell>
-      <div className="detail-actions"><button className="muted-button" onClick={previewSession} type="button">Preview Session</button><button className="primary-button" aria-describedby={commitReason ? 'bulk-receiving-commit-reason' : undefined} disabled={Boolean(commitReason)} onClick={commitSession} type="button">Commit Session</button></div>
-      {commitReason && <p className="receiving-disabled-reason" id="bulk-receiving-commit-reason" role="status">Commit unavailable: {commitReason}</p>}
+      <div className="detail-actions"><button className="muted-button" disabled={!lines.length || loading} onClick={previewSession} type="button">Check receipt</button><button className="primary-button" aria-describedby={commitReason ? 'bulk-receiving-commit-reason' : undefined} disabled={Boolean(commitReason)} onClick={commitSession} type="button">Receive stock</button></div>
+      {commitReason && <p className="receiving-disabled-reason" id="bulk-receiving-commit-reason" role="status">Receive stock is unavailable: {commitReason}</p>}
+      {loading && <div className="loading-strip">Checking receiving details...</div>}
       {error && <div className="api-error">{error}</div>}
       {summary && <div className="success-strip">Receipt {summary.receipt_number} committed. <a href={`${API_BASE_URL}/api/receipts/${summary.id}/export`}>Export CSV</a></div>}
       {preview && <BulkReceivingPreview preview={preview} />}

@@ -7,7 +7,7 @@ from sqlalchemy import event, select
 
 from app.db.session import get_db
 from app.main import app
-from app.models.inventory import InventoryItem, InventoryItemLocation, MovementType, StockAdjustment, StockAdjustmentLine, StockMovement
+from app.models.inventory import InventoryAuditEvent, InventoryItem, InventoryItemLocation, MovementType, StockAdjustment, StockAdjustmentLine, StockMovement
 from app.models.orders import Order, OrderItem
 from app.models.receipts import Receipt, ReceiptItem
 from tests.test_items_api import client, seed_item  # noqa: F401
@@ -187,6 +187,13 @@ def test_bulk_receiving_preview_commit_detail_export(client, monkeypatch):
     assert preview.status_code == 200
     assert preview.json()["valid_line_count"] == 2
     assert preview.json()["total_quantity"] == 5
+    assert preview.json()["lines"][0]["item"]["unit_cost"] == 2
+
+    default_cost_preview = client.post(
+        "/api/receipts/bulk/preview",
+        json={**payload, "lines": [{"sku": "BULK-001", "quantity": 1, "inventory_location": "BULK-01"}]},
+    )
+    assert default_cost_preview.json()["lines"][0]["unit_cost"] == 2
 
     commit = client.post("/api/receipts/bulk/commit", json=payload)
     assert commit.status_code == 200, commit.text
@@ -197,6 +204,8 @@ def test_bulk_receiving_preview_commit_detail_export(client, monkeypatch):
     db = next(override)
     try:
         assert db.get(Receipt, body["id"]).received_date == transaction_date
+        assert db.get(InventoryItem, item["id"]).unit_cost == Decimal("2.5")
+        assert db.scalar(select(InventoryAuditEvent).where(InventoryAuditEvent.item_id == item["id"], InventoryAuditEvent.event_type == "receiving_unit_cost_update")) is not None
     finally:
         override.close()
     refreshed = client.get(f"/api/items/{item['id']}").json()

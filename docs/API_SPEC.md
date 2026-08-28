@@ -1932,6 +1932,8 @@ Validation rules:
 - Each line requires an active location matching warehouse + Location Code or
   warehouse + Location Name.
 - Quantity Received must be greater than zero.
+- Blank Unit Cost uses the item's current Unit Cost. A line is invalid when
+  neither value is positive.
 
 ### POST /api/receipts/direct/commit
 
@@ -1951,6 +1953,8 @@ On success:
   reconciliation in the same transaction; waiting processing orders may
   therefore increase `Allocated` immediately after receipt stock is posted.
 - Recalculates item Sellable, Under Par, and Storage Volume.
+- Replaces the item's current Unit Cost with a positive cost entered on the
+  receipt. Existing on-hand inventory is then valued at that current cost.
 - Creates one stock movement/audit row per received line.
 
 Intentional exclusions:
@@ -1959,7 +1963,7 @@ Intentional exclusions:
 - No WooCommerce calls.
 - No picking, route, or fulfillment workflow. Receiving may trigger local FIFO
   allocation for waiting processing orders.
-- No weighted average cost update.
+- No weighted average costing; receiving uses a simple last-received-cost rule.
 
 ### POST /api/receipts
 
@@ -2610,6 +2614,9 @@ Bulk commit creates one `receipts` row, one `receipt_items` row per valid
 line, updates `inventory_item_locations`, recalculates item aggregate stock
 fields, creates one stock movement per committed line, and reruns FIFO
 allocation for waiting processing orders before commit. Preview is read-only.
+Blank line cost defaults to the item's current Unit Cost. A positive entered
+cost becomes the item's new current Unit Cost on commit and creates a separate
+cost-change audit event.
 
 ## Scanner Workflows
 

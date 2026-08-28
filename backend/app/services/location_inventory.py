@@ -53,6 +53,10 @@ def to_decimal(value) -> Decimal:
         return Decimal("0")
 
 
+def receiving_unit_cost(item: InventoryItem | None, value) -> Decimal:
+    return to_decimal(item.unit_cost if value in (None, "") and item is not None else value)
+
+
 def location_display(location: InventoryItemLocation | InventoryLocation | None) -> str | None:
     if location is None:
         return None
@@ -342,14 +346,30 @@ def receive_to_location(
     quantity = to_decimal(quantity)
     if quantity <= 0:
         raise ValueError("Received quantity must be greater than zero.")
+    unit_cost = to_decimal(unit_cost) if unit_cost is not None else None
     row = get_or_create_item_location(db, item, warehouse, inventory_location, is_default_location=not bool(item.default_location))
     old_location_stock, old_item_stock = row.in_stock or Decimal("0"), item.in_stock or Decimal("0")
     old_location_allocated, old_item_allocated = row.allocated or Decimal("0"), item.allocated or Decimal("0")
+    old_unit_cost = to_decimal(item.unit_cost)
     row.in_stock = old_location_stock + quantity
     recalculate_item_location(row, item)
     assert_location_invariants(row)
     item = recalculate_item_totals(db, item.id)
     assert_item_invariants(item)
+    if unit_cost is not None and unit_cost > 0 and unit_cost != old_unit_cost:
+        item.unit_cost = unit_cost
+        create_audit_event(
+            db,
+            item,
+            row,
+            "receiving_unit_cost_update",
+            Decimal("0"),
+            reference_number,
+            reference_type,
+            reference_id,
+            f"Unit cost changed from {old_unit_cost} to {unit_cost} during receiving.",
+            created_by,
+        )
     create_stock_movement(
         db,
         item,

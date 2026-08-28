@@ -1837,14 +1837,19 @@ describe('App shell and workflows', () => {
 
     await screen.findByRole('heading', { name: 'Bulk Receiving Session' });
     await user.type(screen.getByPlaceholderText('Scan or type SKU/barcode'), 'SMOKE-001');
-    await user.selectOptions(document.querySelector('.bulk-session .scanner-input-row select'), 'Smoke Rack');
-    await user.click(screen.getByRole('button', { name: 'Add Line' }));
-    await user.click(screen.getByRole('button', { name: 'Preview Session' }));
-    const commit = screen.getByRole('button', { name: 'Commit Session' });
+    await user.click(await screen.findByRole('option', { name: /Smoke Test Item/i }));
+    expect(screen.getByRole('textbox', { name: 'Unit cost' })).toHaveValue('4.25');
+    await user.clear(screen.getByRole('textbox', { name: 'Quantity' }));
+    await user.type(screen.getByRole('textbox', { name: 'Quantity' }), '12');
+    await user.click(screen.getByRole('button', { name: 'Add product' }));
+    await user.click(screen.getByRole('button', { name: 'Check receipt' }));
+    const commit = screen.getByRole('button', { name: 'Receive stock' });
     await waitFor(() => expect(commit).toBeEnabled());
     await user.click(commit);
 
     await waitFor(() => {
+      const previewCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/receipts/bulk/preview'));
+      expect(JSON.parse(previewCall[1].body).lines[0]).toMatchObject({ quantity: 12, unit_cost: 4.25, inventory_location: 'Smoke Rack' });
       const commitCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/receipts/bulk/commit'));
       expect(JSON.parse(commitCall[1].body)).toMatchObject({ idempotency_key: expect.any(String) });
     });

@@ -95,8 +95,10 @@ cycle count, allocation, picking, or WooCommerce stock writeback are safe.
 
 Safety: Direct receiving validates the full receipt before commit. If any line
 is invalid, no item stock is changed. Every successful received line creates a
-stock movement/audit row. Unit cost is stored on receipt lines and movements but
-does not overwrite item Unit Cost in this phase.
+stock movement/audit row. A blank receipt cost uses the item's current Unit
+Cost; a positive entered cost becomes the new current Unit Cost and creates a
+cost-change audit event. This is deliberately last-received cost, not weighted
+average costing.
 
 ## ADR-013: Received Inventory Report Uses Receipt Lines
 
