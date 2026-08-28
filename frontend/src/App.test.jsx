@@ -4426,6 +4426,9 @@ describe('App shell and workflows', () => {
     const user = userEvent.setup();
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     fetch.mockImplementation((url) => {
+      if (String(url).includes('/api/items/1/locations')) {
+        return json({ locations: [{ id: 91, warehouse: 'Main Warehouse', inventory_location: 'Smoke Rack', in_stock: 9, allocated: 2 }, { id: 92, warehouse: 'Main Warehouse', inventory_location: 'Overflow Rack', in_stock: 4, allocated: 1 }], total: 2 });
+      }
       if (String(url).includes('/api/inventory/locations')) {
         return json({
           rows: [{
@@ -4485,6 +4488,42 @@ describe('App shell and workflows', () => {
       });
     });
     confirmSpy.mockRestore();
+  });
+
+  it('loads the selected item locations when the inventory page has no location rows yet', async () => {
+    const user = userEvent.setup();
+    fetch.mockImplementation((url, options = {}) => {
+      const request = new URL(String(url));
+      if (request.pathname === '/api/inventory/locations') return json({ rows: [] });
+      if (request.pathname === '/api/items/1/locations') {
+        return json({
+          locations: [{
+            id: 93,
+            item_id: 1,
+            warehouse: 'Main Warehouse',
+            inventory_location: 'Smoke Rack',
+            in_stock: 9,
+            allocated: 2,
+            sellable: 7,
+          }],
+          total: 1,
+        });
+      }
+      return mockFetch(url, options);
+    });
+    window.location.hash = '#/inventory/all';
+    render(<App />);
+
+    await screen.findByText('Smoke Test Item');
+    const inventoryTable = screen.getByText('SMOKE-001').closest('table');
+    await user.click(within(inventoryTable).getByRole('button', { name: 'Open inventory actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Edit Current Stock' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Edit current stock' });
+    expect(dialog).toHaveClass('stock-adjustment-modal');
+    expect(await within(dialog).findByRole('option', { name: 'Main Warehouse / Smoke Rack · 9 in stock' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('spinbutton', { name: 'Final Stock Quantity' })).toHaveValue(9);
+    expect(within(dialog).getByRole('button', { name: 'Commit Adjustment' })).toBeEnabled();
   });
 
   it('navigates between Orders subpages from the sidebar', async () => {

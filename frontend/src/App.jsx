@@ -5929,21 +5929,47 @@ function ProductInfoModal({ item, onClose, onSave }) {
 
 function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
   const mutationRef = useRef(null);
-  const defaultRow = locationRows[0] || null;
+  const [rows, setRows] = useState(locationRows);
+  const [rowsLoading, setRowsLoading] = useState(true);
+  const [rowsError, setRowsError] = useState('');
+  const defaultRow = rows[0] || null;
   const [form, setForm] = useState({ itemLocationId: defaultRow?.id || '', newQuantity: defaultRow ? String(defaultRow.in_stock) : '', reason: '', notes: '' });
   const [error, setError] = useState('');
-  const selectedRow = locationRows.find((row) => String(row.id) === String(form.itemLocationId)) || defaultRow;
+  const selectedRow = rows.find((row) => String(row.id) === String(form.itemLocationId)) || defaultRow;
   const oldQuantity = toNumber(selectedRow?.in_stock);
   const newQuantity = toNumber(form.newQuantity);
   const quantityChange = roundNumber(newQuantity - oldQuantity);
   const allocated = toNumber(selectedRow?.allocated);
+
+  useEffect(() => {
+    let active = true;
+    setRowsLoading(true);
+    setRowsError('');
+    apiFetch(`${API_BASE_URL}/api/items/${item.id}/locations?active=true`)
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error('Unable to load locations.'))))
+      .then((body) => { if (active) setRows(body.locations || []); })
+      .catch((loadError) => { if (active && !locationRows.length) setRowsError(loadError.message || 'Unable to load locations.'); })
+      .finally(() => { if (active) setRowsLoading(false); });
+    return () => { active = false; };
+  }, [item.id]);
+
+  useEffect(() => {
+    if (locationRows.length) setRows(locationRows);
+  }, [locationRows]);
+
+  useEffect(() => {
+    if (!defaultRow) return;
+    setForm((current) => (rows.some((row) => String(row.id) === String(current.itemLocationId))
+      ? current
+      : { ...current, itemLocationId: defaultRow.id, newQuantity: String(defaultRow.in_stock) }));
+  }, [rows]);
 
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
   }
 
   function updateLocation(itemLocationId) {
-    const row = locationRows.find((candidate) => String(candidate.id) === String(itemLocationId));
+    const row = rows.find((candidate) => String(candidate.id) === String(itemLocationId));
     setForm((current) => ({ ...current, itemLocationId, newQuantity: row ? String(row.in_stock) : '' }));
   }
 
@@ -5982,11 +6008,11 @@ function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
 
   return (
     <BodyPortal><div className="modal-backdrop" role="presentation">
-      <section className="import-modal" role="dialog" aria-modal="true" aria-label="Edit current stock">
+      <section className="import-modal stock-adjustment-modal" role="dialog" aria-modal="true" aria-label="Edit current stock">
         <div className="modal-header"><div><h2>Edit Current Stock</h2><p>{item.SKU || productTitle(item)}. This creates an audited stock adjustment.</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Close edit current stock" title="Close" type="button"><X size={20} /></button></div>
         <div className="form-grid">
-          <label className="field wide-field"><span>Location</span><select value={form.itemLocationId} onChange={(event) => updateLocation(event.target.value)}>{locationRows.map((row) => <option key={row.id} value={row.id}>{row.warehouse || 'Unassigned'} / {row.inventory_location || 'Unassigned'} · {formatNumber(row.in_stock)} in stock</option>)}</select></label>
-          <label className="field"><span>Final Stock Quantity</span><input min="0" type="number" step="1" value={form.newQuantity} onChange={(event) => update('newQuantity', event.target.value)} /></label>
+          <label className="field wide-field"><span>Location</span><select disabled={rowsLoading || !rows.length} value={form.itemLocationId} onChange={(event) => updateLocation(event.target.value)}>{!rows.length && <option value="">{rowsLoading ? 'Loading locations…' : 'No location assigned'}</option>}{rows.map((row) => <option key={row.id} value={row.id}>{row.warehouse || 'Unassigned'} / {row.inventory_location || 'Unassigned'} · {formatNumber(row.in_stock)} in stock</option>)}</select></label>
+          <label className="field"><span>Final Stock Quantity</span><input disabled={!selectedRow} min="0" type="number" step="1" value={form.newQuantity} onChange={(event) => update('newQuantity', event.target.value)} /></label>
           <label className="field wide-field"><span>Reason (optional)</span><input value={form.reason} onChange={(event) => update('reason', event.target.value)} placeholder="Optional" /></label>
           <label className="field wide-field"><span>Notes</span><textarea value={form.notes} onChange={(event) => update('notes', event.target.value)} /></label>
         </div>
@@ -5996,8 +6022,10 @@ function StockAdjustmentModal({ item, locationRows, onClose, onCommit }) {
           <Metric label="Difference" value={formatNumber(quantityChange)} />
           <Metric label="Allocated" value={formatNumber(allocated)} />
         </div>
+        {rowsError && <div className="api-error">{rowsError}</div>}
+        {!rowsLoading && !rows.length && !rowsError && <div className="api-error">This item has no active inventory location. Assign one from Bulk Edit before changing stock.</div>}
         {error && <div className="api-error">{error}</div>}
-        <div className="detail-actions"><button className="muted-button" onClick={onClose} type="button">Cancel</button><button className="primary-button" onClick={commit} type="button"><Save size={16} />Commit Adjustment</button></div>
+        <div className="detail-actions"><button className="muted-button" onClick={onClose} type="button">Cancel</button><button className="primary-button" disabled={!selectedRow || rowsLoading} onClick={commit} type="button"><Save size={16} />Commit Adjustment</button></div>
       </section>
     </div></BodyPortal>
   );
