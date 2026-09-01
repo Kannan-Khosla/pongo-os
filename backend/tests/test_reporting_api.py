@@ -383,6 +383,14 @@ def test_sales_report_excludes_cancelled_orders_and_joins_current_stock(client):
         wooProductId=777,
         **{"In Stock": 8, "Allocated": 2, "Unit Cost": 3},
     )
+    seed_item(
+        client,
+        sku="SALES-UNSOLD",
+        Description="Unsold inventory item",
+        Brand="Pongo",
+        Category="Food",
+        **{"In Stock": 4},
+    )
     override, db = database_session()
     try:
         item = db.get(InventoryItem, item_payload["id"])
@@ -452,7 +460,9 @@ def test_sales_report_excludes_cancelled_orders_and_joins_current_stock(client):
     )
 
     assert response.status_code == 200, response.text
-    row = response.json()["rows"][0]
+    body = response.json()
+    rows = {row["sku"]: row for row in body["rows"]}
+    row = rows["SALES-LEGAL"]
     assert row["quantity_sold"] == "3.000"
     assert row["net_sales"] == "15.00"
     assert row["current_in_stock"] == "8.000"
@@ -462,12 +472,17 @@ def test_sales_report_excludes_cancelled_orders_and_joins_current_stock(client):
     assert row["active_subscriptions"] == 1
     assert row["upcoming_30_day_units"] == "7.000"
     assert row["subscription_stockout_risk"] == "At risk"
-    assert "Subscription" in {column["label"] for column in response.json()["columns"]}
+    assert rows["SALES-UNSOLD"]["quantity_sold"] == "0.000"
+    assert rows["SALES-UNSOLD"]["net_sales"] == "0.00"
+    assert rows["SALES-UNSOLD"]["current_in_stock"] == "4.000"
+    assert next(metric for metric in body["kpis"] if metric["key"] == "skus")["value"] == "1"
+    assert "Subscription" in {column["label"] for column in body["columns"]}
     exported = list(
         csv.DictReader(
             StringIO(client.get(f"/api/reports/runs/{response.json()['run_id']}/csv").content.decode("utf-8-sig"))
         )
     )
+    assert {row["sku"] for row in exported} >= {"SALES-LEGAL", "SALES-UNSOLD"}
     assert exported[0]["subscription_status"] == "Active"
     assert exported[0]["upcoming_30_day_units"] == "7.000"
 

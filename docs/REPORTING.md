@@ -74,6 +74,11 @@ due within 30 days, and Pongo sellable-stock risk. Unknown inventory remains
 blank/unknown rather than becoming zero; a missing or past-due next-renewal date
 is labeled `Schedule incomplete` instead of `Covered`.
 
+Sales by SKU includes every active inventory item in the selected product
+scope. Items without a qualifying sale in the selected period remain visible
+with zero orders, quantity sold, and net sales. Sales-only WooCommerce lines
+that are not mapped to an inventory item remain visible for auditability.
+
 Date-based reports provide instant last month, last two months, last three
 months, last year, and calendar-year-to-date presets while preserving custom
 date entry. Received Inventory also exposes the same presets directly on its

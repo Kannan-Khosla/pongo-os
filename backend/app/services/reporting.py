@@ -1663,7 +1663,20 @@ def build_sales_by_sku(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
         ].append(subscription)
         if subscription["sku"]:
             subscription_skus[subscription["sku"].strip().casefold()].append(subscription)
-    groups: dict[Any, dict[str, Any]] = {}
+    groups: dict[Any, dict[str, Any]] = {
+        f"item:{item['item_id']}": {
+            "item_id": item["item_id"],
+            "sku": item["sku"],
+            "name": item["name"],
+            "brand": item["brand"],
+            "category": item["category"],
+            "woo_identities": set(),
+            "orders": set(),
+            "quantity_sold": Decimal("0"),
+            "net_sales": Decimal("0"),
+        }
+        for item in inventory
+    }
     partial_refund_total = Decimal("0")
     for order in scoped_orders(db, filters):
         if not is_recognized_sales_order(order):
@@ -1755,6 +1768,7 @@ def build_sales_by_sku(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
             }
         )
     rows.sort(key=lambda row: D(row["quantity_sold"]), reverse=True)
+    sold_rows = [row for row in rows if D(row["quantity_sold"]) > 0]
     warnings = list(inventory_warnings)
     warnings.extend(
         quality_warning(
@@ -1776,10 +1790,10 @@ def build_sales_by_sku(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
         "kpis": [
             metric("sales", "Net merchandise sales", money(sum((D(row["net_sales"]) for row in rows), Decimal("0"))), "currency"),
             metric("units", "Units sold", qty(sum((D(row["quantity_sold"]) for row in rows), Decimal("0"))), "quantity"),
-            metric("skus", "SKUs sold", str(len(rows))),
+            metric("skus", "SKUs sold", str(len(sold_rows))),
             metric("refunds", "Unallocated refund summary", money(partial_refund_total), "currency"),
         ],
-        "charts": [chart("Top-selling SKUs", rows[:12], "sku", "quantity_sold")],
+        "charts": [chart("Top-selling SKUs", sold_rows[:12], "sku", "quantity_sold")],
         "columns": [
             column("sku", "SKU"),
             column("name", "Item"),
@@ -1798,7 +1812,7 @@ def build_sales_by_sku(db: Session, filters: dict[str, Any]) -> dict[str, Any]:
             column("current_sellable", "Current sellable", "quantity"),
         ],
         "rows": rows,
-        "insights": sales_insights(rows),
+        "insights": sales_insights(sold_rows),
         "data_quality": warnings,
         "definitions": [
             "WooCommerce sales include only processing and completed orders. Manual orders include processing, completed or fulfilled statuses.",
@@ -1836,8 +1850,9 @@ def build_executive_weekly(db: Session, filters: dict[str, Any]) -> dict[str, An
     valuation = build_inventory_cost_category(db, {key: value for key, value in filters.items() if key not in {"start_date", "end_date"}})
     incomplete = build_incomplete_orders(db, filters)
     forecast = build_inventory_forecast(db, filters)
-    brand_rows = aggregate_chart_rows(sales["rows"], "brand", "net_sales")
-    category_rows = aggregate_chart_rows(sales["rows"], "category", "net_sales")
+    sold_rows = [row for row in sales["rows"] if D(row["quantity_sold"]) > 0]
+    brand_rows = aggregate_chart_rows(sold_rows, "brand", "net_sales")
+    category_rows = aggregate_chart_rows(sold_rows, "category", "net_sales")
     rows = []
     for source, source_rows in (("brand", brand_rows), ("category", category_rows)):
         for row in source_rows:
