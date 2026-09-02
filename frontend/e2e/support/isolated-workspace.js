@@ -5,7 +5,7 @@ export async function registerOperator(page, { displayName, runId }) {
   await page.getByRole('tab', { name: 'Register' }).click();
   await page.getByLabel('Display name').fill(displayName);
   await page.getByLabel('Email address').fill(`e2e+${runId.toLowerCase()}@example.com`);
-  await page.getByLabel('Password').fill('correct-horse-battery-staple');
+  await page.getByLabel('Password', { exact: true }).fill('correct-horse-battery-staple');
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.getByLabel(`Account: ${displayName}`)).toBeVisible();
 }

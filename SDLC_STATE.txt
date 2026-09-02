@@ -2,7 +2,7 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-09-02T18:39:00Z
+LAST UPDATED: 2026-09-02T18:46:50Z
 EXECUTION MODE: Release Readiness and Release
 CURRENT PHASE: Login, mobile product-title, and bulk-receiving focus repair candidate updated after dependency audit stopped the first release gate
 CURRENT RELEASE RECOMMENDATION: RELEASE ONLY AFTER LISTED BLOCKERS
@@ -16,6 +16,7 @@ Heroku v64 at exact commit cd741612 now changes only first-time Woo catalog crea
 Heroku v69 at exact commit 1283f9f released the fifth item-import outcome for one-time catalog repair. It matches stable Pongo Item ID first, leaves barcode/SKU/Woo identity untouched, updates nonblank brand and unit cost, and consolidates unallocated stock plus on-order quantities into Main Warehouse / 001 without changing item totals or Woo stock. Allocated units stay at their source until the related order releases or consumes them. The complete 1,348-item repair CSV remains a separate staff-controlled upload with typed REPAIR confirmation; it was not uploaded during deployment, so no inventory changed.
 The current production release is Heroku v80 at commit 8316513 and schema 20260826_0045. The authorized release candidate adds a native Show password control, keeps the five-attempt login safety lock while showing its remaining wait and clearing expired locks, lets product titles wrap fully on phone layouts, keeps the bulk-receiving scanner below the fixed header, and moves focus to the new line quantity after a successful scan. It has no migration, dependency, WooCommerce write, or stock/data mutation.
 The first exact candidate 0ad708a passed PostgreSQL migration/recovery, backup/restore, backend tests, and Python dependency audit, then stopped before frontend tests because a newly published high-severity Browserslist advisory affected the locked 4.28.5 transitive version. The minimal lockfile-only update to Browserslist 4.28.8 and its browser-data packages reports zero npm vulnerabilities; a new exact-SHA release gate is required before production.
+The repaired candidate e3e6196 passed both vulnerability scans, PostgreSQL/backend checks, and frontend unit/build checks. Its browser chain then exposed only a loose test selector: `getByLabel('Password')` also matched the new `Show password` checkbox. The shared helper now requests the exact Password label; no application behavior changed, and the complete exact-SHA gate must rerun.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -529,6 +530,12 @@ THEN: Record the exact commit, CI run, backup, Heroku release, schema, process, 
 APPROVAL STATE: The user explicitly authorized production deployment on 2026-09-02. Concurrent invoice-receiving, PRODUCT_AUDIT, workbench, output, and showcase changes remain excluded.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
+--- DELIVERY RUN: 2026-09-02T18:46:50Z ---
+MODE: Release Readiness and Release
+SUMMARY: The repaired release reached browser contracts and exposed a shared test-selector collision with the new Show password label; the helper now selects the exact Password field and production remains unchanged.
+EVIDENCE: GitHub run 33668536075 for e3e6196 passed both vulnerability scans, PostgreSQL 16 migration/recovery, backup/restore, all PostgreSQL-backed backend tests, all frontend unit tests, and the production build. Three browser contracts stopped at the same registration helper before their application journeys because Playwright's non-exact Password query matched both Password and Show password. The one-line helper fix uses `{ exact: true }`; it changes no runtime application file.
+NEXT ACTION: Commit/push the exact browser-helper repair and require a completely green release gate before backup or deployment.
+
 --- DELIVERY RUN: 2026-09-02T18:39:00Z ---
 MODE: Release Readiness and Release
 SUMMARY: The first exact-SHA gate correctly stopped before production on a newly disclosed high-severity frontend build dependency advisory; the minimal transitive lockfile update is ready for a new gate.
