@@ -41,7 +41,7 @@ class ReceivedInventoryFilters:
     sku: str | None = None
     barcode: str | None = None
     category: str | None = None
-    brand: str | None = None
+    brand: list[str] | None = None
     receipt_number: str | None = None
     reference_number: str | None = None
     created_by: str | None = None
@@ -215,7 +215,9 @@ def effective_received_at(receipt: Receipt) -> datetime:
     return receipt.received_at or receipt.created_at
 
 
-def text_matches(value: str | None, expected: str | None) -> bool:
+def text_matches(value: str | None, expected: str | list[str] | None) -> bool:
+    if isinstance(expected, list):
+        return not expected or any(text_matches(value, candidate) for candidate in expected)
     if not expected:
         return True
     return expected.casefold() in (value or "").casefold()

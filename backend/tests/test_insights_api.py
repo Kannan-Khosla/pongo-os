@@ -199,9 +199,14 @@ def test_insights_brand_and_category_filters_use_mapped_inventory_item(client, m
     by_brand = client.get("/api/insights/overview", params={"brand": "Acana"}).json()
     by_category = client.get("/api/insights/overview", params={"category": "Dog Food"}).json()
     missing = client.get("/api/insights/overview", params={"brand": "Missing Brand"}).json()
+    multiple = client.get(
+        "/api/insights/overview",
+        params=[("brand", "Acana"), ("brand", "Kong")],
+    ).json()
 
     assert by_brand["summary"]["total_orders"] == 2
     assert by_category["summary"]["total_orders"] == 2
+    assert multiple["summary"]["total_orders"] == 3
     assert missing["summary"]["total_orders"] == 0
     assert missing["empty_state"] == "No matching completed or active sales orders"
 

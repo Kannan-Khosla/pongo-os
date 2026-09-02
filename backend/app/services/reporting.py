@@ -458,6 +458,8 @@ def percent(value: Any) -> str:
 
 
 def text_matches(actual: Any, expected: Any, *, contains: bool = False) -> bool:
+    if isinstance(expected, (list, tuple, set)):
+        return not expected or any(text_matches(actual, candidate, contains=contains) for candidate in expected)
     if expected in (None, ""):
         return True
     left = str(actual or "").strip().casefold()

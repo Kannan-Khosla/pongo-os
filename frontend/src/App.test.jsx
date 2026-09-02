@@ -1535,7 +1535,7 @@ describe('App shell and workflows', () => {
     window.location.hash = '#items';
     render(<App />);
 
-    await screen.findByRole('option', { name: 'Before Brand' });
+    await screen.findByRole('checkbox', { name: 'Before Brand' });
     await user.click(screen.getByRole('checkbox', { name: 'Select SMOKE-001' }));
     await user.click(screen.getByRole('button', { name: 'Bulk edit 1' }));
     const dialog = screen.getByRole('dialog', { name: 'Bulk edit inventory items' });
@@ -1544,7 +1544,7 @@ describe('App shell and workflows', () => {
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Apply to 1 item(s)' })).toBeEnabled());
     await user.click(within(dialog).getByRole('button', { name: 'Apply to 1 item(s)' }));
 
-    expect(await screen.findByRole('option', { name: 'After Brand' })).toBeInTheDocument();
+    expect(await screen.findByRole('checkbox', { name: 'After Brand' })).toBeInTheDocument();
     expect(facetRequests).toBe(2);
   });
 
@@ -1901,6 +1901,7 @@ describe('App shell and workflows', () => {
 
   it('uses route-backed report categories, scoped secondary navigation, and contextual filters', async () => {
     const user = userEvent.setup();
+    mockItemFacets = { ...mockItemFacets, brands: ['Acana', 'Smoke Brand'] };
     window.location.hash = '#/reports/inventory/low-stock';
     render(<App />);
 
@@ -1924,12 +1925,14 @@ describe('App shell and workflows', () => {
     expect(within(inventoryFilters).queryByLabelText('Barcode')).not.toBeInTheDocument();
 
     fetch.mockClear();
-    await user.type(within(inventoryFilters).getByLabelText('Brand'), 'Acana');
+    await user.click(within(inventoryFilters).getByLabelText('Brand'));
+    await user.click(await within(inventoryFilters).findByRole('checkbox', { name: 'Acana' }));
+    await user.click(await within(inventoryFilters).findByRole('checkbox', { name: 'Smoke Brand' }));
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => {
       const reportCalls = fetch.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('/api/reports/low-stock'));
       expect(reportCalls).toHaveLength(2);
-      expect(reportCalls.every((url) => new URL(url).searchParams.get('brand') === 'Acana')).toBe(true);
+      expect(reportCalls.every((url) => new URL(url).searchParams.getAll('brand').join('|') === 'Acana|Smoke Brand')).toBe(true);
       expect(reportCalls.every((url) => !new URL(url).searchParams.has('start_date') && !new URL(url).searchParams.has('barcode'))).toBe(true);
     });
 
@@ -2491,7 +2494,8 @@ describe('App shell and workflows', () => {
 
     expect(await screen.findByText('DOG-FOOD')).toBeInTheDocument();
     const filters = document.querySelector('.insights-filter-card');
-    await user.type(within(filters).getByLabelText('Brand'), 'Acana');
+    await user.click(within(filters).getByLabelText('Brand'));
+    await user.click(within(filters).getByRole('checkbox', { name: 'Smoke Brand' }));
 
     expect(screen.getByText('DOG-FOOD')).toBeInTheDocument();
   });

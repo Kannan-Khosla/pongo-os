@@ -2,10 +2,10 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-09-02T18:59:59Z
+LAST UPDATED: 2026-09-02T19:26:42Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Login, mobile product-title, and bulk-receiving focus repair released and verified
-CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
+CURRENT PHASE: Multi-brand filtering implemented and locally verified
+CURRENT RELEASE RECOMMENDATION: PENDING EXACT-SHA RELEASE GATE
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
 Pongo now keeps a normalized, read-only snapshot of active WooCommerce subscription lines, including each official next-payment date. The Dashboard shows renewals due in 30 days with current Pongo stock and sellable quantities; Sales by SKU visibly marks subscription products and includes renewal-demand and stock-risk columns in every export format.
@@ -17,6 +17,7 @@ Heroku v69 at exact commit 1283f9f released the fifth item-import outcome for on
 Heroku v81 at exact commit 3c2f13f now provides a native Show password control, keeps the five-attempt login safety lock while showing its remaining wait and clearing expired locks, lets product titles wrap fully on phone layouts, keeps the bulk-receiving scanner below the fixed header, and moves focus to the new line quantity after a successful scan. It made no schema, WooCommerce, stock, receipt, or business-data change.
 The first exact candidate 0ad708a passed PostgreSQL migration/recovery, backup/restore, backend tests, and Python dependency audit, then stopped before frontend tests because a newly published high-severity Browserslist advisory affected the locked 4.28.5 transitive version. The minimal lockfile-only update to Browserslist 4.28.8 and its browser-data packages reports zero npm vulnerabilities; a new exact-SHA release gate is required before production.
 The repaired candidate e3e6196 passed both vulnerability scans, PostgreSQL/backend checks, and frontend unit/build checks. Its browser chain then exposed only a loose test selector: `getByLabel('Password')` also matched the new `Show password` checkbox. The shared helper now requests the exact Password label; no application behavior changed. Exact commit 3c2f13f then passed the complete GitHub release gate in run 33669357273 before backup b026 and production release v81.
+The current multi-brand patch replaces every customer-facing single-brand search filter with one shared checkbox control. Item, inventory, Insights, report, summary, and CSV endpoints accept repeated `brand` query values with OR semantics while preserving existing one-brand links and requests. Production remains unchanged until the exact candidate passes the normal release gate.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -89,12 +90,15 @@ REQ-AUTH-001: Staff can show or hide the password while typing without changing 
 REQ-AUTH-002: Five incorrect passwords still create the existing temporary lock; locked responses state the remaining wait and include `Retry-After`, and a correct password succeeds after expiry without operator intervention.
 REQ-MOBILE-TITLE-001: Product titles in shared item, inventory, search, result, and detail presentations wrap to their full value on phone widths instead of being clipped or ellipsized.
 REQ-RECEIVING-UX-003: The bulk-receiving entry bar remains fully visible below the fixed application header while scrolling; after a valid scan adds a product, its editable receipt-line quantity receives focus and is selected.
+REQ-FILTER-BRAND-001: Every Items, Inventory, Insights, and report search surface with a Brand filter lets staff select any number of catalog brands, clear them together, and use the same control on desktop and mobile.
+REQ-FILTER-BRAND-002: Selected brands are sent as repeated `brand` query parameters and combined with OR semantics in list, summary, immutable-report, and CSV export paths; existing single-brand requests remain valid.
 
 === 05. SCOPE, NON-GOALS, CONSTRAINTS, AND ASSUMPTIONS ===
 IN SCOPE: phone/hardware scanner normalization across operational lookup paths; absolute audited manual stock corrections; shared search/overlay behavior; ten-zone open-order planning; one-click selected-order planning for one driver; missing/unassigned reporting; keyless Google Maps URL construction; responsive all-stop overview; separate completed-route records; tests and docs.
 NON-GOALS: configuration changes, provider-backed street-map tiles, paid Google Routes API, traffic-aware optimization, server-side geocoding/address correction, persisted open-order plans, dispatch tracking, driver accounts, or proof of delivery.
 CONSTRAINTS: Frontend receives no map credentials. Google Maps URLs have mobile waypoint limits, so long routes must be segmented. Existing completed-order route records remain available as a separate historical workflow.
 ASSUMPTION: Operational open orders are the existing non-historical Woo processing/FooSales set and shipping address fields are the delivery authority.
+MULTI-BRAND FILTER IN SCOPE: one shared accessible checkbox control, repeated-query serialization, OR matching across item/inventory/Insights/report data and exports, backward-compatible single values, tests, and API documentation. Category and other filters remain single-select.
 STOCK CSV IN SCOPE: CSV-only exact per-location stock overrides through the existing six-step item import workspace, validation/preview, audit movements, history, tests, and docs.
 STOCK CSV NON-GOALS: changing allocated/sellable quantities, creating items/warehouses/locations, XLSX support, background processing, or metadata rollback for stock.
 CURRENT STOCK CSV INPUT FACT: The user's inventoryexport.csv has 1,726 data rows, one warehouse, 71 named locations, 456 blank location cells, no blank SKUs or stock values, no negative stock, and no duplicate SKU/warehouse/location scopes. Extra columns are intentionally ignored.
@@ -823,3 +827,9 @@ MODE: Stabilize and Repair; Release Readiness and Release
 SUMMARY: The exact bulk-receiving scan validation and receipt-row repair was released and verified on Pongo production as Heroku v79.
 EVIDENCE: Exact commit c75dad2e641e68ae6930819b83a0e3f681357dd2 passed GitHub release gate 33212558372, including security scans, PostgreSQL 16 migration/recovery and backup/restore, 620 backend tests, 196 frontend tests/build, and browser contracts. Fresh backup b025 completed before Heroku v79; schema remained 20260826_0045; web and worker are up; origin health returned 200. Authenticated production scanning of barcode 064992728274 resolved SKU 728274 and displayed its product name, barcode, current stock 2, editable quantity/cost/notes, and location 001. Browser and application logs were clean; no receipt, stock, Unit Cost, order, or WooCommerce record changed.
 NEXT ACTION: Staff may use Bulk Receiving normally; monitor the next real receipt and separately resolve the existing cost, duplicate-barcode, and alert-webhook readiness items.
+
+--- DELIVERY RUN: 2026-09-02T19:26:42Z ---
+MODE: Build Approved Scope; Release Readiness and Release
+SUMMARY: Multi-brand filtering is implemented across Items, Inventory, Insights, reports, summaries, and CSV exports; production is unchanged.
+EVIDENCE: One shared accessible checkbox filter supports any number of brands; repeated query values retain single-brand compatibility and use OR semantics in backend services. Affected backend tests passed 137; frontend tests passed 199; production build and diff check passed.
+NEXT ACTION: Commit only the multi-brand patch, require its exact green release gate, capture a fresh production backup, then deploy and verify the read-only filters without changing business data.

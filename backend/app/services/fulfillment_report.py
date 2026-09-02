@@ -56,7 +56,7 @@ class FulfillmentReportFilters:
     sku: str | None = None
     barcode: str | None = None
     category: str | None = None
-    brand: str | None = None
+    brand: list[str] | None = None
     fulfillment_number: str | None = None
     woo_order_number: str | None = None
     woo_order_id: int | None = None
@@ -284,7 +284,9 @@ def row_matches_filters(row: FulfillmentReportRow, filters: FulfillmentReportFil
     )
 
 
-def text_matches(value: str | None, expected: str | None) -> bool:
+def text_matches(value: str | None, expected: str | list[str] | None) -> bool:
+    if isinstance(expected, list):
+        return not expected or any(text_matches(value, candidate) for candidate in expected)
     if not expected:
         return True
     return expected.casefold() in (value or "").casefold()

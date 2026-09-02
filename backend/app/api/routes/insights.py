@@ -17,7 +17,7 @@ def insight_params(
     compare_start_date: str | None = None,
     compare_end_date: str | None = None,
     granularity: Literal["day", "week"] = "day",
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     category: str | None = None,
     sku: str | None = None,
     customer_email: str | None = None,

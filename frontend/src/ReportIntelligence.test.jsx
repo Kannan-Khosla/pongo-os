@@ -86,11 +86,11 @@ describe('Report Intelligence performance flow', () => {
     expect(await screen.findByRole('heading', { name: scopedReport.title })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText('Warehouse')).toHaveValue('Main Warehouse'));
     expect(screen.getByLabelText('Location')).toHaveValue('');
-    expect(screen.getByLabelText('Brand')).toHaveValue('');
+    expect(screen.getByLabelText('Brand')).toHaveTextContent('All brands');
     expect(screen.getByLabelText('Category')).toHaveValue('');
     expect(screen.getByLabelText('SKU')).toHaveAttribute('placeholder', 'Exact or partial SKU');
     expect(screen.getByRole('option', { name: 'All locations' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'All brands' })).toBeInTheDocument();
+    expect(screen.getByText('All brands')).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'All categories' })).toBeInTheDocument();
     await waitFor(() => {
       const latestCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/reports/jobs/latest/'));

@@ -89,6 +89,13 @@ def test_inventory_export_supports_brand_filter(client):
     rows = list(csv.DictReader(StringIO(response.text)))
     assert [row["SKU"] for row in rows] == ["INV-BRAND-2"]
 
+    response = client.get(
+        "/api/inventory/export/by-location",
+        params=[("brand", "North Paw"), ("brand", "South Paw")],
+    )
+    rows = list(csv.DictReader(StringIO(response.text)))
+    assert {row["SKU"] for row in rows} == {"INV-BRAND-1", "INV-BRAND-2"}
+
 
 def test_inventory_export_supports_under_par_filter(client):
     seed_item(client, sku="INV-PAR-1", **{"In Stock": 2, "Allocated": 0, "Par Level": 5})

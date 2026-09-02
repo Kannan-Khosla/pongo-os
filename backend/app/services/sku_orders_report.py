@@ -40,7 +40,7 @@ class SkuOrdersFilters:
     start_date: date | None = None
     end_date: date | None = None
     sku: str | None = None
-    brand: str | None = None
+    brand: list[str] | None = None
     category: str | None = None
     order_status: str | None = None
     woo_status: str | None = None
@@ -161,7 +161,7 @@ def line_matches_filters(line: OrderItem, filters: SkuOrdersFilters) -> bool:
     category_value = (item.category if item else "") or ""
     if filters.sku and filters.sku.casefold() not in sku_value.casefold():
         return False
-    if filters.brand and filters.brand.casefold() not in brand_value.casefold():
+    if filters.brand and not any(brand.casefold() in brand_value.casefold() for brand in filters.brand):
         return False
     if filters.category and filters.category.casefold() not in category_value.casefold():
         return False

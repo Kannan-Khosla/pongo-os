@@ -69,7 +69,7 @@ def list_inventory_locations(
     item_ids: str | None = None,
     warehouse: str | None = None,
     inventory_location: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     category: str | None = None,
     under_par: bool | None = None,
     active: bool | None = True,
@@ -119,7 +119,7 @@ def export_inventory_locations(
     item_id: int | None = None,
     warehouse: str | None = None,
     inventory_location: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     category: str | None = None,
     under_par: bool | None = None,
     active: bool | None = True,
@@ -313,7 +313,7 @@ def export_inventory_by_location(
     inventory_location: str | None = None,
     default_location: str | None = None,
     category: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     under_par: bool | None = None,
     non_inventory: bool | None = None,
     db: Session = Depends(get_db),
@@ -347,7 +347,7 @@ def summarize_inventory_by_location(
     inventory_location: str | None = None,
     default_location: str | None = None,
     category: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     under_par: bool | None = None,
     non_inventory: bool | None = None,
     data_quality: str | None = None,
@@ -379,7 +379,7 @@ def query_inventory_location_rows(
     item_ids: list[int] | None,
     warehouse: str | None,
     inventory_location: str | None,
-    brand: str | None,
+    brand: list[str] | None,
     category: str | None,
     under_par: bool | None,
     active: bool | None,
@@ -412,7 +412,7 @@ def build_inventory_location_statement(
     item_ids: list[int] | None,
     warehouse: str | None,
     inventory_location: str | None,
-    brand: str | None,
+    brand: list[str] | None,
     category: str | None,
     under_par: bool | None,
     active: bool | None,
@@ -450,7 +450,7 @@ def build_inventory_location_statement(
     if inventory_location:
         statement = statement.where(InventoryItemLocation.inventory_location == inventory_location)
     if brand:
-        statement = statement.where(InventoryItem.brand == brand)
+        statement = statement.where(InventoryItem.brand.in_(brand))
     if category:
         statement = statement.where(InventoryItem.category == category)
     if under_par is not None:

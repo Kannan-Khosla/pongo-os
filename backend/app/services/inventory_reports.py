@@ -59,7 +59,7 @@ def build_inventory_items_query(
     inventory_location: str | None = None,
     default_location: str | None = None,
     category: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = None,
     under_par: bool | None = None,
     non_inventory: bool | None = None,
     load_locations: bool = True,
@@ -76,7 +76,7 @@ def build_inventory_items_query(
     if category:
         statement = statement.where(InventoryItem.category == category)
     if brand:
-        statement = statement.where(InventoryItem.brand == brand)
+        statement = statement.where(InventoryItem.brand.in_(brand))
     if non_inventory is not None:
         statement = statement.where(InventoryItem.non_inventory.is_(non_inventory))
     statement = statement.order_by(InventoryItem.warehouse.asc().nullslast(), InventoryItem.inventory_location.asc().nullslast(), InventoryItem.sku.asc().nullslast())

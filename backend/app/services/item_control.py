@@ -493,7 +493,7 @@ def build_item_activity(
     return {"activity": rows[safe_offset : safe_offset + safe_limit], "total": total, "limit": safe_limit, "offset": safe_offset}
 
 
-def search_items(db: Session, *, q: str | None = None, sku: str | None = None, barcode: str | None = None, brand: str | None = None, category: str | None = None, limit: int = 25) -> dict[str, Any]:
+def search_items(db: Session, *, q: str | None = None, sku: str | None = None, barcode: str | None = None, brand: list[str] | None = None, category: str | None = None, limit: int = 25) -> dict[str, Any]:
     statement = select(InventoryItem)
     ordering = [InventoryItem.sku.asc().nullslast(), InventoryItem.id.asc()]
     if q:
@@ -526,7 +526,7 @@ def search_items(db: Session, *, q: str | None = None, sku: str | None = None, b
             )
         )
     if brand:
-        statement = statement.where(InventoryItem.brand == brand)
+        statement = statement.where(InventoryItem.brand.in_(brand))
     if category:
         statement = statement.where(InventoryItem.category == category)
     items = list(db.scalars(statement.order_by(*ordering).limit(max(1, min(limit, 100)))).all())

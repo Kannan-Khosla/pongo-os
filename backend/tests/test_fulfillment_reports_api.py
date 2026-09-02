@@ -139,6 +139,10 @@ def test_fulfillment_report_filters(client, monkeypatch):
 
     assert client.get("/api/reports/fulfillments", params={"sku": "NOPE"}).json() == []
     assert client.get("/api/reports/fulfillments/summary", params={"sku": "NOPE"}).json()["total_lines"] == 0
+    assert len(client.get(
+        "/api/reports/fulfillments",
+        params=[("brand", "Missing Brand"), ("brand", "Test Brand")],
+    ).json()) == 1
 
 
 def test_completed_orders_list_filters_export_and_read_only(client, monkeypatch):

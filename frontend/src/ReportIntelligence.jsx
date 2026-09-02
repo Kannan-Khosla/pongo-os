@@ -29,6 +29,7 @@ import {
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import { apiFetch } from './api';
+import MultiSelectFilter from './MultiSelectFilter';
 
 echarts.use([
   AriaComponent,
@@ -277,6 +278,19 @@ function FilterFields({ report, filters, scopeOptions, onChange }) {
         const label = FILTER_LABELS[key] || key.replaceAll('_', ' ');
         const options = optionsFor(key);
         const inputId = `report-filter-${key}`;
+        if (key === 'brand') {
+          return (
+            <MultiSelectFilter
+              allLabel={ALL_OPTION_LABELS.brand}
+              className="ri-field"
+              key={key}
+              label={label}
+              onChange={(value) => onChange(key, value)}
+              options={options.map(([value]) => value)}
+              value={filters[key] || []}
+            />
+          );
+        }
         return (
           <label className="ri-field" htmlFor={inputId} key={key}>
             <span>{label}</span>

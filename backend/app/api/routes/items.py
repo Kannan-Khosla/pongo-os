@@ -70,7 +70,7 @@ def build_items_statement(
     category: str | None = None,
     warehouse: str | None = None,
     inventory_location: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = None,
     active: bool | None = None,
     include_non_inventory: bool = True,
     woo_sync_status: str | None = None,
@@ -94,7 +94,7 @@ def build_items_statement(
     if inventory_location:
         statement = statement.where(InventoryItem.inventory_location == inventory_location)
     if brand:
-        statement = statement.where(InventoryItem.brand == brand)
+        statement = statement.where(InventoryItem.brand.in_(brand))
     if active is not None:
         statement = statement.where(InventoryItem.active.is_(active))
     if not include_non_inventory:
@@ -197,7 +197,7 @@ def search_items_endpoint(
     q: str | None = None,
     sku: str | None = None,
     barcode: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     category: str | None = None,
     limit: int = 25,
     db: Session = Depends(get_db),
@@ -233,7 +233,7 @@ def list_items(
     category: str | None = None,
     warehouse: str | None = None,
     inventory_location: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     active: bool | None = None,
     include_non_inventory: bool = True,
     include_facets: bool = True,
@@ -382,7 +382,7 @@ def export_items(
     category: str | None = None,
     warehouse: str | None = None,
     inventory_location: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     active: bool | None = None,
     include_non_inventory: bool = True,
     woo_sync_status: str | None = None,

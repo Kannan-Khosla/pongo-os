@@ -4,6 +4,7 @@ import './ReportIntelligence.css';
 import { API_BASE_URL, apiFetch } from './api';
 import { ItemImportHistory, ItemImportWorkspace } from './ItemImportWorkspace';
 import MobileCodeScanner from './MobileCodeScanner';
+import MultiSelectFilter, { multiSelectValues } from './MultiSelectFilter';
 import {
   ArrowLeft,
   BarChart3,
@@ -1341,7 +1342,7 @@ function parseHashRoute() {
       inventoryPageSize: [20, 50, 100].includes(requestedPageSize) ? requestedPageSize : 20,
       inventorySearch: query.get('search') || '',
       inventoryCategory: query.get('category') || '',
-      inventoryBrand: query.get('brand') || '',
+      inventoryBrand: query.getAll('brand').filter(Boolean),
       inventoryDataQuality: query.get('data_quality') || '',
       inventorySortBy: query.get('sort_by') || 'sku',
       inventorySortDir: query.get('sort_dir') === 'desc' ? 'desc' : 'asc',
@@ -1646,8 +1647,8 @@ export default function App({ currentUser = null, onLogout = null }) {
   }, [route.pageId]);
 
   useEffect(() => {
-    const itemCollectionView = route.pageId === 'inventory' || (route.pageId === 'items' && !route.itemView);
-    if (itemCollectionView) loadItemFacets();
+    const needsItemFacets = ['inventory', 'insights', 'reports'].includes(route.pageId) || (route.pageId === 'items' && !route.itemView);
+    if (needsItemFacets) loadItemFacets();
   }, [route.pageId, route.itemView]);
 
   useEffect(() => {
@@ -4197,7 +4198,7 @@ function PageBody({
   }
 
   if (route.pageId === 'insights') {
-    return <InsightsPage route={route} />;
+    return <InsightsPage route={route} brands={itemsPagination.facets?.brands || []} />;
   }
 
   if (route.pageId === 'locations') {
@@ -4254,6 +4255,7 @@ function PageBody({
   if (route.pageId === 'reports') {
     return (
       <ReportsPage
+        brands={itemsPagination.facets?.brands || []}
         route={route}
         receivedRows={receivedInventoryRows}
         receivedSummary={receivedInventorySummary}
@@ -4769,7 +4771,10 @@ const insightWarningPresentation = {
 };
 
 function pickFilterValues(filters, allowed) {
-  return Object.fromEntries((allowed || []).filter((key) => filters[key] !== undefined && filters[key] !== '').map((key) => [key, filters[key]]));
+  return Object.fromEntries((allowed || []).filter((key) => {
+    const value = filters[key];
+    return value !== undefined && value !== '' && (!Array.isArray(value) || value.length > 0);
+  }).map((key) => [key, filters[key]]));
 }
 
 function localDateInput(value) {
@@ -4792,7 +4797,7 @@ function emptyInsightFilters(withDefaultRange = true) {
   return {
     ...(withDefaultRange ? completedMonthRange(1) : { start_date: '', end_date: '', compare_start_date: '', compare_end_date: '' }),
     granularity: 'day',
-    brand: '', category: '', sku: '', customer_email: '', city: '', postal_code: '', payment_method: '', order_status: '',
+    brand: [], category: '', sku: '', customer_email: '', city: '', postal_code: '', payment_method: '', order_status: '',
   };
 }
 
@@ -4810,7 +4815,7 @@ function insightRequestKey(config, filters) {
   return `${config.id}${plainFiltersToQueryString(filters)}`;
 }
 
-function InsightsPage({ route }) {
+function InsightsPage({ route, brands = [] }) {
   const activeTab = route.insightsView || 'overview';
   const [cache, setCache] = useState({});
   const [loading, setLoading] = useState(false);
@@ -4975,7 +4980,9 @@ function InsightsPage({ route }) {
           </div>
         )}
         <div className="filter-grid report-filter-grid">
-          {allowedFilters.map((field) => (
+          {allowedFilters.map((field) => field === 'brand' ? (
+            <MultiSelectFilter key={field} label="Brand" value={filters.brand} options={brands} onChange={(value) => updateFilter('brand', value)} allLabel="All Brands" formatOption={decodeHtmlEntities} />
+          ) : (
             <label className="field" key={field}>
               <span>{insightFilterLabels[field] || titleize(field)}</span>
               <input type={field.endsWith('_date') ? 'date' : 'text'} value={filters[field]} onChange={(event) => updateFilter(field, event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} />
@@ -5166,7 +5173,7 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
   const activeSearch = route.inventorySearch || '';
   const filters = useMemo(() => ({
     category: route.inventoryCategory || '',
-    brand: route.inventoryBrand || '',
+    brand: multiSelectValues(route.inventoryBrand),
     dataQuality: route.inventoryDataQuality || '',
     sortBy: route.inventorySortBy || 'sku',
     sortDir: route.inventorySortDir || 'asc',
@@ -5282,7 +5289,7 @@ function InventoryPage({ route, items, pagination = emptyItemsPagination, itemsL
   function clearFilters() {
     setQueryDraft('');
     setMovementFilters({ movement_type: '', warehouse: '', inventory_location: '', date_from: '', date_to: '' });
-    window.location.hash = inventoryRouteHref(route, { search: '', category: '', brand: '', dataQuality: '', sortBy: 'sku', sortDir: 'asc', page: 1 });
+    window.location.hash = inventoryRouteHref(route, { search: '', category: '', brand: [], dataQuality: '', sortBy: 'sku', sortDir: 'asc', page: 1 });
   }
 
   async function loadLocationRows(nextFilters = filters, search = activeSearch, currentItems = items) {
@@ -5486,13 +5493,7 @@ function InventoryScannerSearch({ value, onChange, onSubmit, onClear, filters, o
             {[...new Set([filters.category, ...options.categories].filter(Boolean))].map((category) => <option key={category} value={category}>{decodeHtmlEntities(category)}</option>)}
           </select>
         </label>
-        <label className="zenventory-filter-field">
-          <span>Brand</span>
-          <select value={filters.brand} onChange={(event) => onFilterChange('brand', event.target.value)}>
-            <option value="">All Brands</option>
-            {[...new Set([filters.brand, ...options.brands].filter(Boolean))].map((brand) => <option key={brand} value={brand}>{decodeHtmlEntities(brand)}</option>)}
-          </select>
-        </label>
+        <MultiSelectFilter className="zenventory-filter-field" label="Brand" value={filters.brand} options={options.brands} onChange={(value) => onFilterChange('brand', value)} allLabel="All Brands" formatOption={decodeHtmlEntities} />
         <label className="zenventory-filter-field">
           <span>Data Quality</span>
           <select value={filters.dataQuality} onChange={(event) => onFilterChange('dataQuality', event.target.value)}>
@@ -6392,7 +6393,7 @@ function ItemsList({ route, items, pagination = emptyItemsPagination, loading, e
   const [filters, setFilters] = useState({
     search: route.itemSearch || '',
     category: '',
-    brand: '',
+    brand: [],
     status: 'active',
     stockStatus: '',
     latestWooImport: false,
@@ -6464,7 +6465,7 @@ function ItemsList({ route, items, pagination = emptyItemsPagination, loading, e
     setFilters({
       search: '',
       category: '',
-      brand: '',
+      brand: [],
       status: 'active',
       stockStatus: '',
       latestWooImport: false,
@@ -6626,7 +6627,7 @@ function ItemsList({ route, items, pagination = emptyItemsPagination, loading, e
     }
   }
 
-  const filtersChanged = Boolean(filters.search || filters.category || filters.brand || filters.stockStatus || filters.latestWooImport || filters.dataQuality || filters.status !== 'active' || !filters.includeNonInventory);
+  const filtersChanged = Boolean(filters.search || filters.category || multiSelectValues(filters.brand).length || filters.stockStatus || filters.latestWooImport || filters.dataQuality || filters.status !== 'active' || !filters.includeNonInventory);
   const topQualityIssues = (dataQuality?.issues || []).filter((issue) => issue.count > 0).sort((left, right) => right.count - left.count).slice(0, 5);
   const selectedQualityIssue = (dataQuality?.issues || []).find((issue) => issue.key === filters.dataQuality);
   const csvRepairableQualityIssue = ['missing_title', 'missing_barcode', 'missing_brand', 'missing_category', 'missing_cost'].includes(selectedQualityIssue?.key) ? selectedQualityIssue : null;
@@ -6676,7 +6677,7 @@ function ItemsList({ route, items, pagination = emptyItemsPagination, loading, e
             <button aria-label="Scan QR code or barcode with camera" className="action-button items-camera-button" onClick={() => setCameraScannerOpen(true)} type="button"><Camera aria-hidden="true" size={18} /> Scan code</button>
           </div>
           <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
-          <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
+          <MultiSelectFilter label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} allLabel="All Brands" formatOption={decodeHtmlEntities} />
           <FilterSelect label="Stock Status" value={filters.stockStatus} options={['in_stock', 'out_of_stock', 'under_par', 'negative_sellable']} onChange={(value) => updateFilter('stockStatus', value)} />
           <label className="check-field" title="Show products created by the most recent WooCommerce import that added new items.">
             <input checked={filters.latestWooImport} onChange={(event) => updateFilter('latestWooImport', event.target.checked)} type="checkbox" />
@@ -9067,7 +9068,7 @@ function StockMovementsTable({ movements, pagination, onLoad }) {
   );
 }
 
-function ReportsPage({ route, receivedRows, receivedSummary, receivedLoading, receivedError, onLoadReceivedReport, fulfillmentRows, fulfillmentSummary, fulfillmentLoading, fulfillmentError, onLoadFulfillmentReport, skuOrdersRows, skuOrdersSummary, skuOrdersLoading, skuOrdersError, onLoadSkuOrdersReport }) {
+function ReportsPage({ brands = [], route, receivedRows, receivedSummary, receivedLoading, receivedError, onLoadReceivedReport, fulfillmentRows, fulfillmentSummary, fulfillmentLoading, fulfillmentError, onLoadFulfillmentReport, skuOrdersRows, skuOrdersSummary, skuOrdersLoading, skuOrdersError, onLoadSkuOrdersReport }) {
   const activeDefinition = allReportDefinitions.find((report) => report.key === route.reportKey) || allReportDefinitions[0];
   const activeReport = activeDefinition.key;
   if (intelligentReportKeys.has(activeReport)) {
@@ -9099,20 +9100,21 @@ function ReportsPage({ route, receivedRows, receivedSummary, receivedLoading, re
           </nav>
         </aside>
         <div className="report-main-panel">
-          {isExpandedReport && <ExpandedReportsPanel activeReport={activeReport} key={activeReport} />}
-          {activeReport === 'received-inventory' && <ReceivedInventoryReportPage rows={receivedRows} summary={receivedSummary} loading={receivedLoading} error={receivedError} onLoadReport={onLoadReceivedReport} />}
-          {activeReport === 'fulfillment' && <FulfillmentReportPage rows={fulfillmentRows} summary={fulfillmentSummary} loading={fulfillmentLoading} error={fulfillmentError} onLoadReport={onLoadFulfillmentReport} />}
-          {activeReport === 'sku-orders' && <SkuOrdersReportPage rows={skuOrdersRows} summary={skuOrdersSummary} loading={skuOrdersLoading} error={skuOrdersError} onLoadReport={onLoadSkuOrdersReport} />}
+          {isExpandedReport && <ExpandedReportsPanel activeReport={activeReport} brands={brands} key={activeReport} />}
+          {activeReport === 'received-inventory' && <ReceivedInventoryReportPage brands={brands} rows={receivedRows} summary={receivedSummary} loading={receivedLoading} error={receivedError} onLoadReport={onLoadReceivedReport} />}
+          {activeReport === 'fulfillment' && <FulfillmentReportPage brands={brands} rows={fulfillmentRows} summary={fulfillmentSummary} loading={fulfillmentLoading} error={fulfillmentError} onLoadReport={onLoadFulfillmentReport} />}
+          {activeReport === 'sku-orders' && <SkuOrdersReportPage brands={brands} rows={skuOrdersRows} summary={skuOrdersSummary} loading={skuOrdersLoading} error={skuOrdersError} onLoadReport={onLoadSkuOrdersReport} />}
         </div>
       </div>
     </section>
   );
 }
 
-function ExpandedReportsPanel({ activeReport }) {
+function ExpandedReportsPanel({ activeReport, brands = [] }) {
   const active = activeReport || expandedReportDefinitions[0].key;
-  const [filters, setFilters] = useState({ sku: '', barcode: '', brand: '', category: '', warehouse: '', inventory_location: '', start_date: '', end_date: '', movement_type: '', adjustment_type: '' });
+  const [filters, setFilters] = useState({ sku: '', barcode: '', brand: [], category: '', warehouse: '', inventory_location: '', start_date: '', end_date: '', movement_type: '', adjustment_type: '' });
   const [rows, setRows] = useState([]);
+  const [brandOptions, setBrandOptions] = useState(brands);
   const [summary, setSummary] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -9136,7 +9138,9 @@ function ExpandedReportsPanel({ activeReport }) {
       const query = plainFiltersToQueryString(requestFilters);
       const [rowsResponse, summaryResponse] = await Promise.all([apiFetch(`${API_BASE_URL}/api/reports/${active}${query}`), apiFetch(`${API_BASE_URL}/api/reports/${active}/summary${query}`)]);
       if (!rowsResponse.ok || !summaryResponse.ok) throw new Error('Report API returned an error.');
-      setRows(await rowsResponse.json());
+      const nextRows = await rowsResponse.json();
+      setRows(nextRows);
+      setBrandOptions((current) => [...new Set([...current, ...uniqueOptions(nextRows, 'brand')])].sort((a, b) => a.localeCompare(b)));
       setSummary(await summaryResponse.json());
     } catch (apiError) {
       setRows([]);
@@ -9164,9 +9168,13 @@ function ExpandedReportsPanel({ activeReport }) {
       <div className="toolbar report-toolbar">
         {(definition.filters.includes('start_date') || definition.filters.includes('end_date')) && <div className="date-preset-panel report-date-presets"><div><span>Quick range</span><small>Completed calendar periods</small></div><div className="date-preset-buttons" aria-label="Report date presets"><button type="button" onClick={() => applyDatePreset(1)}>Last month</button><button type="button" onClick={() => applyDatePreset(2)}>Last 2 months</button><button type="button" onClick={() => applyDatePreset(3)}>Last 3 months</button><button type="button" onClick={() => applyDatePreset(12)}>Last year</button></div></div>}
         <div className="filter-grid report-filter-grid">
-          {definition.filters.map((field) => <label className="field" key={field}><span>{reportFilterLabels[field] || titleize(field)}</span><input value={filters[field]} onChange={(event) => update(field, event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, loadReport)} type={field.endsWith('_date') ? 'date' : 'text'} /></label>)}
+          {definition.filters.map((field) => field === 'brand' ? (
+            <MultiSelectFilter key={field} label="Brand" options={[...new Set([...brands, ...brandOptions])]} value={filters.brand} onChange={(value) => update('brand', value)} />
+          ) : (
+            <label className="field" key={field}><span>{reportFilterLabels[field] || titleize(field)}</span><input value={filters[field]} onChange={(event) => update(field, event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, loadReport)} type={field.endsWith('_date') ? 'date' : 'text'} /></label>
+          ))}
         </div>
-        <div className="button-row items-actions"><button className="primary-button" onClick={() => loadReport()} type="button"><RefreshCw size={17} />Refresh</button><button className="muted-button" onClick={() => { const cleared = { sku: '', barcode: '', brand: '', category: '', warehouse: '', inventory_location: '', start_date: '', end_date: '', movement_type: '', adjustment_type: '' }; setFilters(cleared); loadReport(cleared); }} type="button"><RotateCcw size={17} />Reset Filters</button><button className="action-button" onClick={() => exportGenericReportCsv(active, pickFilterValues(filters, definition.filters), definition.label)} type="button"><Download size={17} />Export CSV</button></div>
+        <div className="button-row items-actions"><button className="primary-button" onClick={() => loadReport()} type="button"><RefreshCw size={17} />Refresh</button><button className="muted-button" onClick={() => { const cleared = { sku: '', barcode: '', brand: [], category: '', warehouse: '', inventory_location: '', start_date: '', end_date: '', movement_type: '', adjustment_type: '' }; setFilters(cleared); loadReport(cleared); }} type="button"><RotateCcw size={17} />Reset Filters</button><button className="action-button" onClick={() => exportGenericReportCsv(active, pickFilterValues(filters, definition.filters), definition.label)} type="button"><Download size={17} />Export CSV</button></div>
       </div>
       {loading && <div className="loading-strip">Loading {definition.label}...</div>}
       {error ? <div className="api-error" role="alert">{error}</div> : !loading && <GenericReportTable rows={rows} />}
@@ -9196,7 +9204,7 @@ function renderReportCell(column, value) {
   return formatReportValue(value, column);
 }
 
-function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadReport }) {
+function ReceivedInventoryReportPage({ brands = [], rows, summary, loading, error, onLoadReport }) {
   const [filters, setFilters] = useState(emptyReceivedInventoryFilters);
   const [activeFilters, setActiveFilters] = useState(emptyReceivedInventoryFilters);
   const options = useMemo(
@@ -9291,7 +9299,7 @@ function ReceivedInventoryReportPage({ rows, summary, loading, error, onLoadRepo
             </div>
           </label>
           <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
-          <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
+          <MultiSelectFilter label="Brand" value={filters.brand} options={[...new Set([...brands, ...options.brands])]} onChange={(value) => updateFilter('brand', value)} allLabel="All Brands" formatOption={decodeHtmlEntities} />
           <label className="field">
             <span>Receipt Number</span>
             <div className="input-with-icon">
@@ -9434,7 +9442,7 @@ function ReceivedInventoryLocationSummaryTable({ groups }) {
   );
 }
 
-function FulfillmentReportPage({ rows, summary, loading, error, onLoadReport }) {
+function FulfillmentReportPage({ brands = [], rows, summary, loading, error, onLoadReport }) {
   const [filters, setFilters] = useState(emptyFulfillmentReportFilters);
   const [activeFilters, setActiveFilters] = useState(emptyFulfillmentReportFilters);
   const options = useMemo(
@@ -9502,7 +9510,7 @@ function FulfillmentReportPage({ rows, summary, loading, error, onLoadReport }) 
           <label className="field"><span>SKU</span><div className="input-with-icon"><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
           <label className="field"><span>Barcode</span><div className="input-with-icon"><input value={filters.barcode} onChange={(event) => updateFilter('barcode', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
           <FilterSelect label="Category" value={filters.category} options={options.categories} onChange={(value) => updateFilter('category', value)} />
-          <FilterSelect label="Brand" value={filters.brand} options={options.brands} onChange={(value) => updateFilter('brand', value)} />
+          <MultiSelectFilter label="Brand" value={filters.brand} options={[...new Set([...brands, ...options.brands])]} onChange={(value) => updateFilter('brand', value)} allLabel="All Brands" formatOption={decodeHtmlEntities} />
           <label className="field"><span>Fulfillment Number</span><div className="input-with-icon"><input value={filters.fulfillmentNumber} onChange={(event) => updateFilter('fulfillmentNumber', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
           <label className="field"><span>Woo Order Number</span><div className="input-with-icon"><input value={filters.wooOrderNumber} onChange={(event) => updateFilter('wooOrderNumber', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
           <label className="field"><span>Customer Email</span><div className="input-with-icon"><input value={filters.customerEmail} onChange={(event) => updateFilter('customerEmail', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
@@ -9589,7 +9597,7 @@ function FulfillmentSkuSummaryTable({ groups }) {
   );
 }
 
-function SkuOrdersReportPage({ rows, summary, loading, error, onLoadReport }) {
+function SkuOrdersReportPage({ brands = [], rows, summary, loading, error, onLoadReport }) {
   const [filters, setFilters] = useState(emptySkuOrdersFilters);
   const [activeFilters, setActiveFilters] = useState(emptySkuOrdersFilters);
 
@@ -9630,7 +9638,7 @@ function SkuOrdersReportPage({ rows, summary, loading, error, onLoadReport }) {
           <label className="field"><span>Start Date</span><div className="input-with-icon"><input value={filters.startDate} onChange={(event) => updateFilter('startDate', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" /><CalendarDays size={18} /></div></label>
           <label className="field"><span>End Date</span><div className="input-with-icon"><input value={filters.endDate} onChange={(event) => updateFilter('endDate', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} type="date" /><CalendarDays size={18} /></div></label>
           <label className="field"><span>SKU</span><div className="input-with-icon"><input value={filters.sku} onChange={(event) => updateFilter('sku', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /><Search size={18} /></div></label>
-          <label className="field"><span>Brand</span><input value={filters.brand} onChange={(event) => updateFilter('brand', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
+          <MultiSelectFilter label="Brand" value={filters.brand} options={[...new Set([...brands, ...uniqueOptions(rows, 'brand')])]} onChange={(value) => updateFilter('brand', value)} allLabel="All Brands" formatOption={decodeHtmlEntities} />
           <label className="field"><span>Category</span><input value={filters.category} onChange={(event) => updateFilter('category', event.target.value)} onKeyDown={(event) => submitSearchOnEnter(event, applyFilters)} /></label>
           <FilterSelect label="Group By" value={filters.groupBy} options={['sku', 'brand', 'category', 'location']} onChange={(value) => updateFilter('groupBy', value)} />
           <label className="toggle-card"><input checked={filters.includeUnmatched} onChange={(event) => updateFilter('includeUnmatched', event.target.checked)} type="checkbox" /><span>Include Unmatched</span></label>
@@ -15099,7 +15107,8 @@ function buildInventoryItemRows(items, locationRows, activeSearch, filters, inve
         SEARCH_FIELDS.some((field) => String(item[field] ?? '').toLowerCase().includes(query)) ||
         itemLocationRows.some((row) => [row.warehouse, row.inventory_location, row.location_code, row.location_name].some((value) => String(value || '').toLowerCase().includes(query)));
       const matchesCategory = !filters.category || item.Category === filters.category;
-      const matchesBrand = !filters.brand || item.Brand === filters.brand;
+      const brands = multiSelectValues(filters.brand);
+      const matchesBrand = brands.length === 0 || brands.includes(item.Brand);
       const underPar = Boolean(item['Under Par']) || itemLocationRows.some((row) => row.under_par);
       const matchesView = inventoryView !== 'low-stock' ? true : underPar;
       return matchesSearch && matchesCategory && matchesBrand && matchesView;
@@ -15262,7 +15271,7 @@ function emptyReceivedInventoryFilters() {
     sku: '',
     barcode: '',
     category: '',
-    brand: '',
+    brand: [],
     receiptNumber: '',
     referenceNumber: '',
     createdBy: '',
@@ -15278,7 +15287,7 @@ function emptyFulfillmentReportFilters() {
     sku: '',
     barcode: '',
     category: '',
-    brand: '',
+    brand: [],
     fulfillmentNumber: '',
     wooOrderNumber: '',
     customerEmail: '',
@@ -15292,7 +15301,7 @@ function emptySkuOrdersFilters() {
     startDate: '',
     endDate: '',
     sku: '',
-    brand: '',
+    brand: [],
     category: '',
     orderStatus: '',
     wooStatus: '',
@@ -16089,7 +16098,7 @@ function filtersToQueryString(filters = {}, options = {}) {
   const params = new URLSearchParams();
   if (filters.search) params.set('search', filters.search);
   if (filters.category) params.set('category', filters.category);
-  if (filters.brand) params.set('brand', filters.brand);
+  multiSelectValues(filters.brand).forEach((brand) => params.append('brand', brand));
   if (filters.status === 'active') params.set('active', 'true');
   if (filters.status === 'inactive') params.set('active', 'false');
   if (filters.stockStatus) params.set('stock_status', filters.stockStatus);
@@ -16111,7 +16120,7 @@ function inventoryRouteToItemFilters(route) {
   return {
     search: route.inventorySearch || '',
     category: route.inventoryCategory || '',
-    brand: route.inventoryBrand || '',
+    brand: multiSelectValues(route.inventoryBrand),
     includeNonInventory: true,
     page: paged ? route.inventoryPage || 1 : undefined,
     pageSize: paged ? route.inventoryPageSize || 20 : undefined,
@@ -16127,7 +16136,7 @@ function inventoryRouteHref(route, changes = {}) {
     pageSize: route.inventoryPageSize || 20,
     search: route.inventorySearch || '',
     category: route.inventoryCategory || '',
-    brand: route.inventoryBrand || '',
+    brand: multiSelectValues(route.inventoryBrand),
     dataQuality: route.inventoryDataQuality || '',
     sortBy: route.inventorySortBy || 'sku',
     sortDir: route.inventorySortDir || 'asc',
@@ -16136,7 +16145,7 @@ function inventoryRouteHref(route, changes = {}) {
   const params = new URLSearchParams({ page: String(Math.max(1, next.page)), page_size: String(next.pageSize) });
   if (next.search) params.set('search', next.search);
   if (next.category) params.set('category', next.category);
-  if (next.brand) params.set('brand', next.brand);
+  multiSelectValues(next.brand).forEach((brand) => params.append('brand', brand));
   if (next.dataQuality) params.set('data_quality', next.dataQuality);
   if (next.sortBy && next.sortBy !== 'sku') params.set('sort_by', next.sortBy);
   if (next.sortDir && next.sortDir !== 'asc') params.set('sort_dir', next.sortDir);
@@ -16158,7 +16167,9 @@ function locationsFiltersToQueryString(filters = {}) {
 function plainFiltersToQueryString(filters = {}) {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== '') {
+    if (Array.isArray(value)) {
+      value.filter((entry) => entry !== undefined && entry !== null && entry !== '').forEach((entry) => params.append(key, entry));
+    } else if (value !== undefined && value !== null && value !== '') {
       params.set(key, value);
     }
   });
@@ -16183,7 +16194,7 @@ function inventoryFiltersToQueryString(filters = {}) {
   if (filters.inventoryLocation) params.set('inventory_location', filters.inventoryLocation);
   if (filters.defaultLocation) params.set('default_location', filters.defaultLocation);
   if (filters.category) params.set('category', filters.category);
-  if (filters.brand) params.set('brand', filters.brand);
+  multiSelectValues(filters.brand).forEach((brand) => params.append('brand', brand));
   if (filters.underPar) params.set('under_par', filters.underPar);
   if (filters.dataQuality) params.set('data_quality', filters.dataQuality);
   const query = params.toString();

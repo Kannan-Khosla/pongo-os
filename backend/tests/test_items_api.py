@@ -123,6 +123,10 @@ def test_list_items_filters(client):
     assert body["returned_count"] == 1
     assert body["items"][0]["SKU"] == "DOG-001"
 
+    multi_brand = client.get("/api/items", params=[("brand", "North Paw"), ("brand", "South Paw")])
+    assert multi_brand.status_code == 200
+    assert {item["SKU"] for item in multi_brand.json()["items"]} == {"DOG-001", "CAT-001"}
+
 
 def test_item_search_and_product_title_sort_use_concise_woo_name(client):
     first = seed_item(client, sku="TITLE-1", Description="Long marketing copy one")

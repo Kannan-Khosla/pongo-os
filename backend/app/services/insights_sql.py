@@ -116,7 +116,9 @@ class SqlInsightContext:
 
     @property
     def product_filtered(self) -> bool:
-        return any(clean(self.params.get(key)) for key in ("sku", "brand", "category"))
+        return bool(clean_values(self.params.get("brand"))) or any(
+            clean(self.params.get(key)) for key in ("sku", "category")
+        )
 
     @property
     def dialect(self) -> str:
@@ -271,12 +273,12 @@ def _order_conditions(ctx: SqlInsightContext, *, successful: bool) -> list[Any]:
 def _line_filter_conditions(ctx: SqlInsightContext) -> list[Any]:
     conditions: list[Any] = []
     sku = clean_key(ctx.params.get("sku"))
-    brand = clean(ctx.params.get("brand")).lower()
+    brands = [value.lower() for value in clean_values(ctx.params.get("brand"))]
     category = clean(ctx.params.get("category")).lower()
     if sku:
         conditions.append(func.upper(sql_first_nonblank(OrderItem.sku, InventoryItem.sku)) == sku)
-    if brand:
-        conditions.append(func.lower(sql_first_nonblank(OrderItem.brand, InventoryItem.brand)) == brand)
+    if brands:
+        conditions.append(func.lower(sql_first_nonblank(OrderItem.brand, InventoryItem.brand)).in_(brands))
     if category:
         conditions.append(func.lower(func.trim(func.coalesce(InventoryItem.category, ""))) == category)
     return conditions
@@ -884,12 +886,12 @@ def product_summary(ctx: SqlInsightContext, products) -> dict[str, Any]:
 def _inventory_filters(ctx: SqlInsightContext) -> list[Any]:
     filters: list[Any] = []
     sku = clean_key(ctx.params.get("sku"))
-    brand = clean(ctx.params.get("brand")).lower()
+    brands = [value.lower() for value in clean_values(ctx.params.get("brand"))]
     category = clean(ctx.params.get("category")).lower()
     if sku:
         filters.append(func.upper(func.trim(func.coalesce(InventoryItem.sku, ""))) == sku)
-    if brand:
-        filters.append(func.lower(func.trim(func.coalesce(InventoryItem.brand, ""))) == brand)
+    if brands:
+        filters.append(func.lower(func.trim(func.coalesce(InventoryItem.brand, ""))).in_(brands))
     if category:
         filters.append(func.lower(func.trim(func.coalesce(InventoryItem.category, ""))) == category)
     return filters
@@ -1664,13 +1666,13 @@ def subscriptions(ctx: SqlInsightContext) -> InsightResponse:
 def subscription_products(ctx: SqlInsightContext) -> InsightResponse:
     data = build_subscription_data(ctx.db)
     sku = clean(ctx.params.get("sku")).casefold()
-    brand = clean(ctx.params.get("brand")).casefold()
+    brands = {value.casefold() for value in clean_values(ctx.params.get("brand"))}
     category = clean(ctx.params.get("category")).casefold()
     rows = [
         row
         for row in data["product_rows"]
         if (not sku or sku in str(row.get("sku") or "").casefold())
-        and (not brand or brand == str(row.get("brand") or "").casefold())
+        and (not brands or str(row.get("brand") or "").casefold() in brands)
         and (not category or category == str(row.get("category") or "").casefold())
     ]
     total = len(rows)
@@ -1764,6 +1766,11 @@ def clean_key(value: Any) -> str:
 
 def clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def clean_values(value: Any) -> list[str]:
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    return [clean(entry) for entry in values if clean(entry)]
 
 
 def money(value: Any) -> Decimal:

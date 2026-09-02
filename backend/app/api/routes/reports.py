@@ -379,7 +379,7 @@ def received_inventory_report(
     sku: str | None = None,
     barcode: str | None = None,
     category: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     receipt_number: str | None = None,
     reference_number: str | None = None,
     created_by: str | None = None,
@@ -397,7 +397,7 @@ def received_inventory_summary(
     sku: str | None = None,
     barcode: str | None = None,
     category: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     receipt_number: str | None = None,
     reference_number: str | None = None,
     created_by: str | None = None,
@@ -417,7 +417,7 @@ def export_received_inventory_report(
     sku: str | None = None,
     barcode: str | None = None,
     category: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     receipt_number: str | None = None,
     reference_number: str | None = None,
     created_by: str | None = None,
@@ -446,7 +446,7 @@ def fulfillment_report(
     sku: str | None = None,
     barcode: str | None = None,
     category: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     fulfillment_number: str | None = None,
     woo_order_number: str | None = None,
     woo_order_id: int | None = None,
@@ -467,7 +467,7 @@ def fulfillment_summary(
     sku: str | None = None,
     barcode: str | None = None,
     category: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     fulfillment_number: str | None = None,
     woo_order_number: str | None = None,
     woo_order_id: int | None = None,
@@ -490,7 +490,7 @@ def export_fulfillment_report(
     sku: str | None = None,
     barcode: str | None = None,
     category: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     fulfillment_number: str | None = None,
     woo_order_number: str | None = None,
     woo_order_id: int | None = None,
@@ -518,7 +518,7 @@ def sku_orders_report(
     start_date: date | None = None,
     end_date: date | None = None,
     sku: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     category: str | None = None,
     order_status: str | None = None,
     woo_status: str | None = None,
@@ -536,7 +536,7 @@ def sku_orders_summary(
     start_date: date | None = None,
     end_date: date | None = None,
     sku: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     category: str | None = None,
     order_status: str | None = None,
     woo_status: str | None = None,
@@ -553,7 +553,7 @@ def export_sku_orders_report(
     start_date: date | None = None,
     end_date: date | None = None,
     sku: str | None = None,
-    brand: str | None = None,
+    brand: list[str] | None = Query(default=None),
     category: str | None = None,
     order_status: str | None = None,
     woo_status: str | None = None,
@@ -566,12 +566,12 @@ def export_sku_orders_report(
 
 
 @router.get("/inventory-valuation")
-def inventory_valuation_report(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: str | None = None, category: str | None = None, limit: int | None = None, offset: int = 0, db: Session = Depends(get_db)) -> list[dict]:
+def inventory_valuation_report(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: list[str] | None = Query(default=None), category: str | None = None, limit: int | None = None, offset: int = 0, db: Session = Depends(get_db)) -> list[dict]:
     return inventory_valuation_rows(db, warehouse, inventory_location, sku, barcode, brand, category, limit, offset)
 
 
 @router.get("/inventory-valuation/summary")
-def inventory_valuation_summary(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: str | None = None, category: str | None = None, db: Session = Depends(get_db)) -> dict:
+def inventory_valuation_summary(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: list[str] | None = Query(default=None), category: str | None = None, db: Session = Depends(get_db)) -> dict:
     rows = inventory_valuation_rows(db, warehouse, inventory_location, sku, barcode, brand, category, None, 0)
     return {
         **inventory_valuation_count_metadata(db, warehouse, inventory_location, sku, barcode, brand, category, rows),
@@ -580,24 +580,24 @@ def inventory_valuation_summary(warehouse: str | None = None, inventory_location
 
 
 @router.get("/inventory-valuation/export")
-def inventory_valuation_export(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: str | None = None, category: str | None = None, db: Session = Depends(get_db)) -> Response:
+def inventory_valuation_export(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: list[str] | None = Query(default=None), category: str | None = None, db: Session = Depends(get_db)) -> Response:
     rows = inventory_valuation_rows(db, warehouse, inventory_location, sku, barcode, brand, category, None, 0)
     return csv_response("pongo-inventory-valuation-report.csv", rows)
 
 
 @router.get("/low-stock")
-def low_stock_report(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: str | None = None, category: str | None = None, limit: int | None = None, offset: int = 0, db: Session = Depends(get_db)) -> list[dict]:
+def low_stock_report(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: list[str] | None = Query(default=None), category: str | None = None, limit: int | None = None, offset: int = 0, db: Session = Depends(get_db)) -> list[dict]:
     return [row for row in inventory_valuation_rows(db, warehouse, inventory_location, sku, barcode, brand, category, limit, offset) if row["under_par"] or row["sellable"] < 0]
 
 
 @router.get("/low-stock/summary")
-def low_stock_summary(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: str | None = None, category: str | None = None, db: Session = Depends(get_db)) -> dict:
+def low_stock_summary(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: list[str] | None = Query(default=None), category: str | None = None, db: Session = Depends(get_db)) -> dict:
     rows = low_stock_report(warehouse, inventory_location, sku, barcode, brand, category, None, 0, db)
     return {"total_rows": len(rows), "under_par_count": sum(1 for row in rows if row["under_par"]), "negative_sellable_count": sum(1 for row in rows if row["sellable"] < 0), "suggested_order_qty": sum(row.get("suggested_order_qty", 0) for row in rows)}
 
 
 @router.get("/low-stock/export")
-def low_stock_export(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: str | None = None, category: str | None = None, db: Session = Depends(get_db)) -> Response:
+def low_stock_export(warehouse: str | None = None, inventory_location: str | None = None, sku: str | None = None, barcode: str | None = None, brand: list[str] | None = Query(default=None), category: str | None = None, db: Session = Depends(get_db)) -> Response:
     return csv_response("pongo-low-stock-report.csv", low_stock_report(warehouse, inventory_location, sku, barcode, brand, category, None, 0, db))
 
 
@@ -662,7 +662,7 @@ def location_utilization_export(warehouse: str | None = None, inventory_location
 
 
 @router.get("/margin-by-sku")
-def margin_by_sku_report(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, brand: str | None = None, category: str | None = None, db: Session = Depends(get_db)) -> list[dict]:
+def margin_by_sku_report(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, brand: list[str] | None = Query(default=None), category: str | None = None, db: Session = Depends(get_db)) -> list[dict]:
     statement = select(OrderItem, InventoryItem).join(InventoryItem, OrderItem.inventory_item_id == InventoryItem.id, isouter=True)
     if sku:
         statement = statement.where(OrderItem.sku == sku)
@@ -672,7 +672,7 @@ def margin_by_sku_report(start_date: date | None = None, end_date: date | None =
             continue
         if end_date and order_item.created_at.date() > end_date:
             continue
-        if brand and (item.brand if item else order_item.brand) != brand:
+        if brand and (item.brand if item else order_item.brand) not in brand:
             continue
         if category and (item.category if item else None) != category:
             continue
@@ -695,13 +695,13 @@ def margin_by_sku_report(start_date: date | None = None, end_date: date | None =
 
 
 @router.get("/margin-by-sku/summary")
-def margin_by_sku_summary(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, brand: str | None = None, category: str | None = None, db: Session = Depends(get_db)) -> dict:
+def margin_by_sku_summary(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, brand: list[str] | None = Query(default=None), category: str | None = None, db: Session = Depends(get_db)) -> dict:
     rows = margin_by_sku_report(start_date, end_date, sku, brand, category, db)
     return {"total_skus": len(rows), "revenue": sum(row["revenue"] for row in rows), "estimated_cost": sum(row["estimated_cost"] for row in rows), "estimated_margin": sum(row["estimated_margin"] for row in rows)}
 
 
 @router.get("/margin-by-sku/export")
-def margin_by_sku_export(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, brand: str | None = None, category: str | None = None, db: Session = Depends(get_db)) -> Response:
+def margin_by_sku_export(start_date: date | None = None, end_date: date | None = None, sku: str | None = None, brand: list[str] | None = Query(default=None), category: str | None = None, db: Session = Depends(get_db)) -> Response:
     return csv_response("pongo-margin-by-sku-report.csv", margin_by_sku_report(start_date, end_date, sku, brand, category, db))
 
 
@@ -764,7 +764,7 @@ def adjustments_export(adjustment_type: str | None = None, sku: str | None = Non
     return csv_response("pongo-adjustments-report.csv", adjustments_report(adjustment_type, sku, warehouse, inventory_location, db))
 
 
-def inventory_valuation_rows(db: Session, warehouse: str | None, inventory_location: str | None, sku: str | None, barcode: str | None, brand: str | None, category: str | None, limit: int | None, offset: int) -> list[dict]:
+def inventory_valuation_rows(db: Session, warehouse: str | None, inventory_location: str | None, sku: str | None, barcode: str | None, brand: list[str] | None, category: str | None, limit: int | None, offset: int) -> list[dict]:
     statement = select(InventoryItemLocation, InventoryItem).join(InventoryItem, InventoryItemLocation.inventory_item_id == InventoryItem.id).where(usable_item_location_predicate())
     if warehouse:
         statement = statement.where(InventoryItemLocation.warehouse == warehouse)
@@ -775,7 +775,7 @@ def inventory_valuation_rows(db: Session, warehouse: str | None, inventory_locat
     if barcode:
         statement = statement.where(InventoryItem.barcode == barcode)
     if brand:
-        statement = statement.where(InventoryItem.brand == brand)
+        statement = statement.where(InventoryItem.brand.in_(brand))
     if category:
         statement = statement.where(InventoryItem.category == category)
     statement = statement.order_by(InventoryItem.sku.asc().nullslast(), InventoryItemLocation.warehouse.asc().nullslast(), InventoryItemLocation.inventory_location.asc().nullslast())
@@ -820,7 +820,7 @@ def inventory_valuation_count_metadata(
     inventory_location: str | None,
     sku: str | None,
     barcode: str | None,
-    brand: str | None,
+    brand: list[str] | None,
     category: str | None,
     rows: list[dict],
 ) -> dict:
@@ -830,7 +830,7 @@ def inventory_valuation_count_metadata(
     if barcode:
         statement = statement.where(InventoryItem.barcode == barcode)
     if brand:
-        statement = statement.where(InventoryItem.brand == brand)
+        statement = statement.where(InventoryItem.brand.in_(brand))
     if category:
         statement = statement.where(InventoryItem.category == category)
     items = list(db.scalars(statement).all())
@@ -922,7 +922,7 @@ def build_filters(
     sku: str | None,
     barcode: str | None,
     category: str | None,
-    brand: str | None,
+    brand: list[str] | None,
     receipt_number: str | None,
     reference_number: str | None,
     created_by: str | None,
@@ -950,7 +950,7 @@ def build_fulfillment_filters(
     sku: str | None,
     barcode: str | None,
     category: str | None,
-    brand: str | None,
+    brand: list[str] | None,
     fulfillment_number: str | None,
     woo_order_number: str | None,
     woo_order_id: int | None,
@@ -980,7 +980,7 @@ def build_sku_order_filters(
     start_date: date | None,
     end_date: date | None,
     sku: str | None,
-    brand: str | None,
+    brand: list[str] | None,
     category: str | None,
     order_status: str | None,
     woo_status: str | None,

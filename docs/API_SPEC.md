@@ -44,6 +44,9 @@ local-only route creation/management.
   explicitly allowlisted non-persisting previews; all other writes return
   `403 demo_read_only`, and external integration routes return
   `403 demo_external_access_blocked`.
+- Every item, inventory, Insights, and report endpoint that exposes a `brand`
+  filter accepts that query parameter more than once. Repeated values use OR
+  semantics (`?brand=Acana&brand=Kong`); one value remains backward compatible.
 
 ## Current API Groups
 
@@ -315,7 +318,7 @@ Implemented query params:
 - `category`
 - `warehouse`
 - `inventory_location`
-- `brand`
+- `brand` (repeatable; matches any selected brand)
 - `active`
 - `include_non_inventory`
 - `include_facets` (default `true`; optimized clients use `false` and load

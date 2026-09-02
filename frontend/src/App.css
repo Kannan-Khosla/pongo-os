@@ -1109,6 +1109,136 @@ textarea:focus-visible {
   appearance: none;
 }
 
+.multi-select {
+  position: relative;
+  min-width: 0;
+}
+
+.multi-select > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 0 34px 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  list-style: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.multi-select > summary::-webkit-details-marker {
+  display: none;
+}
+
+.multi-select > summary::after {
+  position: absolute;
+  right: 12px;
+  content: '⌄';
+  color: #77858b;
+}
+
+.multi-select[open] > summary,
+.multi-select > summary:focus-visible {
+  border-color: var(--pongo-blue);
+  box-shadow: 0 0 0 3px rgba(15, 20, 154, 0.12);
+  outline: 0;
+}
+
+.multi-select > summary[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
+.multi-select-menu {
+  position: absolute;
+  z-index: 90;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(320px, calc(100vw - 32px));
+  min-width: min(100%, 260px);
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 14px 35px rgba(17, 24, 39, .16);
+}
+
+.multi-select-menu > input {
+  margin-bottom: 8px;
+}
+
+.multi-select-options {
+  display: grid;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.multi-select-options label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.multi-select-options label:hover {
+  background: var(--surface-muted);
+}
+
+.multi-select-options input {
+  width: 18px;
+  min-height: 18px;
+  margin: 0;
+  box-shadow: none;
+}
+
+.multi-select-options small {
+  padding: 12px 8px;
+  color: var(--muted);
+}
+
+.multi-select-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.multi-select-actions button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--pongo-blue);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.multi-select-actions button:last-child {
+  background: var(--pongo-blue);
+  color: #fff;
+}
+
+.multi-select-actions button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
 .status-field {
   align-self: end;
 }
