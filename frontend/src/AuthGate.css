@@ -20,6 +20,8 @@
 .auth-panel label small { color:#85889a; font-weight:600; letter-spacing:0; text-transform:none; }
 .auth-panel input { width:100%; min-height:50px; padding:0 14px; border:1px solid #d8dae5; border-radius:8px; background:white; color:#17182b; }
 .auth-panel input:focus { border-color:var(--auth-indigo); box-shadow:0 0 0 3px rgba(16,19,111,.12); outline:none; }
+.auth-panel .auth-show-password { display:flex; align-items:center; width:fit-content; gap:9px; margin-top:-8px; cursor:pointer; letter-spacing:0; text-transform:none; }
+.auth-panel .auth-show-password input { width:18px; height:18px; min-height:18px; margin:0; padding:0; border:0; box-shadow:none; accent-color:var(--auth-indigo); }
 .auth-error { padding:12px 14px; border-left:3px solid #c4322a; background:#fee9e7; color:#9e241e; font-weight:700; }
 .auth-submit { min-height:52px; display:inline-flex; align-items:center; justify-content:center; gap:9px; border:0; border-radius:8px; background:var(--auth-indigo); color:white; font-weight:850; cursor:pointer; }
 .auth-submit:hover { background:#090c55; }

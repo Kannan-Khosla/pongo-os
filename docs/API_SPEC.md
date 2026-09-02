@@ -48,7 +48,7 @@ local-only route creation/management.
 ## Current API Groups
 
 - `GET /health`
-- Authentication: `/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`. Auth responses include `access_level`, `data_scope`, and `permissions`.
+- Authentication: `/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`. Auth responses include `access_level`, `data_scope`, and `permissions`. Login lockouts return `429`, a plain-language remaining wait, and a standard `Retry-After` header; expired lockouts clear automatically.
 - Readiness: `GET /ready`
 - Dashboard: `/api/dashboard`, `/api/dashboard/summary`, `/api/dashboard/activity`, `/api/dashboard/warnings`
 - Items and item CSV import/export: `/api/items`, `/api/items/import/*`

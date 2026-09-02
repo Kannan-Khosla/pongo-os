@@ -1872,6 +1872,7 @@ describe('App shell and workflows', () => {
     expect(screen.getByText('SMOKE-001')).toBeInTheDocument();
     expect(screen.getByText('SMOKE001')).toBeInTheDocument();
     expect(screen.getByText('9')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Product 1 quantity' })).toHaveFocus();
     expect(screen.getByRole('textbox', { name: 'Product 1 unit cost' })).toHaveValue('4.25');
     expect(screen.getByRole('textbox', { name: 'Product 1 notes' })).toBeInTheDocument();
     expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/scanner/inventory/lookup?scan_input=SMOKE001'))).toBe(true);

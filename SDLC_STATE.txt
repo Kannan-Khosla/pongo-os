@@ -2,10 +2,10 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-08-28T20:43:00Z
+LAST UPDATED: 2026-09-02T18:31:09Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Bulk-receiving usability and last-received-cost released and verified on production as Heroku v78
-CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
+CURRENT PHASE: Login, mobile product-title, and bulk-receiving focus repair verified locally and authorized for production
+CURRENT RELEASE RECOMMENDATION: READY FOR AUTHORIZED DEPLOYMENT
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
 Pongo now keeps a normalized, read-only snapshot of active WooCommerce subscription lines, including each official next-payment date. The Dashboard shows renewals due in 30 days with current Pongo stock and sellable quantities; Sales by SKU visibly marks subscription products and includes renewal-demand and stock-risk columns in every export format.
@@ -14,6 +14,7 @@ Exact commit 013acf2 passed GitHub run 32178936003, restore-verified backup b016
 The current authorized local patch replaces the Dashboard's misleading cached open-order preview with live WooCommerce processing rows, limits staff status changes to Processed (Woo completed) or Cancelled, adds a durable local product-substitution workflow, and lets staff explicitly recover a completed-without-picking order for inventory picking. Production remains unchanged until a separate deployment request and release gate.
 Heroku v64 at exact commit cd741612 now changes only first-time Woo catalog creation: a truly new Pongo item starts at Woo's current managed nonnegative stock through the existing audited opening-balance workflow. Existing Pongo item stock remains authoritative and is never overwritten by a later catalog update.
 Heroku v69 at exact commit 1283f9f released the fifth item-import outcome for one-time catalog repair. It matches stable Pongo Item ID first, leaves barcode/SKU/Woo identity untouched, updates nonblank brand and unit cost, and consolidates unallocated stock plus on-order quantities into Main Warehouse / 001 without changing item totals or Woo stock. Allocated units stay at their source until the related order releases or consumes them. The complete 1,348-item repair CSV remains a separate staff-controlled upload with typed REPAIR confirmation; it was not uploaded during deployment, so no inventory changed.
+The current production release is Heroku v80 at commit 8316513 and schema 20260826_0045. The authorized release candidate adds a native Show password control, keeps the five-attempt login safety lock while showing its remaining wait and clearing expired locks, lets product titles wrap fully on phone layouts, keeps the bulk-receiving scanner below the fixed header, and moves focus to the new line quantity after a successful scan. It has no migration, dependency, WooCommerce write, or stock/data mutation.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -82,6 +83,10 @@ REQ-ORDER-SUB-003: Completion writes the authoritative absolute stock for both t
 REQ-ORDER-RECOVERY-001: Only a pristine `completed_without_picking` order whose live Woo status is still `completed`, with zero picked, fulfilled, and stock-reduced quantity and no prior pick history, can be explicitly prepared for local picking. Recovery is audited/idempotent and never changes the already-completed Woo status.
 REQ-ORDER-DOC-001: Completed-order filters remain searchable and paginated; each row can be viewed and reprinted at any time, and every invoice displays the order's actual status instead of a hard-coded label.
 REQ-CATALOG-STOCK-001: A simple product or variation created by the durable Woo catalog update starts with Woo's current managed nonnegative stock as one audited opening balance at the active default location, falling back to Main Warehouse / UNASSIGNED; matched or previously created Pongo items keep their local stock unchanged.
+REQ-AUTH-001: Staff can show or hide the password while typing without changing its value, autocomplete meaning, or submission behavior.
+REQ-AUTH-002: Five incorrect passwords still create the existing temporary lock; locked responses state the remaining wait and include `Retry-After`, and a correct password succeeds after expiry without operator intervention.
+REQ-MOBILE-TITLE-001: Product titles in shared item, inventory, search, result, and detail presentations wrap to their full value on phone widths instead of being clipped or ellipsized.
+REQ-RECEIVING-UX-003: The bulk-receiving entry bar remains fully visible below the fixed application header while scrolling; after a valid scan adds a product, its editable receipt-line quantity receives focus and is selected.
 
 === 05. SCOPE, NON-GOALS, CONSTRAINTS, AND ASSUMPTIONS ===
 IN SCOPE: phone/hardware scanner normalization across operational lookup paths; absolute audited manual stock corrections; shared search/overlay behavior; ten-zone open-order planning; one-click selected-order planning for one driver; missing/unassigned reporting; keyless Google Maps URL construction; responsive all-stop overview; separate completed-route records; tests and docs.
@@ -206,6 +211,9 @@ ADR-ITEMREPAIR-002 ACCEPTED: Preserve allocation location identity by moving onl
 52. Add the guarded repair outcome, audited consolidation, deferral rules, UI, tests, and docs. COMPLETED.
 53. Run affected backend/frontend/build/performance/diff review gates and hand off without production import or deployment. COMPLETED.
 54. Commit the exact repair candidate, pass the GitHub release gate, capture a fresh backup, deploy as Heroku v69, and verify without importing the CSV. COMPLETED.
+55. Repair login visibility/lockout feedback, shared mobile product-title wrapping, and bulk-receiving sticky/focus behavior. COMPLETED.
+56. Isolate only this repair from concurrent invoice-receiving work and run full backend/frontend/build checks. COMPLETED.
+57. Commit and push the exact repair, require the exact-SHA release gate, back up production, deploy, and verify without changing business data. IN PROGRESS.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -231,6 +239,7 @@ WI-CATALOG-STOCK-001 / P0 / RELEASED / New items created by the durable Woo cata
 WI-ITEMREPAIR-001 / P0 / RELEASED / Stable-ID metadata repair plus audited one-location consolidation for all 1,348 active items; duplicate/missing barcodes and item stock totals remain untouched; Heroku v69 at 1283f9f.
 WI-RECEIVING-UX-001 / P0 / RELEASED / Bulk receiving defaults to Main Warehouse / 001, fills each item's current Unit Cost, provides click-and-type quantity/cost fields, and applies an explicitly changed positive cost as the item's new audited current Unit Cost; Heroku v78 at 8a34c5e.
 WI-RECEIVING-UX-002 / P0 / RELEASED / Bulk receiving validates every typed or scanned SKU/barcode through the exact inventory resolver before adding it, blocks unknown products, displays product identity/current stock/cost, supports per-line notes, keeps the scanner sticky, and treats blank cost as use-the-saved-cost; Heroku v79 at c75dad2.
+WI-AUTH-MOBILE-RECEIVING-001 / P0 / VERIFIED NOT DEPLOYED / Native password visibility; precise temporary-lock feedback and automatic expiry; full mobile product-title wrapping; header-safe sticky receiving entry; successful-scan quantity focus.
 
 WORK ITEM: WI-001
 TITLE: Complete fully picked orders that retain harmless Woo history lines
@@ -473,9 +482,9 @@ Order-operations patch evidence: full backend passed 559 tests with 10 PostgreSQ
 Item repair evidence: full backend 619 passed with 13 PostgreSQL-only skips; full frontend 189 passed; production frontend build and `git diff --check` passed. Focused regressions cover 001 + UNASSIGNED merge, allocated deferral, Pongo-ID matching without SKU, ignored duplicate Barcode columns, inactive target reuse, full-file blockers, stale location snapshots, exact totals, job reuse, crash recovery, queued expiry, and stale revalidation. The 1,500-row benchmark queues in 0.005 seconds and 8 SQL operations; its worker completes 3,000 audited transfers in 0.888 seconds locally. The generated 592 KB CSV parses to exactly 1,348 distinct Pongo Item IDs; Barcode/In Stock/On Order are blank and SHA-256 is 009238d72f10aa1fefde5a947e0a4c9b27b1100ccbad54fd9f674c40a81ffc9c. Production was read-only.
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
-Database migration: production remains at 20260823_0043; the item-repair release added no migration and the release command completed at the existing head.
-Release baseline: production is Heroku v69 at exact feature commit 1283f9f6e8d51e5b4c02d8d915e0311c2bce6a7f. No dependency, configuration, credential, WooCommerce, order, inventory, or stock change accompanied deployment.
-Recovery: fresh manual backup b022 completed before deployment. Code-only rollback is Heroku v68; if an unexpected data recovery were required, restore b022 rather than improvising an Alembic downgrade.
+Database migration: production is at 20260826_0045; the current candidate adds no migration and its release command must remain a no-op at that head.
+Release baseline: production is Heroku v80 at exact commit 83165131ec479d2c9f3ecc1f7be2ebc58983f01b. Web and worker are up, the direct origin health endpoint returns 200, and anonymous authentication returns 401.
+Recovery: this is a code-only release with no planned data write; rollback is Heroku v80. A fresh production backup is still required before deployment under the established Pongo release runbook.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
 CURRENT DASHBOARD CHANGE STATE: Released and verified on Heroku v52 at 1665ef9 after exact-commit CI and completed backup b013. Schema remains 20260810_0038; there was no dependency, environment, credential, order, or stock change.
@@ -513,11 +522,17 @@ For order operations, reused the existing Woo client, single-order reconciler, g
 For item repair, reused the existing six-step import preview/history, stock mutation lock, location transfer movements, item/location invariants, and stable Pongo/Woo identity. One explicit outcome and one guarded transaction replace a second CSV engine, direct item-total overwrite, migration, dependency, or Woo synchronization job.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Staff may open Items -> Import items -> Repair item data & locations and upload `outputs/inventory-cleanup-20260826/pongo-items-complete-repair-1348.csv`; inspect every blocker, relocation total, and deferred allocation before typing REPAIR.
-THEN: Monitor the durable import job and rerun a fresh preview later for any allocated source quantities reported as deferred.
-APPROVAL STATE: Production code deployment completed on 2026-08-26 as Heroku v69. Live CSV upload/import was not authorized or run as part of deployment and still requires an explicit staff confirmation in the UI. Unrelated PRODUCT_AUDIT/workbench/showcase changes remain untouched.
+NEXT: Commit and push only WI-AUTH-MOBILE-RECEIVING-001, require its exact-SHA GitHub release gate, capture a fresh production backup, deploy to Pongo production, and verify health/auth/UI without creating a receipt or changing stock.
+THEN: Record the exact commit, CI run, backup, Heroku release, schema, process, health, and non-mutating smoke evidence.
+APPROVAL STATE: The user explicitly authorized production deployment on 2026-09-02. Concurrent invoice-receiving, PRODUCT_AUDIT, workbench, output, and showcase changes remain excluded.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
+--- DELIVERY RUN: 2026-09-02T18:31:09Z ---
+MODE: Stabilize and Repair; Release Readiness and Release
+SUMMARY: Login visibility/lockout feedback, complete mobile product titles, and bulk-receiving sticky/focus behavior are locally verified and authorized for production; production remains unchanged pending the exact-SHA gate and backup.
+EVIDENCE: The isolated candidate is 74 additions and 14 deletions across ten auth/frontend/test/API documentation files, with no migration, dependency, configuration, WooCommerce write, or stock/data mutation. Full backend passed 627 tests with 14 PostgreSQL-only skips and two existing warnings; full frontend passed 198 tests; the production build, compileall, and diff checks passed. Read-only production preflight found Heroku v80 at 8316513, schema 20260826_0045, web=1 and worker=1 up, direct-origin health 200, and anonymous auth 401. The one observed staff lock had already expired; no user or business record was changed.
+NEXT ACTION: Commit/push the exact isolated candidate, require green exact-SHA CI, create a fresh backup, deploy, and run non-mutating production verification.
+
 --- DELIVERY RUN: 2026-08-26T18:48:16Z ---
 MODE: Release Readiness and Release
 SUMMARY: Durable item repair released and verified on production as Heroku v69; the repair CSV was not uploaded and no inventory changed.

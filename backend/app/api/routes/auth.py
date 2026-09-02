@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+from math import ceil
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
@@ -55,7 +56,15 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
     if user and user.locked_until:
         locked_until = user.locked_until if user.locked_until.tzinfo else user.locked_until.replace(tzinfo=timezone.utc)
         if locked_until > now:
-            raise HTTPException(status_code=429, detail="Too many failed attempts. Try again later.")
+            retry_after_seconds = max(1, ceil((locked_until - now).total_seconds()))
+            retry_after_minutes = max(1, ceil(retry_after_seconds / 60))
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many incorrect attempts. Try again in {retry_after_minutes} minute{'s' if retry_after_minutes != 1 else ''}.",
+                headers={"Retry-After": str(retry_after_seconds)},
+            )
+        user.locked_until = None
+        user.failed_login_count = 0
     if user is None or not user.active or not verify_password(payload.password, user.password_hash):
         if user is not None:
             user.failed_login_count += 1

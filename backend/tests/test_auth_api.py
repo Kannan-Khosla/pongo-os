@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import create_engine, select
@@ -22,6 +24,24 @@ def test_authenticated_session_protects_api_and_logout_revokes_it(client):
     assert client.get("/api/items").status_code == 401
     assert client.post("/api/auth/login", json={"email": "pytest@example.com", "password": "correct-horse-battery-staple"}).status_code == 200
     assert client.get("/api/items").status_code == 200
+
+
+def test_login_lockout_explains_when_to_retry_and_clears_after_expiry(client):
+    assert client.post("/api/auth/logout").status_code == 204
+    for _ in range(5):
+        assert client.post("/api/auth/login", json={"email": "pytest@example.com", "password": "wrong-password"}).status_code == 401
+
+    locked = client.post("/api/auth/login", json={"email": "pytest@example.com", "password": "correct-horse-battery-staple"})
+    assert locked.status_code == 429
+    assert locked.headers["Retry-After"].isdigit()
+    assert locked.json()["detail"].startswith("Too many incorrect attempts. Try again in ")
+
+    with Session(client.test_engine) as db:
+        user = db.scalar(select(User).where(User.email == "pytest@example.com"))
+        user.locked_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.commit()
+
+    assert client.post("/api/auth/login", json={"email": "pytest@example.com", "password": "correct-horse-battery-staple"}).status_code == 200
 
 
 def test_registration_creates_staff_access_and_rejects_duplicate_email(client):

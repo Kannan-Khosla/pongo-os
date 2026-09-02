@@ -1604,11 +1604,10 @@ textarea:focus-visible,
 }
 
 .app-shell .clamped-text {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  display: block;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .app-shell .clamped-text:focus-visible {

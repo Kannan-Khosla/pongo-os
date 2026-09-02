@@ -9,6 +9,7 @@ export default function AuthGate({ children }) {
   const [mode, setMode] = useState('login');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     apiFetch(`${API_BASE_URL}/api/auth/me`)
@@ -86,7 +87,8 @@ export default function AuthGate({ children }) {
           <form onSubmit={submit}>
             {mode === 'register' && <label>Display name<input name="display_name" autoComplete="name" required maxLength="160" /></label>}
             <label>Email address<input name="email" type="email" autoComplete="email" required /></label>
-            <label>Password<input name="password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'register' ? 12 : 1} required /></label>
+            <label>Password<input name="password" type={showPassword ? 'text' : 'password'} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'register' ? 12 : 1} required /></label>
+            <label className="auth-show-password"><input checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} type="checkbox" />Show password</label>
             {mode === 'register' && <label>Registration code <small>{import.meta.env.PROD ? 'Required in production' : 'Optional outside production'}</small><input name="registration_access_code" type="password" autoComplete="off" required={import.meta.env.PROD} /></label>}
             {error && <div className="auth-error" role="alert">{error}</div>}
             <button className="auth-submit" type="submit" disabled={submitting}>{mode === 'login' ? <LogIn size={18} /> : <UserPlus size={18} />}{submitting ? 'Please wait…' : mode === 'login' ? 'Sign in to Pongo OS' : 'Create account'}</button>

@@ -38,3 +38,16 @@ it('passes the authenticated user and logout action into the workspace', async (
   expect(await screen.findByRole('heading', { name: 'Welcome back' })).toBeInTheDocument();
   expect(fetch.mock.calls[1][0]).toContain('/api/auth/logout');
 });
+
+it('lets staff show and hide the password while typing', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: false, status: 401 }));
+  const user = userEvent.setup();
+  render(<AuthGate><Workspace /></AuthGate>);
+
+  const password = await screen.findByLabelText('Password');
+  expect(password).toHaveAttribute('type', 'password');
+  await user.click(screen.getByRole('checkbox', { name: 'Show password' }));
+  expect(password).toHaveAttribute('type', 'text');
+  await user.click(screen.getByRole('checkbox', { name: 'Show password' }));
+  expect(password).toHaveAttribute('type', 'password');
+});

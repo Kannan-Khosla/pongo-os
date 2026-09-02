@@ -8655,6 +8655,8 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsPagina
 
 function BulkReceivingSession({ locations, onCommitted }) {
   const mutationRef = useRef(null);
+  const latestQuantityRef = useRef(null);
+  const focusLatestQuantityRef = useRef(false);
   const [header, setHeader] = useState({ warehouse: 'Main Warehouse', notes: '' });
   const [scanInput, setScanInput] = useState('');
   const [selectedItem, setSelectedItem] = useState(null);
@@ -8671,6 +8673,13 @@ function BulkReceivingSession({ locations, onCommitted }) {
   const totalUnits = lines.reduce((total, line) => total + toNumber(line.quantity), 0);
   const totalValue = lines.reduce((total, line) => total + (toNumber(line.quantity) * toNumber(line.unit_cost)), 0);
   const commitReason = !lines.length ? 'add at least one product.' : !preview ? 'check the receipt first.' : !preview.can_commit ? 'fix the errors shown below.' : loading ? 'wait for the current action to finish.' : '';
+
+  useEffect(() => {
+    if (!focusLatestQuantityRef.current || !latestQuantityRef.current) return;
+    focusLatestQuantityRef.current = false;
+    latestQuantityRef.current.focus();
+    latestQuantityRef.current.select();
+  }, [lines.length]);
 
   function selectItem(item) {
     setSelectedItem(item);
@@ -8706,6 +8715,7 @@ function BulkReceivingSession({ locations, onCommitted }) {
       }
       const item = lookup.item;
       const resolvedCost = unitCost === '' ? (item.unit_cost ?? '') : unitCost;
+      focusLatestQuantityRef.current = true;
       setLines((current) => [...current, {
         localId: crypto.randomUUID?.() || String(Date.now()),
         item_id: operationalItemId(item),
@@ -8799,7 +8809,7 @@ function BulkReceivingSession({ locations, onCommitted }) {
       <details className="optional-fields"><summary>Optional receiving fields</summary><div className="operation-grid">{Object.keys(optional).map((field) => <label className="field" key={field}><span>{field.replace(/_/g, ' ')}</span><input value={optional[field]} onChange={(event) => setOptional((current) => ({ ...current, [field]: event.target.value }))} type={field === 'expiration_date' ? 'date' : 'text'} /></label>)}</div></details>
       <div className="bulk-cart-summary" aria-live="polite"><strong>{lines.length} product{lines.length === 1 ? '' : 's'}</strong><span>{formatNumber(totalUnits)} units</span><span>{formatCurrency(totalValue)} estimated value</span></div>
       <TableShell className="bulk-receiving-cart" caption="Products in this receipt" columns={['Product', 'SKU', 'Barcode', 'Current Stock', 'Quantity', 'Unit Cost', 'Location', 'Notes', 'Remove']}>
-        {lines.map((line, index) => <tr key={line.localId}><td className="description-cell">{line.product_name}</td><td>{line.sku || <DataQualityBadge kind="missing_sku" />}</td><td className="mono">{line.barcode || 'Not set'}</td><td>{formatNumber(line.current_stock)}</td><td><input className="bulk-cart-input" aria-label={`Product ${index + 1} quantity`} value={line.quantity} onChange={(event) => updateLine(line.localId, 'quantity', event.target.value)} onFocus={(event) => event.target.select()} inputMode="decimal" type="text" /></td><td><input className="bulk-cart-input" aria-label={`Product ${index + 1} unit cost`} value={line.unit_cost} onChange={(event) => updateLine(line.localId, 'unit_cost', event.target.value)} onFocus={(event) => event.target.select()} placeholder="Not set" inputMode="decimal" type="text" /></td><td><LocationPresentation value={line.inventory_location} /></td><td><input className="bulk-cart-note" aria-label={`Product ${index + 1} notes`} value={line.notes || ''} onChange={(event) => updateLine(line.localId, 'notes', event.target.value)} placeholder="Optional note" type="text" /></td><td className="receiving-action-cell"><button className="pager-button" aria-label={`Remove bulk receiving line ${index + 1}`} onClick={() => { setLines((current) => current.filter((candidate) => candidate.localId !== line.localId)); setPreview(null); }} type="button"><X size={17} aria-hidden="true" /></button></td></tr>)}
+        {lines.map((line, index) => <tr key={line.localId}><td className="description-cell">{line.product_name}</td><td>{line.sku || <DataQualityBadge kind="missing_sku" />}</td><td className="mono">{line.barcode || 'Not set'}</td><td>{formatNumber(line.current_stock)}</td><td><input ref={index === lines.length - 1 ? latestQuantityRef : null} className="bulk-cart-input" aria-label={`Product ${index + 1} quantity`} value={line.quantity} onChange={(event) => updateLine(line.localId, 'quantity', event.target.value)} onFocus={(event) => event.target.select()} inputMode="decimal" type="text" /></td><td><input className="bulk-cart-input" aria-label={`Product ${index + 1} unit cost`} value={line.unit_cost} onChange={(event) => updateLine(line.localId, 'unit_cost', event.target.value)} onFocus={(event) => event.target.select()} placeholder="Not set" inputMode="decimal" type="text" /></td><td><LocationPresentation value={line.inventory_location} /></td><td><input className="bulk-cart-note" aria-label={`Product ${index + 1} notes`} value={line.notes || ''} onChange={(event) => updateLine(line.localId, 'notes', event.target.value)} placeholder="Optional note" type="text" /></td><td className="receiving-action-cell"><button className="pager-button" aria-label={`Remove bulk receiving line ${index + 1}`} onClick={() => { setLines((current) => current.filter((candidate) => candidate.localId !== line.localId)); setPreview(null); }} type="button"><X size={17} aria-hidden="true" /></button></td></tr>)}
         {!lines.length && <tr><td colSpan={9}><div className="empty-table-row">Scan your first product above.</div></td></tr>}
       </TableShell>
       <div className="detail-actions"><button className="muted-button" disabled={!lines.length || loading} onClick={previewSession} type="button">Check receipt</button><button className="primary-button" aria-describedby={commitReason ? 'bulk-receiving-commit-reason' : undefined} disabled={Boolean(commitReason)} onClick={commitSession} type="button">Receive stock</button></div>
