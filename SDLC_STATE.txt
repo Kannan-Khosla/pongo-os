@@ -2,10 +2,10 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-09-02T19:26:42Z
+LAST UPDATED: 2026-09-02T19:46:47Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Multi-brand filtering implemented and locally verified
-CURRENT RELEASE RECOMMENDATION: PENDING EXACT-SHA RELEASE GATE
+CURRENT PHASE: Multi-brand filtering released and verified
+CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
 Pongo now keeps a normalized, read-only snapshot of active WooCommerce subscription lines, including each official next-payment date. The Dashboard shows renewals due in 30 days with current Pongo stock and sellable quantities; Sales by SKU visibly marks subscription products and includes renewal-demand and stock-risk columns in every export format.
@@ -833,3 +833,9 @@ MODE: Build Approved Scope; Release Readiness and Release
 SUMMARY: Multi-brand filtering is implemented across Items, Inventory, Insights, reports, summaries, and CSV exports; production is unchanged.
 EVIDENCE: One shared accessible checkbox filter supports any number of brands; repeated query values retain single-brand compatibility and use OR semantics in backend services. Affected backend tests passed 137; frontend tests passed 199; production build and diff check passed.
 NEXT ACTION: Commit only the multi-brand patch, require its exact green release gate, capture a fresh production backup, then deploy and verify the read-only filters without changing business data.
+
+--- DELIVERY RUN: 2026-09-02T19:46:47Z ---
+MODE: Release Readiness and Release
+SUMMARY: Multi-brand filtering was released and verified on Pongo production as Heroku v82.
+EVIDENCE: Exact commit cdcc60dcfd628d4fcd0bde7c4eb83166abfe9bcd passed GitHub release gate 33674195191, including security scans, PostgreSQL migration/recovery and backup/restore, backend/frontend tests and build, and browser contracts. Fresh production backup b027 completed before deployment. Schema remains at head 20260826_0045; web and worker are up; origin health returned 200. An authenticated production check selected Acana and Kong together, produced repeated brand parameters, returned 132 matching inventory records from both brands, and logged no browser errors. Readiness retains only pre-existing cost, duplicate-barcode, location, and alert-webhook findings; no business data was changed by verification.
+NEXT ACTION: Staff may use multi-brand filtering across Items, Inventory, Insights, and Reports; monitor normal use and resolve the separately tracked readiness data-quality items.
