@@ -2,10 +2,10 @@
 SCHEMA VERSION: 1
 PROJECT: pongoOS
 REPOSITORY ROOT: /Users/kannankhosla/Desktop/Codex/pongoOS
-LAST UPDATED: 2026-09-02T18:46:50Z
+LAST UPDATED: 2026-09-02T18:59:59Z
 EXECUTION MODE: Release Readiness and Release
-CURRENT PHASE: Login, mobile product-title, and bulk-receiving focus repair candidate updated after dependency audit stopped the first release gate
-CURRENT RELEASE RECOMMENDATION: RELEASE ONLY AFTER LISTED BLOCKERS
+CURRENT PHASE: Login, mobile product-title, and bulk-receiving focus repair released and verified
+CURRENT RELEASE RECOMMENDATION: RELEASED AND VERIFIED
 
 === 02. EXECUTIVE STATUS IN PLAIN LANGUAGE ===
 Pongo now keeps a normalized, read-only snapshot of active WooCommerce subscription lines, including each official next-payment date. The Dashboard shows renewals due in 30 days with current Pongo stock and sellable quantities; Sales by SKU visibly marks subscription products and includes renewal-demand and stock-risk columns in every export format.
@@ -14,9 +14,9 @@ Exact commit 013acf2 passed GitHub run 32178936003, restore-verified backup b016
 The current authorized local patch replaces the Dashboard's misleading cached open-order preview with live WooCommerce processing rows, limits staff status changes to Processed (Woo completed) or Cancelled, adds a durable local product-substitution workflow, and lets staff explicitly recover a completed-without-picking order for inventory picking. Production remains unchanged until a separate deployment request and release gate.
 Heroku v64 at exact commit cd741612 now changes only first-time Woo catalog creation: a truly new Pongo item starts at Woo's current managed nonnegative stock through the existing audited opening-balance workflow. Existing Pongo item stock remains authoritative and is never overwritten by a later catalog update.
 Heroku v69 at exact commit 1283f9f released the fifth item-import outcome for one-time catalog repair. It matches stable Pongo Item ID first, leaves barcode/SKU/Woo identity untouched, updates nonblank brand and unit cost, and consolidates unallocated stock plus on-order quantities into Main Warehouse / 001 without changing item totals or Woo stock. Allocated units stay at their source until the related order releases or consumes them. The complete 1,348-item repair CSV remains a separate staff-controlled upload with typed REPAIR confirmation; it was not uploaded during deployment, so no inventory changed.
-The current production release is Heroku v80 at commit 8316513 and schema 20260826_0045. The authorized release candidate adds a native Show password control, keeps the five-attempt login safety lock while showing its remaining wait and clearing expired locks, lets product titles wrap fully on phone layouts, keeps the bulk-receiving scanner below the fixed header, and moves focus to the new line quantity after a successful scan. It has no migration, dependency, WooCommerce write, or stock/data mutation.
+Heroku v81 at exact commit 3c2f13f now provides a native Show password control, keeps the five-attempt login safety lock while showing its remaining wait and clearing expired locks, lets product titles wrap fully on phone layouts, keeps the bulk-receiving scanner below the fixed header, and moves focus to the new line quantity after a successful scan. It made no schema, WooCommerce, stock, receipt, or business-data change.
 The first exact candidate 0ad708a passed PostgreSQL migration/recovery, backup/restore, backend tests, and Python dependency audit, then stopped before frontend tests because a newly published high-severity Browserslist advisory affected the locked 4.28.5 transitive version. The minimal lockfile-only update to Browserslist 4.28.8 and its browser-data packages reports zero npm vulnerabilities; a new exact-SHA release gate is required before production.
-The repaired candidate e3e6196 passed both vulnerability scans, PostgreSQL/backend checks, and frontend unit/build checks. Its browser chain then exposed only a loose test selector: `getByLabel('Password')` also matched the new `Show password` checkbox. The shared helper now requests the exact Password label; no application behavior changed, and the complete exact-SHA gate must rerun.
+The repaired candidate e3e6196 passed both vulnerability scans, PostgreSQL/backend checks, and frontend unit/build checks. Its browser chain then exposed only a loose test selector: `getByLabel('Password')` also matched the new `Show password` checkbox. The shared helper now requests the exact Password label; no application behavior changed. Exact commit 3c2f13f then passed the complete GitHub release gate in run 33669357273 before backup b026 and production release v81.
 
 === 03. PRODUCT VISION, USERS, AND SUCCESS METRICS ===
 Primary users are Pongo warehouse staff and delivery coordinators using desktop, iPhone, or Android. Success means a scanned code immediately runs the current Items/Inventory search, and every routable open order appears exactly once in a visible driver plan. Staff can change driver count, optionally return to the warehouse, and share working Google Maps links without configuring map credentials.
@@ -216,7 +216,7 @@ ADR-ITEMREPAIR-002 ACCEPTED: Preserve allocation location identity by moving onl
 55. Repair login visibility/lockout feedback, shared mobile product-title wrapping, and bulk-receiving sticky/focus behavior. COMPLETED.
 56. Isolate only this repair from concurrent invoice-receiving work and run full backend/frontend/build checks. COMPLETED.
 57. Commit and push the exact repair; inspect the first exact-SHA gate failure and apply the minimal transitive dependency repair. COMPLETED.
-58. Require the repaired exact-SHA release gate, back up production, deploy, and verify without changing business data. IN PROGRESS.
+58. Require the repaired exact-SHA release gate, back up production, deploy, and verify without changing business data. COMPLETED.
 
 === 09. WORK ITEM REGISTER ===
 SCAN-001 / P0 / COMPLETED / Reused phone-camera scanner across Items and Inventory; detected values execute search immediately.
@@ -242,7 +242,7 @@ WI-CATALOG-STOCK-001 / P0 / RELEASED / New items created by the durable Woo cata
 WI-ITEMREPAIR-001 / P0 / RELEASED / Stable-ID metadata repair plus audited one-location consolidation for all 1,348 active items; duplicate/missing barcodes and item stock totals remain untouched; Heroku v69 at 1283f9f.
 WI-RECEIVING-UX-001 / P0 / RELEASED / Bulk receiving defaults to Main Warehouse / 001, fills each item's current Unit Cost, provides click-and-type quantity/cost fields, and applies an explicitly changed positive cost as the item's new audited current Unit Cost; Heroku v78 at 8a34c5e.
 WI-RECEIVING-UX-002 / P0 / RELEASED / Bulk receiving validates every typed or scanned SKU/barcode through the exact inventory resolver before adding it, blocks unknown products, displays product identity/current stock/cost, supports per-line notes, keeps the scanner sticky, and treats blank cost as use-the-saved-cost; Heroku v79 at c75dad2.
-WI-AUTH-MOBILE-RECEIVING-001 / P0 / VERIFIED NOT DEPLOYED / Native password visibility; precise temporary-lock feedback and automatic expiry; full mobile product-title wrapping; header-safe sticky receiving entry; successful-scan quantity focus.
+WI-AUTH-MOBILE-RECEIVING-001 / P0 / RELEASED / Native password visibility; precise temporary-lock feedback and automatic expiry; full mobile product-title wrapping; header-safe sticky receiving entry; successful-scan quantity focus; Heroku v81 at 3c2f13f.
 
 WORK ITEM: WI-001
 TITLE: Complete fully picked orders that retain harmless Woo history lines
@@ -486,8 +486,8 @@ Item repair evidence: full backend 619 passed with 13 PostgreSQL-only skips; ful
 
 === 13. DATA MIGRATION, RELEASE, AND ROLLBACK STATE ===
 Database migration: production is at 20260826_0045; the current candidate adds no migration and its release command must remain a no-op at that head.
-Release baseline: production is Heroku v80 at exact commit 83165131ec479d2c9f3ecc1f7be2ebc58983f01b. Web and worker are up, the direct origin health endpoint returns 200, and anonymous authentication returns 401.
-Recovery: this is a code-only release with no planned data write; rollback is Heroku v80. A fresh production backup is still required before deployment under the established Pongo release runbook.
+Release baseline: production is Heroku v81 at exact commit 3c2f13fab500b4981c241aa2184794f868562a46. Web and worker are up, the direct origin health endpoint returns 200, anonymous authentication returns 401, and schema remains 20260826_0045.
+Recovery: rollback is Heroku v80 with completed pre-release backup b026 available. This release performed no stock, receipt, order, WooCommerce, or other business-data mutation.
 PRODUCTION APPROVAL: User explicitly requested “deploy everything” on 2026-08-09.
 ACTIVE STOCK CSV RELEASE STATE: Released and verified on production. No real stock-changing smoke import was performed because live inventory mutation was not needed to prove deployment and requires a controlled staff test row.
 CURRENT DASHBOARD CHANGE STATE: Released and verified on Heroku v52 at 1665ef9 after exact-commit CI and completed backup b013. Schema remains 20260810_0038; there was no dependency, environment, credential, order, or stock change.
@@ -525,11 +525,17 @@ For order operations, reused the existing Woo client, single-order reconciler, g
 For item repair, reused the existing six-step import preview/history, stock mutation lock, location transfer movements, item/location invariants, and stable Pongo/Woo identity. One explicit outcome and one guarded transaction replace a second CSV engine, direct item-total overwrite, migration, dependency, or Woo synchronization job.
 
 === 17. EXACT NEXT ACTIONS AND REQUIRED APPROVALS ===
-NEXT: Commit and push the lockfile-only Browserslist advisory repair, require its exact-SHA GitHub release gate, capture a fresh production backup, deploy to Pongo production, and verify health/auth/UI without creating a receipt or changing stock.
-THEN: Record the exact commit, CI run, backup, Heroku release, schema, process, health, and non-mutating smoke evidence.
-APPROVAL STATE: The user explicitly authorized production deployment on 2026-09-02. Concurrent invoice-receiving, PRODUCT_AUDIT, workbench, output, and showcase changes remain excluded.
+NEXT: Monitor normal staff login, mobile item/inventory, and bulk-receiving use. Resolve the independent readiness housekeeping for missing positive costs, duplicate barcodes, locationless items, and the operations alert webhook separately.
+THEN: None for this released repair.
+APPROVAL STATE: The user explicitly authorized production deployment on 2026-09-02. Concurrent invoice-receiving, PRODUCT_AUDIT, workbench, output, and showcase changes remained excluded.
 
 === 18. COMPLETE APPEND-ONLY DELIVERY HISTORY ===
+--- DELIVERY RUN: 2026-09-02T18:59:59Z ---
+MODE: Release Readiness and Release
+SUMMARY: Login visibility/lockout feedback, complete mobile product titles, and bulk-receiving sticky/focus behavior released and verified on production as Heroku v81 without changing business data.
+EVIDENCE: Exact commit 3c2f13fab500b4981c241aa2184794f868562a46 passed GitHub run 33669357273 in 6m33s, including vulnerability scans, PostgreSQL 16 migration/recovery and backup/restore, full backend/frontend/build checks, and the browser contract chain. Fresh production backup b026 completed before deployment. Heroku v81 reports the exact commit; schema remains 20260826_0045; web and worker are up; `/health` returned 200; anonymous auth returned 401; no active user lock remained; the deployed bundle contains Show password; and recent app logs contain no error/exception/traceback/critical entries. `/ready` retains only independent pre-existing housekeeping: 48 missing positive costs, four duplicate-barcode groups, 25 active items without an active location row, and the missing operations alert webhook. No stock, receipt, order, WooCommerce, or other business record was changed.
+NEXT ACTION: Monitor normal use and handle the independent readiness housekeeping separately.
+
 --- DELIVERY RUN: 2026-09-02T18:46:50Z ---
 MODE: Release Readiness and Release
 SUMMARY: The repaired release reached browser contracts and exposed a shared test-selector collision with the new Show password label; the helper now selects the exact Password field and production remains unchanged.
