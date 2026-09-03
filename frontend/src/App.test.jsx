@@ -462,6 +462,15 @@ function mockFetch(url, options = {}) {
   if (target.includes('/api/cycle-counts')) return json({ cycle_counts: [] });
   if (target.includes('/api/receipts/direct/preview')) return json({ total_lines: 1, valid_lines: 1, invalid_lines: 0, total_quantity: 1, estimated_inventory_value: 4.25, errors: [], preview_lines: [{ line_number: 1, status: 'valid', sku: 'SMOKE-001', description: 'Smoke Test Item', inventory_location: 'Smoke Rack', quantity_received: 1, previous_in_stock: 9, new_in_stock: 10, line_value: 4.25 }] });
   if (target.includes('/api/receipts/direct/commit')) return json({ status: 'committed', id: 11, receipt_number: 'REC-0011' });
+  if (target.includes('/api/receipts/invoice/preview')) return json({
+    supplier: 'Pan Pacific Pet Limited', invoice_number: 'IN20187152', invoice_date: '2026-08-27', document_sha256: 'a'.repeat(64), warehouse: 'Main Warehouse', inventory_location: 'Smoke Rack', duplicate: false, duplicate_receipts: [], counts: { ready: 0, review: 1, unmatched: 1, excluded: 1 }, total_pieces: 12,
+    lines: [
+      { line_number: 1, shipped_quantity: 1, upc: 'SMOKE001', invoice_description: 'Smoke Test Item 12/13 oz', uom: 'CS', net_price: 48, status: 'review', selected: true, review_required: true, human_verified: false, reasons: ['Case converted to 12 individual pieces; verify the pack size.'], pack_multiplier: 12, quantity_pieces: 12, unit_cost: 4, inventory_location: 'Smoke Rack', item: { id: 1, sku: 'SMOKE-001', barcode: 'SMOKE001', description: 'Smoke Test Item', old_item_stock: 9, new_item_stock: 21 } },
+      { line_number: 2, shipped_quantity: 1, upc: 'MISSING001', invoice_description: 'New Product', uom: 'EA', net_price: 8, status: 'unmatched', selected: false, review_required: false, human_verified: false, reasons: ['UPC was not found in Pongo OS.'], pack_multiplier: 1, quantity_pieces: 1, unit_cost: 8, inventory_location: 'Smoke Rack', item: null },
+      { line_number: 3, shipped_quantity: 0, upc: 'ZERO001', invoice_description: 'Not shipped', uom: 'EA', net_price: 8, status: 'excluded', selected: false, review_required: false, human_verified: false, reasons: ['Not shipped; excluded from receiving.'], pack_multiplier: 1, quantity_pieces: 0, unit_cost: 8, inventory_location: 'Smoke Rack', item: null },
+    ],
+  });
+  if (target.includes('/api/receipts/invoice/commit')) return json({ status: 'committed', id: 13, receipt_id: 13, receipt_number: 'RCPT-2026-00013', total_quantity_received: 12, total_lines: 1, woocommerce_sync_requested: true, woocommerce_sync: { id: 31, status: 'queued' } });
   if (target.includes('/api/receipts/bulk/preview')) return json({ can_commit: true, line_count: 1, valid_line_count: 1, error_line_count: 0, total_quantity: 1, total_cost: 4.25, lines: [{ line_number: 1, status: 'valid', item: { sku: 'SMOKE-001' }, inventory_location: 'Smoke Rack', quantity: 1, old_location_stock: 9, new_location_stock: 10, errors: [] }] });
   if (target.includes('/api/receipts/bulk/commit')) return json({ status: 'committed', id: 12, receipt_number: 'REC-0012' });
   if (target.includes('/api/receipts')) return json({ receipts: [] });
@@ -1728,6 +1737,7 @@ describe('App shell and workflows', () => {
       .filter((url) => url.pathname === '/api/items');
     expect(itemRequests).toHaveLength(0);
     expect(within(modes).getByRole('link', { name: 'Direct Receiving' })).toHaveAttribute('aria-current', 'page');
+    expect(within(modes).getByRole('link', { name: 'Invoice Receiving' })).not.toHaveAttribute('aria-current');
     expect(within(modes).getByRole('link', { name: 'Bulk Receiving Session' })).not.toHaveAttribute('aria-current');
     expect(within(modes).getByRole('link', { name: 'Receipt History' })).not.toHaveAttribute('aria-current');
 
@@ -1772,6 +1782,39 @@ describe('App shell and workflows', () => {
     expect(window.location.hash).toBe('#/receiving/history');
     expect(screen.getByRole('link', { name: 'Receipt History' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('heading', { name: 'Direct Receiving', level: 2 })).not.toBeInTheDocument();
+  });
+
+  it('reviews case quantities as individual pieces before invoice receiving', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/receiving/invoice';
+    render(<App />);
+
+    const modes = await screen.findByRole('navigation', { name: 'Receiving modes' });
+    expect(within(modes).getByRole('link', { name: 'Invoice Receiving' })).toHaveAttribute('aria-current', 'page');
+    const fileInput = document.querySelector('.invoice-upload-drop input[type="file"]');
+    await user.upload(fileInput, new File(['invoice'], 'IN20187152.pdf', { type: 'application/pdf' }));
+    await user.click(screen.getByRole('button', { name: 'Read Invoice' }));
+
+    expect(await screen.findByText('Pan Pacific Pet Limited')).toBeInTheDocument();
+    expect(screen.getByText('Not received · UPC not matched')).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Receive Not shipped' })).not.toBeInTheDocument();
+    const commit = screen.getByRole('button', { name: 'Receive Matched Stock' });
+    expect(commit).toBeDisabled();
+    expect(screen.getByText('Commit unavailable: verify 1 review line.')).toHaveAttribute('role', 'status');
+
+    await user.click(screen.getByRole('checkbox', { name: 'Verified Smoke Test Item 12/13 oz' }));
+    expect(commit).toBeEnabled();
+    await user.click(commit);
+
+    expect(await screen.findByText(/12 pieces added to current stock/i)).toBeInTheDocument();
+    const commitCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/receipts/invoice/commit'));
+    expect(commitCall[1].body).toBeInstanceOf(FormData);
+    expect(commitCall[1].body.get('file')).toBeInstanceOf(File);
+    expect(JSON.parse(commitCall[1].body.get('payload'))).toMatchObject({
+      idempotency_key: expect.any(String),
+      invoice_number: 'IN20187152',
+      lines: [{ source_line_number: 1, upc: 'SMOKE001', quantity_pieces: 12, pack_multiplier: 12, human_verified: true }],
+    });
   });
 
   it('finds a later catalog item for direct receiving without preloading the catalog', async () => {

@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'rea
 import { createPortal } from 'react-dom';
 import './ReportIntelligence.css';
 import { API_BASE_URL, apiFetch } from './api';
+import DocumentActions from './DocumentActions';
 import { ItemImportHistory, ItemImportWorkspace } from './ItemImportWorkspace';
 import MobileCodeScanner from './MobileCodeScanner';
 import MultiSelectFilter, { multiSelectValues } from './MultiSelectFilter';
@@ -1363,7 +1364,7 @@ function parseHashRoute() {
   }
   if (path === 'receiving' || path.startsWith('receiving/')) {
     const requestedView = path.split('/')[1] || 'direct';
-    const view = ['direct', 'bulk', 'history'].includes(requestedView) ? requestedView : 'direct';
+    const view = ['direct', 'invoice', 'bulk', 'history'].includes(requestedView) ? requestedView : 'direct';
     return { pageId: 'receiving', receivingView: view };
   }
   if (path === 'routes' || path.startsWith('routes/')) {
@@ -1560,7 +1561,7 @@ export default function App({ currentUser = null, onLogout = null }) {
     if (route.pageId === 'receiving') {
       loadLocations({ status: 'active' });
       if ((route.receivingView || 'direct') === 'history') loadReceipts();
-      if ((route.receivingView || 'direct') !== 'bulk') loadStockMovements({ movement_type: 'receive_direct' });
+      if (['direct', 'history'].includes(route.receivingView || 'direct')) loadStockMovements({ movement_type: 'receive_direct' });
     }
     if (route.pageId === 'scanner') {
       loadLocations({ status: 'active' });
@@ -8318,7 +8319,7 @@ function CycleCountHistoryTable({ counts, pagination, onLoad, onLoadDetail }) {
   return (
     <TableShell
       caption={`${pagination.total} cycle count(s)`}
-      columns={['Count Number', 'Status', 'Warehouse', 'Inventory Location', 'Count Type', 'Total Lines', 'Adjustment Lines', 'Created At', 'Posted At', 'Created By', 'Export']}
+      columns={['Count Number', 'Status', 'Warehouse', 'Inventory Location', 'Count Type', 'Total Lines', 'Adjustment Lines', 'Created At', 'Posted At', 'Created By', 'Actions']}
       pagination={serverTablePagination(
         pagination,
         'cycle counts',
@@ -8342,12 +8343,7 @@ function CycleCountHistoryTable({ counts, pagination, onLoad, onLoadDetail }) {
           <td>{formatDateTime(count.created_at)}</td>
           <td>{formatDateTime(count.posted_at)}</td>
           <td>{count.created_by}</td>
-          <td>
-            <button className="action-button" onClick={() => exportCycleCountCsv(count.id, count.count_number)} type="button">
-              <Download size={17} />
-              Export
-            </button>
-          </td>
+          <td><DocumentActions compact csvUrl={`${API_BASE_URL}/api/cycle-counts/${count.id}/export`} pdfUrl={`${API_BASE_URL}/api/cycle-counts/${count.id}/pdf`} title={`Cycle count ${count.count_number}`} /></td>
         </tr>
       ))}
       {counts.length === 0 && (
@@ -8372,10 +8368,7 @@ function CycleCountDetailPanel({ detail, onClose }) {
           </p>
         </div>
         <div className="button-row compact">
-          <button className="action-button" onClick={() => exportCycleCountCsv(detail.id, detail.count_number)} type="button">
-            <Download size={17} />
-            Export CSV
-          </button>
+          <DocumentActions compact csvUrl={`${API_BASE_URL}/api/cycle-counts/${detail.id}/export`} pdfUrl={`${API_BASE_URL}/api/cycle-counts/${detail.id}/pdf`} title={`Cycle count ${detail.count_number}`} />
           <button className="muted-button" onClick={onClose} type="button">
             Close
           </button>
@@ -8506,6 +8499,7 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsPagina
     <section className="content-panel receiving-page">
       <nav className="tab-row" aria-label="Receiving modes">
         <a className={mode === 'direct' ? 'tab-button active' : 'tab-button'} href="#/receiving/direct" aria-current={mode === 'direct' ? 'page' : undefined}>Direct Receiving</a>
+        <a className={mode === 'invoice' ? 'tab-button active' : 'tab-button'} href="#/receiving/invoice" aria-current={mode === 'invoice' ? 'page' : undefined}>Invoice Receiving</a>
         <a className={mode === 'bulk' ? 'tab-button active' : 'tab-button'} href="#/receiving/bulk" aria-current={mode === 'bulk' ? 'page' : undefined}>Bulk Receiving Session</a>
         <a className={mode === 'history' ? 'tab-button active' : 'tab-button'} href="#/receiving/history" aria-current={mode === 'history' ? 'page' : undefined}>Receipt History</a>
       </nav>
@@ -8613,12 +8607,14 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsPagina
         {loading && <div className="loading-strip">Working on receiving...</div>}
         {error && <div className="api-error">{error}</div>}
         {summary && (
-          <div className="success-strip">
-            Receipt {summary.receipt_number} posted. {summary.total_quantity_received} units received across {summary.total_lines} line(s).
+          <div className="success-strip document-success-strip">
+            <span>Receipt {summary.receipt_number} posted. {summary.total_quantity_received} units received across {summary.total_lines} line(s).</span>
+            <ReceiptDocumentActions receipt={summary} />
           </div>
         )}
         {preview && <ReceivingPreview preview={preview} />}
       </div>}
+      {mode === 'invoice' && <InvoiceReceivingPage locations={locations} onCommitted={onLoadInventorySummary} />}
       {mode === 'bulk' && <BulkReceivingSession locations={locations} onCommitted={() => onLoadInventorySummary()} />}
       {mode === 'history' && <div className="wide-panel">
         <div className="panel-title">
@@ -8635,7 +8631,7 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsPagina
         {receiptsLoading && <div className="loading-strip">Loading receipt history...</div>}
         <ReceiptHistoryTable receipts={receipts} pagination={receiptsPagination} onLoad={onLoadReceipts} />
       </div>}
-      {mode !== 'bulk' && <div className="wide-panel">
+      {['direct', 'history'].includes(mode) && <div className="wide-panel">
         <div className="panel-title">
           <div>
             <h2>Recent Stock Movements</h2>
@@ -8651,6 +8647,319 @@ function DirectReceivingPage({ route, items, locations, receipts, receiptsPagina
         <StockMovementsTable movements={stockMovements} pagination={stockMovementsPagination} onLoad={(page, pageSize) => onLoadStockMovements({ movement_type: 'receive_direct', page, page_size: pageSize })} />
       </div>}
     </section>
+  );
+}
+
+function InvoiceReceivingPage({ locations, onCommitted }) {
+  const commitMutationRef = useRef(null);
+  const reversalMutationRef = useRef(null);
+  const [file, setFile] = useState(null);
+  const [warehouse, setWarehouse] = useState('Main Warehouse');
+  const [inventoryLocation, setInventoryLocation] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [syncWoo, setSyncWoo] = useState(true);
+  const [duplicateOverride, setDuplicateOverride] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [reversal, setReversal] = useState(null);
+  const [reversalSummary, setReversalSummary] = useState(null);
+
+  const activeLocations = locations.filter((location) => location.isActive && (!warehouse || location.warehouse === warehouse));
+  const selectedLines = preview?.lines.filter((line) => line.selected && line.item) || [];
+  const unmatchedLines = preview?.lines.filter((line) => line.status === 'unmatched') || [];
+  const selectedPieces = selectedLines.reduce((total, line) => total + (Number(line.quantity_pieces) || 0), 0);
+  const unverifiedCount = selectedLines.filter((line) => line.review_required && !line.human_verified).length;
+  const commitDisabledReason = !preview
+    ? 'read an invoice first.'
+    : selectedLines.length === 0
+      ? 'select at least one matched product.'
+      : unverifiedCount
+        ? `verify ${unverifiedCount} review line${unverifiedCount === 1 ? '' : 's'}.`
+        : preview.duplicate && !duplicateOverride
+          ? 'confirm the duplicate invoice override or stop.'
+          : preview.duplicate && !overrideReason.trim()
+            ? 'enter a duplicate override reason.'
+            : '';
+
+  useEffect(() => {
+    if (inventoryLocation || activeLocations.length === 0) return;
+    const preferred = activeLocations.find((location) => location.code === '001') || activeLocations[0];
+    setInventoryLocation(preferred.code);
+  }, [locations, warehouse, inventoryLocation]);
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  async function loadHistory() {
+    setHistoryLoading(true);
+    try {
+      const result = await getJsonRequest('/api/receipts?receipt_type=invoice&page=1&page_size=20');
+      setHistory(result.receipts || []);
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to load invoice receipt history.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function resetInvoice() {
+    resetMutationIdempotency(commitMutationRef);
+    setFile(null);
+    setPreview(null);
+    setSummary(null);
+    setDuplicateOverride(false);
+    setOverrideReason('');
+    setError('');
+  }
+
+  async function readInvoice() {
+    if (!file || !inventoryLocation) return;
+    setLoading(true);
+    setError('');
+    setSummary(null);
+    setDuplicateOverride(false);
+    setOverrideReason('');
+    resetMutationIdempotency(commitMutationRef);
+    const form = new FormData();
+    form.append('file', file);
+    form.append('warehouse', warehouse);
+    form.append('inventory_location', inventoryLocation);
+    try {
+      setPreview(await postForm('/api/receipts/invoice/preview', form));
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to read this invoice.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function updateLine(lineNumber, field, value) {
+    setPreview((current) => ({
+      ...current,
+      lines: current.lines.map((line) => {
+        if (line.line_number !== lineNumber) return line;
+        const next = { ...line, [field]: value };
+        if (field === 'pack_multiplier') {
+          const multiplier = Math.max(1, Number(value) || 1);
+          next.pack_multiplier = multiplier;
+          next.quantity_pieces = Number((Number(line.shipped_quantity) * multiplier).toFixed(3));
+          next.unit_cost = Number((Number(line.net_price) / multiplier).toFixed(2));
+          next.human_verified = false;
+          next.review_required = true;
+        }
+        if (field === 'quantity_pieces' || field === 'unit_cost') {
+          next.human_verified = false;
+          next.review_required = true;
+        }
+        return next;
+      }),
+    }));
+    setSummary(null);
+    resetMutationIdempotency(commitMutationRef);
+  }
+
+  async function commitInvoice() {
+    if (commitDisabledReason) return;
+    setLoading(true);
+    setError('');
+    try {
+      const payload = {
+        supplier: preview.supplier,
+        invoice_number: preview.invoice_number,
+        invoice_date: preview.invoice_date,
+        document_sha256: preview.document_sha256,
+        warehouse,
+        duplicate_override: duplicateOverride,
+        override_reason: duplicateOverride ? overrideReason : null,
+        sync_woocommerce: syncWoo,
+        lines: selectedLines.map((line) => ({
+          source_line_number: line.line_number,
+          item_id: line.item.id,
+          upc: line.upc,
+          invoice_description: line.invoice_description,
+          uom: line.uom,
+          shipped_quantity: Number(line.shipped_quantity),
+          pack_multiplier: Number(line.pack_multiplier),
+          quantity_pieces: Number(line.quantity_pieces),
+          net_price: Number(line.net_price),
+          unit_cost: Number(line.unit_cost),
+          inventory_location: line.inventory_location,
+          review_required: Boolean(line.review_required),
+          human_verified: Boolean(line.human_verified),
+        })),
+      };
+      const form = new FormData();
+      form.append('payload', JSON.stringify(withMutationIdempotency(commitMutationRef, 'invoice-receipt', payload)));
+      form.append('file', file);
+      const result = await postForm('/api/receipts/invoice/commit', form);
+      setSummary(result);
+      resetMutationIdempotency(commitMutationRef);
+      await Promise.all([loadHistory(), onCommitted()]);
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to receive this invoice.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function beginReversal(receipt) {
+    setError('');
+    setReversalSummary(null);
+    resetMutationIdempotency(reversalMutationRef);
+    try {
+      const result = await postJson(`/api/receipts/invoice/${receipt.id}/reversal/preview`, {});
+      setReversal({ preview: result, reason: '', sync_woocommerce: true });
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to preview this reversal.');
+    }
+  }
+
+  async function commitReversal() {
+    if (!reversal?.preview.can_revert || reversal.reason.trim().length < 3) return;
+    setLoading(true);
+    setError('');
+    try {
+      const payload = { reason: reversal.reason.trim(), sync_woocommerce: reversal.sync_woocommerce };
+      const result = await postJson(
+        `/api/receipts/invoice/${reversal.preview.receipt_id}/reversal/commit`,
+        withMutationIdempotency(reversalMutationRef, 'invoice-reversal', payload),
+      );
+      setReversalSummary(result);
+      setReversal(null);
+      resetMutationIdempotency(reversalMutationRef);
+      await Promise.all([loadHistory(), onCommitted()]);
+    } catch (apiError) {
+      setError(apiError.message || 'Unable to revert this invoice receipt.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="invoice-receiving-workspace">
+      <div className="invoice-receiving-hero">
+        <div>
+          <span className="invoice-kicker">Fast receiving · Human reviewed</span>
+          <h2>Invoice Receiving</h2>
+          <p>Upload a supplier PDF, verify UPC matches and case conversions, then add the received pieces to current stock.</p>
+        </div>
+        <div className="invoice-safety-note"><ClipboardCheck size={20} aria-hidden="true" /><span><strong>No stock changes on upload.</strong> Inventory changes only after review and commit.</span></div>
+      </div>
+
+      <div className="invoice-upload-grid">
+        <label className="invoice-upload-drop">
+          <input accept="application/pdf,.pdf" onChange={(event) => { setFile(event.target.files?.[0] || null); setPreview(null); setSummary(null); }} type="file" />
+          <Upload size={24} aria-hidden="true" />
+          <span><strong>{file?.name || 'Choose supplier invoice PDF'}</strong><small>PDF only · 10 MB maximum</small></span>
+        </label>
+        <label className="field">
+          <span>Warehouse</span>
+          <select value={warehouse} onChange={(event) => { setWarehouse(event.target.value); setInventoryLocation(''); setPreview(null); }}>
+            {uniqueOptions(locations.filter((location) => location.isActive), 'warehouse').map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>Receiving location</span>
+          <select value={inventoryLocation} onChange={(event) => { setInventoryLocation(event.target.value); setPreview(null); }}>
+            <option value="">Select location</option>
+            {activeLocations.map((location) => <option key={location.id} value={location.code}>{location.code} · {location.name}</option>)}
+          </select>
+        </label>
+        <button className="primary-button" disabled={!file || !inventoryLocation || loading} onClick={readInvoice} type="button">
+          <FileSpreadsheet size={17} aria-hidden="true" />
+          Read Invoice
+        </button>
+      </div>
+
+      <div aria-live="polite">
+        {loading && <div className="loading-strip">Working on the invoice...</div>}
+        {error && <div className="api-error" role="alert">{error}</div>}
+        {summary && <div className="success-strip document-success-strip"><span><CheckCircle2 size={18} aria-hidden="true" /> Receipt {summary.receipt_number} posted: {formatNumber(summary.total_quantity_received)} pieces added to current stock. {summary.woocommerce_sync ? 'WooCommerce stock sync queued.' : summary.woocommerce_sync_requested ? 'WooCommerce sync needs attention.' : 'WooCommerce sync was not requested.'}</span><ReceiptDocumentActions receipt={summary} /></div>}
+        {summary?.warnings?.map((warning) => <div className="api-error" key={warning} role="alert">{warning}</div>)}
+        {reversalSummary && <div className="success-strip"><RotateCcw size={18} aria-hidden="true" /> Receipt {reversalSummary.reversed_receipt_number} was reverted with {formatNumber(reversalSummary.total_quantity_reversed)} pieces removed from current stock. {reversalSummary.woocommerce_sync ? 'WooCommerce stock sync queued.' : reversalSummary.woocommerce_sync_requested ? 'WooCommerce sync needs attention.' : 'WooCommerce sync was not requested.'}</div>}
+        {reversalSummary?.warnings?.map((warning) => <div className="api-error" key={warning} role="alert">{warning}</div>)}
+      </div>
+
+      {preview && <>
+        <div className="invoice-document-bar">
+          <div><span>Supplier</span><strong>{preview.supplier}</strong></div>
+          <div><span>Invoice</span><strong>{preview.invoice_number}</strong></div>
+          <div><span>Invoice date</span><strong>{preview.invoice_date || 'Not detected'}</strong></div>
+          <button className="muted-button" onClick={resetInvoice} type="button">Start Over</button>
+        </div>
+
+        {preview.duplicate && <div className="invoice-duplicate-warning" role="alert">
+          <TriangleAlert size={21} aria-hidden="true" />
+          <div><strong>Possible duplicate invoice</strong><p>This supplier invoice or exact PDF was received before. Do not continue unless this is a separate delivery.</p></div>
+          <label className="invoice-check"><input checked={duplicateOverride} onChange={(event) => setDuplicateOverride(event.target.checked)} type="checkbox" /> Override warning</label>
+          {duplicateOverride && <label className="field"><span>Override reason</span><input value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} placeholder="Why is this safe to receive again?" /></label>}
+        </div>}
+
+        <div className="invoice-metrics" aria-label="Invoice matching summary">
+          <div data-tone="ready"><span>Ready</span><strong>{preview.counts.ready}</strong></div>
+          <div data-tone="review"><span>Needs review</span><strong>{preview.counts.review}</strong></div>
+          <div data-tone="unmatched"><span>Unmatched</span><strong>{preview.counts.unmatched}</strong></div>
+          <div><span>Not shipped</span><strong>{preview.counts.excluded}</strong></div>
+          <div data-tone="pieces"><span>Selected pieces</span><strong>{formatNumber(selectedPieces)}</strong></div>
+        </div>
+
+        <div className="invoice-review-heading">
+          <div><h3>Review matched products</h3><p>Case quantities are converted to individual pieces. Check every yellow review row before receiving.</p></div>
+          <span className="status-pill status-info">{selectedLines.length} selected</span>
+        </div>
+        <div className="table-scroll invoice-review-scroll">
+          <table className="invoice-review-table">
+            <thead><tr><th>Receive</th><th>Status</th><th>UPC & invoice product</th><th>Pongo match</th><th>Shipped</th><th>Pack</th><th>Pieces</th><th>Piece cost</th><th>Stock after</th><th>Verified</th></tr></thead>
+            <tbody>{preview.lines.filter((line) => line.status !== 'excluded').map((line) => (
+              <tr className={`invoice-row invoice-row-${line.status}`} key={`${line.line_number}-${line.upc}`}>
+                <td><input aria-label={`Receive ${line.invoice_description}`} checked={Boolean(line.selected)} disabled={!line.item || Boolean(summary)} onChange={(event) => updateLine(line.line_number, 'selected', event.target.checked)} type="checkbox" /></td>
+                <td><span className={`status-pill ${line.status === 'ready' ? 'status-success' : line.status === 'review' ? 'status-warning' : 'status-error'}`}>{line.status === 'ready' ? 'Ready' : line.status === 'review' ? 'Review' : 'Unmatched'}</span></td>
+                <td className="invoice-product-cell"><code>{line.upc}</code><strong>{line.invoice_description}</strong>{line.reasons.map((reason) => <small key={reason}>{reason}</small>)}</td>
+                <td>{line.item ? <><strong>{line.item.description}</strong><small>SKU {line.item.sku}</small></> : <a href="#/items/new">Add product</a>}</td>
+                <td>{formatNumber(line.shipped_quantity)} {line.uom}</td>
+                <td><input aria-label={`Pack multiplier for ${line.invoice_description}`} disabled={!line.item || Boolean(summary)} min="1" onChange={(event) => updateLine(line.line_number, 'pack_multiplier', event.target.value)} step="1" type="number" value={line.pack_multiplier} /></td>
+                <td><input aria-label={`Pieces received for ${line.invoice_description}`} disabled={!line.item || Boolean(summary)} min="0.001" onChange={(event) => updateLine(line.line_number, 'quantity_pieces', event.target.value)} step="0.001" type="number" value={line.quantity_pieces} /></td>
+                <td><input aria-label={`Piece cost for ${line.invoice_description}`} disabled={!line.item || Boolean(summary)} min="0.01" onChange={(event) => updateLine(line.line_number, 'unit_cost', event.target.value)} step="0.01" type="number" value={line.unit_cost} /></td>
+                <td>{line.item ? <span className="invoice-stock-change">{formatNumber(line.item.old_item_stock)} <ChevronRight size={13} aria-hidden="true" /> <strong>{formatNumber(line.item.old_item_stock + Number(line.quantity_pieces || 0))}</strong></span> : '—'}</td>
+                <td>{line.review_required && line.item ? <label className="invoice-verify"><input aria-label={`Verified ${line.invoice_description}`} checked={Boolean(line.human_verified)} disabled={Boolean(summary)} onChange={(event) => updateLine(line.line_number, 'human_verified', event.target.checked)} type="checkbox" /><span>Checked</span></label> : <span aria-label="No verification required">—</span>}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+
+        <div className="invoice-commit-rail">
+          <label className="invoice-check"><input checked={syncWoo} disabled={Boolean(summary)} onChange={(event) => setSyncWoo(event.target.checked)} type="checkbox" /><span><strong>Sync received stock to WooCommerce</strong><small>Queued only after this reviewed receipt is committed.</small></span></label>
+          <div><span>{selectedLines.length} products</span><strong>{formatNumber(selectedPieces)} pieces</strong></div>
+          <button aria-describedby={commitDisabledReason ? 'invoice-commit-reason' : undefined} className="primary-button" disabled={Boolean(commitDisabledReason) || loading || Boolean(summary)} onClick={commitInvoice} type="button">Receive Matched Stock</button>
+        </div>
+        {commitDisabledReason && !summary && <p className="receiving-disabled-reason" id="invoice-commit-reason" role="status">Commit unavailable: {commitDisabledReason}</p>}
+
+        {unmatchedLines.length > 0 && <div className="invoice-unmatched-panel">
+          <div className="panel-title"><div><h3>Not received · UPC not matched</h3><p>These products were left untouched. Add them to Pongo/WooCommerce, then receive them separately with Direct Receiving.</p></div><span className="status-pill status-error">{unmatchedLines.length} products</span></div>
+          <ul>{unmatchedLines.map((line) => <li key={line.upc}><code>{line.upc}</code><span><strong>{line.invoice_description}</strong><small>{formatNumber(line.shipped_quantity)} {line.uom} · net {formatCurrency(line.net_price)}</small></span><a href="#/items/new">Add product</a></li>)}</ul>
+        </div>}
+      </>}
+
+      <div className="wide-panel invoice-history-panel">
+        <div className="panel-title"><div><h3>Invoice receipt history</h3><p>Every committed invoice can be fully reverted once. Reversal subtracts its received quantity from current stock; it never restores an old snapshot.</p></div><button className="muted-button" disabled={historyLoading} onClick={loadHistory} type="button"><RefreshCw size={16} aria-hidden="true" /> Refresh</button></div>
+        {historyLoading && <div className="loading-strip">Loading invoice receipts...</div>}
+        {!historyLoading && history.length === 0 && <div className="empty-state compact"><FileSpreadsheet size={24} aria-hidden="true" /><p>No invoice receipts yet.</p></div>}
+        {history.length > 0 && <div className="table-scroll"><table><thead><tr><th>Receipt</th><th>Supplier / invoice</th><th>Received</th><th>Pieces</th><th>Status</th><th>Actions</th></tr></thead><tbody>{history.map((receipt) => <tr key={receipt.id}><td><strong>{receipt.receipt_number}</strong></td><td>{receipt.client || 'Unknown supplier'}<small>{receipt.reference_number || '—'}</small></td><td>{formatDateTime(receipt.received_at)}</td><td>{formatNumber(receipt.total_quantity)}</td><td><span className={`status-pill ${receipt.status === 'committed' ? 'status-success' : 'status-neutral'}`}>{receipt.status}</span></td><td><div className="document-record-actions"><ReceiptDocumentActions receipt={receipt} /><button className="danger-button" disabled={receipt.status !== 'committed'} onClick={() => beginReversal(receipt)} type="button"><RotateCcw size={15} aria-hidden="true" /> Preview Reversal</button></div></td></tr>)}</tbody></table></div>}
+      </div>
+
+      {reversal && <div className="invoice-reversal-panel" role="region" aria-label="Invoice reversal review">
+        <div><span className="invoice-kicker">Compensating transaction</span><h3>Revert {reversal.preview.receipt_number}</h3><p>This removes the exact received quantities from current stock and writes a new audit receipt.</p></div>
+        <div className="table-scroll"><table><thead><tr><th>Product</th><th>Location</th><th>Remove</th><th>Current</th><th>After</th><th>Check</th></tr></thead><tbody>{reversal.preview.lines.map((line) => <tr key={line.receipt_item_id}><td><strong>{line.description}</strong><small>{line.sku}</small></td><td>{line.inventory_location}</td><td>-{formatNumber(line.quantity_to_remove)}</td><td>{formatNumber(line.current_stock)}</td><td>{formatNumber(line.stock_after_reversal)}</td><td>{line.errors.length ? <span className="status-pill status-error">Blocked</span> : <span className="status-pill status-success">Safe</span>}{line.errors.map((message) => <small key={message}>{message}</small>)}</td></tr>)}</tbody></table></div>
+        <label className="field"><span>Reason for reversal</span><input onChange={(event) => setReversal((current) => ({ ...current, reason: event.target.value }))} placeholder="Required audit reason" value={reversal.reason} /></label>
+        <label className="invoice-check"><input checked={reversal.sync_woocommerce} onChange={(event) => setReversal((current) => ({ ...current, sync_woocommerce: event.target.checked }))} type="checkbox" /> Sync reverted stock to WooCommerce</label>
+        <div className="detail-actions"><button className="muted-button" onClick={() => setReversal(null)} type="button">Cancel</button><button className="danger-button" disabled={!reversal.preview.can_revert || reversal.reason.trim().length < 3 || loading} onClick={commitReversal} type="button"><RotateCcw size={16} aria-hidden="true" /> Revert Entire Receipt</button></div>
+      </div>}
+    </div>
   );
 }
 
@@ -8764,7 +9073,7 @@ function BulkReceivingSession({ locations, onCommitted }) {
     setLoading(true);
     setError('');
     try {
-      const payload = { ...bulkReceivingPayload(header, lines), source: 'manual' };
+      const payload = bulkReceivingPayload(header, lines);
       const result = await postJson('/api/receipts/bulk/commit', withMutationIdempotency(mutationRef, 'bulk-receipt', payload));
       setSummary(result);
       setLines([]);
@@ -8817,7 +9126,7 @@ function BulkReceivingSession({ locations, onCommitted }) {
       {commitReason && <p className="receiving-disabled-reason" id="bulk-receiving-commit-reason" role="status">Receive stock is unavailable: {commitReason}</p>}
       {loading && <div className="loading-strip">Checking receiving details...</div>}
       {error && <div className="api-error">{error} {error.startsWith('No Pongo product matches') && <a href="#/items/new">Add product</a>}</div>}
-      {summary && <div className="success-strip">Receipt {summary.receipt_number} committed. <a href={`${API_BASE_URL}/api/receipts/${summary.id}/export`}>Export CSV</a></div>}
+      {summary && <div className="success-strip document-success-strip"><span>Receipt {summary.receipt_number} committed.</span><ReceiptDocumentActions receipt={summary} /></div>}
       {preview && <BulkReceivingPreview preview={preview} />}
     </div>
   );
@@ -9014,9 +9323,23 @@ function ReceivingPreview({ preview }) {
   );
 }
 
+function ReceiptDocumentActions({ receipt }) {
+  const receiptId = receipt?.receipt_id ?? receipt?.id;
+  if (!receiptId) return null;
+  const receiptNumber = receipt.receipt_number || receiptId;
+  return (
+    <DocumentActions
+      compact
+      csvUrl={`${API_BASE_URL}/api/receipts/${receiptId}/export`}
+      pdfUrl={`${API_BASE_URL}/api/receipts/${receiptId}/pdf`}
+      title={`Receipt ${receiptNumber}`}
+    />
+  );
+}
+
 function ReceiptHistoryTable({ receipts, pagination, onLoad }) {
   return (
-    <TableShell caption={`${pagination?.total ?? receipts.length} receipt(s)`} columns={['Receipt Number', 'Warehouse', 'Reference Number', 'Status', 'Total Lines', 'Total Quantity', 'Received At', 'Created By']} pagination={serverTablePagination(pagination, 'receipts', (page) => onLoad({ page, page_size: pagination.page_size || 20 }), (pageSize) => onLoad({ page: 1, page_size: pageSize }))}>
+    <TableShell caption={`${pagination?.total ?? receipts.length} receipt(s)`} columns={['Receipt Number', 'Warehouse', 'Reference Number', 'Status', 'Total Lines', 'Total Quantity', 'Received At', 'Created By', 'Actions']} pagination={serverTablePagination(pagination, 'receipts', (page) => onLoad({ page, page_size: pagination.page_size || 20 }), (pageSize) => onLoad({ page: 1, page_size: pageSize }))}>
       {receipts.map((receipt) => (
         <tr key={receipt.id}>
           <td className="mono">{receipt.receipt_number}</td>
@@ -9027,11 +9350,12 @@ function ReceiptHistoryTable({ receipts, pagination, onLoad }) {
           <td>{formatNumber(receipt.total_quantity)}</td>
           <td>{formatDateTime(receipt.received_at || receipt.created_at)}</td>
           <td>{receipt.created_by}</td>
+          <td><ReceiptDocumentActions receipt={receipt} /></td>
         </tr>
       ))}
       {receipts.length === 0 && (
         <tr>
-          <td colSpan={8}>
+          <td colSpan={9}>
             <div className="empty-table-row">No receipts posted yet.</div>
           </td>
         </tr>
@@ -9384,6 +9708,7 @@ function ReceivedInventoryTable({ rows }) {
               <th>Total Received Value</th>
               <th>Reference Number</th>
               <th>Created By</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -9403,11 +9728,12 @@ function ReceivedInventoryTable({ rows }) {
                 <td>{isMissingValue(row.total_received_value) ? 'Not available' : formatCurrency(row.total_received_value)}</td>
                 <td className="mono">{row.reference_number}</td>
                 <td>{row.created_by}</td>
+                <td><ReceiptDocumentActions receipt={row} /></td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={14}>
+                <td colSpan={15}>
                   <div className="empty-table-row">No received inventory rows match the current filters.</div>
                 </td>
               </tr>
@@ -12010,10 +12336,7 @@ function AllocationDetailPanel({ allocation }) {
           <h2>{allocation.allocation_number}</h2>
           <p>{allocation.status} · {formatNumber(allocation.total_quantity_allocated)} reserved</p>
         </div>
-        <button className="action-button" onClick={() => exportAllocationCsv(allocation.id, allocation.allocation_number)} type="button">
-          <Download size={17} />
-          Export
-        </button>
+        <DocumentActions compact csvUrl={`${API_BASE_URL}/api/allocations/${allocation.id}/export`} pdfUrl={`${API_BASE_URL}/api/allocations/${allocation.id}/pdf`} title={`Allocation ${allocation.allocation_number}`} />
       </div>
       <TableShell caption={`${allocation.lines?.length || 0} allocation line(s)`} columns={['SKU', 'Qty', 'Allocated After', 'Before Sellable', 'After Sellable', 'Status']}>
         {(allocation.lines || []).map((line) => (
@@ -12086,10 +12409,7 @@ function PickDetailPanel({ pick }) {
           <h2>{pick.pick_number}</h2>
           <p>{pick.status} · {formatNumber(pick.total_quantity_picked)} picked</p>
         </div>
-        <button className="action-button" onClick={() => exportPickCsv(pick.id, pick.pick_number)} type="button">
-          <Download size={17} />
-          Export
-        </button>
+        <DocumentActions compact csvUrl={`${API_BASE_URL}/api/picks/${pick.id}/export`} pdfUrl={`${API_BASE_URL}/api/picks/${pick.id}/pdf`} title={`Pick ${pick.pick_number}`} />
       </div>
       {pick.notes && (
         <div aria-label="Pick note" className="pick-history-note" role="note">
@@ -12172,10 +12492,7 @@ function FulfillmentDetailPanel({ fulfillment }) {
           <h2>{fulfillment.fulfillment_number}</h2>
           <p>{fulfillment.status} · {formatNumber(fulfillment.total_quantity_fulfilled)} fulfilled</p>
         </div>
-        <button className="action-button" onClick={() => exportFulfillmentCsv(fulfillment.id, fulfillment.fulfillment_number)} type="button">
-          <Download size={17} />
-          Export
-        </button>
+        <DocumentActions compact csvUrl={`${API_BASE_URL}/api/fulfillments/${fulfillment.id}/export`} pdfUrl={`${API_BASE_URL}/api/fulfillments/${fulfillment.id}/pdf`} title={`Fulfillment ${fulfillment.fulfillment_number}`} />
       </div>
       <TableShell caption={`${fulfillment.lines?.length || 0} fulfillment line(s)`} columns={['SKU', 'Fulfilled', 'Fulfilled After', 'Remaining', 'Before Stock', 'After Stock', 'Before Allocated', 'After Allocated', 'Status']}>
         {(fulfillment.lines || []).map((line) => (
@@ -13321,7 +13638,7 @@ function RouteHistoryTable({ routes, pagination, filters, onLoad, detail, onSele
           <td>
             <div className="button-row compact table-button-row">
               <button className="muted-button" onClick={(event) => { event.stopPropagation(); onSelect(route.id); }} type="button">View</button>
-              <button className="action-button" onClick={(event) => { event.stopPropagation(); exportRouteCsv(route.id, route.route_number); }} type="button"><Download size={15} />CSV</button>
+              <DocumentActions compact csvUrl={`${API_BASE_URL}/api/routes/${route.id}/export`} pdfUrl={`${API_BASE_URL}/api/routes/${route.id}/pdf`} title={`Route ${route.route_number}`} />
               <button className="primary-button" onClick={(event) => { event.stopPropagation(); onFinalize(route.id); }} disabled={route.status !== 'draft'} type="button">Finalize</button>
               <button className="muted-button" onClick={(event) => { event.stopPropagation(); onCancel(route.id); }} disabled={route.status === 'cancelled'} type="button">Cancel</button>
             </div>
@@ -13375,10 +13692,7 @@ function RouteDetailPanel({ route, mapPayload, providerMessage, loading, onSaveM
           <h2>{route.route_number}</h2>
           <p>{route.status} · {route.total_stops} stop(s) · {route.route_date}</p>
         </div>
-        <button className="action-button" onClick={() => exportRouteCsv(route.id, route.route_number)} type="button">
-          <Download size={17} />
-          Export
-        </button>
+        <DocumentActions compact csvUrl={`${API_BASE_URL}/api/routes/${route.id}/export`} pdfUrl={`${API_BASE_URL}/api/routes/${route.id}/pdf`} title={`Route ${route.route_number}`} />
       </div>
       {route.notes && <div className="csv-note">{route.notes}</div>}
       <div className="receiving-form route-form">
@@ -15032,6 +15346,10 @@ function getHeaderMeta(route, items) {
     const meta = inventorySubpageMeta[route.inventoryView || 'all'] || inventorySubpageMeta.all;
     return { ...meta, tabs: [] };
   }
+  if (route.pageId === 'receiving') {
+    const receivingLabels = { direct: 'Direct receiving without PO', invoice: 'Invoice receiving', bulk: 'Bulk receiving session', history: 'Receipt history' };
+    return { ...pageMeta.receiving, kicker: receivingLabels[route.receivingView || 'direct'] };
+  }
   if (route.pageId === 'reports') {
     const report = allReportDefinitions.find((candidate) => candidate.key === route.reportKey) || allReportDefinitions[0];
     const category = reportCategories.find((candidate) => candidate.id === report.category);
@@ -15765,23 +16083,6 @@ async function exportCompletedOrdersCsv(filters) {
   URL.revokeObjectURL(url);
 }
 
-async function exportAllocationCsv(allocationId, allocationNumber) {
-  const response = await apiFetch(`${API_BASE_URL}/api/allocations/${allocationId}/export`);
-  if (!response.ok) {
-    showPlaceholder('Unable to export allocation from the backend.');
-    return;
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `pongo-allocation-${allocationNumber || allocationId}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
-
 async function exportAllocationExceptionsCsv(filters) {
   const response = await apiFetch(`${API_BASE_URL}/api/allocations/exceptions/export${plainFiltersToQueryString(allocationExceptionFiltersToApi(filters))}`);
   if (!response.ok) throw new Error(`Allocation exceptions export returned ${response.status}`);
@@ -15790,74 +16091,6 @@ async function exportAllocationExceptionsCsv(filters) {
   const link = document.createElement('a');
   link.href = url;
   link.download = 'pongo-allocation-exceptions.csv';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
-
-async function exportPickCsv(pickId, pickNumber) {
-  const response = await apiFetch(`${API_BASE_URL}/api/picks/${pickId}/export`);
-  if (!response.ok) {
-    showPlaceholder('Unable to export pick from the backend.');
-    return;
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `pongo-pick-${pickNumber || pickId}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
-
-async function exportFulfillmentCsv(fulfillmentId, fulfillmentNumber) {
-  const response = await apiFetch(`${API_BASE_URL}/api/fulfillments/${fulfillmentId}/export`);
-  if (!response.ok) {
-    showPlaceholder('Unable to export fulfillment from the backend.');
-    return;
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `pongo-fulfillment-${fulfillmentNumber || fulfillmentId}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
-
-async function exportRouteCsv(routeId, routeNumber) {
-  const response = await apiFetch(`${API_BASE_URL}/api/routes/${routeId}/export`);
-  if (!response.ok) {
-    showPlaceholder('Unable to export route CSV from the backend.');
-    return;
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `pongo-route-${routeNumber || routeId}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
-
-async function exportCycleCountCsv(cycleCountId, countNumber) {
-  const response = await apiFetch(`${API_BASE_URL}/api/cycle-counts/${cycleCountId}/export`);
-  if (!response.ok) {
-    showPlaceholder('Unable to export cycle count CSV from the backend. Start the FastAPI server and try again.');
-    return;
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `pongo-cycle-count-${countNumber || cycleCountId}.csv`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -15934,6 +16167,20 @@ async function postJson(path, payload, options = {}) {
     try {
       const body = await response.json();
       detail = apiErrorDetail(body);
+    } catch {
+      detail = await safeResponseText(response);
+    }
+    throw new Error(detail || `API returned ${response.status}`);
+  }
+  return response.json();
+}
+
+async function postForm(path, formData) {
+  const response = await apiFetch(`${API_BASE_URL}${path}`, { method: 'POST', body: formData });
+  if (!response.ok) {
+    let detail = '';
+    try {
+      detail = apiErrorDetail(await response.json());
     } catch {
       detail = await safeResponseText(response);
     }

@@ -50,15 +50,55 @@ class BulkReceiptLineInput(BaseModel):
 
 
 class BulkReceiptRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     idempotency_key: str | None = Field(default=None, max_length=120)
     warehouse: str | None = None
+    reference_number: str | None = Field(default=None, max_length=120)
+    receipt_date: date | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+    commit_valid_lines_only: bool = False
     lines: list[BulkReceiptLineInput] = Field(default_factory=list)
 
 
 class BulkReceiptCommitRequest(BulkReceiptRequest):
     idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class InvoiceReceiptLineInput(BaseModel):
+    source_line_number: int = Field(ge=1)
+    item_id: int
+    upc: str = Field(min_length=1, max_length=120)
+    invoice_description: str = Field(min_length=1, max_length=500)
+    uom: str = Field(min_length=1, max_length=20)
+    shipped_quantity: float = Field(gt=0)
+    pack_multiplier: int = Field(default=1, ge=1, le=1000)
+    quantity_pieces: float = Field(gt=0)
+    net_price: float = Field(gt=0)
+    unit_cost: float = Field(gt=0)
+    inventory_location: str = Field(min_length=1, max_length=200)
+    review_required: bool = False
+    human_verified: bool = False
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class InvoiceReceiptCommitRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    supplier: str = Field(min_length=1, max_length=120)
+    invoice_number: str = Field(min_length=1, max_length=120)
+    invoice_date: date | None = None
+    document_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    warehouse: str = Field(default="Main Warehouse", min_length=1, max_length=120)
+    duplicate_override: bool = False
+    override_reason: str | None = Field(default=None, max_length=500)
+    sync_woocommerce: bool = True
+    lines: list[InvoiceReceiptLineInput] = Field(min_length=1)
+
+
+class InvoiceReceiptReversalRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=3, max_length=500)
+    sync_woocommerce: bool = True
 
 
 class DirectReceiptLinePreview(BaseModel):
@@ -129,6 +169,7 @@ class ReceiptRead(BaseModel):
     receipt_number: str
     receipt_type: str | None = None
     status: str | None = None
+    client: str | None = None
     warehouse: str | None = None
     reference_number: str | None = None
     notes: str | None = None

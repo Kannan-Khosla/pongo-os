@@ -10,7 +10,6 @@ import {
   Download,
   ExternalLink,
   FileSpreadsheet,
-  FileText,
   LoaderCircle,
   Mail,
   RefreshCw,
@@ -29,6 +28,7 @@ import {
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import { apiFetch } from './api';
+import DocumentActions from './DocumentActions';
 import MultiSelectFilter from './MultiSelectFilter';
 
 echarts.use([
@@ -790,14 +790,16 @@ export default function ReportIntelligencePage({ apiBaseUrl, reportKey }) {
                     <small>{previewPagination.total.toLocaleString()} rows • generated {new Date(run.generated_at).toLocaleString('en-CA')}</small>
                   </div>
                   <div>
-                    {report.formats.includes('csv') && (
+                    {report.formats.includes('pdf') ? (
+                      <DocumentActions
+                        compact
+                        csvUrl={report.formats.includes('csv') ? `${apiBaseUrl}/api/reports/runs/${run.run_id}/csv` : undefined}
+                        pdfUrl={`${apiBaseUrl}/api/reports/runs/${run.run_id}/pdf`}
+                        title={`${report.title} · run ${run.run_id}`}
+                      />
+                    ) : report.formats.includes('csv') && (
                       <a href={`${apiBaseUrl}/api/reports/runs/${run.run_id}/csv`} className="ri-action-button">
                         <Download size={16} />CSV
-                      </a>
-                    )}
-                    {report.formats.includes('pdf') && (
-                      <a href={`${apiBaseUrl}/api/reports/runs/${run.run_id}/pdf`} className="ri-action-button">
-                        <FileText size={16} />PDF
                       </a>
                     )}
                   </div>

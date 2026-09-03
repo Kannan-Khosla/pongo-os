@@ -310,6 +310,7 @@ def receipt_to_read(receipt: Receipt) -> ReceiptRead:
         receipt_number=receipt.receipt_number,
         receipt_type=receipt.receipt_type,
         status=receipt.status,
+        client=receipt.client,
         warehouse=receipt.warehouse,
         reference_number=receipt.reference_number,
         notes=receipt.notes,

@@ -191,6 +191,7 @@ def test_allocation_list_detail_and_export(client, monkeypatch):
     listing = client.get("/api/allocations")
     detail = client.get(f"/api/allocations/{allocation_id}")
     exported = client.get(f"/api/allocations/{allocation_id}/export")
+    pdf_preview = client.get(f"/api/allocations/{allocation_id}/pdf", params={"preview": True})
 
     assert listing.status_code == 200
     assert listing.json()["total"] == 1
@@ -198,6 +199,8 @@ def test_allocation_list_detail_and_export(client, monkeypatch):
     assert len(detail.json()["lines"]) == 1
     assert detail.json()["audit_event_ids"]
     assert exported.status_code == 200
+    assert pdf_preview.content.startswith(b"%PDF")
+    assert pdf_preview.headers["content-disposition"].startswith("inline;")
     rows = list(csv.DictReader(StringIO(exported.text)))
     assert detail.json()["auto_allocated"] is True
     assert rows[0]["Allocation Number"] == detail.json()["allocation_number"]

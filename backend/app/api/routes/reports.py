@@ -60,6 +60,7 @@ from app.services.report_jobs import (
     report_job_to_dict,
 )
 from app.services.auth import authenticated_actor
+from app.services.pdf_exports import pdf_content_disposition
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -290,14 +291,14 @@ def download_report_csv(run_id: str, db: Session = Depends(get_db)) -> Response:
 
 
 @router.get("/runs/{run_id}/pdf")
-def download_report_pdf(run_id: str, db: Session = Depends(get_db)) -> Response:
+def download_report_pdf(run_id: str, preview: bool = False, db: Session = Depends(get_db)) -> Response:
     run = require_report_run(db, run_id)
     pdf_artifact = require_report_artifact(run, "pdf")
     return StreamingResponse(
         BytesIO(pdf_artifact),
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="pongo-{run.report_key}-{run.id}.pdf"',
+            "Content-Disposition": pdf_content_disposition(f"pongo-{run.report_key}-{run.id}.pdf", preview),
             "Content-Length": str(len(pdf_artifact)),
             "X-Report-Data-SHA256": run.data_hash,
             "X-Artifact-SHA256": run.pdf_artifact_hash,

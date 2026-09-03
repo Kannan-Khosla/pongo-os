@@ -144,7 +144,7 @@ def next_bulk_receipt_number(db: Session, now: datetime | None = None) -> str:
 
 
 def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
-    mutation, replay = begin_stock_mutation(db, "bulk_receipt", payload.get("idempotency_key"), payload)
+    mutation, replay = begin_stock_mutation(db, payload.get("mutation_type") or "bulk_receipt", payload.get("idempotency_key"), payload)
     if replay is not None:
         return replay
 
@@ -168,9 +168,10 @@ def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
     default_warehouse = (payload.get("warehouse") or "Main Warehouse").strip() or "Main Warehouse"
     receipt = Receipt(
         receipt_number=next_bulk_receipt_number(db, now),
-        receipt_type="bulk",
+        receipt_type=payload.get("receipt_type") or "bulk",
         status="committed",
         source=payload.get("source") or "manual",
+        client=payload.get("client"),
         warehouse=default_warehouse,
         reference_number=payload.get("reference_number"),
         notes=payload.get("notes"),
@@ -194,6 +195,7 @@ def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
             raise ValueError(match_error or "No matching item was found.")
         quantity = to_decimal(line.get("quantity", line.get("quantity_received")))
         unit_cost = receiving_unit_cost(item, line.get("unit_cost"))
+        previous_unit_cost = to_decimal(item.unit_cost)
         warehouse = (line.get("warehouse") or default_warehouse).strip() or default_warehouse
         inventory_location = (line.get("inventory_location") or "").strip()
         get_or_create_item_location(db, item, warehouse, inventory_location)
@@ -205,7 +207,7 @@ def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
             quantity,
             unit_cost=unit_cost,
             reference_number=receipt.receipt_number,
-            reference_type="bulk_receipt",
+            reference_type=payload.get("reference_type") or "bulk_receipt",
             reference_id=receipt.id,
             notes=line.get("notes"),
             created_by=payload.get("created_by") or "system",
@@ -225,6 +227,7 @@ def commit_bulk_receipt(payload: dict[str, Any], db: Session) -> dict[str, Any]:
             quantity_received=quantity,
             uom=item.unit_of_measurement,
             unit_cost=unit_cost,
+            previous_unit_cost=previous_unit_cost,
             unit_cost_total=line_cost,
             sales_price=to_decimal(line.get("sales_price")) if line.get("sales_price") not in (None, "") else item.sales_price,
             weight=to_decimal(line.get("weight")) if line.get("weight") not in (None, "") else item.weight,

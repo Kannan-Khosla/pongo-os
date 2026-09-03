@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.schemas.fulfillments import FulfillmentCommitResponse, FulfillmentDetail, FulfillmentListResponse, FulfillmentPreviewResponse, FulfillmentRequest
 from app.services.fulfillments import commit_fulfillment, export_fulfillment_csv, fulfillment_to_read, get_fulfillment_detail, list_fulfillments_page, preview_fulfillment
 from app.services.auth import authenticated_actor
+from app.services.pdf_exports import pdf_content_disposition, tabular_pdf_bytes
 
 router = APIRouter(prefix="/fulfillments", tags=["fulfillments"])
 
@@ -77,4 +78,16 @@ def export_fulfillment_record(fulfillment_id: int, db: Session = Depends(get_db)
         content=csv_text,
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="pongo-fulfillment-export.csv"'},
+    )
+
+
+@router.get("/{fulfillment_id}/pdf")
+def fulfillment_record_pdf(fulfillment_id: int, preview: bool = False, db: Session = Depends(get_db)) -> Response:
+    csv_text = export_fulfillment_csv(db, fulfillment_id)
+    if csv_text is None:
+        raise HTTPException(status_code=404, detail="Fulfillment not found")
+    return Response(
+        content=tabular_pdf_bytes(csv_text, f"Fulfillment record {fulfillment_id}"),
+        media_type="application/pdf",
+        headers={"Content-Disposition": pdf_content_disposition(f"pongo-fulfillment-{fulfillment_id}.pdf", preview)},
     )

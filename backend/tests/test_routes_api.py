@@ -483,6 +483,7 @@ def test_route_list_detail_export_finalize_cancel(client, monkeypatch):
     listing = client.get("/api/routes")
     detail = client.get(f"/api/routes/{route_id}")
     exported = client.get(f"/api/routes/{route_id}/export")
+    pdf_preview = client.get(f"/api/routes/{route_id}/pdf", params={"preview": True})
     finalized = client.post(f"/api/routes/{route_id}/finalize")
 
     assert listing.status_code == 200
@@ -496,6 +497,8 @@ def test_route_list_detail_export_finalize_cancel(client, monkeypatch):
     assert detail.json()["map_provider"] == "google"
     assert detail.json()["optimization_status"] == "manual"
     assert exported.status_code == 200
+    assert pdf_preview.content.startswith(b"%PDF")
+    assert pdf_preview.headers["content-disposition"].startswith("inline;")
     header = exported.text.splitlines()[0].split(",")
     assert header == [
         "Route Number",

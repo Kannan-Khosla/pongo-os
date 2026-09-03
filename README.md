@@ -233,6 +233,8 @@ Current local build now includes:
 - Production-grade Items and Inventory controls: rich filters, image-aware table rows, column visibility, saved item views, shared safe bulk editing for non-unique metadata/tags/locations/costs, debounced keyword search with live item/SKU suggestions, and an Item Detail Control Center.
 - Item Detail Control Center tabs for overview, stock by location, activity, history, and metadata edit. Stock quantity edits remain routed through receiving, cycle count, or adjustment workflows.
 - Bulk Receiving Session under Receiving. It previews multi-row receiving carts, commits valid rows into one local receipt, updates `inventory_item_locations`, recalculates item aggregate stock fields, and creates stock movements.
+- In-app PDF document preview with direct PDF and CSV downloads for existing and newly committed receipts, cycle counts, allocations, picks, fulfillments, routes, and verified report runs.
+- Invoice Receiving under Receiving. Staff upload a supplier PDF, review exact UPC matches, case-to-piece conversions, unmatched products, and manual quantity/cost adjustments, then add the approved pieces to current stock. Supplier/invoice and PDF-hash duplicate guards prevent accidental double receiving; committed invoice receipts can be reverted once through an audited compensating transaction.
 - Scanner page for inventory lookup, location lookup, receiving, cycle count,
   and adjustment. Items and every Inventory subpage also provide an on-demand
   phone-camera scanner for QR codes and product barcodes. Pick Orders uses

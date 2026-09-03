@@ -3,91 +3,105 @@ Report schema version: 1.0
 Purpose: Living current-state review plus complete append-only audit history.
 
 === 00. CURRENT STATUS UPDATE ===
-Authoritative as of: 2026-08-08T20:53:34Z
-Scope: Release-integrity and performance remediation requested after the 2026-08-08T03:47:47Z audit.
-Result: The requested backup/E2E/dependency/Alembic/pagination/SQL-bounding sequence is implemented and its isolated local release gate is green. No production, Heroku, customer database, or live WooCommerce service was accessed or changed.
-Closed by this remediation: DB-001, QA-001, QA-002, SYS-004, FE-002, FE-003, FE-004, BE-007, QA-004, and DB-007.
-Current validation: 501 backend tests passed with PostgreSQL enabled; 132 frontend tests passed; production build passed; Python and npm audits found no known vulnerabilities; migration upgrade/downgrade/re-upgrade and Alembic drift check passed at 20260807_0037; the hardened backup verifier restored the exact head and all 52 ORM application tables; both active zero-retry Playwright journeys passed from a clean PostgreSQL database (one evidence-capture test remains intentionally skipped).
-Current release posture: The release machinery repaired in this scope is trustworthy locally, but the overall product remains DO NOT DEPLOY until the unrelated inherited P1 safety findings still listed in the open register are resolved or deliberately accepted. In particular, this run does not close Woo write-ownership, cycle-count/manual-allocation locking, false invoice/bulk-preview findings, live data-quality/readiness, or deployment-gate enforcement.
-Supersession note: Sections 01-21 preserve the full 2026-08-08T03:47:47Z audit context and evidence. This section plus the appended 2026-08-08T20:53:34Z run are the authoritative update for the remediated findings.
+Authoritative as of: 2026-08-14T19:10:16Z
+Scope: Focused production catalog, Woo mapping, order-line matching, legacy CSV, and stock-direction audit.
+Result: The reported 229 rows are not 229 currently missing Woo products. They are exact legacy-file SKUs absent from an older 1,307-row Pongo export and include aliases and duplicates. A fresh read-only Woo pull found 1,313 current eligible Woo SKU records, 1,308 Pongo items, 1,307 shared identities, six Woo records absent locally, and one local record outside the current eligible Woo set. The four screenshot products already exist and are mapped; active processing orders currently have zero positive-quantity unmatched lines.
+Immediate safety posture: Production is in Woo Read & write mode, with no pending writeback queue rows or stock jobs. Do not run catalog commit or stock synchronization during recovery until access is changed to Read only and a verified backup exists. Existing stock sync sends Pongo sellable stock to Woo; it does not import Woo stock.
+Current stock evidence: For the 1,307 shared identities, live Woo quantity differs from Pongo sellable on only three rows by one unit each. Two Woo values are -1 and cannot be imported into Pongo's nonnegative stock model; the third is Woo 0 versus Pongo sellable 1. No stock was changed.
+New focused findings: SYS-005, DB-008, and BE-009. Prior closed findings remain closed; inherited open findings were not broadly revalidated.
+No application code, configuration, production database row, Woo product, order, or stock value was changed. PRODUCT_AUDIT.txt is the only repository file updated by this run.
 
 === 01. AUDIT METADATA ===
 Project: Pongo Inventory OS (PongoOS)
 Repository root: /Users/kannankhosla/Desktop/Codex/pongoOS
-Audit timestamp: 2026-08-08T03:47:47Z
-Audit mode: Full pre-deployment mock run and release-candidate audit
-Requested scope: Exercise the complete current application before deployment, including backend end-to-end behavior, frontend end-to-end behavior, PostgreSQL migrations/concurrency, dependencies, production build, and a self-directed search for breaking defects.
-Inspected scope: FastAPI routes/services and critical stock/order/Woo contracts; React application routes and primary operator screens; isolated authenticated browser page sweep; Playwright production-chain and item-import journeys; complete backend and frontend test suites; PostgreSQL migration upgrade/downgrade/re-upgrade and concurrency suite; Alembic drift check; backup/restore gate contract; dependency audits; production frontend build; release workflow; current performance bounds; invoice and bulk-edit workflows.
-Uninspected scope: Production/customer data, live Heroku runtime, live WooCommerce, outbound email/Google Sheets, real printer/scanner hardware, production backup artifact, production PostgreSQL query plans/telemetry, destructive external writes, load/soak/penetration testing, and a full assistive-technology session.
+Audit timestamp: 2026-08-14T19:10:16Z
+Audit mode: Focused cross-layer production reconciliation audit
+Requested scope: Explain why Woo products, Pongo items, 229 legacy CSV SKUs, and order rows appear inconsistent; determine the current production truth; provide a concrete safe backend/frontend/data recovery plan without mutating data.
+Inspected scope: Current item/catalog/order/remap/stock-writeback code paths and tests; production inventory, mapping, order-line, sync-history, access-mode, writeback-queue, and stock-job aggregates through read-only SQL; two supplied CSV exports; read-only live Woo published product/variation and stock capture; screenshot semantics; prior audit memory and product constraints.
+Uninspected scope: Authenticated production UI rendering, production backup/restore execution, mutating reconciliation preview/commit, direct Woo writes, unpublished/private Woo catalog completeness beyond order-referenced cases, production telemetry/query plans, staff acceptance testing, and post-fix deployment verification.
 Branch: codex/pongo-os-new-design-by-kannan-july-17
-HEAD: 100970f18086b998925ba000ab41098584bc7baf
-Baseline: Incremental full-system verification against the 2026-08-07T07:07:40Z Full Baseline and the 2026-08-08T03:39:54Z performance follow-up preserved in section 22. Inherited findings remain open unless this run provides explicit closure evidence.
-Deployed state: Not inspected or changed. No deployment, production configuration change, production database access, live WooCommerce operation, email, or Sheets action was performed.
-Dirty working tree: An active, pre-existing implementation contained 33 modified files and two untracked application files plus one untracked migration. Those changes were treated as user/other-agent work and were not edited, staged, committed, or deployed. PRODUCT_AUDIT.txt is the only file written by this audit.
+HEAD: 71fef06ecd8aaf59908f5c55a1bec168dd996156
+Baseline: Focused update to the living audit after the 2026-08-08T20:53:34Z release-integrity remediation. Inherited findings remain open unless this run directly revalidated them.
+Deployed state: Inspected read-only. Production PostgreSQL and live Woo were queried only for aggregate/product reconciliation evidence. No deployment, configuration change, database mutation, Woo write, email, or Sheets action was performed.
+Dirty working tree: Two pre-existing untracked directories were present: outputs/019fd334-5b4a-7a63-a289-ff8d826b30c1/ and the-os-showcase/. They were treated as user-owned and not modified by this audit.
 Instruction and requirement sources: Repository AGENTS.md; README.md; docs/PRODUCT_REQUIREMENTS.md; docs/ARCHITECTURE.md; docs/DEPLOYMENT.md; docs/OPERATIONS.md; docs/REPORTING.md; docs/SECURITY.md; Procfile; app.json; package manifests and lockfiles; GitHub release-gate workflow; audit-product-system skill and all of its role, severity, report-contract, and self-improvement references.
-Specialist execution method: The lead ran the complete isolated test matrix and authenticated browser sweep. Four independent read-only specialists reviewed backend, frontend, database, and program/release behavior; the lead performed the fifth QA perspective and reconciled only independently supported findings. Only the lead wrote this artifact.
-Checks permitted: Read-only code/config inspection; disposable local PostgreSQL and fake WooCommerce services; isolated authentication and application data; local tests/build/audits; and non-mutating repository checks.
-Checks executed: Complete backend pytest on default test configuration and again with PostgreSQL enabled; all PostgreSQL concurrency tests; complete frontend Vitest; Vite production build; npm production and full audits; Python pip-audit; fresh PostgreSQL Alembic upgrade/downgrade/re-upgrade; Alembic drift check; disposable backup and restore probe; Playwright E2E chain; authenticated browser sweep of all principal routes at documented laptop width; source-level five-role audit; git diff checks.
-Checks failed: Playwright's two active journeys failed; full npm audit failed on two high-severity development-only dependency advisories; `alembic check` reported two raw-SQL reporting indexes as removals; the backup verifier remains pinned to migration 0027; one frontend report test was nondeterministic across repeated runs; the Routes screen deterministically crashed during the manual browser sweep.
-Checks skipped or unavailable: One Playwright evidence-capture test is intentionally skipped. Live WooCommerce, Heroku, production PostgreSQL/load/device/printer/scanner, email/Sheets, destructive writes, and assistive-technology checks were not run.
+Specialist execution method: Three independent read-only specialists audited CSV identity data, mapping/order code, and production recovery. The lead independently queried production and live Woo read-only, reconciled evidence, and alone updated this artifact.
+Checks permitted: Read-only graph/source inspection, CSV analysis, production SQL SELECT statements, and live Woo GET requests through the backend's configured client.
+Checks executed: Exact/raw/normalized CSV comparison; production item and order-line mapping queries; production sync-error/history and schema checks; current access/writeback queue/job checks; complete current Woo published sellable product/variation pull; current Woo-to-Pongo identity and stock comparison.
+Checks failed: None. Historical sync logs contain 444 description-length failures, but all 389 distinct affected identities now exist in production after the description column migration.
+Checks skipped or unavailable: No production mutation, backup/restore, catalog commit, stock adjustment, order remap, UI session, full test suite, load test, or deployment was attempted. Unpublished/private Woo items were not included in the fresh bulk pull.
 
 === 02. CURRENT EXECUTIVE SUMMARY ===
-The release candidate is not safe to deploy. The broad backend regression result is strong: 452 tests passed with PostgreSQL enabled, including all eight real concurrency/advisory-lock tests. The final frontend run passed all 121 tests, the production build passed, Python and production npm dependencies were clean, and a fresh PostgreSQL schema completed upgrade/downgrade/re-upgrade through 20260807_0037.
+The catalog is not broadly destroyed, and the 229 figure is not the current Woo gap. The old CSV has 1,532 exact SKUs; the older Pongo enrichment export has 1,307; 1,303 overlap and 229 are old-file-only. After deterministic alias/barcode cleanup, 205 identities remain; up to nine title-only candidates need manual review. Those legacy quantities are stale and must not be imported.
 
-Those green results do not cover several deterministic failures. Opening Routes throws an unhandled `ReferenceError` and blanks the workspace. Inventory By Location silently stops at 1,000 rows while the current catalog is larger. A keyboard user can change a bulk-edit selection after preview and commit edits to unreviewed items. Invoices printed from open orders always claim `Completed`. The release gate cannot become green because backup verification expects migration 0027, the two active Playwright journeys do not work from a clean authenticated database, and full npm audit fails on test-only packages.
+A fresh production comparison found six current Woo records absent from Pongo: SKUs ELON, kimjongun, vlad, 12577, 344131, and 471973. Pongo also has one mapped item, SKU 813188, that is not in the current published/purchasable Woo result. Among 1,307 shared records, live Woo and Pongo sellable stock differ on only three rows by one unit each. This is a narrow reconciliation, not a 1,500-product stock replacement.
 
-The recent performance work is present for All Inventory and Open/Allocate/Pick queues, but it is incomplete across By Location, Receiving, Completed Orders, histories, and post-mutation refreshes. Woo reconciliation also creates unbounded run history and scans every operational order for every imported batch. These issues will make the application progressively slower even though the present small-dataset tests pass.
+The screenshot exposes a second defect: Allocation calls a row “Unmatched Item” based on the stored order-line match status, not catalog existence. The four pictured products already have local and Woo identities. Current active processing lines are matched, while old completed rows retain stale statuses. Catalog sync does not repair those historical/order-line states, and matching rules differ across catalog, orders, remap, and scanner paths.
 
-Recommendation: NO-GO. Fix the deterministic UI/document defects and restore one green, fresh-database release chain before deployment. Retain the current production write safeguards while inherited stock-safety findings remain open.
+Recommendation: do not bulk-create 229 products and do not copy Woo quantity directly into Pongo physical stock. First change Woo access to Read only and take a verified backup. Then deploy one previewed reconciliation using exact Woo identity, exact normalized SKU, reviewed aliases/barcodes, order-line healing, and an audited Woo-to-Pongo baseline where Pongo in_stock equals Woo sellable plus current allocations. Re-enable outbound writeback only after equality and conflict checks pass.
 
 === 03. CURRENT HEALTH SNAPSHOT ===
-Overall: RED for authoritative-production promotion; AMBER for contained internal evaluation.
-Program/product: AMBER. Core modules match the stated MVP, but several UI/API promises do not match behavior and staff authorization remains an explicit unresolved decision.
-Backend: RED-AMBER. Strong service separation and broad tests coexist with P1 writeback, ownership, completion, and concurrency-contract defects.
-Frontend: RED. Unit tests/build pass, but Routes crashes, invoices can be false, bulk-edit preview targets are mutable, location inventory is truncated, and one report test is flaky.
-QA/release: RED. Both active browser E2E journeys fail, full npm audit is non-green, and the backup/restore gate is pinned to an obsolete migration.
-Database/data: RED-AMBER. Fresh PostgreSQL migrations and the full concurrency suite pass, but backup verification, cycle-count locking/idempotency, raw-index metadata drift, and inherited production-data findings remain open.
-Operations/security: AMBER from repository tests and inherited containment evidence. Live health/auth/readiness were not rechecked in this isolated run; alert and authority/writeback decisions remain open.
-Current finding count: P0 0; P1 17; P2 14; P3 0. Total open findings: 31. No finding was closed in this run.
+Overall: RED for unattended catalog/stock recovery; AMBER for continued use if staff avoid catalog commit/stock sync until containment.
+Program/product: RED-AMBER. Three different states are called “unmatched,” leading operators toward duplicate creation or unsafe stock action.
+Backend: RED-AMBER. Current active order lines are healthy, but catalog commit does not heal stale order lines and no safe inbound Woo-stock baseline exists.
+Frontend: AMBER. The visible badge and barcode-matching copy do not truthfully describe backend behavior; authenticated live rendering was not rechecked.
+QA/release: AMBER. This focused audit produced strong current data evidence but did not run the complete release gate or a mutating recovery rehearsal.
+Database/data: RED-AMBER. Current identities are mostly aligned, but uniqueness is not guaranteed and 229 legacy-only SKUs still need disposition before metadata/location import.
+Operations/security: RED for recovery while Woo access remains Read & write; no outstanding writeback/job rows existed at inspection time.
+Current register after this focused run: P0 0; P1 15; P2 9; P3 0; 24 open inherited/new findings and 10 previously closed findings. Inherited counts were not broadly revalidated.
 
 === 04. RELEASE RECOMMENDATION ===
 DO NOT RELEASE
 
-Meaning: do not perform another production promotion and do not enable PongoOS WooCommerce stock authority/writeback until the listed P1 blockers are resolved and a complete release gate is green. The prior baseline found the deployed app contained by authentication and disabled writeback; this run did not recheck live state and is not a request for an untested rollback.
+Meaning for this scope: do not deploy or run a mutating catalog/stock recovery while production is in Read & write. The recovery build must first be proven against an immutable preview and disposable production-copy rehearsal, then deployed while Woo access is Read only.
 
 Current release blockers:
-- FE-004: Routes always throws an unhandled reference error and blanks the workspace.
+- SYS-005: catalog, legacy CSV, and order-line “unmatched” states are conflated; six current Woo products remain absent locally.
+- DB-008: matching rules and database uniqueness do not guarantee one item per Woo identity.
+- BE-009: no audited Woo-to-Pongo stock baseline exists; the existing stock job writes in the opposite direction.
 - FE-005: bulk-edit commit can target a different item selection than the reviewed preview.
 - FE-006: invoices printed from open orders falsely state that the order is completed.
-- SYS-004: Inventory By Location silently omits rows beyond 1,000 and other operational surfaces remain unbounded.
 - SYS-001: Heroku deployment can complete while the same commit's release gate is failing.
-- DB-001: Backup/restore verification is pinned to migration 20260731_0027 while current schema is 20260807_0037.
-- QA-001: both active isolated browser journeys fail from a fresh database due to missing/stale authentication and location setup.
-- QA-002: the exact full npm audit used by the release workflow fails on two high-severity development-only advisories.
 - DB-002 and DB-003: cycle counts and manual allocations do not share a complete stock lock/idempotency contract.
 - BE-001, BE-002, BE-003: WooCommerce writeback and field-ownership safety contracts are not enforced at the server boundary.
 - SYS-002: orders completed without picking remain eligible as route candidates.
 - DB-004: a historical migration depends on current ORM metadata, making clean historical reconstruction non-deterministic.
-- DB-005 and SYS-003: live readiness is 503 due to missing costs, missing alerting, and deliberately disabled stock authority/writeback.
+- DB-005 and SYS-003: cost/alert/readiness prerequisites remain open from the prior audit and were not revalidated; production is already Read & write.
 
-Evidence supporting the implementation: 452 PostgreSQL-enabled backend tests, 121 final frontend tests, production build, dependency checks for Python/runtime npm, a fresh PostgreSQL migration cycle, and the isolated authenticated route sweep all completed. This is test evidence, not evidence about the live deployment.
+Current evidence: live read-only Woo/Pongo identity and stock comparisons, production SQL mapping/order/queue checks, exact CSV forensics, and code-path tracing. This focused run did not revalidate every inherited blocker or the complete release gate.
 
 === 05. CRITICAL FINDINGS ===
 No P0 findings.
 
-The most urgent current P1 cluster is deterministic operator-visible failure plus a release chain that cannot prove itself:
-1. Routes crashes every time it renders because it references two variables that are not in scope (FE-004).
-2. Open-order invoices claim `Completed`, creating inaccurate customer/bookkeeping documents (FE-006).
-3. Inventory By Location silently truncates after 1,000 rows, and bulk-edit commit can act on item IDs that were never part of the preview (SYS-004, FE-005).
-4. A correct migration restore at 0037 is rejected because the verifier expects 0027; both active browser E2E journeys also fail from clean state, and full npm audit blocks the same gate (DB-001, QA-001, QA-002).
-5. Cycle counts still do not use the shared stock lock/idempotency ledger, so concurrent or retried counts can produce conflicting audit history (DB-002).
+The most urgent P1 cluster for this request is catalog identity and stock direction:
+1. Six current Woo products are absent locally, while the 229 legacy-only SKUs include aliases and obsolete/unknown records; bulk creation would create duplicates (SYS-005).
+2. Catalog, order, remap, and scanner matching use different rules, and the database does not guarantee a single active item for one Woo identity (DB-008).
+3. Product sync creates missing local items at zero and only saves the Woo quantity as a snapshot. The existing stock job sends Pongo sellable to Woo, so running it during recovery can overwrite correct Woo stock (BE-009).
+4. Production is presently Read & write. No queued/failed stock action existed during inspection, but containment must precede any catalog commit.
+5. Existing inherited P1 release/mutation findings remain open unless separately proven resolved.
 
 === 06. CROSS-ROLE CONSENSUS ===
-All five perspectives converged on NO-GO. Program and frontend independently confirmed the Routes crash and false invoice status. Frontend and QA agree that browser-visible behavior is not represented by the passing unit suite. Database and QA agree the current release gate deterministically rejects a valid restored schema. Backend and frontend agree that several remaining unbounded queries and refresh chains will worsen latency as order and sync history grows.
+All focused reviewers agree that “229 missing,” “local item not mapped,” “Woo product absent from Pongo,” and “order line unmatched” must remain separate directional counts. They also agree the legacy CSV is useful for metadata and locations but not for current stock.
 
-The strongest positive consensus is that core stock/order services have broad automated protection: the full PostgreSQL-enabled suite and concurrency tests are green, Woo calls remain backend-owned, critical mutations generally use locks/idempotency, reporting snapshots are evidence-hashed, and production build/runtime dependency checks pass. The exception is cycle-count mutation, which database review reconfirmed as outside the shared lock/retry contract.
+Backend and database reviews agree on one minimal root fix: a shared fail-closed resolver plus post-catalog order-line healing, followed by uniqueness constraints only after cleanup. Product and QA reviews agree that every automatic match must show its method and that aliases/barcodes/title candidates require review. All reviewers agree Woo quantity corresponds to Pongo sellable, so the inbound baseline must set physical stock to captured Woo quantity plus surviving allocations through audited movements.
 
 === 07. RECOMMENDED IMPROVEMENT ORDER ===
+Stage 0 - Contain the recovery window.
+Change persisted Woo access to Read only, pause stock/order mutations, confirm queues/jobs are empty, create a verified PostgreSQL backup, and capture immutable Woo catalog/stock/open-order inputs. This must happen before a catalog commit because production is currently Read & write.
+
+Stage 1 - Deploy the smallest reconciliation repair.
+Reuse the existing item-identifier and remap machinery. Add one shared resolver ordered by exact Woo identity, exact normalized SKU, then reviewed unique barcode/leading-zero alias. Any duplicate or disagreement is a conflict. After catalog map/create, heal NULL/unknown/unmatched order lines for that exact remote identity and run FIFO allocation once per batch. Preserve processed/history-sensitive mappings for explicit review.
+
+Stage 2 - Reconcile current Woo and the legacy CSV without stock.
+Create the six current Woo records missing from Pongo, review the one local record outside current eligible Woo scope, and give all 229 legacy-only SKUs a recorded disposition. Import only approved metadata and multiple location rows. Do not import the legacy 733 units.
+
+Stage 3 - Apply one audited Woo-to-Pongo baseline.
+For each mapped stock-managed item with a nonnegative captured Woo quantity, target Pongo sellable to Woo. After order reconciliation, set Pongo in_stock to captured Woo quantity plus allocated through the existing locked/idempotent adjustment and audit path. Block negative/null quantities, missing locations, conflicts, or stale previews.
+
+Stage 4 - Verify and canary outbound writes.
+Require zero active unmatched lines, zero duplicate identities, stock/location invariants, and Pongo sellable equal to the captured Woo quantity. Revalidate/cancel stale outbound work, test 5-10 low-risk equal-quantity canaries, and only then restore Read & write.
+
+Inherited stages below remain applicable after this focused recovery:
 Stage 1 - Fix deterministic user-visible blockers.
 Correct the Routes variable names and add an error boundary/regression test; derive invoice status from the actual order or restrict invoice printing to completed orders; snapshot bulk-edit target IDs at preview and invalidate the preview on any target change; remove the 1,000-row location ceiling with stable server pagination and accurate totals.
 
@@ -124,6 +138,9 @@ Only after Stages 1-6 acceptance criteria are met: take a backup, run a restore 
 - Explicitly deferred unless requested: suppliers, purchase orders, quote portals, complex delivery stages, EOQ/ABC forecasting, and generic warehouse expansion.
 - MVP authentication may be simple, but production must remain authenticated and registration controlled.
 - Operational priority: correct inventory state and auditable transitions over feature breadth.
+- Current owner decision for this recovery: old CSV stock is stale; current Woo quantity is the temporary baseline for Pongo sellable, not physical in_stock.
+- Legacy SKU text, including leading zeros, is an identifier. Do not strip SKU zeros globally; use approved aliases for known rekeys.
+- Every legacy-only SKU and every current Woo/Pongo mismatch must receive an explicit disposition; no silent discard or blind duplicate creation.
 
 === 09. SYSTEM AND WORKFLOW MAP ===
 Runtime:
@@ -140,8 +157,13 @@ Primary journeys:
 5. Route lifecycle: eligible local orders -> route candidates -> preview/commit route -> manual stop ordering/geocode/provider status -> CSV/map output; must remain separate from Woo stock mutation.
 6. Reporting: operational and historical local snapshots -> reporting/metrics services -> React report workspace -> CSV/Google Sheets export paths.
 7. Release: GitHub release-gate workflow and manual/direct Heroku Git deployment currently operate independently; this separation is the root of SYS-001.
+8. Reconciliation gap: current Woo catalog GET -> page-by-page catalog preview/commit -> local InventoryItem/mapping. Commit does not repair existing OrderItem match state. Product sync stores Woo quantity snapshot but local stock begins/persists independently. Separate stock sync sends local sellable -> Woo.
+9. Required recovery flow: immutable Woo capture + Pongo/legacy snapshot -> directional classification -> reviewed catalog/mapping commit -> active-order healing/FIFO -> audited Woo-sellable baseline -> equality checks -> controlled outbound canary.
 
 === 10. OPEN FINDINGS REGISTER ===
+SYS-005 | Catalog, legacy CSV, and order-line unmatched states are conflated | DEFECT | NEW | P1 | CONFIRMED | Product/Backend/Data | 2026-08-14T19:10:16Z
+DB-008 | Identity resolution is inconsistent and uniqueness is not guaranteed | RISK | NEW | P1 | HIGH | Backend/Database | 2026-08-14T19:10:16Z
+BE-009 | No safe Woo-to-Pongo stock baseline exists | RISK | NEW | P1 | CONFIRMED | Backend/Inventory/Integrations | 2026-08-14T19:10:16Z
 SYS-001 | Deployment bypasses the failed release gate | DEFECT | CONFIRMED | P1 | CONFIRMED | Platform/Release | 2026-08-07T07:07:40Z
 DB-002 | Cycle counts lack shared locking and idempotency | RISK | CONFIRMED | P1 | HIGH | Backend/Database | 2026-08-07T07:07:40Z
 DB-003 | Manual allocation can mutate stock outside the shared stock lock | RISK | CONFIRMED | P1 | HIGH | Backend/Database | 2026-08-07T07:07:40Z
@@ -177,6 +199,54 @@ QA-004 | Report Intelligence test passed ten consecutive focused runs and the co
 DB-007 | Alembic ignores only migration-owned expression indexes and PostgreSQL tests verify their exact definitions | CLOSED | 2026-08-08T20:53:34Z
 
 === 12. CURRENT PROGRAM MANAGER REVIEW ===
+Focused 2026-08-14 update: the core operator problem is terminology and workflow ownership. The detailed catalog finding below is authoritative for this scope; inherited program findings remain unless separately revalidated.
+
+FINDING: SYS-005
+TITLE: Catalog, legacy CSV, and order-line unmatched states are conflated
+TYPE: DEFECT
+STATUS: NEW
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Product/Backend/Data
+EFFORT: M
+AFFECTED AREAS: Items, Woo catalog sync, allocation exceptions, legacy CSV migration, stock recovery
+
+PLAIN-LANGUAGE SUMMARY:
+The app and supporting exports use “unmatched” for different problems. A legacy SKU absent from an old Pongo export, a Pongo item without a Woo ID, a current Woo product absent locally, and an order line not linked to an item are not the same thing. Treating them as one list makes the product catalog look far more broken than it is and encourages duplicate creation.
+
+WHY THIS MATTERS:
+Inventory identity is the basis for stock, allocation, picking, reporting, and Woo writeback. Operators need to know which direction a gap goes and whether the safe action is create, map, alias, archive, or repair an order line.
+
+IF NOT FIXED:
+Staff can create duplicates for existing products, import stale quantities, or attempt stock synchronization when only historical order-line state is wrong. Support will continue to reconcile contradictory counts manually.
+
+IF FIXED:
+One screen states the current Woo gap, local-only items, legacy-only records, conflicts, and repairable order lines separately. Every row has a match method, reason, and next action.
+
+WHAT TO DO IN SIMPLE TERMS:
+Replace the generic “unmatched” count with a read-only reconciliation preview. Auto-accept only exact Woo identity and exact normalized SKU. Present barcode, leading-zero, and title matches for approval. After catalog commit, repair safe order lines and show the result.
+
+TECHNICAL DETAILS:
+The allocation badge is derived from OrderItem.matched_status rather than catalog existence. Catalog commit creates/maps InventoryItem rows but does not revisit OrderItem. The `unmatched_local_items` metric counts local InventoryItem rows with no Woo product ID, which is the opposite direction from “Woo product missing locally.” The old-file set difference also includes aliases and multi-location rows.
+
+EVIDENCE:
+Production read-only evidence: 1,313 current Woo eligible SKU records, 1,308 local mapped items, 1,307 shared identities, six current Woo-only identities, and one local identity outside the current eligible Woo set. Active processing orders had 134 matched positive-quantity lines and zero unmatched; old completed/cancelled/failed rows retained unmatched history. Screenshot SKUs 37824, 454311, 471968, and 671957 exist with exact Woo IDs and current active matched lines. CSV evidence: 1,532 legacy exact SKUs versus 1,307 old enrichment SKUs, 1,303 overlap, 229 legacy-only, and deterministic alias cleanup to 205 identities. Code: frontend/src/App.jsx:10003-10018 and 12318-12326; backend/app/services/allocations.py:291-302; backend/app/services/woocommerce_sync.py:81-184 and 493-496.
+
+TECHNICAL REMEDIATION:
+Add one server-side reconciliation preview response with directional categories and stable row reasons. Reuse current catalog/remap services. Extract exact-identity OrderItem repair from manual remap and invoke it after successful catalog map/create for NULL/unknown/unmatched rows; leave conflict and protected history manual. Run FIFO allocation once after the batch. Update labels and counts without adding a second catalog subsystem.
+
+MIGRATION / ROLLOUT NOTES:
+No catalog data mutation until Woo access is Read only and a verified backup exists. Deploy preview first. Rehearse commit on a restored production copy. The one-time order-line backfill must include SQL NULL match status and preserve picked, fulfilled, stock-reduced, or otherwise protected lines for review.
+
+VERIFICATION:
+A current preview reports exactly six Woo-only records before recovery and never reports the screenshot products as missing catalog items. Reusing the same commit key creates no duplicate items or repairs. After commit, every positive-quantity operational line is matched or an explicit conflict; active allocation rows show truthful reasons. All 229 legacy-only SKUs have recorded dispositions and the stale 733 legacy units are not imported.
+
+DEPENDENCIES AND ORDERING:
+Contain Woo writes and create a backup first. Implement shared identity rules under DB-008 before committing SYS-005. Complete catalog/order repair before the BE-009 stock baseline.
+
+SOURCE RUN: 2026-08-14T19:10:16Z
+LAST VERIFIED: 2026-08-14T19:10:16Z
+
 Product shape: The implemented modules substantially match the documented Pongo MVP and avoid the explicitly deferred supplier/purchase-order scope. The main program risk is not missing breadth; it is that production promotion, user-visible capability, and safety decisions are not consistently bound to objective gates.
 
 FINDING: SYS-001
@@ -226,6 +296,54 @@ SOURCE RUN: 2026-08-07T07:07:40Z
 LAST VERIFIED: 2026-08-07T07:07:40Z
 
 === 13. CURRENT BACKEND ENGINEERING REVIEW ===
+Focused 2026-08-14 update: the current outbound stock implementation is not an inbound recovery tool. The detailed finding below is authoritative for this scope; inherited backend findings remain unless separately revalidated.
+
+FINDING: BE-009
+TITLE: No safe Woo-to-Pongo stock baseline exists
+TYPE: RISK
+STATUS: NEW
+SEVERITY: P1
+CONFIDENCE: CONFIRMED
+OWNER: Backend/Inventory/Integrations
+EFFORT: M
+AFFECTED AREAS: Woo product sync, stock adjustment, allocations, writeback worker, production recovery
+
+PLAIN-LANGUAGE SUMMARY:
+Pongo can send its available stock to Woo, but it has no guarded operation to adopt Woo's current stock into Pongo. New Woo items are created locally with zero physical stock. Running the existing stock button or job during recovery goes in the wrong direction.
+
+WHY THIS MATTERS:
+Woo currently contains the owner-approved baseline quantities. If missing products are created at zero while production remains Read & write, a later outbound job can replace correct storefront quantities with zero or stale Pongo values.
+
+IF NOT FIXED:
+Recovery can understate storefront stock, violate allocations, or double-reserve open orders. A direct database update would also bypass required stock movements and audit evidence.
+
+IF FIXED:
+Woo quantities can be adopted once through a previewed, idempotent, fully audited operation without losing reservations or enabling outbound writes prematurely.
+
+WHAT TO DO IN SIMPLE TERMS:
+Freeze outbound writes, repair mappings and open-order allocations, then run a dedicated “Use Woo as starting sellable stock” preview. Apply only nonnegative, unambiguous values through the existing stock-adjustment engine and verify equality before re-enabling writeback.
+
+TECHNICAL DETAILS:
+Product sync stores Woo stock in `woo_stock_quantity_snapshot` and creates InventoryItem with in_stock zero. Outbound stock sync compares and sends InventoryItem.sellable. Therefore the inbound target is `sellable = captured Woo quantity`; after order reconciliation the required physical target is `in_stock = captured Woo quantity + allocated`. Setting in_stock directly to Woo quantity before or after allocating would reserve the same orders twice or violate allocated <= in_stock.
+
+EVIDENCE:
+backend/app/services/woocommerce_sync.py:379-424; backend/app/services/woocommerce_writeback.py:29-149 and 257-318. Production was Read & write at 2026-08-14T19:10:16Z with no pending writeback rows or stock jobs. Live comparison found 1,307 shared identities and three one-unit sellable differences: SKUs 72401 and 471421 had Woo -1 versus Pongo 0; SKU 428354 had Woo 0 versus Pongo 1. Negative Woo values cannot enter Pongo's nonnegative model.
+
+TECHNICAL REMEDIATION:
+Reuse the existing locked/idempotent stock-adjustment and movement/audit path. Persist an immutable Woo capture hash and timestamp. Preview target sellable, surviving allocation, target in_stock, location, delta, and blockers. Commit under item/location locks with an idempotency key. Reject negative/null/unmanaged quantities, missing locations, duplicate identities, stale capture, or changed allocations. Do not add a new queue unless production timing proves synchronous commit inadequate.
+
+MIGRATION / ROLLOUT NOTES:
+Change persisted Woo access to Read only and pause stock/order mutations before capture. Take and verify a backup. Rehearse against a restored production copy. Rollback before operations resume can use the verified backup; after operations resume, corrections must be forward audited adjustments rather than deleting history.
+
+VERIFICATION:
+Preview performs zero writes. Repeating commit with one idempotency key creates one adjustment and movement result. Every changed item has operator, reason, capture hash, and before/after evidence. Item totals equal location totals, sellable equals in_stock minus allocated, and every nonnegative mapped Woo quantity equals final Pongo sellable. Negative Woo rows remain explicit blockers. No Woo PATCH or PUT occurs until the controlled outbound canary.
+
+DEPENDENCIES AND ORDERING:
+Requires SYS-005 catalog/order reconciliation and DB-008 identity cleanup first. It precedes any restoration of Read & write and any forced stock job.
+
+SOURCE RUN: 2026-08-14T19:10:16Z
+LAST VERIFIED: 2026-08-14T19:10:16Z
+
 Backend shape: FastAPI route modules generally delegate to explicit services, authentication is attached globally, stock movements and audit events are first-class records, Woo calls stay server-side, and retry/queue/readiness mechanisms are present. The principal defects are boundary enforcement: several public schemas or service transitions trust a caller to preserve invariants that the server must own.
 
 FINDING: BE-001
@@ -1307,6 +1425,54 @@ SOURCE RUN: 2026-08-08T03:47:47Z
 LAST VERIFIED: 2026-08-08T03:47:47Z
 
 === 16. CURRENT DATABASE AND DATA REVIEW ===
+Focused 2026-08-14 update: current mappings are mostly complete, but matching and uniqueness contracts remain inconsistent. The detailed finding below is authoritative for this scope; inherited database findings remain unless separately revalidated.
+
+FINDING: DB-008
+TITLE: Identity resolution is inconsistent and uniqueness is not guaranteed
+TYPE: RISK
+STATUS: NEW
+SEVERITY: P1
+CONFIDENCE: HIGH
+OWNER: Backend/Database
+EFFORT: M
+AFFECTED AREAS: InventoryItem, WooItemMapping, product sync, order sync, remap, scanner, CSV aliases
+
+PLAIN-LANGUAGE SUMMARY:
+Different parts of Pongo decide “same product” differently, and the database does not fully prevent one Woo product from pointing at more than one local item. A barcode that works in the scanner can still fail in catalog sync, while a duplicate can look valid until an order arrives.
+
+WHY THIS MATTERS:
+Stock and order history must attach to one stable product identity. Conflicting rules or duplicate mappings can split stock, misallocate orders, or send a quantity to the wrong Woo product.
+
+IF NOT FIXED:
+New imports and Woo edits can recreate the confusion even after a one-time cleanup. Leading-zero and barcode variants can become duplicate items, and a later sync can replace a protected line mapping with no item.
+
+IF FIXED:
+Every catalog, order, remap, import, and scanner path uses the same fail-closed identity rules, while database constraints stop duplicate active Woo mappings.
+
+WHAT TO DO IN SIMPLE TERMS:
+Put one matching rule in the existing item-identifier helper and reuse it everywhere. Prefer exact Woo ID, then exact normalized SKU. Suggest unique barcode and one-leading-zero barcode aliases only when they do not disagree. Stop and ask for review on duplicates. Add database uniqueness only after cleaning existing conflicts.
+
+TECHNICAL DETAILS:
+Catalog matching uses Woo identity or active mapping and trim+casefold SKU, but not barcode. Order matching uses Woo identity then exact case-sensitive SKU or barcode and ignores the mapping table. Scanner lookup has separate leading-zero barcode candidates. InventoryItem Woo identity has only a nonunique index; WooItemMapping's tuple constraint does not enforce one active remote identity per item or one item per remote identity. Manual remap excludes SQL NULL statuses. Order upsert also treats old-nonnull to incoming-null as no mapping change and can drop an existing link without the protected-history guard.
+
+EVIDENCE:
+backend/app/services/woocommerce_sync.py:305-345; backend/app/services/woocommerce_orders.py:587-609 and 696-745; backend/app/services/item_identifiers.py:6-30; backend/app/services/woocommerce_remap.py:198-249; backend/app/models/inventory.py:57-125; backend/app/models/woocommerce.py:81-99; backend/alembic/versions/20260707_0007_woocommerce_order_sync.py:75-104. CSV evidence found 18 leading-zero aliases, five exact-barcode aliases, seven reused barcodes, and nine title-only candidates requiring review.
+
+TECHNICAL REMEDIATION:
+Extend the existing identifier helper rather than creating another matcher. Return a candidate only when all available keys agree on one item; otherwise return a typed conflict. Never strip leading zeros from SKU globally. Add an explicit approved alias record for legacy identifiers. After a cleanup report proves uniqueness, add PostgreSQL partial unique indexes for one active mapping per item and one active mapping per normalized `(woo_product_id, coalesce(woo_variation_id,-1))`, plus one InventoryItem per Woo identity. Preserve an existing OrderItem link and mark needs_review if a refresh becomes unresolved.
+
+MIGRATION / ROLLOUT NOTES:
+Run duplicate and conflict queries and resolve rows before adding constraints. Use concurrent or low-lock index creation where production size warrants it. Deploy resolver compatibility before constraints, then backfill NULL/unknown/unmatched safe lines. Keep conflicts manual and retain history.
+
+VERIFICATION:
+Unit tests cover trim/case SKU normalization, leading-zero barcode alternatives, reused barcode conflicts, key disagreement, SQL NULL order status, and protected history. Database tests reject duplicate active remote/item mappings. Catalog, order, remap, import, and scanner tests return the same candidate and reason for the same identifiers. Production reconciliation returns zero duplicate identities and zero positive-quantity operational lines without an item.
+
+DEPENDENCIES AND ORDERING:
+Implement before SYS-005 commit and BE-009 stock baseline. Constraint rollout follows data cleanup and a verified backup.
+
+SOURCE RUN: 2026-08-14T19:10:16Z
+LAST VERIFIED: 2026-08-14T19:10:16Z
+
 Database shape: The product targets PostgreSQL and has a linear single Alembic head at 20260807_0037. Fresh disposable PostgreSQL completed upgrade/downgrade/re-upgrade and the full concurrency-enabled test suite. The model includes extensive audit/history tables. Principal risks remain release-restore revision drift, cycle-count lock/idempotency coverage, raw-index metadata drift, historical migration determinism, and inherited production data-quality findings not rechecked here.
 
 FINDING: DB-001
@@ -1632,6 +1798,13 @@ SOURCE RUN: 2026-08-08T03:47:47Z
 LAST VERIFIED: 2026-08-08T03:47:47Z
 
 === 17. CROSS-CUTTING RISKS AND OPPORTUNITIES ===
+Focused 2026-08-14 priorities:
+1. Do not build a new generic import engine. Reuse the existing catalog, remap, identifier, adjustment, lock, idempotency, movement, and audit paths; add only the missing shared resolver, repair step, and inbound baseline direction.
+2. The six live Woo-only products are the immediate catalog delta. The 229 legacy-only SKUs are a disposition queue, not a create queue.
+3. Read & write is operationally acceptable only after recovery equality checks. During reconciliation it converts a local zero/stale item into storefront risk.
+4. Two live Woo quantities are -1. Treat them as explicit upstream anomalies; do not weaken Pongo's nonnegative constraints to ingest them.
+5. A full background-processing system is not justified. The current catalog size completed a read-only full pull in minutes; use synchronous reviewed work unless measured production commit time exceeds the maintenance window.
+
 1. The optimization architecture is proportionate. Existing SQL pagination, request cancellation, immutable caching, metric caching, and report jobs address real bottlenecks without adding a new service. Preserve this bias toward measured, local fixes.
 2. Cache invalidation is intentionally broad. A single metric version invalidates all dashboard/insight namespaces and serializes version changes on one row. That is simple and appropriate for current single-organization volume; split versions by domain only if PostgreSQL lock/rebuild measurements show contention.
 3. One worker handles operational sync, reports, history, and metric warming in priority order. Priority protects queued operational work before starting a report, but a report already running can occupy the single worker. Add worker separation only if measured report duration delays operational freshness.
@@ -1641,6 +1814,19 @@ LAST VERIFIED: 2026-08-08T03:47:47Z
 7. The main bundle remains large, but raw chunk size is not sufficient proof of slow user experience. Measure cold/warm startup and interaction timing on actual phones before splitting the 13k-line application or introducing more build abstractions.
 
 === 18. TEST AND VALIDATION EVIDENCE ===
+Focused 2026-08-14 production evidence (supersedes older scope statements for this run):
+- Git: branch codex/pongo-os-new-design-by-kannan-july-17 at 71fef06ecd8aaf59908f5c55a1bec168dd996156; two pre-existing untracked directories; no application diff written by the audit.
+- CSV: legacy 1,726 rows / 1,532 exact SKUs / 10,060 stale units; old enrichment 1,307 rows/SKUs / 9,232 units; 1,303 exact overlap; 229 legacy-only / 258 location rows / 733 stale units; 18 leading-zero aliases, five exact-barcode aliases, seven reused barcodes, and nine title-only manual-review candidates.
+- Production inventory: 1,308 active items, all 1,308 carrying Woo IDs; zero local items without a Woo product ID.
+- Live Woo: 1,589 raw published product/variation/container records, 1,313 published purchasable non-parent records with SKU, 1,307 identities shared with Pongo, six Woo-only, and one Pongo identity outside current eligible Woo results.
+- Live stock: 1,307 stock-comparable shared records; three one-unit differences; two are negative Woo values and one is Woo 0 versus Pongo sellable 1.
+- Active order lines: processing orders had 134 matched positive-quantity lines and zero unmatched positive-quantity lines; eight removed zero-quantity rows. Historical completed/cancelled/failed orders retain unmatched rows.
+- Screenshot identities: production item IDs 473/807/621/619 map the four pictured SKUs to Woo IDs and active processing lines are matched.
+- Exposure: latest persisted access mode is Read & write; no pending/approved/sending/failed writeback queue rows and no queued/running/retrying/failed stock jobs existed at inspection time.
+- Historical product-sync errors: 444 description-length failures represented 389 distinct identities; current production contains all 389 after migration 20260803_0030 widened InventoryItem.description to Text.
+- Code discovery used the repository knowledge graph first, then exact source/config/database strings where required. Three independent focused specialists reviewed code identity flow, CSV data, and recovery operations.
+- No mutating tests or complete release gate were run. No production or Woo write was performed.
+
 Code discovery and architecture:
 - The existing repository knowledge graph (more than 4,000 nodes and 21,000 edges) was used first for architecture, call paths, routes, and current snippets. Changed/high-value source was then checked directly where exact literals/configuration were required.
 - Four independent specialist reviews plus lead QA covered program, backend, frontend, QA/release, and database perspectives. The Routes crash and false invoice status were independently confirmed by both frontend and program reviews.
@@ -1675,6 +1861,12 @@ Repository checks:
 - Audit snapshot remained at HEAD 100970f with the same pre-existing modified/untracked application files recorded at scope start. No application code, test, configuration, credential, external service, deployment, or production data was changed by this audit.
 
 === 19. COVERAGE, LIMITATIONS, AND BLIND SPOTS ===
+- Focused 2026-08-14 limitation: the live Woo pull included published products and purchasable variations. Draft/private/unpurchasable records were not treated as current sellable catalog, except production order history may still reference them.
+- Authenticated production UI was not opened, so the screenshot explanation is proven by source and database state rather than a fresh visual reproduction.
+- Production backup/restore, reconciliation preview/commit, constraint migration, order-line backfill, stock baseline, and outbound canary were intentionally not run.
+- The current live pull is a point-in-time snapshot. A recovery preview must persist its timestamp/hash and revalidate staleness before commit.
+- Negative Woo quantities require an owner decision or Woo correction; this audit does not infer whether overselling is intended.
+- Prior inherited findings were not broadly revalidated. Their register status is retained, not claimed as current runtime reproduction.
 - PostgreSQL functional/concurrency behavior was exercised locally, but no production `EXPLAIN (ANALYZE, BUFFERS)`, lock-wait, pool, cache-hit, p50/p95, table-size, or Heroku memory/CPU measurement was taken.
 - No production browser/customer data, live WooCommerce call, deployment, dyno/config change, email/Sheets action, printer/scanner hardware action, production mutation, or production restore occurred.
 - The Playwright chain used a fully disposable PostgreSQL/fake-Woo environment. It failed before completing the mutation flow, so no browser E2E proof exists for import -> allocation -> bulk pick -> completion -> Woo update -> report.
@@ -1686,6 +1878,19 @@ Repository checks:
 - Real print pagination/logo output, screen-reader focus behavior, and intermediate 1,024 px responsive behavior were not fully validated. Dedicated lint, type-check, axe, and performance tasks remain absent.
 
 === 20. AUDIT SELF-IMPROVEMENT ===
+Focused 2026-08-14 comparison with prior memory:
+- The prior audit correctly warned that stock authority/writeback needed controlled promotion. Production is now Read & write, which made stock direction a material recovery concern.
+- The prior audit did not distinguish legacy-file gaps, local-only items, Woo-only items, and order-line match state clearly enough. This run adds stable cross-cutting findings and directional acceptance criteria.
+- Initial specialist inference treated the screenshot as a current runtime mapping failure. Direct production queries corrected that: the four products and active lines are matched now; only historical rows retain stale statuses. The finding was narrowed rather than overstated.
+- Historical sync logs initially suggested 444 products remained missing. Identity joins disproved that; all 389 distinct failed identities now exist. The current live gap is six.
+- Comparing Woo snapshot to Pongo physical in_stock initially produced a misleading count. Code and allocation evidence corrected the invariant to Woo quantity versus Pongo sellable.
+- Highest-value next audit focus: mutation rehearsal of the exact recovery plan on a restored production copy, including idempotency, protected order history, negative Woo stock blockers, and zero outbound calls.
+
+PROPOSED SKILL IMPROVEMENTS FOR THIS RUN
+1. For external catalog audits, require directional set names in every count: remote-only, local-only, shared, and operational-line unresolved.
+2. Require live/current identity joins before promoting historical integration errors into current missing-record findings.
+3. Require stock-source audits to identify physical, allocated, and sellable semantics before comparing external quantities.
+
 Comparison with prior review:
 - The previous performance follow-up reported green local suites but did not run PostgreSQL concurrency or browser E2E. This run supplied both and changed the release conclusion based on deterministic browser/release-gate evidence.
 - Findings were promoted only when reproduced or independently confirmed. Routes and invoice findings were independently identified by program and frontend reviewers; the lead reproduced Routes in the browser.
@@ -1701,20 +1906,21 @@ PROPOSED SKILL IMPROVEMENTS
 5. Keep the dirty-tree ownership checkpoint before and after long audits so active implementation is never mistaken for audit output.
 
 === 21. NEXT AUDIT PLAN ===
-Recommended trigger: after FE-004/FE-005/FE-006, SYS-004, DB-001, QA-001/QA-002/QA-004, and DB-007 are repaired on a clean release-candidate commit.
+Recommended trigger: after SYS-005, DB-008, and BE-009 are implemented on a clean branch and before any production recovery commit.
 
 Required evidence for the next run:
-1. A clean immutable SHA and exact GitHub release-gate commands green: PostgreSQL migration cycle, current-head backup/restore, 452+ backend tests, clean Python/full npm audits, 121+ deterministic frontend tests, build, and Playwright.
-2. Two independent fresh-database browser journeys covering authenticated item import/opening balance -> allocation -> bulk pick -> completion -> fake Woo status/stock write -> immutable report, with no retries/order dependence.
-3. Routes renders loading/error/empty/populated states without console error and an application error boundary preserves navigation after injected failure.
-4. Bulk-edit target/value changes always invalidate preview and commit exactly the reviewed IDs.
-5. Open, partially picked, and completed print outputs display truthful status; bulk print remains fail-closed and one document per order.
-6. Inventory By Location seeds more than 1,300 rows, reports the real total, and reaches every row once through bounded pages. Remaining histories and receiving surfaces have explicit stable bounds.
-7. Cycle-count concurrent/retry PostgreSQL tests prove one mutation/audit result and no lost update or deadlock.
-8. `alembic check` is clean while both reporting indexes remain present; restore/readiness/current head all agree on 0037 or its successor.
-9. After release correctness is green, add QA-003 production-like latency/device evidence and resolve FE-003/BE-007 based on measured budgets.
+1. A verified production backup restored into a disposable database at the exact current Alembic head.
+2. One immutable reconciliation preview with directional counts, source timestamp/hash, all six Woo-only identities, the one local-outside-scope identity, all 229 legacy-only dispositions, aliases, conflicts, and zero silent drops.
+3. Shared-resolver tests for exact Woo identity, trim/case SKU, leading-zero barcode suggestions, reused barcode conflict, key disagreement, and no global SKU-zero stripping.
+4. Catalog commit repairs NULL/unknown/unmatched safe order lines once, preserves conflict/protected history, and runs FIFO allocation once.
+5. Database cleanup proves uniqueness before constraints; constraint tests reject duplicate active item/remote mappings without locking production unsafely.
+6. Woo-to-Pongo preview makes zero writes; commit is idempotent, locked, audited, location-balanced, and targets sellable rather than physical stock.
+7. Negative Woo quantities and missing/unmanaged/location/stale/allocation conflicts block commit with actionable output.
+8. A fake Woo service proves zero PATCH/PUT during preview, catalog commit, order repair, and baseline; only the explicit final canary can write.
+9. Production dry run while Read only returns zero duplicate identities, zero positive-quantity active unresolved lines, and expected stock deltas before approval.
+10. Complete backend/frontend/PostgreSQL/Playwright release gate passes on the final recovery SHA, followed by authenticated desktop/mobile UI acceptance.
 
-Next audit mode: Focused release-gate re-audit for current P1 blockers, followed by a full authority/writeback audit before enabling production stock writes.
+Next audit mode: Focused release-readiness and production-copy recovery rehearsal. Revalidate inherited P1 findings separately before using the same deployment as a broader release.
 
 === 22. COMPLETE APPEND-ONLY AUDIT RUN HISTORY ===
 --- AUDIT RUN: 2026-08-07T07:07:40Z ---
@@ -1946,3 +2152,66 @@ Limitations and remaining risk:
 - Existing P1 findings outside this requested sequence remain open in the register, including release/deployment enforcement, cycle-count/manual-allocation mutation contracts, Woo write ownership/suppression, initial-migration determinism, live data/readiness, bulk-edit preview integrity, and invoice truthfulness.
 
 End of run 2026-08-08T20:53:34Z.
+
+--- AUDIT RUN: 2026-08-14T19:10:16Z ---
+Schema: 1.0
+Mode: Focused cross-layer production reconciliation audit
+Project/root: Pongo Inventory OS / /Users/kannankhosla/Desktop/Codex/pongoOS
+Branch/HEAD: codex/pongo-os-new-design-by-kannan-july-17 / 71fef06ecd8aaf59908f5c55a1bec168dd996156
+Requested scope: Determine why Woo products, Pongo items, a 229-SKU legacy difference, and order-line “Unmatched Item” badges disagree; provide a safe concrete recovery plan.
+Execution: Three independent read-only specialists plus lead production SQL/live Woo verification. Only PRODUCT_AUDIT.txt changed. No application code, configuration, deployment, production row, Woo record, order, or stock value changed.
+Release recommendation: DO NOT RELEASE or run recovery mutation while Woo access remains Read & write. Contain, backup, deploy preview, rehearse, then commit while Read only.
+Health: RED for unattended recovery; AMBER for continued operation if catalog commit and stock sync are avoided until containment.
+Finding totals after focused update: P0 0; P1 15; P2 9; P3 0; open 24; previously closed 10. Inherited findings were not broadly revalidated.
+
+Complete new finding snapshot:
+- SYS-005 / P1 / DEFECT / CONFIRMED: catalog, legacy-file, local-only, Woo-only, and order-line unmatched states are conflated. Required outcome: one directional reconciliation preview, exact-safe commit, order-line healing, and explicit dispositions.
+- DB-008 / P1 / RISK / HIGH: catalog/order/remap/scanner identity rules disagree and database uniqueness is insufficient. Required outcome: one fail-closed resolver, cleanup, protected-line behavior, aliases, and partial uniqueness constraints.
+- BE-009 / P1 / RISK / CONFIRMED: no safe Woo-to-Pongo stock baseline exists; existing sync sends Pongo sellable to Woo. Required outcome: locked/idempotent/audited inbound baseline targeting sellable with negative/stale/conflict guards.
+
+Production truth snapshot:
+- Pongo: 1,308 active InventoryItem rows; all 1,308 have Woo product IDs; zero local items lack Woo identity.
+- Live Woo published catalog: 1,589 raw product/variation/container records; 1,313 published purchasable SKU records.
+- Identity comparison: 1,307 shared; six Woo-only (`ELON`, `kimjongun`, `vlad`, `12577`, `344131`, `471973`); one Pongo identity outside the current eligible Woo result (`813188`).
+- Stock comparison: 1,307 comparable shared identities; three one-unit sellable differences. Woo reports -1 for SKUs `72401` and `471421`, while Pongo reports 0; Woo reports 0 for `428354`, while Pongo reports 1.
+- Active orders: 134 matched positive-quantity processing lines; zero unmatched positive-quantity processing lines; eight removed zero-quantity lines.
+- Screenshot: SKUs `37824`, `454311`, `471968`, and `671957` already have local/Woo identities and current matched processing lines. Their visible badge represents stored order-line state, not absent products.
+- Access/exposure: latest persisted Woo mode is Read & write. No nonterminal writeback queue row or stock-sync job existed at inspection time.
+
+Legacy-file snapshot:
+- Old inventory CSV: 1,726 rows, 1,532 exact SKUs, 10,060 stale units.
+- Old enrichment export: 1,307 rows/SKUs, 9,232 units.
+- Exact overlap 1,303; legacy-only 229 SKUs across 258 location rows and 733 stale units; enrichment-only four.
+- Deterministic cleanup: 18 leading-zero aliases, five exact-barcode aliases, one same-title duplicate pair, leaving 205 unresolved identities. Nine title-only candidates require manual approval and can reduce the unresolved set to 196.
+- 183 legacy SKUs span multiple distinct locations; one InventoryItem must retain multiple location rows rather than becoming duplicate items.
+- Seven reused barcodes prevent blind barcode matching. One malformed CSV-fragment SKU and novelty SKUs require explicit disposition.
+
+Root-cause snapshot:
+- `unmatched_local_items` counts Pongo rows with no Woo ID, not Woo products absent from Pongo.
+- Allocation exceptions label any line whose stored status is not literal `matched` as unmatched, even when an InventoryItem is attached.
+- Catalog commit does not heal existing OrderItem match state. Manual remap repair omits SQL NULL statuses.
+- Catalog matches normalized SKU; order sync uses exact SKU/barcode; scanner alone supports one-leading-zero barcode alternatives; UI overstates barcode behavior.
+- Product sync creates missing items at zero stock and stores Woo quantity only as a snapshot.
+- Outbound sync uses Pongo sellable. Correct inbound baseline target is `Pongo sellable = captured Woo quantity`, therefore `Pongo in_stock = captured Woo quantity + surviving allocated` after order reconciliation.
+
+Recommended order snapshot:
+1. Change Woo access to Read only, pause stock/order mutations, confirm queues, verify backup/restore, capture immutable Woo catalog/stock/open orders.
+2. Deploy shared resolver, protected order-line healer including NULL statuses, and mapping cleanup/constraints after data verification.
+3. Reconcile the six Woo-only products and all 229 legacy dispositions without importing legacy stock.
+4. Apply one idempotent audited Woo-to-Pongo baseline through stock adjustments; block negative/null/unmanaged/missing-location/conflict/stale rows.
+5. Verify identity, location, stock, allocation, audit, and zero-write invariants; run a small equal-quantity outbound canary; only then restore Read & write.
+
+Checks and limitations snapshot:
+- Executed exact CSV analysis, graph/source trace, read-only production SQL, live Woo GET catalog capture, identity join, and stock comparison.
+- Historical 444 description-length error rows were investigated; all 389 distinct affected identities now exist after the Text-column migration, so they are not the current gap.
+- No authenticated live UI, production backup/restore, mutation, migration, recovery rehearsal, full test suite, release gate, deployment, or Woo write was performed.
+- Live Woo capture excluded draft/private/unpurchasable catalog rows from the eligible sellable set and is point-in-time evidence.
+
+Audit self-improvement snapshot:
+- Direct production joins corrected two plausible but false early conclusions: historical description failures are not still missing, and the screenshot products are not currently absent/unmatched in active work.
+- Code evidence corrected stock comparison from physical in_stock to sellable.
+- Future catalog audits should name direction explicitly and join historical failures to current identities before escalating them.
+
+Next audit: focused release-readiness and recovery rehearsal on a restored production copy after SYS-005, DB-008, and BE-009 implementation.
+
+End of run 2026-08-14T19:10:16Z.

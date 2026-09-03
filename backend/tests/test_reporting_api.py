@@ -226,6 +226,7 @@ def test_inventory_cost_run_is_frozen_and_all_exports_share_its_hash(client):
     frozen = client.get(f"/api/reports/runs/{body['run_id']}")
     csv_export = client.get(f"/api/reports/runs/{body['run_id']}/csv")
     pdf_export = client.get(f"/api/reports/runs/{body['run_id']}/pdf")
+    pdf_preview = client.get(f"/api/reports/runs/{body['run_id']}/pdf", params={"preview": True})
 
     assert frozen.status_code == 200
     assert frozen.json()["data_hash"] == body["data_hash"]
@@ -233,6 +234,8 @@ def test_inventory_cost_run_is_frozen_and_all_exports_share_its_hash(client):
     assert body["data_hash"] in csv_export.text
     assert pdf_export.status_code == 200
     assert pdf_export.content.startswith(b"%PDF")
+    assert pdf_export.headers["content-disposition"].startswith("attachment;")
+    assert pdf_preview.headers["content-disposition"].startswith("inline;")
 
 
 def test_large_report_preview_is_paginated_while_frozen_payload_and_exports_remain_complete(client):

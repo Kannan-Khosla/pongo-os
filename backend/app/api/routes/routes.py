@@ -26,6 +26,7 @@ from app.services.routes import (
     update_route_stop,
 )
 from app.services.auth import authenticated_actor
+from app.services.pdf_exports import pdf_content_disposition, tabular_pdf_bytes
 
 router = APIRouter(prefix="/routes", tags=["routes"])
 
@@ -188,6 +189,18 @@ def export_route_record(route_id: int, db: Session = Depends(get_db)) -> Respons
     if csv_text is None:
         raise HTTPException(status_code=404, detail="Route not found")
     return Response(content=csv_text, media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="pongo-route-export.csv"'})
+
+
+@router.get("/{route_id}/pdf")
+def route_record_pdf(route_id: int, preview: bool = False, db: Session = Depends(get_db)) -> Response:
+    csv_text = export_route_csv(db, route_id)
+    if csv_text is None:
+        raise HTTPException(status_code=404, detail="Route not found")
+    return Response(
+        content=tabular_pdf_bytes(csv_text, f"Route record {route_id}"),
+        media_type="application/pdf",
+        headers={"Content-Disposition": pdf_content_disposition(f"pongo-route-{route_id}.pdf", preview)},
+    )
 
 
 @router.post("/{route_id}/finalize", response_model=RouteCommitResponse)

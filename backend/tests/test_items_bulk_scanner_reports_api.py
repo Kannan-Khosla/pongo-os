@@ -237,6 +237,27 @@ def test_bulk_receiving_invalid_blocks_by_default(client):
     assert client.get("/api/items", params={"sku": "BLOCK-001"}).json()["items"][0]["In Stock"] == 4
 
 
+def test_bulk_receiving_rejects_internal_invoice_and_audit_metadata(client):
+    item = setup_stock_item(client, sku="BULK-BOUNDARY", in_stock=4)
+    line = {"sku": "BULK-BOUNDARY", "quantity": 1, "inventory_location": "BULK-01"}
+    reserved = {
+        "receipt_type": "invoice",
+        "mutation_type": "invoice_receipt",
+        "reference_type": "invoice_receipt",
+        "client": "Forged Supplier",
+        "source": "invoice_upload",
+    }
+
+    for index, (field, value) in enumerate(reserved.items(), start=1):
+        response = client.post(
+            "/api/receipts/bulk/commit",
+            json={"idempotency_key": f"bulk-boundary-{index}", "warehouse": "Main Warehouse", "lines": [line], field: value},
+        )
+        assert response.status_code == 422, field
+
+    assert client.get(f"/api/items/{item['id']}").json()["In Stock"] == 4
+
+
 def test_bulk_receiving_and_scanner_fail_closed_for_duplicate_barcode(client):
     setup_stock_item(client, sku="DUP-BULK-A", barcode="DUP-BULK")
     seed_item(client, sku="DUP-BULK-B", Barcode="DUP-BULK")

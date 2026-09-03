@@ -9,6 +9,7 @@ from app.schemas.allocations import AllocationCommitResponse, AllocationDetail, 
 from app.services.allocations import allocation_to_read, commit_allocation, export_allocation_csv, export_allocation_exceptions_csv, get_allocation_detail, list_allocation_exception_lines, list_allocations_page, preview_allocation
 from app.services.auth import authenticated_actor
 from app.services.order_workflow import auto_allocate_processing_orders_fifo
+from app.services.pdf_exports import pdf_content_disposition, tabular_pdf_bytes
 
 router = APIRouter(prefix="/allocations", tags=["allocations"])
 
@@ -139,4 +140,16 @@ def export_allocation_record(allocation_id: int, db: Session = Depends(get_db)) 
         content=csv_text,
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="pongo-allocation-export.csv"'},
+    )
+
+
+@router.get("/{allocation_id}/pdf")
+def allocation_record_pdf(allocation_id: int, preview: bool = False, db: Session = Depends(get_db)) -> Response:
+    csv_text = export_allocation_csv(db, allocation_id)
+    if csv_text is None:
+        raise HTTPException(status_code=404, detail="Allocation not found")
+    return Response(
+        content=tabular_pdf_bytes(csv_text, f"Allocation record {allocation_id}"),
+        media_type="application/pdf",
+        headers={"Content-Disposition": pdf_content_disposition(f"pongo-allocation-{allocation_id}.pdf", preview)},
     )

@@ -203,6 +203,7 @@ def test_fulfillment_list_detail_export_and_open_orders_reflect_fulfilled(client
     listing = client.get("/api/fulfillments")
     detail = client.get(f"/api/fulfillments/{fulfillment_id}")
     exported = client.get(f"/api/fulfillments/{fulfillment_id}/export")
+    pdf_preview = client.get(f"/api/fulfillments/{fulfillment_id}/pdf", params={"preview": True})
     open_orders = client.get("/api/orders/open")
 
     assert listing.status_code == 200
@@ -212,6 +213,8 @@ def test_fulfillment_list_detail_export_and_open_orders_reflect_fulfilled(client
     assert detail.json()["stock_movement_ids"] == []
     assert detail.json()["audit_event_ids"]
     assert exported.status_code == 200
+    assert pdf_preview.content.startswith(b"%PDF")
+    assert pdf_preview.headers["content-disposition"].startswith("inline;")
     assert exported.text.splitlines()[0] == "Fulfillment Number,Status,Created At,Posted At,Woo Order Number,Order ID,SKU,Barcode,Description,Warehouse,Inventory Location,Quantity Ordered,Quantity Allocated,Quantity Picked,Previously Fulfilled,Quantity Fulfilled,Fulfilled After,Remaining To Fulfill,In Stock Before,Allocated Before,Sellable Before,In Stock After,Allocated After,Sellable After,Line Status,Notes"
     rows = list(csv.DictReader(StringIO(exported.text)))
     assert rows[0]["Fulfillment Number"] == commit.json()["fulfillment_number"]

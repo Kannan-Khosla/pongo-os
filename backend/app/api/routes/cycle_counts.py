@@ -25,8 +25,18 @@ from app.services.cycle_counts import (
     cycle_count_to_read,
 )
 from app.services.auth import authenticated_actor
+from app.services.pdf_exports import pdf_content_disposition, tabular_pdf_bytes
 
 router = APIRouter(prefix="/cycle-counts", tags=["cycle-counts"])
+
+
+def cycle_count_csv(count: CycleCount) -> str:
+    buffer = StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=CYCLE_COUNT_EXPORT_COLUMNS)
+    writer.writeheader()
+    for line in count.lines:
+        writer.writerow(cycle_count_line_to_export_row(count, line))
+    return buffer.getvalue()
 
 
 @router.post("/preview", response_model=CycleCountPreviewResponse)
@@ -118,13 +128,20 @@ def export_cycle_count(cycle_count_id: int, db: Session = Depends(get_db)) -> Re
     count = db.scalars(select(CycleCount).where(CycleCount.id == cycle_count_id).options(selectinload(CycleCount.lines))).one_or_none()
     if count is None:
         raise HTTPException(status_code=404, detail="Cycle count not found")
-    buffer = StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=CYCLE_COUNT_EXPORT_COLUMNS)
-    writer.writeheader()
-    for line in count.lines:
-        writer.writerow(cycle_count_line_to_export_row(count, line))
     return Response(
-        content=buffer.getvalue(),
+        content=cycle_count_csv(count),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="pongo-cycle-count-{count.count_number}.csv"'},
+    )
+
+
+@router.get("/{cycle_count_id}/pdf")
+def cycle_count_pdf(cycle_count_id: int, preview: bool = False, db: Session = Depends(get_db)) -> Response:
+    count = db.scalars(select(CycleCount).where(CycleCount.id == cycle_count_id).options(selectinload(CycleCount.lines))).one_or_none()
+    if count is None:
+        raise HTTPException(status_code=404, detail="Cycle count not found")
+    return Response(
+        content=tabular_pdf_bytes(cycle_count_csv(count), f"Cycle count {count.count_number}"),
+        media_type="application/pdf",
+        headers={"Content-Disposition": pdf_content_disposition(f"pongo-cycle-count-{count.count_number}.pdf", preview)},
     )

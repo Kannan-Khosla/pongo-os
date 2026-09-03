@@ -77,6 +77,14 @@ local-only route creation/management.
 - Fulfillments: `/api/fulfillments`
 - Routes and open-order delivery planning: `/api/routes`
 
+### Operational record documents
+
+Saved receipts, cycle counts, allocations, picks, fulfillments, and routes expose
+`GET /api/{resource}/{id}/pdf`. The PDF is rendered from the same authoritative
+rows as that record's CSV export. The default response is an attachment;
+`?preview=true` returns `Content-Disposition: inline` for the authenticated
+in-app document viewer. Existing records require no migration.
+
 ## Health
 
 ### GET /health
@@ -2198,6 +2206,8 @@ endpoints instead of this compatibility route.
 - `GET /api/reports/runs/{run_id}/pdf` exports that snapshot as a paginated PDF.
   Both endpoints stream worker-rendered, SHA-256-verified artifacts stored with
   the immutable run; they return `409` when an older run has no artifact.
+  Add `?preview=true` to the PDF URL for inline display; the default remains an
+  attachment for backward-compatible downloads.
 - `POST /api/reports/runs/{run_id}/google-sheets` creates and optionally shares
   a Google Sheet from that snapshot.
 - `POST /api/reports/runs/{run_id}/email` emails PDF/CSV attachments and an
@@ -2612,6 +2622,7 @@ Implemented endpoints:
 - `POST /api/receipts/bulk/commit`
 - `GET /api/receipts/{id}/detail`
 - `GET /api/receipts/{id}/export`
+- `GET /api/receipts/{id}/pdf` (`?preview=true` for inline display)
 
 Bulk commit creates one `receipts` row, one `receipt_items` row per valid
 line, updates `inventory_item_locations`, recalculates item aggregate stock
@@ -2620,6 +2631,31 @@ allocation for waiting processing orders before commit. Preview is read-only.
 Blank line cost defaults to the item's current Unit Cost. A positive entered
 cost becomes the item's new current Unit Cost on commit and creates a separate
 cost-change audit event.
+
+## Invoice Receiving
+
+Implemented endpoints:
+- `POST /api/receipts/invoice/preview` (multipart PDF, warehouse, location)
+- `POST /api/receipts/invoice/commit` (multipart PDF plus JSON `payload` form field)
+- `POST /api/receipts/invoice/{id}/reversal/preview`
+- `POST /api/receipts/invoice/{id}/reversal/commit`
+
+Preview extracts supplier, invoice number/date, shipped quantity, UPC,
+description, UOM, and net price without changing stock. Zero-shipped rows are
+excluded. Exact UPC matches are proposed for receiving; case rows are converted
+to pieces from their pack notation and always require staff verification.
+Unmatched or ambiguous UPCs are never received or used to create products.
+
+Commit re-reads the attached PDF and verifies its hash, supplier, invoice
+identity, source rows, quantities, UPCs, descriptions, and prices before adding
+approved pieces to current location stock. The duplicate check is serialized
+with stock mutations; override requires an audited reason. A targeted
+WooCommerce stock-sync job can be queued after local commit and an idempotent
+retry repairs a missed queue operation without applying stock twice. Reversal
+is a one-time compensating receipt that subtracts the original received
+quantity, restores the pre-receipt unit cost when no later cost change would be
+overwritten, blocks negative or below-allocation results, and writes separate
+stock and cost audit records.
 
 ## Scanner Workflows
 

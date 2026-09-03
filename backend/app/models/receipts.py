@@ -54,6 +54,7 @@ class ReceiptItem(Base):
     uom: Mapped[str | None] = mapped_column(String(50))
     quantity_base_uom: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    previous_unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     unit_cost_total: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     sales_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     weight: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))

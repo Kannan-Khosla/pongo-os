@@ -232,9 +232,12 @@ def test_cycle_count_export_returns_csv(client):
     created = client.post("/api/cycle-counts/commit", json=cycle_payload()).json()
 
     response = client.get(f"/api/cycle-counts/{created['cycle_count_id']}/export")
+    pdf_preview = client.get(f"/api/cycle-counts/{created['cycle_count_id']}/pdf", params={"preview": True})
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/csv")
+    assert pdf_preview.content.startswith(b"%PDF")
+    assert pdf_preview.headers["content-disposition"].startswith("inline;")
     assert response.text.splitlines()[0].split(",") == CYCLE_COUNT_EXPORT_COLUMNS
     rows = list(csv.DictReader(StringIO(response.text)))
     assert rows[0]["Count Number"] == created["count_number"]

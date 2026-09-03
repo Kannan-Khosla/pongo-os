@@ -1,4 +1,7 @@
+from io import BytesIO
 from uuid import uuid4
+
+import pdfplumber
 
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_locations_api import force_location_active_for_legacy_test, seed_location
@@ -81,6 +84,17 @@ def test_direct_receiving_commit_creates_receipt_line_stock_and_movement(client)
     assert detail.status_code == 200
     assert detail.json()["lines"][0]["sku"] == "RCV-001"
     assert detail.json()["lines"][0]["quantity_received"] == 5
+
+    pdf_preview = client.get(f"/api/receipts/{body['receipt_id']}/pdf", params={"preview": True})
+    pdf_download = client.get(f"/api/receipts/{body['receipt_id']}/pdf")
+    assert pdf_preview.status_code == 200
+    assert pdf_preview.headers["content-type"] == "application/pdf"
+    assert pdf_preview.headers["content-disposition"].startswith("inline;")
+    assert pdf_download.headers["content-disposition"].startswith("attachment;")
+    with pdfplumber.open(BytesIO(pdf_preview.content)) as document:
+        pdf_text = "\n".join(page.extract_text() or "" for page in document.pages)
+    assert body["receipt_number"] in pdf_text
+    assert "RCV-001" in pdf_text
 
     movements = client.get("/api/stock-movements", params={"sku": "RCV-001", "movement_type": "receive_direct"}).json()["movements"]
     assert len(movements) == 1

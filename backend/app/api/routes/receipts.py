@@ -1,19 +1,34 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.models.receipts import Receipt, ReceiptItem
-from app.schemas.receipts import BulkReceiptCommitRequest, BulkReceiptRequest, DirectReceiptCommitRequest, DirectReceiptCommitResponse, DirectReceiptPreviewResponse, DirectReceiptRequest, ReceiptDetail, ReceiptListResponse
+from app.schemas.receipts import BulkReceiptCommitRequest, BulkReceiptRequest, DirectReceiptCommitRequest, DirectReceiptCommitResponse, DirectReceiptPreviewResponse, DirectReceiptRequest, InvoiceReceiptCommitRequest, InvoiceReceiptReversalRequest, ReceiptDetail, ReceiptListResponse
 from app.services.bulk_receiving import commit_bulk_receipt, export_receipt_csv, preview_bulk_receipt
 from app.services.auth import authenticated_actor
 from app.services.receiving import build_direct_receipt_preview, commit_direct_receipt, receipt_to_detail, receipt_to_read
+from app.services.invoice_receiving import commit_invoice_receipt, invoice_reversal_preview, preview_invoice_pdf, revert_invoice_receipt
+from app.services.pdf_exports import pdf_content_disposition, tabular_pdf_bytes
 from app.services.stock_mutation_guard import IdempotencyConflict
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
+MAX_INVOICE_PDF_BYTES = 10 * 1024 * 1024
+
+
+async def read_invoice_upload(file: UploadFile) -> bytes:
+    if not file.filename or not file.filename.casefold().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Upload a PDF invoice.")
+    document = await file.read(MAX_INVOICE_PDF_BYTES + 1)
+    if len(document) > MAX_INVOICE_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="Invoice PDFs must be 10 MB or smaller.")
+    if not document.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="The uploaded file is not a valid PDF.")
+    return document
 
 
 @router.post("/direct/preview", response_model=DirectReceiptPreviewResponse)
@@ -49,6 +64,52 @@ def preview_bulk_receipt_endpoint(payload: BulkReceiptRequest, db: Session = Dep
 def commit_bulk_receipt_endpoint(payload: BulkReceiptCommitRequest, db: Session = Depends(get_db), actor: str = Depends(authenticated_actor)) -> dict:
     try:
         return commit_bulk_receipt({**payload.model_dump(), "created_by": actor}, db)
+    except IdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/invoice/preview")
+async def preview_invoice_receipt_endpoint(
+    file: UploadFile = File(...),
+    warehouse: str = Form("Main Warehouse"),
+    inventory_location: str = Form(...),
+    db: Session = Depends(get_db),
+) -> dict:
+    return preview_invoice_pdf(await read_invoice_upload(file), db, warehouse=warehouse, inventory_location=inventory_location)
+
+
+@router.post("/invoice/commit")
+async def commit_invoice_receipt_endpoint(
+    payload: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> dict:
+    try:
+        validated = InvoiceReceiptCommitRequest.model_validate_json(payload)
+        return commit_invoice_receipt(validated, await read_invoice_upload(file), db, actor)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+    except IdempotencyConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/invoice/{receipt_id}/reversal/preview")
+def preview_invoice_reversal_endpoint(receipt_id: int, db: Session = Depends(get_db)) -> dict:
+    return invoice_reversal_preview(receipt_id, db)
+
+
+@router.post("/invoice/{receipt_id}/reversal/commit")
+def commit_invoice_reversal_endpoint(
+    receipt_id: int,
+    payload: InvoiceReceiptReversalRequest,
+    db: Session = Depends(get_db),
+    actor: str = Depends(authenticated_actor),
+) -> dict:
+    try:
+        return revert_invoice_receipt(receipt_id, payload, db, actor)
     except IdempotencyConflict as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -118,6 +179,23 @@ def get_receipt(receipt_id: int, db: Session = Depends(get_db)) -> ReceiptDetail
 @router.get("/{receipt_id}/detail", response_model=ReceiptDetail)
 def get_receipt_detail(receipt_id: int, db: Session = Depends(get_db)) -> ReceiptDetail:
     return get_receipt(receipt_id, db)
+
+
+@router.get("/{receipt_id}/pdf")
+def receipt_pdf(receipt_id: int, preview: bool = False, db: Session = Depends(get_db)) -> Response:
+    receipt = db.scalars(
+        select(Receipt)
+        .where(Receipt.id == receipt_id)
+        .options(selectinload(Receipt.items).selectinload(ReceiptItem.inventory_item), selectinload(Receipt.items).selectinload(ReceiptItem.inventory_location))
+    ).one_or_none()
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    filename = f"pongo-{receipt.receipt_number}-receipt.pdf"
+    return Response(
+        content=tabular_pdf_bytes(export_receipt_csv(receipt), f"Receipt {receipt.receipt_number}"),
+        media_type="application/pdf",
+        headers={"Content-Disposition": pdf_content_disposition(filename, preview)},
+    )
 
 
 @router.get("/{receipt_id}/export")

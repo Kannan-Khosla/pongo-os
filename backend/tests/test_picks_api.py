@@ -313,6 +313,7 @@ def test_pick_list_detail_export_and_open_orders_reflect_picked(client, monkeypa
     listing = client.get("/api/picks")
     detail = client.get(f"/api/picks/{pick_id}")
     exported = client.get(f"/api/picks/{pick_id}/export")
+    pdf_preview = client.get(f"/api/picks/{pick_id}/pdf", params={"preview": True})
     open_orders = client.get("/api/orders/open")
 
     assert listing.status_code == 200
@@ -322,6 +323,8 @@ def test_pick_list_detail_export_and_open_orders_reflect_picked(client, monkeypa
     assert detail.json()["audit_event_ids"]
     assert detail.json()["lines"][0]["stock_movement_id"]
     assert exported.status_code == 200
+    assert pdf_preview.content.startswith(b"%PDF")
+    assert pdf_preview.headers["content-disposition"].startswith("inline;")
     rows = list(csv.DictReader(StringIO(exported.text)))
     assert exported.text.splitlines()[0] == "Pick Number,Status,Created At,Posted At,Woo Order Number,Order ID,SKU,Barcode,Description,Warehouse,Inventory Location,Quantity Ordered,Quantity Allocated,Previously Picked,Quantity Picked,Picked After,Remaining To Pick,Line Status,Notes"
     assert rows[0]["Pick Number"] == commit.json()["pick_number"]

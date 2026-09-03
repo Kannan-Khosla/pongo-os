@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.schemas.picks import PickCommitRequest, PickCommitResponse, PickDetail, PickListResponse, PickPreviewResponse, PickRequest, PickScanCommitRequest, PickScanRequest, PickScanResponse, PickScannerOrder
 from app.services.picks import commit_pick, commit_scan, export_pick_csv, get_pick_detail, get_scanner_order, list_picks_page, pick_to_read, preview_pick, preview_scan
 from app.services.auth import authenticated_actor
+from app.services.pdf_exports import pdf_content_disposition, tabular_pdf_bytes
 from app.services.stock_mutation_guard import IdempotencyConflict
 
 router = APIRouter(prefix="/picks", tags=["picks"])
@@ -110,4 +111,16 @@ def export_pick_record(pick_id: int, db: Session = Depends(get_db)) -> Response:
         content=csv_text,
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="pongo-pick-export.csv"'},
+    )
+
+
+@router.get("/{pick_id}/pdf")
+def pick_record_pdf(pick_id: int, preview: bool = False, db: Session = Depends(get_db)) -> Response:
+    csv_text = export_pick_csv(db, pick_id)
+    if csv_text is None:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    return Response(
+        content=tabular_pdf_bytes(csv_text, f"Pick record {pick_id}"),
+        media_type="application/pdf",
+        headers={"Content-Disposition": pdf_content_disposition(f"pongo-pick-{pick_id}.pdf", preview)},
     )

@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from hashlib import sha256
+from io import BytesIO
 import os
 from threading import Barrier
 from uuid import uuid4
@@ -22,6 +24,7 @@ from app.models.stock_mutations import StockMutationRequest
 from app.models.woocommerce import WooCommerceSyncError, WooCommerceSyncRun, WooStockSyncJob
 from app.schemas.picks import PickRequest
 from app.schemas.receipts import DirectReceiptRequest
+from app.schemas.receipts import InvoiceReceiptCommitRequest
 from app.schemas.auth import LoginRequest
 from app.services.auth import hash_password
 from app.services.location_inventory import create_committed_adjustment
@@ -31,10 +34,12 @@ from app.api.routes.locations import ensure_location_has_no_stock
 from app.services.order_workflow import complete_picked_order
 from app.services.picks import commit_pick, unpick_orders
 from app.services.receiving import commit_direct_receipt
+from app.services.invoice_receiving import commit_invoice_receipt
 from app.services.stock_mutation_guard import begin_stock_mutation, complete_stock_mutation
 from app.services.woocommerce_catalog_sync import POSTGRES_CATALOG_WORKER_LOCK_KEY, process_next_catalog_sync
 from app.services.woocommerce_stock_sync_jobs import POSTGRES_STOCK_JOB_WORKER_LOCK_KEY, process_next_stock_sync_job
 from app.services.woocommerce_sync_errors import store_sync_error_once
+from reportlab.pdfgen import canvas
 
 
 @pytest.mark.skipif(not os.environ.get("PONGO_TEST_POSTGRES_URL"), reason="PONGO_TEST_POSTGRES_URL is required for migration index verification")
@@ -246,6 +251,68 @@ def test_concurrent_postgres_receipt_retries_apply_once():
         assert db.get(InventoryItem, item_id).in_stock == Decimal("2.000")
         assert db.scalar(select(func.count(Receipt.id)).where(Receipt.id == receipt_ids[0])) == 1
         assert db.scalar(select(func.count(StockMovement.id)).where(StockMovement.inventory_item_id == item_id)) == 1
+
+
+@pytest.mark.skipif(not os.environ.get("PONGO_TEST_POSTGRES_URL"), reason="PONGO_TEST_POSTGRES_URL is required for real transaction locking")
+def test_concurrent_postgres_invoice_duplicates_apply_once():
+    engine = make_engine(os.environ["PONGO_TEST_POSTGRES_URL"])
+    sessions = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    suffix = uuid4().hex[:10]
+    invoice_number = f"IN{int(uuid4().hex[:8], 16):010d}"
+    barcode = f"{int(uuid4().hex[:12], 16) % 10**12:012d}"
+    with sessions() as db:
+        location = InventoryLocation(client="Pongo", warehouse="Main Warehouse", location_code=f"INV-{suffix}", location_name=f"Invoice {suffix}", active=True)
+        item = InventoryItem(sku=f"PG-INVOICE-{suffix}", barcode=barcode, description="ACANA Cat Bountiful Catch 4.5 kg", unit_cost=11, in_stock=0, allocated=0, sellable=0, active=True, non_inventory=False)
+        db.add_all([location, item])
+        db.flush()
+        db.add(InventoryItemLocation(inventory_item_id=item.id, location_id=location.id, warehouse=location.warehouse, inventory_location=location.location_code, in_stock=0, allocated=0, sellable=0, active=True))
+        db.commit()
+        item_id = item.id
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer)
+    for y, row in enumerate(
+        [
+            "Supplier: Pan Pacific Pet Limited",
+            f"Invoice #: {invoice_number}",
+            "Date: 09/01/2026",
+            "Description UPC Qty UOM Unit Price Total",
+            f"ACANA Cat Bountiful Catch 4.5 kg {barcode} 1 EA 38.46 38.46",
+        ],
+        start=1,
+    ):
+        pdf.drawString(40, 780 - (y * 18), row)
+    pdf.save()
+    document = buffer.getvalue()
+    base_payload = {
+        "supplier": "Pan Pacific Pet Limited",
+        "invoice_number": invoice_number,
+        "invoice_date": "2026-09-01",
+        "document_sha256": sha256(document).hexdigest(),
+        "warehouse": "Main Warehouse",
+        "sync_woocommerce": False,
+        "lines": [{"source_line_number": 1, "item_id": item_id, "upc": barcode, "invoice_description": "ACANA Cat Bountiful Catch 4.5 kg", "uom": "EA", "shipped_quantity": 1, "pack_multiplier": 1, "quantity_pieces": 1, "net_price": 38.46, "unit_cost": 38.46, "inventory_location": f"INV-{suffix}", "review_required": True, "human_verified": True}],
+    }
+    barrier = Barrier(2)
+
+    def receive(key: str) -> str:
+        with sessions() as db:
+            barrier.wait()
+            try:
+                commit_invoice_receipt(InvoiceReceiptCommitRequest.model_validate({**base_payload, "idempotency_key": key}), document, db, "pytest")
+                return "committed"
+            except HTTPException as exc:
+                db.rollback()
+                assert exc.status_code == 409
+                return "duplicate"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(receive, [f"pg-invoice-a-{suffix}", f"pg-invoice-b-{suffix}"]))
+
+    assert sorted(outcomes) == ["committed", "duplicate"]
+    with sessions() as db:
+        assert db.get(InventoryItem, item_id).in_stock == Decimal("1.000")
+        assert db.scalar(select(func.count(Receipt.id)).where(Receipt.receipt_type == "invoice", Receipt.reference_number == invoice_number)) == 1
 
 
 @pytest.mark.skipif(not os.environ.get("PONGO_TEST_POSTGRES_URL"), reason="PONGO_TEST_POSTGRES_URL is required for real transaction locking")

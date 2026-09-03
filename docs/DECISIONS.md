@@ -630,3 +630,25 @@ Safety: enqueue writes before network, catalog sync performs no Woo writes or
 stock movements, bounded retries retain checkpoints, manual resolutions are
 revalidated and audited, and old automatic stage detail can be pruned without
 deleting attention or human decisions.
+
+## ADR-042: Invoice Receiving Is Review-First And Reversible
+
+Decision: accept supplier PDF invoices as a read-only preview, match only exact
+UPCs, convert cases to individual pieces, and require staff review before one
+additive local receipt is committed. Unmatched products remain a staff-owned
+product-creation task.
+
+Safety: supplier/invoice identity and the document hash detect duplicate
+uploads; case, name-mismatch, duplicate-UPC, and manually adjusted rows require
+verification. WooCommerce stock is queued only after local commit. Reversal is
+a separate audited stock transaction that subtracts the original quantities
+from current stock, blocks allocation/negative-stock violations, and cannot run
+twice.
+
+Hardening: commit receives the PDF again and treats the server extraction as
+authoritative rather than trusting browser-supplied invoice fields. The
+existing PostgreSQL stock-mutation advisory lock serializes duplicate checks.
+Receipt lines retain their pre-receipt unit cost so reversal can compensate the
+cost change without overwriting a later edit. WooCommerce queue creation stays
+outside the local stock transaction and is repairable by replaying the same
+idempotency key.
