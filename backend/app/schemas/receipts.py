@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -53,6 +54,7 @@ class BulkReceiptRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     idempotency_key: str | None = Field(default=None, max_length=120)
+    source: Literal["manual"] = "manual"
     warehouse: str | None = None
     reference_number: str | None = Field(default=None, max_length=120)
     receipt_date: date | None = None

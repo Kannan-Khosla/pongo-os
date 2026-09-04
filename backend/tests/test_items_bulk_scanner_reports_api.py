@@ -175,6 +175,7 @@ def test_bulk_receiving_preview_commit_detail_export(client, monkeypatch):
     item = setup_stock_item(client, sku="BULK-001", barcode="BULK-BAR", in_stock=4, allocated=1)
     payload = {
         "idempotency_key": "bulk-receipt-detail",
+        "source": "manual",
         "warehouse": "Main Warehouse",
         "notes": "Bulk session",
         "lines": [
