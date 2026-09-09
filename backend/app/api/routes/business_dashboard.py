@@ -127,7 +127,7 @@ def sanitize_demo_order(row: dict[str, Any], ids: dict[int, int]) -> dict[str, A
         "local_order_id": ids.get(woo_order_id) if woo_order_id is not None else None,
         "order_number": str(row.get("order_number") or woo_order_id or ""),
         "status": "processing",
-        "customer_name": str(row.get("customer_name") or "Demo customer"),
+        "customer_name": str(row.get("customer_name") or "Reference customer"),
         "customer_email": str(row.get("customer_email") or ""),
         "currency": "CAD",
         "total": str(row.get("order_total") or "0"),

@@ -98,9 +98,9 @@ def require_authenticated_user(
     request.state.user = user
     if user.access_level == "demo":
         if request.url.path.startswith(("/api/integrations/", "/api/reports/google-sheets")):
-            raise HTTPException(status_code=403, detail={"code": "demo_external_access_blocked", "message": "External integrations are unavailable in the isolated demo workspace."})
+            raise HTTPException(status_code=403, detail={"code": "demo_external_access_blocked", "message": "External integrations are unavailable in the isolated preview workspace."})
         if request.method not in {"GET", "HEAD", "OPTIONS"} and not (request.method == "POST" and request.url.path in DEMO_SAFE_POST_PATHS):
-            raise HTTPException(status_code=403, detail={"code": "demo_read_only", "message": "This demo account is read-only. You can review mock data and run previews, but cannot save changes."})
+            raise HTTPException(status_code=403, detail={"code": "demo_read_only", "message": "This preview account is read-only. You can review reference data and run previews, but cannot save changes."})
         use_demo_database(db)
     return user
 
