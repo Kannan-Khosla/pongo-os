@@ -1,4 +1,5 @@
 import csv
+import json
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
@@ -6,6 +7,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -16,6 +18,7 @@ from app.models.inventory import InventoryItem, InventoryItemLocation
 from app.models.orders import Order, OrderItem
 from app.models.reporting import GoogleReportsConfiguration, ReportDelivery, ReportRun
 from app.models.woocommerce import WooCommerceSyncRun, WooSubscriptionLineSnapshot
+from app.services.reporting import report_payload_hash
 from tests.test_fulfillments_api import picked_order
 from tests.test_items_api import client, seed_item  # noqa: F401
 from tests.test_locations_api import seed_location
@@ -386,17 +389,27 @@ def test_sales_report_excludes_cancelled_orders_and_joins_current_stock(client):
         wooProductId=777,
         **{"In Stock": 8, "Allocated": 2, "Unit Cost": 3},
     )
-    seed_item(
+    unsold_payload = seed_item(
         client,
         sku="SALES-UNSOLD",
         Description="Unsold inventory item",
-        Brand="Pongo",
-        Category="Food",
+        Brand="Other",
+        Category="Treats",
+        wooProductId=778,
         **{"In Stock": 4},
+    )
+    seed_item(
+        client,
+        sku="SALES-EXCLUDED",
+        Description="Excluded inventory item",
+        Brand="Pongo",
+        Category="Toys",
+        **{"In Stock": 1, "Allocated": 0},
     )
     override, db = database_session()
     try:
         item = db.get(InventoryItem, item_payload["id"])
+        unsold_item = db.get(InventoryItem, unsold_payload["id"])
         successful = Order(
             order_number="SALE-1",
             local_status="processing",
@@ -436,11 +449,11 @@ def test_sales_report_excludes_cancelled_orders_and_joins_current_stock(client):
                 status="completed",
                 started_at=synced_at,
                 completed_at=synced_at,
-                total_remote_records=1,
-                created_count=1,
+                total_remote_records=2,
+                created_count=2,
             )
         )
-        db.add(
+        db.add_all([
             WooSubscriptionLineSnapshot(
                 woo_subscription_id=7001,
                 woo_line_item_id=1,
@@ -451,15 +464,31 @@ def test_sales_report_excludes_cancelled_orders_and_joins_current_stock(client):
                 product_name=item.description,
                 quantity_per_renewal=7,
                 synced_at=synced_at,
-            )
-        )
+            ),
+            WooSubscriptionLineSnapshot(
+                woo_subscription_id=7002,
+                woo_line_item_id=2,
+                status="active",
+                next_payment_at=synced_at + timedelta(days=10),
+                woo_product_id=778,
+                sku=unsold_item.sku,
+                product_name=unsold_item.description,
+                quantity_per_renewal=2,
+                synced_at=synced_at,
+            ),
+        ])
         db.commit()
     finally:
         override.close()
 
     response = client.post(
         "/api/reports/runs/sales-by-sku",
-        json={"filters": {"start_date": "2026-07-01", "end_date": "2026-07-31"}},
+        json={"filters": {
+            "start_date": "2026-07-01",
+            "end_date": "2026-07-31",
+            "brand": ["Pongo", "Other"],
+            "category": ["Food", "Treats"],
+        }},
     )
 
     assert response.status_code == 200, response.text
@@ -478,6 +507,11 @@ def test_sales_report_excludes_cancelled_orders_and_joins_current_stock(client):
     assert rows["SALES-UNSOLD"]["quantity_sold"] == "0.000"
     assert rows["SALES-UNSOLD"]["net_sales"] == "0.00"
     assert rows["SALES-UNSOLD"]["current_in_stock"] == "4.000"
+    assert rows["SALES-UNSOLD"]["subscription_status"] == "Active"
+    assert rows["SALES-UNSOLD"]["active_subscriptions"] == 1
+    assert rows["SALES-UNSOLD"]["upcoming_30_day_units"] == "2.000"
+    assert "SALES-EXCLUDED" not in rows
+    assert next(metric for metric in body["kpis"] if metric["key"] == "units")["value"] == "3.000"
     assert next(metric for metric in body["kpis"] if metric["key"] == "skus")["value"] == "1"
     assert "Subscription" in {column["label"] for column in body["columns"]}
     exported = list(
@@ -633,6 +667,94 @@ def test_unconfigured_external_report_sharing_fails_closed(client, monkeypatch):
 
     assert google.status_code == 503
     assert email.status_code == 503
+
+
+def test_google_sheet_publisher_sizes_the_grid_for_the_frozen_report(client, monkeypatch):
+    seed_item(client, sku="SHEET-GRID", **{"In Stock": 1, "Allocated": 0, "Unit Cost": 2})
+    run = client.post("/api/reports/runs/inventory-cost-sku", json={"filters": {}}).json()
+    large_row_count = 1001
+    override, db = database_session()
+    try:
+        stored_run = db.get(ReportRun, run["run_id"])
+        payload = {**stored_run.payload, "rows": stored_run.payload["rows"] * large_row_count}
+        stored_run.payload = payload
+        stored_run.row_count = large_row_count
+        stored_run.data_hash = report_payload_hash(payload)
+        db.commit()
+    finally:
+        override.close()
+    settings = SimpleNamespace(
+        google_reports_client_id="client-id",
+        google_reports_client_secret="client-secret",
+        google_reports_refresh_token="refresh-token",
+        google_reports_folder_id="",
+        smtp_host="",
+        smtp_from_email="",
+    )
+    requests = []
+
+    def google_response(request):
+        requests.append(request)
+        if request.url.path == "/v4/spreadsheets":
+            return httpx.Response(200, json={
+                "spreadsheetId": "sheet-1",
+                "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/sheet-1",
+                "sheets": [{"properties": {"sheetId": 0}}, {"properties": {"sheetId": 1}}],
+            })
+        return httpx.Response(200, json={})
+
+    real_client = httpx.Client
+    transport = httpx.MockTransport(google_response)
+    monkeypatch.setattr("app.api.routes.reports.get_settings", lambda: settings)
+    monkeypatch.setattr("app.services.reporting.google_access_token", lambda candidate: "access-token")
+    monkeypatch.setattr(
+        "app.services.reporting.httpx.Client",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+
+    response = client.post(f"/api/reports/runs/{run['run_id']}/google-sheets", json={"share_with": []})
+
+    assert response.status_code == 200, response.text
+    create_request = next(request for request in requests if request.url.path == "/v4/spreadsheets")
+    sheet = json.loads(create_request.content)["sheets"][0]["properties"]
+    assert sheet["gridProperties"]["rowCount"] == large_row_count + 1
+    assert sheet["gridProperties"]["columnCount"] == len(run["columns"])
+    override, db = database_session()
+    try:
+        delivery = db.scalar(select(ReportDelivery).where(ReportDelivery.report_run_id == run["run_id"]))
+        assert delivery.external_url == response.json()["url"]
+    finally:
+        override.close()
+
+
+def test_expired_google_sheet_connection_returns_reconnect_guidance(client, monkeypatch):
+    seed_item(client, sku="SHEET-EXPIRED", **{"In Stock": 1, "Allocated": 0, "Unit Cost": 2})
+    run = client.post("/api/reports/runs/inventory-cost-sku", json={"filters": {}}).json()
+    settings = SimpleNamespace(
+        google_reports_client_id="client-id",
+        google_reports_client_secret="client-secret",
+        google_reports_refresh_token="expired-refresh-token",
+        google_reports_folder_id="",
+        smtp_host="",
+        smtp_from_email="",
+    )
+    monkeypatch.setattr("app.api.routes.reports.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "app.services.reporting.httpx.post",
+        lambda *args, **kwargs: httpx.Response(
+            400,
+            request=httpx.Request("POST", "https://oauth2.googleapis.com/token"),
+            json={"error": "invalid_grant", "error_description": "Token has been expired or revoked."},
+        ),
+    )
+
+    response = client.post(f"/api/reports/runs/{run['run_id']}/google-sheets", json={"share_with": []})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Google Sheets connection expired or was revoked. "
+        "Reconnect under Settings → Google Sheets, then try again."
+    )
 
 
 def test_usage_report_reconciles_opening_movements_and_closing_stock(client):

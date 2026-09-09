@@ -59,7 +59,10 @@ redirect URI displayed by Pongo into Google Cloud. For the current production
 origin it is
 `https://inventory.pongo.ca/api/reports/google-sheets/oauth/callback`. If the
 public origin changes, update the Google OAuth client to the new URI shown in
-Settings before reconnecting. Staff never configure or copy a refresh token.
+Settings before reconnecting. Enable the Google Sheets and Drive APIs, and set
+the consent app to **In production** or **Internal** before staff connect it.
+If Google reports that authorization expired or was revoked, reconnect once
+under Settings → Google Sheets. Staff never configure or copy a refresh token.
 
 ## Readiness and alerts
 
