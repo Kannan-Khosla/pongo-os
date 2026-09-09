@@ -2427,7 +2427,7 @@ tbody tr:nth-child(even) .sticky-col {
 
 .route-planner-controls {
   display: grid;
-  grid-template-columns: minmax(280px, 1.8fr) minmax(150px, 0.55fr) minmax(270px, 1fr);
+  grid-template-columns: minmax(240px, 1.8fr) repeat(2, minmax(140px, 0.7fr)) minmax(220px, 1fr);
   align-items: stretch;
   gap: 12px;
   padding: 15px;
@@ -2669,200 +2669,6 @@ tbody tr:nth-child(even) .sticky-col {
   font-weight: 700;
 }
 
-.route-map-card {
-  display: grid;
-  gap: 14px;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--white);
-}
-
-.route-map-card .panel-title {
-  margin: 0;
-}
-
-.route-map-google-launch {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 12px 14px;
-  border: 1px solid #cfdcf5;
-  border-radius: 9px;
-  background: #f3f6ff;
-}
-
-.route-map-google-launch > div:first-child {
-  display: grid;
-  gap: 3px;
-}
-
-.route-map-google-launch span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.route-map-google-launch .button-row {
-  flex: 0 1 auto;
-}
-
-.route-map-time {
-  display: grid;
-  justify-items: end;
-  gap: 2px;
-}
-
-.route-map-time span {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.route-map-time strong {
-  color: var(--pongo-blue);
-  font-size: 20px;
-}
-
-.route-map-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
-  gap: 14px;
-  min-width: 0;
-}
-
-.route-map-canvas {
-  position: relative;
-  min-width: 0;
-  min-height: 430px;
-  overflow: hidden;
-  border: 1px solid #d8e1e6;
-  border-radius: 10px;
-  background:
-    linear-gradient(rgba(255, 255, 255, .72), rgba(255, 255, 255, .72)),
-    repeating-linear-gradient(0deg, transparent 0 39px, #dce6eb 40px),
-    repeating-linear-gradient(90deg, transparent 0 39px, #dce6eb 40px),
-    #eef4f6;
-}
-
-.route-map-canvas .map-empty {
-  z-index: 2;
-  align-items: start;
-  padding: 24px 18px;
-}
-
-.route-map-lines {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
-.route-map-zone,
-.route-map-warehouse,
-.route-map-stop {
-  position: absolute;
-  transform: translate(-50%, -50%);
-}
-
-.route-map-zone {
-  color: rgba(65, 87, 99, .48);
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: .04em;
-  pointer-events: none;
-  text-transform: uppercase;
-}
-
-.route-map-warehouse {
-  z-index: 3;
-  display: grid;
-  width: 38px;
-  height: 38px;
-  place-items: center;
-  border: 3px solid var(--white);
-  border-radius: 50%;
-  background: #1f3945;
-  color: var(--white);
-  box-shadow: 0 4px 12px rgba(21, 36, 42, .2);
-}
-
-.route-map-stop {
-  z-index: 4;
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  border: 3px solid var(--white);
-  border-radius: 50%;
-  color: var(--white);
-  font-size: 11px;
-  font-weight: 900;
-  text-decoration: none;
-  box-shadow: 0 4px 12px rgba(21, 36, 42, .24);
-  transition: transform .15s ease, box-shadow .15s ease;
-}
-
-.route-map-stop.approximate {
-  outline: 2px dashed rgba(31, 57, 69, .55);
-  outline-offset: 2px;
-}
-
-.route-map-stop:hover,
-.route-map-stop:focus-visible {
-  z-index: 5;
-  outline: 3px solid rgba(15, 20, 154, .22);
-  outline-offset: 2px;
-  transform: translate(-50%, -50%) scale(1.12);
-  box-shadow: 0 7px 18px rgba(21, 36, 42, .3);
-}
-
-.route-map-legend {
-  display: grid;
-  align-content: start;
-  gap: 8px;
-  min-width: 0;
-}
-
-.route-map-totals {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 7px;
-  margin-bottom: 4px;
-}
-
-.route-map-legend article {
-  display: grid;
-  grid-template-columns: 12px minmax(0, 1fr);
-  align-items: center;
-  gap: 9px;
-  padding: 9px 10px;
-  border: 1px solid #e1e8ec;
-  border-radius: 8px;
-  background: #f8fafb;
-}
-
-.route-map-legend article i {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-
-.route-map-legend article div,
-.route-map-legend article span,
-.route-map-legend article small {
-  display: block;
-  min-width: 0;
-}
-
-.route-map-legend article span,
-.route-map-legend > small {
-  color: var(--muted);
-  font-size: 11px;
-}
-
 .route-planner-note,
 .route-planner-warning {
   display: flex;
@@ -2911,6 +2717,7 @@ tbody tr:nth-child(even) .sticky-col {
 
 .driver-route-card > header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -2960,11 +2767,20 @@ tbody tr:nth-child(even) .sticky-col {
 .driver-stop-list {
   display: grid;
   gap: 0;
-  max-height: 390px;
   margin: 0;
   padding: 0 15px;
-  overflow-y: auto;
   list-style: none;
+}
+
+.driver-route-card > .route-planner-note {
+  margin: 12px;
+}
+
+.driver-route-endpoint {
+  margin: 12px 15px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .driver-stop-list li {
@@ -3029,6 +2845,7 @@ tbody tr:nth-child(even) .sticky-col {
 
 .driver-map-link {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -3054,11 +2871,11 @@ tbody tr:nth-child(even) .sticky-col {
 }
 
 .driver-map-link .button-row {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
 }
 
 .driver-map-link :is(a, button) {
-  min-height: 38px;
+  min-height: 44px;
   white-space: nowrap;
 }
 
@@ -5642,6 +5459,7 @@ tbody tr:nth-child(even) .sticky-col {
   .route-filter-grid,
   .route-history-filter-grid,
   .route-header-fields,
+  .route-planner-controls,
   .cycle-count-header-fields,
   .form-grid {
     grid-template-columns: repeat(2, minmax(170px, 1fr));
@@ -5699,28 +5517,6 @@ tbody tr:nth-child(even) .sticky-col {
   .route-strategy-options,
   .route-driver-zone-assignments {
     grid-template-columns: 1fr;
-  }
-
-  .route-map-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .route-map-google-launch {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .route-map-google-launch .button-row,
-  .route-map-google-launch a {
-    width: 100%;
-  }
-
-  .route-map-canvas {
-    min-height: 340px;
-  }
-
-  .route-map-time {
-    justify-items: start;
   }
 
   .route-strategy-options > legend {

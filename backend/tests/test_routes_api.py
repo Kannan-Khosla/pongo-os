@@ -1,9 +1,13 @@
 import csv
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from decimal import Decimal
 from io import StringIO
 from urllib.parse import parse_qs, urlparse
+from types import SimpleNamespace
+from unittest.mock import Mock
 
+import pytest
 from sqlalchemy.orm import Session
 
 from app.models.orders import Order
@@ -304,25 +308,350 @@ def test_open_order_plan_exposes_secret_free_map_and_time_data(client):
     assert geocoded_stop["coordinate_source"] == "existing_route_stop"
 
 
-def test_open_order_route_planner_segments_long_runs_for_mobile_google_maps(client):
-    for index in range(1, 10):
+@pytest.mark.parametrize("return_to_start", [False, True])
+def test_seven_deliveries_have_one_complete_link(client, return_to_start):
+    for index in range(1, 8):
         seed_open_delivery_order(client, index)
 
     response = client.post(
         "/api/routes/open-orders/plan",
-        json={"start_address": "5855 99 Street", "driver_count": 1, "return_to_start": True},
+        json={"start_address": "5855 99 Street", "driver_count": 1, "return_to_start": return_to_start},
     )
 
     assert response.status_code == 200, response.text
     driver = response.json()["drivers"][0]
-    delivery_links = [link for link in driver["google_maps_links"] if not link["returns_to_start"]]
-    return_links = [link for link in driver["google_maps_links"] if link["returns_to_start"]]
-    assert [link["stop_count"] for link in delivery_links] == [4, 4, 1]
-    assert len(return_links) == 1
-    assert parse_qs(urlparse(return_links[0]["url"]).query)["destination"] == ["5855 99 Street"]
-    for link in delivery_links:
-        waypoints = parse_qs(urlparse(link["url"]).query).get("waypoints", [""])[0].split("|")
-        assert len([waypoint for waypoint in waypoints if waypoint]) <= 3
+    assert len(driver["google_maps_links"]) == 1
+    link = driver["google_maps_links"][0]
+    assert link["stop_count"] == 7
+    assert link["requires_google_maps_app"] is True
+    assert link["returns_to_start"] is return_to_start
+    query = parse_qs(urlparse(link["url"]).query)
+    addresses = [stop["address"] for stop in driver["stops"]]
+    assert query["origin"] == ["5855 99 Street"]
+    assert query["waypoints"][0].split("|") == (addresses if return_to_start else addresses[:-1])
+    assert query["destination"] == ["5855 99 Street" if return_to_start else addresses[-1]]
+
+
+@pytest.mark.parametrize("driver_count", [1, 2, 3, 7, 10])
+def test_one_complete_link_per_nonempty_driver_covers_all_selected_orders(client, driver_count):
+    selected = [seed_open_delivery_order(client, index) for index in range(1, 8)]
+    seed_open_delivery_order(client, 10)
+    response = client.post("/api/routes/open-orders/plan", json={"driver_count": driver_count, "order_ids": selected})
+    assert response.status_code == 200, response.text
+    drivers = response.json()["drivers"]
+    ids = [stop["order_id"] for driver in drivers for stop in driver["stops"]]
+    assert sorted(ids) == sorted(selected)
+    for driver in drivers:
+        assert len(driver["google_maps_links"]) == 1
+        query = parse_qs(urlparse(driver["google_maps_links"][0]["url"]).query)
+        addresses = query.get("waypoints", [""])[0].split("|") if query.get("waypoints") else []
+        assert addresses + query["destination"] == [stop["address"] for stop in driver["stops"]]
+
+
+@pytest.mark.parametrize("return_to_start, count, supported", [(False, 9, True), (False, 10, False), (True, 8, True), (True, 9, False)])
+def test_route_link_capacity_never_drops_or_splits_stops(client, return_to_start, count, supported):
+    selected = [seed_open_delivery_order(client, index) for index in range(1, count + 1)]
+    response = client.post("/api/routes/open-orders/plan", json={"driver_count": 1, "return_to_start": return_to_start})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    driver = body["drivers"][0]
+    assert sorted(stop["order_id"] for stop in driver["stops"]) == selected
+    assert body["assigned_order_count"] == count
+    assert len(driver["google_maps_links"]) == int(supported)
+    assert (driver["google_maps_error"] is None) is supported
+    if not supported:
+        assert "No stops have been removed" in driver["google_maps_error"]
+
+
+def test_long_route_url_is_not_shared_incomplete(client):
+    order_ids = [seed_open_delivery_order(client, index) for index in range(1, 8)]
+    with Session(client.test_engine) as db:
+        for order_id in order_ids:
+            db.get(Order, order_id).shipping_address_2 = "Suite A & B " * 20
+        db.commit()
+    response = client.post("/api/routes/open-orders/plan", json={"driver_count": 1})
+    assert response.status_code == 200, response.text
+    driver = response.json()["drivers"][0]
+    assert driver["stop_count"] == 7
+    assert driver["google_maps_links"] == []
+    assert "length limit" in driver["google_maps_error"]
+
+
+def test_routes_use_shipping_only_and_reject_blank_shipping(client):
+    valid = seed_open_delivery_order(client, 1)
+    absent = seed_open_delivery_order(client, 2, address=False)
+    whitespace = seed_open_delivery_order(client, 3)
+    blank_city = seed_open_delivery_order(client, 4)
+    with Session(client.test_engine) as db:
+        for order_id in [valid, absent, whitespace, blank_city]:
+            order = db.get(Order, order_id)
+            order.billing_address_1 = "999 Billing Only Road"
+            order.billing_city = "Calgary"
+            order.billing_zip = "T2A 1A1"
+        db.get(Order, whitespace).shipping_address_1 = " \t "
+        db.get(Order, blank_city).shipping_city = " "
+        db.get(Order, blank_city).shipping_zip = " "
+        db.commit()
+    response = client.post("/api/routes/open-orders/plan", json={"order_ids": [valid, absent, whitespace, blank_city]})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [stop["order_id"] for driver in body["drivers"] for stop in driver["stops"]] == [valid]
+    assert {order["order_id"] for order in body["unassigned_orders"]} == {absent, whitespace, blank_city}
+    assert "Billing+Only" not in body["drivers"][0]["google_maps_links"][0]["url"]
+    assert "101 Delivery Street" in body["drivers"][0]["stops"][0]["address"]
+
+
+def mock_fleet_provider(monkeypatch):
+    from app.services import routes
+    provider = SimpleNamespace(
+        settings=SimpleNamespace(
+            route_optimization_provider="google_route_optimization", route_map_provider="disabled",
+            google_routes_project_id="pongo-route-tests",
+            google_routes_credentials_file="/not-read/test-route-credentials.json",
+            google_routes_credentials_json="",
+        ),
+        token=Mock(return_value="test-oauth-token"),
+        geocode=Mock(side_effect=lambda addresses, **kwargs: [(53 + index / 1000, -113.0) for index in range(len(addresses))]),
+        fleet=Mock(),
+    )
+    monkeypatch.setattr(routes, "get_settings", lambda: provider.settings)
+    monkeypatch.setattr(routes, "service_account_access_token", provider.token)
+    monkeypatch.setattr(routes, "geocode_route_addresses", provider.geocode)
+    monkeypatch.setattr(routes, "optimize_fleet_routes", provider.fleet)
+    return provider
+
+
+def test_route_plan_uses_google_sequence_and_time_only_when_requested(client, monkeypatch):
+    provider = mock_fleet_provider(monkeypatch)
+    provider.fleet.return_value = [([2, 1, 0], 1801)]
+    for index in range(1, 4):
+        seed_open_delivery_order(client, index)
+    initial = client.post("/api/routes/open-orders/plan", json={"optimize": False}).json()
+    for stage in [provider.token, provider.geocode, provider.fleet]:
+        stage.assert_not_called()
+    assert initial["drivers"][0]["optimization_status"] == "not_requested"
+    response = client.post("/api/routes/open-orders/plan", json={"optimize": True})
+    assert response.status_code == 200, response.text
+    driver = response.json()["drivers"][0]
+    addresses = [stop["address"] for stop in initial["drivers"][0]["stops"]]
+    assert driver["optimization_status"] == "optimized"
+    assert driver["estimated_duration_minutes"] == 31
+    assert [stop["address"] for stop in driver["stops"]] == list(reversed(addresses))
+    assert [stop["stop_sequence"] for stop in driver["stops"]] == [1, 2, 3]
+    assert [stop["latitude"] for stop in driver["stops"]] == [53.003, 53.002, 53.001]
+    assert all(stop["coordinate_source"] == "google" for stop in driver["stops"])
+    provider.token.assert_called_once_with("pongo-route-tests", "/not-read/test-route-credentials.json", "")
+    provider.geocode.assert_called_once_with(
+        [initial["start_address"], *addresses], project_id="pongo-route-tests", access_token="test-oauth-token",
+    )
+    provider.fleet.assert_called_once_with(
+        (53.0, -113.0), [(53.001, -113.0), (53.002, -113.0), (53.003, -113.0)], 1, False,
+        project_id="pongo-route-tests", access_token="test-oauth-token", allowed_vehicle_indices=None, service_minutes=5,
+    )
+    query = parse_qs(urlparse(driver["google_maps_links"][0]["url"]).query)
+    assert query["waypoints"][0].split("|") + query["destination"] == list(reversed(addresses))
+    assert "test-oauth-token" not in response.text
+    assert "test-route-credentials" not in response.text
+
+
+def test_forty_stops_use_one_fleet_call_and_allow_reassignment_across_four_drivers(client, monkeypatch):
+    provider = mock_fleet_provider(monkeypatch)
+    selected = [seed_open_delivery_order(client, index, postal_code="T6B 1A1") for index in range(1, 41)]
+    seed_open_delivery_order(client, 50)
+    payload = {"driver_count": 4, "order_ids": selected, "return_to_start": True, "service_minutes": 7}
+    initial = client.post("/api/routes/open-orders/plan", json=payload).json()
+    source_stops = [stop for driver in initial["drivers"] for stop in driver["stops"]]
+    assignments = [list(reversed(range(index, 40, 4))) for index in range(4)]
+    provider.fleet.return_value = [(indexes, 6001 + 600 * index) for index, indexes in enumerate(assignments)]
+
+    response = client.post("/api/routes/open-orders/plan", json={**payload, "optimize": True})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["assigned_order_count"] == 40
+    assert body["unassigned_orders"] == []
+    assert sorted(stop["order_id"] for driver in body["drivers"] for stop in driver["stops"]) == selected
+    for index, driver in enumerate(body["drivers"]):
+        assert [stop["order_id"] for stop in driver["stops"]] == [source_stops[row]["order_id"] for row in assignments[index]]
+        assert driver["optimization_status"] == "optimized"
+        assert driver["estimated_duration_minutes"] == 101 + 10 * index
+        # All ten deliveries stay visible even though one Maps link cannot hold them.
+        assert driver["google_maps_links"] == []
+        assert "No stops have been removed" in driver["google_maps_error"]
+    assert body["total_estimated_duration_minutes"] == 464
+    assert body["estimated_completion_minutes"] == 131
+    assert body["map"]["coordinate_count"] == 40
+    provider.token.assert_called_once()
+    provider.geocode.assert_called_once_with(
+        [initial["start_address"], *(stop["address"] for stop in source_stops)],
+        project_id="pongo-route-tests", access_token="test-oauth-token",
+    )
+    provider.fleet.assert_called_once()
+    assert len(provider.fleet.call_args.args[1]) == 40
+    assert provider.fleet.call_args.args[2:] == (4, True)
+    assert provider.fleet.call_args.kwargs["allowed_vehicle_indices"] is None
+    assert provider.fleet.call_args.kwargs["service_minutes"] == 7
+    assert client.get("/api/routes").json()["total"] == 0
+
+
+def test_fleet_optimizer_receives_hard_direction_eligibility_and_excludes_unassigned_zones(client, monkeypatch):
+    provider = mock_fleet_provider(monkeypatch)
+    east = [seed_open_delivery_order(client, index, postal_code="T6B 1A1") for index in [1, 2]]
+    west = seed_open_delivery_order(client, 3, postal_code="T5P 1A1")
+    north = seed_open_delivery_order(client, 4, postal_code="T5Z 1A1")
+    payload = {
+        "driver_count": 2, "order_ids": [*east, west, north], "assignment_method": "directions",
+        "direction_assignments": [
+            {"driver_number": 1, "directions": ["E"]},
+            {"driver_number": 2, "directions": ["E", "W"]},
+        ],
+    }
+    initial = client.post("/api/routes/open-orders/plan", json=payload).json()
+    source_stops = [stop for driver in initial["drivers"] for stop in driver["stops"]]
+    expected_eligibility = [[0, 1] if stop["direction"] == "E" else [1] for stop in source_stops]
+    provider.fleet.return_value = [
+        ([index for index, stop in enumerate(source_stops) if stop["direction"] == "E"], 1200),
+        ([index for index, stop in enumerate(source_stops) if stop["direction"] == "W"], 600),
+    ]
+    response = client.post("/api/routes/open-orders/plan", json={**payload, "optimize": True})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    provider.fleet.assert_called_once()
+    assert provider.fleet.call_args.kwargs["allowed_vehicle_indices"] == expected_eligibility
+    assert len(provider.geocode.call_args.args[0]) == 4  # Warehouse plus three covered deliveries.
+    assert {stop["order_id"] for stop in body["drivers"][0]["stops"]} == set(east)
+    assert [stop["order_id"] for stop in body["drivers"][1]["stops"]] == [west]
+    assert body["drivers"][0]["directions"] == ["E"]
+    assert body["drivers"][1]["directions"] == ["E", "W"]
+    assert [(order["order_id"], order["reason_code"]) for order in body["unassigned_orders"]] == [(north, "zone_not_assigned")]
+    assert body["assigned_order_count"] == 3
+
+
+@pytest.mark.parametrize("failed_stage, message", [
+    ("token", "Google authorization is unavailable."),
+    ("geocode", "Route address 2 lookup timed out."),
+    ("fleet", "Google could not produce a complete route plan."),
+])
+def test_optimization_failure_preserves_all_stops_with_truthful_status(client, monkeypatch, failed_stage, message):
+    from app.services.routes import RouteOptimizationError
+    provider = mock_fleet_provider(monkeypatch)
+    getattr(provider, failed_stage).side_effect = RouteOptimizationError(message)
+    selected = [seed_open_delivery_order(client, index) for index in range(1, 7)]
+    payload = {"driver_count": 2, "order_ids": selected}
+    initial = client.post("/api/routes/open-orders/plan", json=payload).json()
+    response = client.post("/api/routes/open-orders/plan", json={**payload, "optimize": True})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["assigned_order_count"] == 6
+    assert body["unassigned_orders"] == []
+    for driver, original in zip(body["drivers"], initial["drivers"], strict=True):
+        assert driver["stops"] == original["stops"]
+        assert driver["optimization_status"] == "unavailable"
+        assert message in driver["optimization_message"]
+        assert "Google optimization was not applied" in driver["optimization_message"]
+        assert driver["estimated_duration_minutes"] == original["estimated_duration_minutes"]
+        assert len(driver["google_maps_links"]) == 1
+    stages = ["token", "geocode", "fleet"]
+    for index, stage in enumerate(stages):
+        assert getattr(provider, stage).call_count == int(index <= stages.index(failed_stage))
+    assert "test-oauth-token" not in response.text
+
+
+def test_unconfigured_optimizer_does_not_call_google(client, monkeypatch):
+    provider = mock_fleet_provider(monkeypatch)
+    provider.settings.route_optimization_provider = "disabled"
+    order_id = seed_open_delivery_order(client, 1)
+    response = client.post("/api/routes/open-orders/plan", json={"optimize": True})
+    assert response.status_code == 200, response.text
+    driver = response.json()["drivers"][0]
+    assert driver["optimization_status"] == "not_configured"
+    assert [stop["order_id"] for stop in driver["stops"]] == [order_id]
+    for stage in [provider.token, provider.geocode, provider.fleet]:
+        stage.assert_not_called()
+
+
+def test_outer_optimization_deadline_cancels_work_and_preserves_every_stop(client, monkeypatch):
+    from app.services import routes
+    provider = mock_fleet_provider(monkeypatch)
+    selected = [seed_open_delivery_order(client, index) for index in range(1, 5)]
+    payload = {"driver_count": 2, "order_ids": selected}
+    initial = client.post("/api/routes/open-orders/plan", json=payload).json()
+    future = Mock()
+    future.result.side_effect = TimeoutError
+    executor = Mock()
+    executor.submit.return_value = future
+    pool = Mock(return_value=executor)
+    monkeypatch.setattr(routes, "ThreadPoolExecutor", pool)
+    monkeypatch.setattr(routes, "monotonic", lambda: 100.0)
+    response = client.post("/api/routes/open-orders/plan", json={**payload, "optimize": True})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["assigned_order_count"] == 4
+    assert body["unassigned_orders"] == []
+    for driver, original in zip(body["drivers"], initial["drivers"], strict=True):
+        assert driver["stops"] == original["stops"]
+        assert driver["optimization_status"] == "unavailable"
+        assert "timed out" in driver["optimization_message"]
+    future.result.assert_called_once_with(timeout=27.0)
+    future.cancel.assert_called_once()
+    pool.assert_called_once_with(max_workers=1)
+    executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+    for stage in [provider.token, provider.geocode, provider.fleet]:
+        stage.assert_not_called()
+
+
+@pytest.mark.parametrize("expires_after", ["token", "geocode"])
+def test_expired_planning_deadline_never_starts_a_later_paid_stage(client, monkeypatch, expires_after):
+    from app.services import routes
+    provider = mock_fleet_provider(monkeypatch)
+    order_id = seed_open_delivery_order(client, 1)
+    clock = [100.0]
+    monkeypatch.setattr(routes, "monotonic", lambda: clock[0])
+
+    def authenticate(*args):
+        if expires_after == "token":
+            clock[0] = 128.0
+        return "test-oauth-token"
+
+    def geocode(addresses, **kwargs):
+        clock[0] = 128.0
+        return [(53.0, -113.0) for address in addresses]
+
+    def run_now(function):
+        future = Future()
+        try:
+            future.set_result(function())
+        except Exception as exc:
+            future.set_exception(exc)
+        return future
+
+    provider.token.side_effect = authenticate
+    provider.geocode.side_effect = geocode
+    executor = Mock()
+    executor.submit.side_effect = run_now
+    monkeypatch.setattr(routes, "ThreadPoolExecutor", Mock(return_value=executor))
+    response = client.post("/api/routes/open-orders/plan", json={"optimize": True})
+    assert response.status_code == 200, response.text
+    driver = response.json()["drivers"][0]
+    assert driver["optimization_status"] == "unavailable"
+    assert "timed out" in driver["optimization_message"]
+    assert [stop["order_id"] for stop in driver["stops"]] == [order_id]
+    provider.token.assert_called_once()
+    assert provider.geocode.call_count == int(expires_after == "geocode")
+    provider.fleet.assert_not_called()
+
+
+def test_address_separator_cannot_silently_add_extra_map_stops(client):
+    first = seed_open_delivery_order(client, 1, postal_code="T6B 1A1")
+    seed_open_delivery_order(client, 2, postal_code="T6B 1A2")
+    with Session(client.test_engine) as db:
+        db.get(Order, first).shipping_address_1 = "101 Road | Other address"
+        db.commit()
+    response = client.post("/api/routes/open-orders/plan", json={"return_to_start": True})
+    assert response.status_code == 200, response.text
+    driver = response.json()["drivers"][0]
+    assert driver["stop_count"] == 2
+    assert driver["google_maps_links"] == []
+    assert "separator" in driver["google_maps_error"]
 
 
 def test_open_order_route_planner_validates_driver_count_and_handles_no_orders(client):

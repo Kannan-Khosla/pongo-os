@@ -3360,15 +3360,23 @@ describe('App shell and workflows', () => {
     expect(await screen.findByRole('heading', { name: 'Plan selected open orders' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Completed-order route records' })).not.toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Starting location' })).toHaveValue('5855 99 Street NW, Edmonton, AB');
+    expect(screen.getByRole('spinbutton', { name: 'Minutes per delivery' })).toHaveValue(5);
     expect(await screen.findByRole('heading', { name: 'Driver 1' })).toBeInTheDocument();
     expect(screen.getByText('Order #0802')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open Maps' })).toHaveAttribute('href', expect.stringContaining('https://www.google.com/maps/dir/'));
-    expect(screen.getByRole('link', { name: 'Open planned route in Google Maps' })).toHaveAttribute('href', expect.stringContaining('https://www.google.com/maps/dir/'));
-    const routeMap = screen.getByRole('group', { name: /Route map with 2 planned delivery stops/i });
-    expect(within(routeMap).getByRole('link', { name: 'Open order 0802 in Google Maps' })).toHaveClass('approximate');
-    expect(within(routeMap).getByRole('link', { name: 'Open order 0803 in Google Maps' })).toHaveClass('approximate');
+    const mapsLink = screen.getByRole('link', { name: 'Open Google Maps' });
+    expect(mapsLink).toHaveAttribute('href', expect.stringContaining('https://www.google.com/maps/dir/'));
+    expect(screen.queryByRole('group', { name: /Route map with/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Shipping address' })).toBeInTheDocument();
+    expect(within(screen.getByRole('list', { name: 'Driver 1 shipping stops' })).getAllByRole('listitem')).toHaveLength(2);
+    expect(screen.getByText('Not optimized.')).toBeInTheDocument();
+    expect(JSON.parse(fetch.mock.calls.find(([url]) => String(url).includes('/api/routes/open-orders/plan'))[1].body).optimize).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Share route for Driver 1' }));
+    expect(await navigator.clipboard.readText()).toBe(mapsLink.href);
+    expect(screen.getByText('Copied Driver 1 route link.')).toHaveAttribute('role', 'status');
 
     await user.click(screen.getByRole('checkbox', { name: 'Select order 0803' }));
+    expect(screen.queryByRole('link', { name: 'Open Google Maps' })).not.toBeInTheDocument();
+    expect(screen.getByText('Route settings changed. Create routes to get updated driver links.')).toBeInTheDocument();
     await user.click(screen.getByRole('radio', { name: /Direction zones/i }));
 
     const driverCount = screen.getByRole('spinbutton', { name: 'Number of drivers' });
@@ -3379,13 +3387,15 @@ describe('App shell and workflows', () => {
     await user.click(within(driverOne).getByRole('checkbox', { name: 'E' }));
     expect(within(driverOne).getByRole('checkbox', { name: 'W' })).not.toBeChecked();
     await user.click(within(driverTwo).getByRole('checkbox', { name: 'N' }));
-    await user.click(screen.getByRole('button', { name: 'Plan 1 selected' }));
+    await user.click(screen.getByRole('button', { name: 'Create routes' }));
 
     await waitFor(() => expect(fetch.mock.calls.some(([url, options = {}]) => (
       String(url).includes('/api/routes/open-orders/plan')
       && JSON.parse(options.body || '{}').driver_count === 2
       && JSON.parse(options.body || '{}').start_address === '5855 99 Street NW, Edmonton, AB'
       && JSON.parse(options.body || '{}').assignment_method === 'directions'
+      && JSON.parse(options.body || '{}').optimize === true
+      && JSON.parse(options.body || '{}').service_minutes === 5
       && JSON.stringify(JSON.parse(options.body || '{}').order_ids) === '[701]'
       && JSON.stringify(JSON.parse(options.body || '{}').direction_assignments) === '[{"driver_number":1,"directions":["E"]},{"driver_number":2,"directions":["N"]}]'
     ))).toBe(true));
@@ -3404,8 +3414,11 @@ describe('App shell and workflows', () => {
       const response = currentFetch(url, options);
       return new Promise((resolve) => { releaseRoutePlan = () => resolve(response); });
     });
-    await user.click(screen.getByRole('button', { name: 'Map 1 selected for 1 driver' }));
-    expect(screen.queryByRole('link', { name: 'Open planned route in Google Maps' })).not.toBeInTheDocument();
+    await user.clear(driverCount);
+    await user.type(driverCount, '1');
+    await user.click(screen.getByRole('radio', { name: /Optimize across drivers/i }));
+    await user.click(screen.getByRole('button', { name: 'Create routes' }));
+    expect(screen.queryByRole('link', { name: 'Open Google Maps' })).not.toBeInTheDocument();
     await act(async () => { releaseRoutePlan(); });
     await waitFor(() => {
       const routeCalls = fetch.mock.calls.filter(([url]) => String(url).includes('/api/routes/open-orders/plan'));
@@ -3417,10 +3430,104 @@ describe('App shell and workflows', () => {
         direction_assignments: [],
         start_address: '123 Test Route, Edmonton, AB',
         return_to_start: true,
+        optimize: true,
+        service_minutes: 5,
       });
     });
     expect(driverCount).toHaveValue(1);
-    expect(screen.getByRole('radio', { name: /Equal estimated time/i })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Optimize across drivers/i })).toBeChecked();
+  });
+
+  it.each(['missing', 'split', 'incomplete', 'capacity', 'overlong'])('keeps all route stops visible without sharing a %s link', async (scenario) => {
+    fetch.mockImplementation(async (url, options = {}) => {
+      const response = await mockFetch(url, options);
+      if (!String(url).includes('/api/routes/open-orders/plan')) return response;
+      const plan = await response.json();
+      const driver = plan.drivers[0];
+      if (scenario === 'missing') driver.google_maps_links = [];
+      if (scenario === 'split') driver.google_maps_links.push({ ...driver.google_maps_links[0], part_number: 2 });
+      if (scenario === 'incomplete') driver.google_maps_links[0].stop_count = 1;
+      if (scenario === 'capacity') driver.google_maps_error = 'Too many stops for one Google Maps route. Add drivers or select fewer orders.';
+      if (scenario === 'overlong') driver.google_maps_links[0].url += 'x'.repeat(2048);
+      return json(plan);
+    });
+    window.location.hash = '#/routes/live';
+    render(<App />);
+
+    const stops = await screen.findByRole('list', { name: 'Driver 1 shipping stops' });
+    expect(within(stops).getAllByRole('listitem')).toHaveLength(2);
+    expect(screen.queryByRole('link', { name: 'Open Google Maps' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Share route for Driver 1' })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'Plan selected open orders' })).getByRole('status')).toHaveTextContent(scenario === 'capacity' ? 'Add drivers or select fewer orders.' : 'Every stop remains listed below.');
+  });
+
+  it('optimizes all 40 shipping stops only on Create routes and includes valid delivery minutes', async () => {
+    const user = userEvent.setup();
+    const orders = Array.from({ length: 40 }, (_, index) => ({
+      order_id: index + 1, woo_order_number: `FLEET-${index + 1}`,
+      customer_name: `Fleet customer ${index + 1}`,
+      address: `${100 + index} Shipping Way, Edmonton, AB, CA`, direction: 'N',
+    }));
+    const requests = [];
+    fetch.mockImplementation(async (url, options = {}) => {
+      const response = await mockFetch(url, options);
+      if (!String(url).includes('/api/routes/open-orders/plan')) return response;
+      const request = JSON.parse(options.body);
+      requests.push(request);
+      const plan = await response.json();
+      const selected = orders.filter((order) => !request.order_ids || request.order_ids.includes(order.order_id));
+      const stops = (request.optimize ? [...selected].reverse() : selected).map((order, index) => ({ ...order, stop_sequence: index + 1 }));
+      return json({
+        ...plan, available_orders: orders, total_open_orders: orders.length,
+        selected_order_count: selected.length, assigned_order_count: selected.length,
+        estimated_completion_minutes: 345, total_estimated_duration_minutes: 345,
+        estimate_basis: 'Google route totals include travel and delivery time.',
+        drivers: [{
+          driver_number: 1, driver_label: 'Driver 1', stop_count: stops.length,
+          estimated_duration_minutes: 345, stops,
+          optimization_status: request.optimize ? 'optimized' : 'not_requested',
+          google_maps_links: [],
+          google_maps_error: 'One Google Maps link cannot include 40 deliveries. All stops remain listed.',
+        }],
+      });
+    });
+    window.location.hash = '#/routes/live';
+    render(<App />);
+    const planner = await screen.findByRole('region', { name: 'Plan selected open orders' });
+    const minutes = within(planner).getByRole('spinbutton', { name: 'Minutes per delivery' });
+    const create = within(planner).getByRole('button', { name: 'Create routes' });
+    await screen.findByRole('list', { name: 'Driver 1 shipping stops' });
+    expect(minutes).toHaveValue(5);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].optimize).toBe(false);
+    expect(within(planner).getByText(/The Google Maps link limit does not limit optimization/)).toBeInTheDocument();
+    expect(within(planner).queryByText(/Add drivers|fewer orders|cannot include 40/)).not.toBeInTheDocument();
+    for (const value of ['', '-1', '61', '2.5']) {
+      fireEvent.change(minutes, { target: { value } });
+      expect(create).toBeDisabled();
+      expect(minutes).toHaveAttribute('aria-invalid', 'true');
+    }
+    fireEvent.change(minutes, { target: { value: '0' } });
+    expect(create).toBeEnabled();
+    fireEvent.change(minutes, { target: { value: '60' } });
+    expect(create).toBeEnabled();
+    fireEvent.change(minutes, { target: { value: '7' } });
+    expect(requests).toHaveLength(1);
+    await user.click(create);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toMatchObject({ optimize: true, service_minutes: 7, order_ids: orders.map((order) => order.order_id) });
+    const stops = await screen.findByRole('list', { name: 'Driver 1 shipping stops' });
+    const stopRows = within(stops).getAllByRole('listitem');
+    expect(stopRows).toHaveLength(40);
+    expect(stopRows[0]).toHaveTextContent('Order #FLEET-40');
+    expect(stopRows[39]).toHaveTextContent('Order #FLEET-1');
+    expect(within(planner).getByText('40 stops · 345 min total est.')).toBeInTheDocument();
+    expect(within(planner).getByText('Google optimized.')).toBeInTheDocument();
+    expect(within(planner).queryByRole('link', { name: 'Open Google Maps' })).not.toBeInTheDocument();
+    expect(within(planner).queryByRole('button', { name: 'Share route for Driver 1' })).not.toBeInTheDocument();
+    fireEvent.change(minutes, { target: { value: '8' } });
+    expect(within(planner).queryByRole('list', { name: 'Driver 1 shipping stops' })).not.toBeInTheDocument();
+    expect(requests).toHaveLength(2);
   });
 
   it('shows all Update All errors and wires resume and cancel actions after refresh', async () => {

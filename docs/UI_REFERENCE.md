@@ -779,22 +779,25 @@ No route screenshot was present. Routes use the global Pongo admin shell and
 the same dense operational table language as Orders, Reports, and Fulfillment.
 
 Current behavior:
+
 - `Live Planner` and `Completed Routes` are separate route subpages.
 - Select the operational open orders being delivered from the default Pongo
   warehouse starting point.
-- Use `Map selected for 1 driver` to send the exact checked orders to one
-  equal-time driver plan without manually resetting the driver controls.
-- Choose 1–50 drivers and optionally add a return leg.
-- Balance deterministic estimated time or explicitly assign any of ten zones:
+- Use `Create routes` to optimize up to 200 checked orders together across the fleet.
+- Choose 1–50 drivers, set Minutes per delivery (whole minutes, 0–60, default 5),
+  and optionally add a return leg. Optimized totals include travel and delivery time.
+- Use `Optimize across drivers` or assign any of ten zones as hard constraints:
   N, S, E, W, NE, NW, SE, SW, Central East, and Central West.
 - Never add an unselected zone; show uncovered orders as unassigned.
 - Review every driver assignment and every order excluded for a missing
   address.
-- Plot all assigned stops in a responsive overview with total driver minutes,
-  parallel finish estimate, stop counts, driver colors, and per-stop Google
-  Maps navigation. Ungeocoded stops are visibly placed in their direction zone.
-- Open or share mobile-safe Google Maps direction links; long routes continue
-  in numbered parts.
+- Show a responsive ordered shipping-address list and at most one complete Open/Share
+  link per driver; no embedded or schematic map. Display optimization status and time basis.
+- Keep every selected stop visible when Google limits prevent a complete link;
+  a 40-stop route still shows all optimized stops. Do not tell staff to reduce stops
+  before optimizing. Never share numbered parts or partial routes.
+- For more than three intermediate stops, explain that mobile users must open
+  the link in the Google Maps app. Nine total stops including a return is the limit.
 - Show eligible completed local orders with shipping/customer snapshots.
 - Filter candidates by status, customer email, Woo order number, and search.
 - Select orders to include as route stops.
@@ -807,9 +810,14 @@ Current behavior:
 - Finalize or cancel a local route.
 
 Safety / not yet built:
+
 - Do not expose map provider keys in frontend code.
-- Keyless Google Maps URLs are allowed; do not call map, geocoding, or paid
-  route-optimization APIs.
+- Google Maps URLs remain keyless. Explicit Create routes may call the backend's
+  Google Route Optimization integration. Page loads and selection changes do not
+  call the paid provider; service-account credentials and OAuth tokens stay on the backend.
+- Changing a route input hides stale results until Create routes completes.
+- Do not promise equal driver times or an absolute fastest route. Public itineraries
+  are not implemented.
 - Do not update WooCommerce.
 - Do not change local inventory quantities.
 - Do not add shipping labels, delivery tracking, or outbound/customer

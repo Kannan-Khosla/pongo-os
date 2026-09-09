@@ -53,13 +53,13 @@ Implemented locally:
 - Fulfillment/completion report
 - Completed orders export
 - SKU Orders report
-- Selectable open-order delivery planning from the Pongo warehouse, balanced by estimated workload or explicitly assigned N/S/E/W/NE/NW/SE/SW/Central East/Central West zones across 1–50 drivers, with a responsive all-stop overview, shareable Google Maps navigation links, and separate completed-route records
+- Selectable shipping-address-only delivery planning across 1–50 drivers, with optional backend Google fleet optimization, complete Google Maps links where supported, and separate completed-route records
 - Cookie-based staff login plus an isolated read-only preview role with reference data only
 - Immutable, hash-verified report runs with interactive dashboards, CSV/PDF, Google Sheets, and audited email sharing
 - Resumable background full-catalog WooCommerce stock-sync jobs with progress, retry, resume, and cancel controls
 
 Not implemented yet:
-- Provider-backed street-map tiles, address geocoding, or traffic-aware route optimization calls
+- Embedded street-map tiles and saved-route geocoding/optimization workflows
 - Supplier management, purchase orders, delivery issue logs, customer notifications, and shipping labels
 
 ## Safety Boundaries
@@ -219,13 +219,45 @@ include only `status`. Writeback requests must be previewed, queued, approved,
 and sent through backend endpoints. The frontend never calls WooCommerce
 directly, and DELETE remains blocked even in live test mode.
 
-Route provider placeholders are intentionally disabled by default:
+Route providers are disabled by default:
 
 ```bash
 ROUTE_GEO_PROVIDER=disabled
 ROUTE_MAP_PROVIDER=disabled
 ROUTE_OPTIMIZATION_PROVIDER=disabled
 ```
+
+For live-order fleet optimization, enable the Route Optimization API and Geocoding
+API in a billing-enabled Google Cloud project. Grant the service account Route
+Optimization Editor and Service Usage Consumer roles on that project. Configure
+the backend:
+
+```bash
+ROUTE_OPTIMIZATION_PROVIDER=google_route_optimization
+GOOGLE_ROUTES_PROJECT_ID=your-google-cloud-project-id
+GOOGLE_ROUTES_CREDENTIALS_FILE=/absolute/path/outside-repository/service-account.json
+```
+
+For production, use `GOOGLE_ROUTES_CREDENTIALS_JSON` with the service-account JSON
+in backend secret configuration instead of `GOOGLE_ROUTES_CREDENTIALS_FILE`.
+Set exactly one credential source. Keep the key file outside the repository;
+credentials and OAuth tokens must not reach React, shared links, logs, or commits.
+
+Only **Create routes** sends warehouse/shipping addresses for geocoding and one
+whole-fleet optimization request for up to 200 selected deliveries. Page loading
+and selection changes make no paid calls; preview accounts cannot use the provider.
+Approve Google billing and address processing before enabling it. Google plans
+assignments and stop order together, with hard driver-zone constraints in direction
+mode. Totals include travel, an optional return, and `service_minutes` at each
+delivery (whole minutes, 0–60, default 5). Equal driver times and the absolute
+fastest route are not guaranteed. Failures retain all stops with unoptimized estimates.
+
+One Google Maps app route supports nine stops including the final destination:
+nine deliveries, or eight plus a warehouse return. Links also must fit 2,048
+characters. These sharing limits do not limit optimization: a 40-stop driver route
+still shows its full optimized stop list, with no partial link. Public itineraries
+are not implemented. More than three intermediate stops require the Google Maps
+app or desktop, not a mobile browser.
 
 ## Current Production Operations Chunk
 
@@ -273,8 +305,7 @@ Still intentionally delayed:
 - Live WooCommerce credential/webhook contract checks outside the deployed application.
 - Purchase orders and supplier management.
 - Shipping labels, customer notifications, delivery issue logs,
-  return-to-inventory workflows, provider-backed street-map tiles, address geocoding, and
-  traffic-aware route optimization provider calls.
+  return-to-inventory workflows, provider-backed street-map tiles, and saved-route geocoding/optimization.
 
 ## Preview Account
 

@@ -542,6 +542,31 @@ planner and completed-order route records are separate subpages. A responsive
 in-app overview plots verified coordinates when present and otherwise marks the
 declared zone; Google Maps URLs remain the navigation authority.
 
+Amendment (2026-09-09): the live planner removes the schematic map and four-stop
+link splitting. Each driver gets at most one complete shipping-address-only link,
+including the optional warehouse return. Google app capacity (nine total stops) and URL
+length (2,048 characters) fail explicitly without dropping orders. Mobile-browser
+limits are explained; larger supported links require the app or desktop.
+Explicit Create routes now uses backend Google Route Optimization with
+`ROUTE_OPTIMIZATION_PROVIDER=google_route_optimization`. Service-account OAuth
+uses `GOOGLE_ROUTES_PROJECT_ID` and exactly one credential source:
+`GOOGLE_ROUTES_CREDENTIALS_FILE` outside the repository for local use, or
+`GOOGLE_ROUTES_CREDENTIALS_JSON` in production secret configuration. Enable the
+Route Optimization API and Geocoding API and grant Route Optimization Editor
+and Service Usage Consumer roles on the billing project.
+The backend geocodes shipping addresses, then optimizes up to 200 selected
+deliveries in one whole-fleet request. Direction assignments are hard constraints.
+Driver totals include travel and per-stop `service_minutes` (0–60, default 5),
+plus an optional return. Equal times or a globally fastest route are not promised.
+The nine-stop Google Maps sharing limit does not cap optimization; larger routes
+retain their full optimized lists without partial links or public itineraries.
+Provider failure is visible and preserves all stops.
+This supersedes the no-provider/no-address-sharing rule above for explicit live
+optimization only; page loading and selection changes make no paid calls. Preview
+accounts cannot use the paid provider. Saved-route placeholders remain unchanged.
+Database and WooCommerce writes remain prohibited in route planning. See README
+for provider billing, address-processing consent, setup, and limits.
+
 ## ADR-038: Scan Identity and Manual Stock Corrections Fail Safe
 
 Decision: barcode-driven product lookup tries the scanned string and its

@@ -2427,8 +2427,9 @@ SKU/barcode order report with search by SKU, barcode, description, and date rang
 ## Routes
 
 Route records are local-only. The open-order planner constructs keyless Google
-Maps direction URLs but does not send orders to Google, call a map/geocoding
-API, persist a route, call WooCommerce, or change inventory/order state.
+Maps direction URLs and can use backend Google geocoding and fleet optimization
+on explicit requests. Planning does not persist a route, call WooCommerce, or
+change inventory/order state.
 
 ### POST /api/routes/open-orders/plan
 
@@ -2437,22 +2438,24 @@ orders with complete shipping addresses. Omitting `order_ids` preserves the
 legacy behavior and selects every routable order; an empty list selects none.
 
 Request body:
+
 - `start_address` (defaults to `5855 99 Street NW, Edmonton, AB`)
 - `driver_count` (1–50)
 - `return_to_start`
+- `optimize` (defaults to `false`; explicit Create routes sends `true`)
+- `service_minutes` (whole minutes at each delivery, 0–60, defaults to 5)
 - `order_ids` (optional list of at most 5,000 local order IDs)
 - `assignment_method` (`equal_time` or `directions`)
 - `order_directions` (optional per-order corrections using `N`, `S`, `E`, `W`,
   `NE`, `NW`, `SE`, `SW`, `Central East`, or `Central West`)
 - `direction_assignments` (driver numbers with zero or more assigned directions)
 
-`equal_time` uses a deterministic delivery-area and stop-workload estimate to
-minimize the estimated duration spread while keeping postal areas together when
-possible. It does not claim live Google travel or traffic time. `directions`
-supports the ten exact zones above; each driver may receive several zones and
-each zone may be shared. When assignments are supplied, the backend never adds
-another zone implicitly. Every selected order appears exactly once in a driver
-plan or in `unassigned_orders` with a reason. Orders missing a street plus
+`equal_time` lets Google optimize fleet assignments and stop order together when
+the provider is requested and configured. The unpaid preview and failure fallback
+use delivery-area estimates. `directions` enforces driver-zone assignments as hard
+constraints; each driver may receive several zones and each zone may be shared.
+The backend never adds an unassigned zone. Every selected order appears once in a
+driver plan or in `unassigned_orders` with a reason. Orders missing a street plus
 city/postal code are returned in `excluded_orders` with an actionable reason.
 
 The response includes `available_orders`, selected/assigned/unassigned counts,
@@ -2462,12 +2465,36 @@ contact/address/total snapshots, and each driver's assigned directions and
 estimated duration. IDs that are no longer eligible are safely skipped with a
 warning.
 
-Each driver includes ordered stop snapshots and one or more shareable Google
-Maps direction URLs. Delivery links contain at most four stops so the three
-intermediate-waypoint mobile-browser limit is respected. Long routes therefore
-continue as numbered parts, with each part beginning at the prior part's last
-stop. Planning is synchronous, read-only, and does not create `routes` or
-`route_stops` rows.
+Each driver includes ordered shipping stop snapshots and at most one complete
+Google Maps URL in `google_maps_links`. A return is part of that same link.
+Google Maps apps allow nine total stops (eight deliveries if returning); URLs
+must fit 2,048 characters. Above either limit, all stops remain in `stops` and
+`google_maps_error` explains why no link is available. Sharing limits do not limit
+optimization: a 40-stop route retains its complete optimized list without a partial
+link. Public itineraries are not implemented.
+`requires_google_maps_app` flags more than three intermediate waypoints, which
+mobile browsers do not support. Missing/whitespace shipping addresses are excluded;
+billing addresses never substitute for shipping addresses.
+
+With `optimize=true` and `ROUTE_OPTIMIZATION_PROVIDER=google_route_optimization`,
+the backend geocodes warehouse/shipping addresses and sends one whole-fleet
+`optimizeTours` request for at most 200 selected deliveries. Configure
+`GOOGLE_ROUTES_PROJECT_ID` and exactly one of `GOOGLE_ROUTES_CREDENTIALS_FILE`
+(local key file outside the repository) or `GOOGLE_ROUTES_CREDENTIALS_JSON`
+(production secret). Authentication uses backend service-account OAuth. Enable
+the Route Optimization API and Geocoding API and grant the service account Route
+Optimization Editor and Service Usage Consumer roles on the billing project.
+`optimization_status` is `optimized`, `not_configured`, `not_requested`, or
+`unavailable`; `optimization_message` explains the basis. Optimized durations
+include travel and `service_minutes` at each stop, plus the return trip if requested.
+Google does not guarantee equal driver times or an absolute fastest route. Other
+durations remain rough area estimates. Capacity, authentication, geocoding, or
+provider failures preserve all deliveries and return sanitized errors.
+Planning is database-read-only and does not create `routes` or `route_stops` rows.
+Google address processing and billing apply only when optimization is enabled
+and requested. The UI requests it only on Create routes, never on page load or
+selection changes. Preview accounts cannot call the paid provider even when
+requesting optimization. Credentials and OAuth tokens never reach the client.
 
 Eligible route candidates are non-historical local orders with
 `local_status = completed`, `fulfilled`, or `partially_fulfilled` that are not
@@ -2564,9 +2591,10 @@ Mark a route cancelled locally. Stops remain for audit/review, and the orders
 become eligible for a future route because cancelled routes are ignored by the
 candidate filter.
 
-Not implemented yet:
-- traffic-aware or road-network route optimization
-- address validation/geocoding
+Not implemented for saved completed-order route records:
+
+- live road-network optimization or geocoding (available in the open-order planner)
+- address validation
 - embedded in-app maps
 - delivery tracking
 - customer notifications

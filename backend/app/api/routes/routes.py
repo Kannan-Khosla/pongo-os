@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -34,8 +34,11 @@ router = APIRouter(prefix="/routes", tags=["routes"])
 @router.post("/open-orders/plan", response_model=OpenOrderRoutePlanResponse)
 def plan_open_order_delivery_routes(
     payload: OpenOrderRoutePlanRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> OpenOrderRoutePlanResponse:
+    if getattr(getattr(request.state, "user", None), "access_level", None) == "demo":
+        payload = payload.model_copy(update={"optimize": False})
     return plan_open_order_routes(db, payload)
 
 

@@ -54,6 +54,8 @@ class OpenOrderRoutePlanRequest(BaseModel):
     )
     driver_count: int = Field(default=1, ge=1, le=50)
     return_to_start: bool = False
+    optimize: bool = False
+    service_minutes: int = Field(default=5, ge=0, le=60)
     order_ids: list[int] | None = Field(default=None, max_length=5000)
     assignment_method: Literal["equal_time", "directions"] = "equal_time"
     order_directions: list["OpenOrderDirectionOverride"] = Field(default_factory=list, max_length=5000)
@@ -135,6 +137,7 @@ class GoogleMapsRouteLink(BaseModel):
     stop_sequence_to: int | None = None
     stop_count: int = 0
     returns_to_start: bool = False
+    requires_google_maps_app: bool = False
 
 
 class DriverOpenOrderRoutePlan(BaseModel):
@@ -145,6 +148,9 @@ class DriverOpenOrderRoutePlan(BaseModel):
     directions: list[RouteDirection] = Field(default_factory=list)
     stops: list[OpenOrderRoutePlanStop] = Field(default_factory=list)
     google_maps_links: list[GoogleMapsRouteLink] = Field(default_factory=list)
+    google_maps_error: str | None = None
+    optimization_status: Literal["optimized", "unavailable", "not_configured", "not_requested"] = "not_configured"
+    optimization_message: str | None = None
 
 
 class OpenOrderRouteMapSummary(BaseModel):

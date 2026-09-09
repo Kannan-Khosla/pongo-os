@@ -65,19 +65,6 @@ const smartBuyingSubpages = [
 ].map(([id, label]) => ({ id, label, href: `#/smart-buying/${id}` }));
 const DEFAULT_ROUTE_START_ADDRESS = '5855 99 Street NW, Edmonton, AB';
 const ROUTE_DIRECTIONS = ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW', 'Central East', 'Central West'];
-const ROUTE_ZONE_POSITIONS = {
-  N: { left: 50, top: 16 },
-  S: { left: 50, top: 84 },
-  E: { left: 84, top: 50 },
-  W: { left: 16, top: 50 },
-  NE: { left: 76, top: 24 },
-  NW: { left: 24, top: 24 },
-  SE: { left: 76, top: 76 },
-  SW: { left: 24, top: 76 },
-  'Central East': { left: 60, top: 50 },
-  'Central West': { left: 40, top: 50 },
-};
-const ROUTE_DRIVER_COLORS = ['#0f149a', '#ef5b3f', '#16835f', '#8b5cf6', '#d97706', '#0369a1', '#be123c', '#4d7c0f'];
 
 function defaultRouteDirectionAssignments(driverCount) {
   const count = Math.max(1, Math.min(50, Number(driverCount) || 1));
@@ -1622,6 +1609,7 @@ export default function App({ currentUser = null, onLogout = null }) {
         start_address: DEFAULT_ROUTE_START_ADDRESS,
         driver_count: 1,
         return_to_start: false,
+        optimize: false,
       });
     }
     if (route.pageId === 'routes' && route.routesView === 'completed') {
@@ -12881,153 +12869,16 @@ function CompletedOrdersPanel({ ordersData, loading, error, onLoadCompletedOrder
   );
 }
 
-function routeStopSearchUrl(address) {
-  const query = new URLSearchParams({ api: '1', query: address });
-  return `https://www.google.com/maps/search/?${query.toString()}`;
-}
-
-function hasRouteCoordinates(stop) {
-  return [stop.latitude, stop.longitude].every((value) => value != null && String(value).trim() !== '' && Number.isFinite(Number(value)));
-}
-
-function positionedRouteStops(drivers) {
-  const rows = drivers.flatMap((driver) => (driver.stops || []).map((stop) => ({ driver, stop })));
-  const located = rows.filter(({ stop }) => hasRouteCoordinates(stop));
-  const latitudes = located.map(({ stop }) => Number(stop.latitude));
-  const longitudes = located.map(({ stop }) => Number(stop.longitude));
-  const minLatitude = Math.min(...latitudes);
-  const maxLatitude = Math.max(...latitudes);
-  const minLongitude = Math.min(...longitudes);
-  const maxLongitude = Math.max(...longitudes);
-  const latitudeRange = Math.max(maxLatitude - minLatitude, 0.01);
-  const longitudeRange = Math.max(maxLongitude - minLongitude, 0.01);
-  const hasCoordinateBounds = located.length > 1;
-  const zoneCounts = {};
-
-  return rows.map(({ driver, stop }) => {
-    const hasCoordinates = hasRouteCoordinates(stop);
-    if (hasCoordinates) {
-      return {
-        driver,
-        stop,
-        approximate: false,
-        left: hasCoordinateBounds ? 8 + ((Number(stop.longitude) - minLongitude) / longitudeRange) * 84 : 54,
-        top: hasCoordinateBounds ? 8 + ((maxLatitude - Number(stop.latitude)) / latitudeRange) * 84 : 46,
-      };
-    }
-    const base = ROUTE_ZONE_POSITIONS[stop.direction] || ROUTE_ZONE_POSITIONS['Central East'];
-    const occurrence = zoneCounts[stop.direction] || 0;
-    zoneCounts[stop.direction] = occurrence + 1;
-    const angle = occurrence * 2.4;
-    const radius = Math.min(10, 2 + Math.floor(occurrence / 2) * 1.4);
-    return {
-      driver,
-      stop,
-      approximate: true,
-      left: Math.max(5, Math.min(95, base.left + Math.cos(angle) * radius)),
-      top: Math.max(5, Math.min(95, base.top + Math.sin(angle) * radius)),
-    };
-  });
-}
-
-function OpenOrderRouteMap({ plan }) {
-  const drivers = plan?.drivers || [];
-  const oneDriverLinks = drivers.length === 1 ? drivers[0].google_maps_links || [] : [];
-  const markers = positionedRouteStops(drivers);
-  const lines = drivers.map((driver) => {
-    const points = markers.filter((marker) => marker.driver.driver_number === driver.driver_number);
-    return { driver, points: [{ left: 50, top: 50 }, ...points] };
-  });
-
-  return (
-    <section className="route-map-card" aria-labelledby="route-map-title">
-      <div className="panel-title compact-title">
-        <div>
-          <h3 id="route-map-title">All planned stops</h3>
-          <p>{markers.length} stop{markers.length === 1 ? '' : 's'} across {drivers.length} driver route{drivers.length === 1 ? '' : 's'}. Tap any stop to open it in Google Maps.</p>
-        </div>
-        <div className="route-map-time">
-          <span>Parallel finish estimate</span>
-          <strong>{formatNumber(plan.estimated_completion_minutes || 0)} min</strong>
-        </div>
-      </div>
-      {oneDriverLinks.length > 0 && (
-        <div className="route-map-google-launch">
-          <div>
-            <strong>Google Maps for Driver 1</strong>
-            <span>{oneDriverLinks.length === 1 ? `Open all ${markers.length} planned stops in Google Maps.` : `Open ${oneDriverLinks.length} continuous parts in order to cover all ${markers.length} planned stops.`}</span>
-          </div>
-          <div className="button-row compact" aria-label="Driver 1 Google Maps route">
-            {oneDriverLinks.map((link) => (
-              <a className="primary-button" href={link.url} key={`map-launch-${link.part_number}`} rel="noreferrer" target="_blank">
-                <MapPin aria-hidden="true" size={16} />
-                {oneDriverLinks.length === 1 ? 'Open planned route in Google Maps' : `Open ${link.label}`}
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
-      <div className="route-map-layout">
-        <div className="route-map-canvas" role="group" aria-label={`Route map with ${markers.length} planned delivery stops`}>
-          <svg aria-hidden="true" className="route-map-lines" preserveAspectRatio="none" viewBox="0 0 100 100">
-            {lines.map(({ driver, points }) => (
-              <polyline
-                fill="none"
-                key={driver.driver_number}
-                points={points.map((point) => `${point.left},${point.top}`).join(' ')}
-                stroke={ROUTE_DRIVER_COLORS[(driver.driver_number - 1) % ROUTE_DRIVER_COLORS.length]}
-                strokeDasharray="2 1.5"
-                strokeWidth="0.65"
-              />
-            ))}
-          </svg>
-          {Object.entries(ROUTE_ZONE_POSITIONS).map(([zone, position]) => (
-            <span className="route-map-zone" key={zone} style={{ left: `${position.left}%`, top: `${position.top}%` }}>{zone}</span>
-          ))}
-          <span className="route-map-warehouse" style={{ left: '50%', top: '50%' }} title={plan.start_address}><Warehouse aria-hidden="true" size={17} /></span>
-          {markers.map(({ driver, stop, left, top, approximate }) => (
-            <a
-              aria-label={`Open order ${stop.woo_order_number || stop.woo_order_id || stop.order_id} in Google Maps`}
-              className={approximate ? 'route-map-stop approximate' : 'route-map-stop'}
-              href={routeStopSearchUrl(stop.address)}
-              key={`${driver.driver_number}-${stop.order_id}`}
-              rel="noreferrer"
-              style={{ background: ROUTE_DRIVER_COLORS[(driver.driver_number - 1) % ROUTE_DRIVER_COLORS.length], left: `${left}%`, top: `${top}%` }}
-              target="_blank"
-              title={`${driver.driver_label} · Stop ${stop.stop_sequence} · ${stop.address}`}
-            >
-              {stop.stop_sequence}
-            </a>
-          ))}
-          {!markers.length && <div className="map-empty">Choose open orders and build a route to plot the stops.</div>}
-        </div>
-        <div className="route-map-legend">
-          <div className="route-map-totals">
-            <Metric label="Assigned" value={plan.assigned_order_count ?? markers.length} />
-            <Metric label="Unassigned" value={plan.unassigned_order_count || 0} />
-            <Metric label="Driver time total" value={`${formatNumber(plan.total_estimated_duration_minutes || 0)} min`} />
-          </div>
-          {drivers.map((driver) => (
-            <article key={driver.driver_number}>
-              <i style={{ background: ROUTE_DRIVER_COLORS[(driver.driver_number - 1) % ROUTE_DRIVER_COLORS.length] }} />
-              <div><strong>{driver.driver_label}</strong><span>{driver.stop_count} stop{driver.stop_count === 1 ? '' : 's'} · {driver.estimated_duration_minutes || 0} min</span></div>
-            </article>
-          ))}
-          {plan.map?.missing_coordinate_count > 0 && <small>Outlined markers use their assigned direction zone until verified coordinates are available.</small>}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
   const [form, setForm] = useState({
     startAddress: DEFAULT_ROUTE_START_ADDRESS,
     driverCount: 1,
+    serviceMinutes: 5,
     returnToStart: false,
     assignmentMethod: 'equal_time',
   });
   const [shareMessage, setShareMessage] = useState('');
+  const [planDirty, setPlanDirty] = useState(false);
   const [selectedOrderIds, setSelectedOrderIds] = useState([]);
   const [orderDirections, setOrderDirections] = useState({});
   const [driverDirections, setDriverDirections] = useState(() => defaultRouteDirectionAssignments(1));
@@ -13036,6 +12887,8 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
 
   const availableOrders = plan?.available_orders || [];
   const normalizedDriverCount = Math.max(1, Math.min(50, Number(form.driverCount) || 1));
+  const serviceMinutes = Number(form.serviceMinutes);
+  const validServiceMinutes = form.serviceMinutes !== '' && Number.isInteger(serviceMinutes) && serviceMinutes >= 0 && serviceMinutes <= 60;
   const selectedOrderIdSet = new Set(selectedOrderIds);
   const filteredOrders = availableOrders.filter((order) => {
     const query = orderSearch.trim().toLocaleLowerCase();
@@ -13054,6 +12907,7 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
   }, [plan]);
 
   function updateForm(name, value) {
+    setPlanDirty(true);
     setForm((current) => ({ ...current, [name]: value }));
   }
 
@@ -13066,20 +12920,24 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
   }
 
   function toggleOrder(orderId) {
+    setPlanDirty(true);
     setSelectedOrderIds((current) => (current.includes(orderId) ? current.filter((id) => id !== orderId) : [...current, orderId]));
   }
 
   function selectVisibleOrders() {
+    setPlanDirty(true);
     const visibleIds = filteredOrders.map((order) => order.order_id);
     setSelectedOrderIds((current) => [...new Set([...current, ...visibleIds])]);
   }
 
   function clearVisibleOrders() {
+    setPlanDirty(true);
     const visibleIds = new Set(filteredOrders.map((order) => order.order_id));
     setSelectedOrderIds((current) => current.filter((id) => !visibleIds.has(id)));
   }
 
   function toggleDriverDirection(driverNumber, direction) {
+    setPlanDirty(true);
     setDriverDirections((current) => {
       const selected = current[driverNumber] || [];
       return {
@@ -13089,24 +12947,22 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
     });
   }
 
-  function buildPlan({ driverCount = normalizedDriverCount, assignmentMethod = form.assignmentMethod } = {}) {
+  function buildPlan() {
+    setShareMessage('');
+    setPlanDirty(false);
     onPlan({
       start_address: form.startAddress.trim() || DEFAULT_ROUTE_START_ADDRESS,
-      driver_count: driverCount,
+      driver_count: normalizedDriverCount,
+      service_minutes: serviceMinutes,
       return_to_start: form.returnToStart,
+      optimize: true,
       order_ids: selectedOrderIds,
-      assignment_method: assignmentMethod,
+      assignment_method: form.assignmentMethod,
       order_directions: selectedOrderIds.map((orderId) => ({ order_id: orderId, direction: orderDirections[orderId] || 'Central East' })),
-      direction_assignments: assignmentMethod === 'directions'
-        ? Array.from({ length: driverCount }, (_, index) => ({ driver_number: index + 1, directions: driverDirections[index + 1] || [] }))
+      direction_assignments: form.assignmentMethod === 'directions'
+        ? Array.from({ length: normalizedDriverCount }, (_, index) => ({ driver_number: index + 1, directions: driverDirections[index + 1] || [] }))
         : [],
     });
-  }
-
-  function buildOneDriverPlan() {
-    updateDriverCount(1);
-    updateForm('assignmentMethod', 'equal_time');
-    buildPlan({ driverCount: 1, assignmentMethod: 'equal_time' });
   }
 
   async function shareLink(link, driverLabel) {
@@ -13114,11 +12970,11 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
     try {
       if (navigator.share) {
         await navigator.share({
-          title: `${driverLabel} · ${link.label}`,
+          title: `${driverLabel} route`,
           text: `Pongo delivery route for ${driverLabel}`,
           url: link.url,
         });
-        setShareMessage(`Shared ${driverLabel} ${link.label}.`);
+        setShareMessage(`Shared ${driverLabel} route.`);
         return;
       }
       if (navigator.clipboard?.writeText) {
@@ -13134,7 +12990,7 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
         document.execCommand('copy');
         copyField.remove();
       }
-      setShareMessage(`Copied ${driverLabel} ${link.label} link.`);
+      setShareMessage(`Copied ${driverLabel} route link.`);
     } catch (shareError) {
       if (shareError?.name !== 'AbortError') setShareMessage('Unable to share automatically. Open Google Maps and copy the address from your browser.');
     }
@@ -13150,16 +13006,12 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
         <div>
           <span className="route-planner-kicker"><Route aria-hidden="true" size={16} /> Live delivery planning</span>
           <h2 id="open-order-route-planner-title">Plan selected open orders</h2>
-          <p>Choose today’s deliveries, balance estimated workload, or assign the ten delivery zones to specific drivers.</p>
+          <p>Choose shipping orders and drivers, then optimize assignments and stop order. Google Maps links appear when the complete driver route fits.</p>
         </div>
         <div className="button-row route-planner-actions">
-          <button className="primary-button route-planner-submit" disabled={loading || !form.startAddress.trim() || selectedOrderIds.length === 0} onClick={buildOneDriverPlan} type="button">
-            <MapPin aria-hidden="true" size={18} />
-            {loading ? 'Building map…' : `Map ${selectedOrderIds.length} selected for 1 driver`}
-          </button>
-          <button className="muted-button route-planner-submit" disabled={loading || !form.startAddress.trim() || selectedOrderIds.length === 0 || (form.assignmentMethod === 'directions' && !hasDirectionSelection)} onClick={buildPlan} type="button">
+          <button className="primary-button route-planner-submit" disabled={loading || !form.startAddress.trim() || !validServiceMinutes || selectedOrderIds.length === 0 || (form.assignmentMethod === 'directions' && !hasDirectionSelection)} onClick={buildPlan} type="button">
             <Route aria-hidden="true" size={18} />
-            {loading ? 'Planning routes…' : `Plan ${selectedOrderIds.length} selected`}
+            {loading ? 'Creating routes…' : 'Create routes'}
           </button>
         </div>
       </div>
@@ -13178,9 +13030,14 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
           <input aria-label="Number of drivers" inputMode="numeric" max="50" min="1" onChange={(event) => updateDriverCount(event.target.value)} type="number" value={form.driverCount} />
           <small>Choose 1, 2, 3, or any number up to 50.</small>
         </label>
+        <label className="field route-driver-count-field">
+          <span>Minutes per delivery</span>
+          <input aria-label="Minutes per delivery" aria-invalid={!validServiceMinutes} inputMode="numeric" max="60" min="0" onChange={(event) => updateForm('serviceMinutes', event.target.value)} step="1" type="number" value={form.serviceMinutes} />
+          <small>{validServiceMinutes ? 'Time at each stop, included in route totals.' : 'Enter a whole number from 0 to 60.'}</small>
+        </label>
         <label className="route-return-toggle">
           <input checked={form.returnToStart} onChange={(event) => updateForm('returnToStart', event.target.checked)} type="checkbox" />
-          <span><strong>Return to starting location</strong><small>Add a final Google Maps link back to 5855 99 Street.</small></span>
+          <span><strong>Return to starting location</strong><small>Include the return trip in each driver’s route.</small></span>
         </label>
       </div>
 
@@ -13188,11 +13045,11 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
         <legend>How should orders be split?</legend>
         <label className={form.assignmentMethod === 'equal_time' ? 'selected' : ''}>
           <input checked={form.assignmentMethod === 'equal_time'} name="route-assignment-method" onChange={() => updateForm('assignmentMethod', 'equal_time')} type="radio" />
-          <span><strong>Equal estimated time</strong><small>Balances area, postal transitions, and stop workload so driver estimates stay as close as possible.</small></span>
+          <span><strong>Optimize across drivers</strong><small>Google plans assignments and stop order using travel and delivery time. Driver totals may differ.</small></span>
         </label>
         <label className={form.assignmentMethod === 'directions' ? 'selected' : ''}>
           <input checked={form.assignmentMethod === 'directions'} name="route-assignment-method" onChange={() => updateForm('assignmentMethod', 'directions')} type="radio" />
-          <span><strong>Direction zones</strong><small>Assign one or more zones to each driver. A zone can be shared by multiple drivers.</small></span>
+          <span><strong>Direction zones</strong><small>Optimize within the zones assigned to each driver. A zone can be shared by multiple drivers.</small></span>
         </label>
       </fieldset>
 
@@ -13220,11 +13077,11 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
           <label className="field route-order-search"><span>Find an order</span><div className="input-with-icon"><input aria-label="Find an open order" onChange={(event) => setOrderSearch(event.target.value)} placeholder="Order, customer, postal code, or address" value={orderSearch} /><Search aria-hidden="true" size={18} /></div></label>
           <div className="route-order-table-wrap">
             <table className="route-order-table">
-              <thead><tr><th><input aria-label="Select all visible open orders" checked={allVisibleSelected} onChange={(event) => (event.target.checked ? selectVisibleOrders() : clearVisibleOrders())} type="checkbox" /></th><th>Order</th><th>Customer</th><th>Delivery address</th><th>Direction</th></tr></thead>
+              <thead><tr><th><input aria-label="Select all visible open orders" checked={allVisibleSelected} onChange={(event) => (event.target.checked ? selectVisibleOrders() : clearVisibleOrders())} type="checkbox" /></th><th>Order</th><th>Customer</th><th>Shipping address</th><th>Direction</th></tr></thead>
               <tbody>
                 {filteredOrders.map((order) => {
                   const orderNumber = order.woo_order_number || order.woo_order_id || order.order_id;
-                  return <tr key={order.order_id}><td><input aria-label={`Select order ${orderNumber}`} checked={selectedOrderIdSet.has(order.order_id)} onChange={() => toggleOrder(order.order_id)} type="checkbox" /></td><td><strong>#{orderNumber}</strong><small>{order.postal_area || 'No postal area'}</small></td><td>{order.customer_name || 'Customer name unavailable'}</td><td>{order.address}</td><td><select aria-label={`Direction for order ${orderNumber}`} onChange={(event) => setOrderDirections((current) => ({ ...current, [order.order_id]: event.target.value }))} value={orderDirections[order.order_id] || order.direction}>{ROUTE_DIRECTIONS.map((direction) => <option key={direction} value={direction}>{direction.charAt(0).toUpperCase() + direction.slice(1)}</option>)}</select></td></tr>;
+                  return <tr key={order.order_id}><td><input aria-label={`Select order ${orderNumber}`} checked={selectedOrderIdSet.has(order.order_id)} onChange={() => toggleOrder(order.order_id)} type="checkbox" /></td><td><strong>#{orderNumber}</strong><small>{order.postal_area || 'No postal area'}</small></td><td>{order.customer_name || 'Customer name unavailable'}</td><td>{order.address}</td><td><select aria-label={`Direction for order ${orderNumber}`} onChange={(event) => { setPlanDirty(true); setOrderDirections((current) => ({ ...current, [order.order_id]: event.target.value })); }} value={orderDirections[order.order_id] || order.direction}>{ROUTE_DIRECTIONS.map((direction) => <option key={direction} value={direction}>{direction.charAt(0).toUpperCase() + direction.slice(1)}</option>)}</select></td></tr>;
                 })}
                 {filteredOrders.length === 0 && <tr><td colSpan={5}><div className="empty-table-row">No open orders match this search.</div></td></tr>}
               </tbody>
@@ -13235,49 +13092,69 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
 
       {error && <div className="api-error" role="alert">{error}</div>}
       {loading && <div className="loading-strip" role="status">Building routes for the selected open orders…</div>}
-      {shareMessage && <div className="api-success" role="status" aria-live="polite">{shareMessage}</div>}
+      {planDirty && !loading && <div className="route-planner-note" role="status">Route settings changed. Create routes to get updated driver links.</div>}
+      {shareMessage && !planDirty && <div className="api-success" role="status" aria-live="polite">{shareMessage}</div>}
 
-      {plan && !loading && (
+      {plan && !loading && !planDirty && !error && (
         <>
           <div className="summary-strip route-planner-summary">
             <Metric label="Open Orders" value={plan.total_open_orders} />
             <Metric label="Selected" value={plan.selected_order_count ?? plan.routable_order_count} />
             <Metric label="Assigned" value={plan.assigned_order_count ?? plan.routable_order_count} />
+            <Metric label="Unassigned" value={plan.unassigned_order_count || 0} />
             <Metric label="Drivers" value={plan.effective_driver_count} />
             <Metric label="Finish Estimate" value={`${formatNumber(plan.estimated_completion_minutes || 0)} min`} />
+            <Metric label="Driver Time Total" value={`${formatNumber(plan.total_estimated_duration_minutes || 0)} min`} />
           </div>
-          <OpenOrderRouteMap plan={plan} />
+          {plan.estimate_basis && <div className="route-planner-note">{plan.estimate_basis}</div>}
           {(plan.warnings || []).map((warning) => <div className="route-planner-warning" key={warning}><TriangleAlert aria-hidden="true" size={17} /><span>{warning}</span></div>)}
 
           {drivers.length > 0 ? (
             <div className="driver-route-grid">
-              {drivers.map((driver) => (
-                <article className="driver-route-card" key={driver.driver_number}>
-                  <header>
-                    <div><span>Driver route</span><h3>{driver.driver_label}</h3>{driver.directions?.length > 0 && <small>{driver.directions.map((direction) => direction.charAt(0).toUpperCase() + direction.slice(1)).join(' · ')}</small>}</div>
-                    <strong>{driver.stop_count} stop{driver.stop_count === 1 ? '' : 's'} · {driver.estimated_duration_minutes || 0} min est.</strong>
-                  </header>
-                  <ol className="driver-stop-list">
-                    {(driver.stops || []).map((stop) => (
-                      <li key={stop.order_id}>
-                        <span className="driver-stop-number">{stop.stop_sequence}</span>
-                        <div><strong>Order #{stop.woo_order_number || stop.woo_order_id || stop.order_id}</strong><span>{stop.customer_name || 'Customer name unavailable'}</span><small>{stop.address}</small></div>
-                      </li>
-                    ))}
-                  </ol>
-                  <div className="driver-map-links" aria-label={`${driver.driver_label} Google Maps links`}>
-                    {(driver.google_maps_links || []).map((link) => (
-                      <div className="driver-map-link" key={`${driver.driver_number}-${link.part_number}`}>
-                        <div><strong>{link.label}</strong><small>{link.returns_to_start ? 'Return leg' : `${link.stop_count} delivery stop${link.stop_count === 1 ? '' : 's'}`}</small></div>
-                        <div className="button-row compact">
-                          <button aria-label={`Share ${driver.driver_label} ${link.label}`} className="muted-button" onClick={() => shareLink(link, driver.driver_label)} type="button"><Copy aria-hidden="true" size={16} /> Share</button>
-                          <a className="primary-button" href={link.url} rel="noreferrer" target="_blank"><MapPin aria-hidden="true" size={16} /> Open Maps</a>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </article>
-              ))}
+              {drivers.map((driver) => {
+                const candidateLink = driver.google_maps_links?.length === 1 ? driver.google_maps_links[0] : null;
+                const link = !driver.google_maps_error && candidateLink?.url && candidateLink.url.length <= 2048
+                  && candidateLink.stop_count === driver.stop_count && candidateLink.stop_count === driver.stops?.length
+                  && candidateLink.stop_count + Number(candidateLink.returns_to_start || false) <= 9
+                  ? candidateLink : null;
+                const optimized = driver.optimization_status === 'optimized';
+                const requiresMapsApp = link && (link.requires_google_maps_app ?? (link.stop_count - (link.returns_to_start ? 0 : 1) > 3));
+                return (
+                  <article className="driver-route-card" key={driver.driver_number}>
+                    <header>
+                      <div><span>Driver route</span><h3>{driver.driver_label}</h3>{driver.directions?.length > 0 && <small>{driver.directions.map((direction) => direction.charAt(0).toUpperCase() + direction.slice(1)).join(' · ')}</small>}</div>
+                      <strong>{driver.stop_count} stop{driver.stop_count === 1 ? '' : 's'} · {driver.estimated_duration_minutes || 0} min {optimized ? 'total est.' : 'rough est.'}</strong>
+                    </header>
+                    <div className="route-planner-note"><span><strong>{optimized ? 'Google optimized.' : 'Not optimized.'}</strong> {driver.optimization_message || (optimized ? 'Route totals include travel and delivery time.' : 'Stop order and time are rough estimates; route optimization was not performed.')}</span></div>
+                    <div className="driver-map-links" aria-label={`${driver.driver_label} Google Maps route`}>
+                      {link ? (
+                        <>
+                          <div className="driver-map-link">
+                            <div><strong>All {driver.stop_count} shipping stops</strong><small>{link.returns_to_start ? 'Returns to starting location' : 'Ends at the last shipping address'}</small></div>
+                            <div className="button-row compact">
+                              <button aria-label={`Share route for ${driver.driver_label}`} className="muted-button" onClick={() => shareLink(link, driver.driver_label)} type="button"><Copy aria-hidden="true" size={16} /> Share route</button>
+                              <a className="primary-button" href={link.url} rel="noreferrer" target="_blank"><MapPin aria-hidden="true" size={16} /> Open Google Maps</a>
+                            </div>
+                          </div>
+                          {requiresMapsApp && <small>Open in the Google Maps app to keep every stop. Mobile browsers may omit stops.</small>}
+                        </>
+                      ) : (
+                        <div className="route-planner-warning" role="status"><TriangleAlert aria-hidden="true" size={17} /><span>{driver.optimization_status === 'not_requested' ? 'Create routes to optimize all selected stops. The Google Maps link limit does not limit optimization.' : driver.google_maps_error || 'This entire route does not fit in one Google Maps link. Every stop remains listed below.'}</span></div>
+                      )}
+                    </div>
+                    <p className="driver-route-endpoint"><strong>Start:</strong> {plan.start_address}</p>
+                    <ol aria-label={`${driver.driver_label} shipping stops`} className="driver-stop-list">
+                      {(driver.stops || []).map((stop) => (
+                        <li key={stop.order_id}>
+                          <span className="driver-stop-number">{stop.stop_sequence}</span>
+                          <div><strong>Order #{stop.woo_order_number || stop.woo_order_id || stop.order_id}</strong><span>{stop.customer_name || 'Customer name unavailable'}</span><small>Shipping: {stop.address}</small></div>
+                        </li>
+                      ))}
+                    </ol>
+                    {plan.return_to_start && <p className="driver-route-endpoint"><strong>Return:</strong> {plan.start_address}</p>}
+                  </article>
+                );
+              })}
             </div>
           ) : (
             <div className="route-planner-empty"><CheckCircle2 aria-hidden="true" size={22} /><div><strong>{availableOrders.length ? 'No orders selected for this plan' : 'No routable open orders right now'}</strong><span>{availableOrders.length ? 'Choose at least one open order above, then plan the routes.' : 'New WooCommerce processing orders will appear here after they sync.'}</span></div></div>
@@ -13285,7 +13162,7 @@ function OpenOrderRoutePlanner({ plan, loading, error, onPlan }) {
 
           {excludedOrders.length > 0 && (
             <details className="route-excluded-orders">
-              <summary>{excludedOrders.length} order{excludedOrders.length === 1 ? '' : 's'} need a delivery address</summary>
+              <summary>{excludedOrders.length} order{excludedOrders.length === 1 ? '' : 's'} need a shipping address</summary>
               <div>
                 {excludedOrders.map((order) => <p key={order.order_id}><strong>Order #{order.woo_order_number || order.order_id}</strong><span>{order.customer_name || 'Customer name unavailable'} · {order.reason}</span></p>)}
               </div>

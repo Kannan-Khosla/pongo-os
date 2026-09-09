@@ -57,7 +57,7 @@ def test_registration_creates_staff_access_and_rejects_duplicate_email(client):
     assert user["permissions"] == ["read", "write"]
 
 
-def test_demo_user_sees_only_mock_data_and_cannot_write_or_reach_integrations(client):
+def test_demo_user_sees_only_mock_data_and_cannot_write_or_reach_integrations(client, monkeypatch):
     with Session(client.test_engine) as db:
         db.add(InventoryItem(sku="PRIVATE-LIVE-SKU", description="Must never reach demo", in_stock=1, allocated=0, sellable=1, active=True))
         user = db.scalar(select(User).where(User.email == "pytest@example.com"))
@@ -97,9 +97,17 @@ def test_demo_user_sees_only_mock_data_and_cannot_write_or_reach_integrations(cl
     assert blocked.status_code == 403
     assert blocked.json()["detail"]["code"] == "demo_read_only"
 
-    route_plan = client.post("/api/routes/open-orders/plan", json={})
+    from app.services import routes
+    monkeypatch.setattr(routes, "get_settings", lambda: Settings(
+        _env_file=None, route_optimization_provider="google_route_optimization",
+        google_routes_project_id="pongo-route-tests", google_routes_credentials_json="unused-test-credentials",
+    ))
+    for stage in ["service_account_access_token", "geocode_route_addresses", "optimize_fleet_routes"]:
+        monkeypatch.setattr(routes, stage, lambda *args, **kwargs: pytest.fail("Preview accounts must not call paid providers"))
+    route_plan = client.post("/api/routes/open-orders/plan", json={"optimize": True})
     assert route_plan.status_code == 200, route_plan.text
     assert route_plan.json()["selected_order_count"] > 0
+    assert all(driver["optimization_status"] == "not_requested" for driver in route_plan.json()["drivers"])
 
     integration = client.get("/api/integrations/woocommerce/status")
     assert integration.status_code == 403

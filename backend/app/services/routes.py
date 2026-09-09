@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
+from math import ceil
+from time import monotonic
 from urllib.parse import urlencode
 
 from sqlalchemy import func, or_, select
@@ -40,11 +43,14 @@ from app.schemas.routes import (
     RouteUpdateRequest,
 )
 from app.services.order_workflow import COMPLETED_LOCAL_STATUSES, operational_order_clause
+from app.services.route_optimization import RouteOptimizationError, optimize_fleet_routes, service_account_access_token
+from app.services.route_geocoding import geocode_route_addresses
 
 ROUTE_ELIGIBLE_STATUSES = {"completed", "fulfilled", "partially_fulfilled"}
 DEFAULT_ROUTE_START_ADDRESS = "5855 99 Street NW, Edmonton, AB"
 GOOGLE_MAPS_DIRECTIONS_URL = "https://www.google.com/maps/dir/"
-GOOGLE_MAPS_MOBILE_DELIVERY_STOPS_PER_LINK = 4
+# Google Maps apps allow nine stops including the final destination.
+GOOGLE_MAPS_MAX_STOPS = 9
 ROUTE_DIRECTIONS = ("N", "S", "E", "W", "NE", "NW", "SE", "SW", "Central East", "Central West")
 DIRECTION_POSTAL_AREAS = {
     "N": {"T5G", "T5Z"},
@@ -126,7 +132,9 @@ def plan_open_order_routes(db: Session, payload: OpenOrderRoutePlanRequest) -> O
         address = order_shipping_address(order)
         postal_area = order_postal_area(order)
         direction = direction_overrides.get(order.id, order_route_direction(order))
-        if not order.shipping_address_1 or not (order.shipping_city or order.shipping_zip):
+        if not (order.shipping_address_1 or "").strip() or not (
+            (order.shipping_city or "").strip() or (order.shipping_zip or "").strip()
+        ):
             candidate = OpenOrderRouteExcludedOrder(
                 order_id=order.id,
                 woo_order_number=order.woo_order_number,
@@ -135,7 +143,7 @@ def plan_open_order_routes(db: Session, payload: OpenOrderRoutePlanRequest) -> O
                 postal_area=postal_area or None,
                 direction=direction,
                 reason_code="incomplete_address",
-                reason="A street address plus city or postal code is required.",
+                reason="A shipping street address plus shipping city or postal code is required. Billing addresses are not used.",
             )
             excluded.append(candidate)
             excluded_by_id[order.id] = candidate
@@ -206,8 +214,26 @@ def plan_open_order_routes(db: Session, payload: OpenOrderRoutePlanRequest) -> O
         driver_groups = split_by_estimated_time(routable, effective_driver_count, payload.return_to_start)
         assigned_directions = {index: {row.direction for row in rows} for index, rows in enumerate(driver_groups, start=1)}
 
+    start_address = payload.start_address.strip() or DEFAULT_ROUTE_START_ADDRESS
+    optimizations = optimize_driver_groups(driver_groups, start_address, payload, assigned_directions)
     drivers: list[DriverOpenOrderRoutePlan] = []
     for driver_index, driver_orders in enumerate(driver_groups, start=1):
+        optimization = optimizations.get(driver_index)
+        optimization_status = "not_requested" if not payload.optimize else "not_configured"
+        optimization_message = "Stops are ordered by delivery area; driving-time optimization has not been requested." if not payload.optimize else (
+            "Driving-time optimization is not connected. Stops are ordered by delivery area, not fastest driving time."
+        )
+        duration = estimated_route_minutes(driver_orders, payload.return_to_start)
+        if isinstance(optimization, tuple):
+            driver_orders, total_seconds = optimization
+            duration = ceil(total_seconds / 60)
+            if payload.assignment_method != "directions":
+                assigned_directions[driver_index] = {row.direction for row in driver_orders}
+            optimization_status = "optimized"
+            optimization_message = f"Google optimized these deliveries together across your drivers. Time includes {payload.service_minutes} minutes per delivery; traffic and actual delivery times may vary."
+        elif isinstance(optimization, str):
+            optimization_status = "unavailable"
+            optimization_message = optimization
         stops = [
             OpenOrderRoutePlanStop(
                 stop_sequence=stop_sequence,
@@ -228,25 +254,28 @@ def plan_open_order_routes(db: Session, payload: OpenOrderRoutePlanRequest) -> O
             )
             for stop_sequence, row in enumerate(driver_orders, start=1)
         ]
-        links = build_google_maps_route_links(
-            start_address=payload.start_address.strip() or DEFAULT_ROUTE_START_ADDRESS,
-            stops=stops,
-            return_to_start=payload.return_to_start,
-        )
-        delivery_link_count = sum(1 for link in links if not link.returns_to_start)
-        if delivery_link_count > 1:
-            warnings.append(
-                f"Driver {driver_index} is split into {delivery_link_count} Google Maps parts so every link works reliably on iPhone and Android."
+        maps_error = None
+        try:
+            links = build_google_maps_route_links(
+                start_address=start_address,
+                stops=stops,
+                return_to_start=payload.return_to_start,
             )
+        except ValueError as exc:
+            links = []
+            maps_error = str(exc)
         drivers.append(
             DriverOpenOrderRoutePlan(
                 driver_number=driver_index,
                 driver_label=f"Driver {driver_index}",
                 stop_count=len(stops),
-                estimated_duration_minutes=estimated_route_minutes(driver_orders, payload.return_to_start),
+                estimated_duration_minutes=duration,
                 directions=[direction for direction in ROUTE_DIRECTIONS if direction in assigned_directions.get(driver_index, set())],
                 stops=stops,
                 google_maps_links=links,
+                google_maps_error=maps_error,
+                optimization_status=optimization_status,
+                optimization_message=optimization_message,
             )
         )
 
@@ -284,7 +313,11 @@ def plan_open_order_routes(db: Session, payload: OpenOrderRoutePlanRequest) -> O
         excluded_order_count=len(excluded),
         return_to_start=payload.return_to_start,
         assignment_method=payload.assignment_method,
-        estimate_basis="Delivery-zone and stop-count estimate; live traffic and geocoding are not included.",
+        estimate_basis=(
+            "Google optimizes driver assignments and stop order to reduce total driving and fleet completion time, respecting selected directions. Estimates include time at deliveries; exactly equal driver times are not guaranteed."
+            if any(driver.optimization_status == "optimized" for driver in drivers)
+            else "Delivery-area and stop-count estimate, not optimized driving time. Google driving-time optimization is unavailable or has not been requested."
+        ),
         total_estimated_duration_minutes=sum(durations),
         estimated_completion_minutes=max(durations, default=0),
         zones=list(ROUTE_DIRECTIONS),
@@ -315,6 +348,67 @@ def plan_open_order_routes(db: Session, payload: OpenOrderRoutePlanRequest) -> O
         unassigned_orders=unassigned,
         warnings=warnings,
     )
+
+
+def optimize_driver_groups(
+    groups: list[list[OpenOrderRouteRow]], start_address: str, payload: OpenOrderRoutePlanRequest,
+    assigned_directions: dict[int, set[str]],
+) -> dict[int, tuple[list[OpenOrderRouteRow], int] | str]:
+    settings = get_settings()
+    if not payload.optimize or settings.route_optimization_provider != "google_route_optimization":
+        return {}
+    rows = [row for group in groups for row in group]
+    if not rows:
+        return {}
+    deadline = monotonic() + 27.0
+    timeout_message = "Google route planning timed out. Try route optimization again."
+    try:
+        # ponytail: bounded synchronous planning for up to 200 stops; use a background job above this ceiling.
+        if len(rows) > 200:
+            raise RouteOptimizationError("Google optimization supports up to 200 selected deliveries per request here.")
+        addresses = [start_address, *(row.address for row in rows)]
+        allowed = [
+            [index - 1 for index, directions in assigned_directions.items() if row.direction in directions]
+            for row in rows
+        ] if payload.assignment_method == "directions" else None
+        driver_count, return_to_start, service_minutes = len(groups), payload.return_to_start, payload.service_minutes
+        project_id = settings.google_routes_project_id
+        credentials_file, credentials_json = settings.google_routes_credentials_file, settings.google_routes_credentials_json
+
+        def check_deadline():
+            if monotonic() >= deadline:
+                raise RouteOptimizationError(timeout_message)
+
+        def request_fleet_plan():
+            # Only immutable order snapshots enter the worker; the SQLAlchemy session stays on its caller thread.
+            check_deadline()
+            token = service_account_access_token(project_id, credentials_file, credentials_json)
+            check_deadline()
+            coordinates = geocode_route_addresses(addresses, project_id=project_id, access_token=token)
+            check_deadline()
+            optimized = optimize_fleet_routes(
+                coordinates[0], coordinates[1:], driver_count, return_to_start,
+                project_id=project_id, access_token=token,
+                allowed_vehicle_indices=allowed, service_minutes=service_minutes,
+            )
+            return coordinates, optimized
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(request_fleet_plan)
+        try:
+            coordinates, optimized = future.result(timeout=max(0.0, deadline - monotonic()))
+        except FutureTimeoutError:
+            raise RouteOptimizationError(timeout_message) from None
+        finally:
+            future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+        return {
+            driver_index: ([replace(rows[index], latitude=coordinates[index + 1][0], longitude=coordinates[index + 1][1], coordinate_source="google") for index in indexes], seconds)
+            for driver_index, (indexes, seconds) in enumerate(optimized, start=1)
+        }
+    except RouteOptimizationError as exc:
+        message = f"{exc} All deliveries are preserved below in delivery-area order; Google optimization was not applied."
+        return {index: message for index in range(1, len(groups) + 1)}
 
 
 def order_shipping_address(order: Order) -> str:
@@ -485,45 +579,41 @@ def build_google_maps_route_links(
     stops: list[OpenOrderRoutePlanStop],
     return_to_start: bool,
 ) -> list[GoogleMapsRouteLink]:
-    links: list[GoogleMapsRouteLink] = []
-    origin = start_address
-    for offset in range(0, len(stops), GOOGLE_MAPS_MOBILE_DELIVERY_STOPS_PER_LINK):
-        stop_group = stops[offset : offset + GOOGLE_MAPS_MOBILE_DELIVERY_STOPS_PER_LINK]
-        destination = stop_group[-1].address
-        parameters = {
-            "api": "1",
-            "origin": origin,
-            "destination": destination,
-            "travelmode": "driving",
-        }
-        if len(stop_group) > 1:
-            parameters["waypoints"] = "|".join(stop.address for stop in stop_group[:-1])
-        part_number = len(links) + 1
-        links.append(
-            GoogleMapsRouteLink(
-                part_number=part_number,
-                label=f"Stops {stop_group[0].stop_sequence}–{stop_group[-1].stop_sequence}",
-                url=f"{GOOGLE_MAPS_DIRECTIONS_URL}?{urlencode(parameters)}",
-                stop_sequence_from=stop_group[0].stop_sequence,
-                stop_sequence_to=stop_group[-1].stop_sequence,
-                stop_count=len(stop_group),
-            )
+    if not stops:
+        return []
+    limit = GOOGLE_MAPS_MAX_STOPS - int(return_to_start)
+    if len(stops) > limit:
+        raise ValueError(
+            f"This driver has {len(stops)} deliveries. One Google Maps route supports up to {limit} deliveries"
+            f"{' when returning to the warehouse' if return_to_start else ''}. "
+            "The full stop list remains below, but it cannot open as one Google Maps app route. No stops have been removed."
         )
-        origin = destination
-
-    if return_to_start and stops:
-        links.append(
-            GoogleMapsRouteLink(
-                part_number=len(links) + 1,
-                label="Return to starting location",
-                url=f"{GOOGLE_MAPS_DIRECTIONS_URL}?{urlencode({'api': '1', 'origin': origin, 'destination': start_address, 'travelmode': 'driving'})}",
-                stop_sequence_from=stops[-1].stop_sequence,
-                stop_sequence_to=None,
-                stop_count=0,
-                returns_to_start=True,
-            )
+    waypoints = stops if return_to_start else stops[:-1]
+    if any("|" in stop.address for stop in waypoints):
+        raise ValueError("A shipping address contains the route separator '|'. Correct that shipping address before sharing this route.")
+    parameters = {
+        "api": "1", "origin": start_address,
+        "destination": start_address if return_to_start else stops[-1].address,
+        "travelmode": "driving",
+    }
+    if waypoints:
+        parameters["waypoints"] = "|".join(stop.address for stop in waypoints)
+    url = f"{GOOGLE_MAPS_DIRECTIONS_URL}?{urlencode(parameters)}"
+    if len(url) > 2048:
+        raise ValueError(
+            "These addresses exceed Google's route-link length limit. The full stop list remains below, "
+            "but it cannot open as one Google Maps app route. No stops have been removed."
         )
-    return links
+    return [GoogleMapsRouteLink(
+        part_number=1,
+        label="Complete delivery route",
+        url=url,
+        stop_sequence_from=stops[0].stop_sequence,
+        stop_sequence_to=stops[-1].stop_sequence,
+        stop_count=len(stops),
+        returns_to_start=return_to_start,
+        requires_google_maps_app=len(waypoints) > 3,
+    )]
 
 
 def list_route_candidates(
