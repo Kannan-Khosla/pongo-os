@@ -20,13 +20,14 @@ export default function MultiSelectFilter({
   const summaryRef = useRef(null);
   const [search, setSearch] = useState('');
   const selected = multiSelectValues(value);
-  const choices = [...new Set([...selected, ...(options || []).map(String)].filter(Boolean))];
+  const choices = [...new Set([...(options || []).map(String), ...selected].filter(Boolean))];
   const visibleChoices = choices.filter((option) => formatOption(option).toLowerCase().includes(search.trim().toLowerCase()));
+  const optionsLabel = allLabel.replace(/^All /i, '').toLowerCase();
   const summary = selected.length === 0
     ? allLabel
     : selected.length === 1
       ? formatOption(selected[0])
-      : `${selected.length} brands selected`;
+      : `${selected.length} ${optionsLabel} selected`;
 
   function toggle(option, checked) {
     onChange(checked ? [...selected, option] : selected.filter((value) => value !== option));
@@ -64,7 +65,7 @@ export default function MultiSelectFilter({
         <div className="multi-select-menu">
           {choices.length > 10 && (
             <input
-              aria-label={`Search ${label.toLowerCase()}s`}
+              aria-label={`Search ${optionsLabel}`}
               autoComplete="off"
               onChange={(event) => setSearch(event.target.value)}
               placeholder={`Find a ${label.toLowerCase()}`}
@@ -83,7 +84,7 @@ export default function MultiSelectFilter({
                 <span>{formatOption(option)}</span>
               </label>
             ))}
-            {visibleChoices.length === 0 && <small>No brands found.</small>}
+            {visibleChoices.length === 0 && <small>No {optionsLabel} found.</small>}
           </div>
           <div className="multi-select-actions">
             <button disabled={selected.length === 0} onClick={() => onChange([])} type="button">Clear</button>

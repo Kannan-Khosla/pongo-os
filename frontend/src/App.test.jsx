@@ -1174,7 +1174,7 @@ describe('App shell and workflows', () => {
   it('labels demo sessions and never polls external integrations', async () => {
     render(<App currentUser={{ display_name: 'Demo', email: 'demo@example.test', access_level: 'demo' }} />);
 
-    expect(screen.getByText(/Mock data only/)).toBeInTheDocument();
+    expect(screen.getByText(/Reference data only/)).toBeInTheDocument();
     expect(screen.getByLabelText('Powered by Mythodus')).toBeInTheDocument();
     expect(screen.getByAltText('Mythodus logo')).toHaveAttribute('src', '/mythodus-logo.jpeg');
     await waitFor(() => expect(fetch.mock.calls.length).toBeGreaterThan(0));
@@ -2842,7 +2842,7 @@ describe('App shell and workflows', () => {
     window.location.hash = '#/settings/catalog';
     render(<App currentUser={{ display_name: 'Demo', email: 'demo@example.test', access_level: 'demo' }} />);
 
-    expect(await screen.findByRole('heading', { name: 'Product updates are unavailable in the isolated demo.' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Product updates are not connected in this preview workspace.' })).toBeInTheDocument();
     expect(screen.getByText(/cannot connect to Pongo's WooCommerce store/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Update products/i })).not.toBeInTheDocument();
     await act(async () => { await Promise.resolve(); });

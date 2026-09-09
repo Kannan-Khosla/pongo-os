@@ -2209,7 +2209,9 @@ endpoints instead of this compatibility route.
   Add `?preview=true` to the PDF URL for inline display; the default remains an
   attachment for backward-compatible downloads.
 - `POST /api/reports/runs/{run_id}/google-sheets` creates and optionally shares
-  a Google Sheet from that snapshot.
+  a Google Sheet from that snapshot. An expired or revoked Google authorization
+  returns `409` with reconnect guidance; other Google API rejections return
+  `424`.
 - `POST /api/reports/runs/{run_id}/email` emails PDF/CSV attachments and an
   optional Google Sheet link.
 
@@ -2218,6 +2220,10 @@ version, generation time, and SHA-256 evidence hash. See `docs/REPORTING.md`.
 Preview pagination never changes the stored payload or its evidence hash. CSV,
 PDF, Google Sheets, and email deliveries always use every row in that immutable
 payload, regardless of which preview page is open in the browser.
+
+Generated-report `brand` and `category` filters accept either one string or an
+array of strings. An array matches any selected value within that field; filters
+from different fields are combined.
 
 ### GET /api/reports/received-inventory
 
