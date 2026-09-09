@@ -64,7 +64,8 @@ describe('Report Intelligence performance flow', () => {
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith(`/api/reports/jobs/${report.key}`))).toBe(false);
   });
 
-  it('prefills the sole warehouse and renders catalog-backed scope dropdowns', async () => {
+  it('prefills the sole warehouse and supports multiple brands and categories', async () => {
+    const user = userEvent.setup();
     vi.stubGlobal('fetch', vi.fn((url) => {
       const target = String(url);
       if (target.endsWith('/api/reports')) return response({ reports: [scopedReport] });
@@ -78,6 +79,10 @@ describe('Report Intelligence performance flow', () => {
         });
       }
       if (target.includes('/api/reports/jobs/latest/')) return response({}, { ok: false, status: 404 });
+      if (target.endsWith(`/api/reports/jobs/${scopedReport.key}`)) {
+        return response({ job_id: 90, report_key: scopedReport.key, status: 'completed', progress: 100, run_id: 7 }, { status: 202 });
+      }
+      if (target.includes('/api/reports/runs/7?')) return response({ ...run, run_id: 7 });
       return response({});
     }));
 
@@ -87,14 +92,27 @@ describe('Report Intelligence performance flow', () => {
     await waitFor(() => expect(screen.getByLabelText('Warehouse')).toHaveValue('Main Warehouse'));
     expect(screen.getByLabelText('Location')).toHaveValue('');
     expect(screen.getByLabelText('Brand')).toHaveTextContent('All brands');
-    expect(screen.getByLabelText('Category')).toHaveValue('');
+    expect(screen.getByLabelText('Category')).toHaveTextContent('All categories');
     expect(screen.getByLabelText('SKU')).toHaveAttribute('placeholder', 'Exact or partial SKU');
     expect(screen.getByRole('option', { name: 'All locations' })).toBeInTheDocument();
     expect(screen.getByText('All brands')).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'All categories' })).toBeInTheDocument();
+    expect(screen.getByText('All categories')).toBeInTheDocument();
     await waitFor(() => {
       const latestCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/reports/jobs/latest/'));
       expect(JSON.parse(latestCall[1].body).filters).toEqual({ warehouse: 'Main Warehouse' });
+    });
+
+    await user.click(screen.getByLabelText('Category'));
+    await user.click(screen.getByLabelText('Cats'));
+    await user.click(screen.getByLabelText('Dogs'));
+    expect(screen.getByLabelText('Category')).toHaveTextContent('2 categories selected');
+    await user.click(screen.getByRole('button', { name: /Generate verified report/i }));
+    await waitFor(() => {
+      const generationCall = fetch.mock.calls.find(([url]) => String(url).endsWith(`/api/reports/jobs/${scopedReport.key}`));
+      expect(JSON.parse(generationCall[1].body).filters).toEqual({
+        warehouse: 'Main Warehouse',
+        category: ['Cats', 'Dogs'],
+      });
     });
   });
 
@@ -115,6 +133,30 @@ describe('Report Intelligence performance flow', () => {
     await user.click(await screen.findByRole('button', { name: 'Create and open Sheet' }));
     await waitFor(() => expect(replace).toHaveBeenCalledWith('https://docs.google.com/spreadsheets/d/pongo-report'));
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/api/reports/runs/77/google-sheets'))).toBe(true);
+  });
+
+  it('shows reconnect guidance when the saved Google authorization expired', async () => {
+    const user = userEvent.setup();
+    const close = vi.fn();
+    vi.spyOn(window, 'open').mockReturnValue({ opener: null, location: { replace: vi.fn() }, close });
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      const target = String(url);
+      if (target.endsWith('/api/reports')) return response({ reports: [scopedReport], google_sheets_configured: true });
+      if (target.includes('/api/reports/jobs/latest/')) return response({ ...run, filters: {}, run_id: 77 });
+      if (target.endsWith('/api/reports/runs/77/google-sheets')) {
+        return response(
+          { detail: 'Google Sheets connection expired or was revoked. Reconnect under Settings → Google Sheets, then try again.' },
+          { ok: false, status: 409 },
+        );
+      }
+      return response({});
+    }));
+
+    render(<ReportIntelligencePage apiBaseUrl="" reportKey={scopedReport.key} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Create and open Sheet' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Reconnect under Settings → Google Sheets');
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it('links directly to Google sign-in when report sharing is not connected', async () => {

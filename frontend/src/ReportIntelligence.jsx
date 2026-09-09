@@ -278,10 +278,10 @@ function FilterFields({ report, filters, scopeOptions, onChange }) {
         const label = FILTER_LABELS[key] || key.replaceAll('_', ' ');
         const options = optionsFor(key);
         const inputId = `report-filter-${key}`;
-        if (key === 'brand') {
+        if (key === 'brand' || key === 'category') {
           return (
             <MultiSelectFilter
-              allLabel={ALL_OPTION_LABELS.brand}
+              allLabel={ALL_OPTION_LABELS[key]}
               className="ri-field"
               key={key}
               label={label}

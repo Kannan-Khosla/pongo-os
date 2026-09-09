@@ -320,10 +320,12 @@ def open_report_in_google_sheets(
             effective_google_reports_settings(db, get_settings()),
             [str(recipient) for recipient in payload.share_with],
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail="Google Sheets rejected the report request. Check the backend Google connection and scopes.") from exc
+        raise HTTPException(status_code=424, detail="Google Sheets rejected the report request. Check the backend Google connection and scopes.") from exc
 
 
 @router.post("/runs/{run_id}/email")

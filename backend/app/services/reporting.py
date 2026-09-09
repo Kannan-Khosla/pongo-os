@@ -2237,8 +2237,10 @@ def publish_report_to_google_sheets(
     verify_report_run(run)
     if not google_sheets_status(settings)["configured"]:
         raise RuntimeError("Google Sheets is not configured on the backend.")
-    token = google_access_token(settings)
     payload = run.payload or {}
+    columns = payload.get("columns") or []
+    rows = payload.get("rows") or []
+    token = google_access_token(settings)
     generated_at = run.generated_at or datetime.now(timezone.utc)
     if generated_at.tzinfo is None:
         generated_at = generated_at.replace(tzinfo=timezone.utc)
@@ -2251,7 +2253,16 @@ def publish_report_to_google_sheets(
             json={
                 "properties": {"title": title, "locale": "en_CA", "timeZone": REPORT_TIMEZONE},
                 "sheets": [
-                    {"properties": {"title": "Report", "gridProperties": {"frozenRowCount": 1}}},
+                    {
+                        "properties": {
+                            "title": "Report",
+                            "gridProperties": {
+                                "frozenRowCount": 1,
+                                "rowCount": max(1, len(rows) + 1),
+                                "columnCount": max(1, len(columns)),
+                            },
+                        }
+                    },
                     {"properties": {"title": "Audit"}},
                 ],
             },
@@ -2259,12 +2270,11 @@ def publish_report_to_google_sheets(
         created.raise_for_status()
         spreadsheet = created.json()
         spreadsheet_id = spreadsheet["spreadsheetId"]
-        columns = payload.get("columns") or []
         report_values = [
             [item["label"] for item in columns],
             *[
                 [sheet_value(row.get(item["key"]), item.get("type")) for item in columns]
-                for row in payload.get("rows") or []
+                for row in rows
             ],
         ]
         audit_values = [
@@ -2366,6 +2376,16 @@ def google_access_token(settings: Settings) -> str:
         },
         timeout=20,
     )
+    if response.is_error:
+        try:
+            error = response.json().get("error")
+        except (AttributeError, TypeError, ValueError):
+            error = None
+        if error == "invalid_grant":
+            raise ValueError(
+                "Google Sheets connection expired or was revoked. "
+                "Reconnect under Settings → Google Sheets, then try again."
+            )
     response.raise_for_status()
     return response.json()["access_token"]
 
