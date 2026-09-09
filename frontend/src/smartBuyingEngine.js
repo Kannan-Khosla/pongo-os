@@ -1,4 +1,4 @@
-// Pure demo calculations. The JSON fixture is the only inventory/deal input;
+// Pure planning calculations. The JSON snapshot is the only inventory/deal input;
 // no request, clock, random value, or live operational write occurs here.
 export const defaults = { horizon: 60, strategy: 'balanced', safety: 'standard', growth: 0, budget: 40000, optimize: false, budgetMode: false };
 export const strategies = [
@@ -67,7 +67,7 @@ function allocateBudget(lines, data, options) {
   const selected = lines.map((line) => ({ ...line, cases: line.pinned ? line.cases : 0 }));
   if (totalCash(selected, data, options) > options.budget) return selected;
   const desired = new Map(lines.map((line) => [line.id, line.cases]));
-  // ponytail: greedy case allocation suits this 20-SKU demo; use a constrained
+  // ponytail: greedy case allocation suits this 20-SKU snapshot; use a constrained
   // optimizer when real catalogs need global rebate/freight optimality.
   let changed = true;
   while (changed) {
@@ -210,7 +210,7 @@ export function copilotAnswer(query, plan, data, options = {}) {
   }
   if (/save|saving|deal|supplier/.test(text)) {
     const best = [...groups].sort((a, b) => b.savings - a.savings)[0];
-    return best ? `${best.name} contributes ${money(best.savings)} of the plan's ${money(metrics.savings)} supplier savings across ${best.lines.length} SKUs. ${metrics.activeDeals} dated offers are available in the fixture. The plan includes qualifying discounts; optimization tests whether extra cases justify the cash. Check expiry dates and minimum quantities in Supplier Deals.` : 'No supplier order is selected. Include a SKU or increase the cash budget to compare eligible offers.';
+    return best ? `${best.name} contributes ${money(best.savings)} of the plan's ${money(metrics.savings)} supplier savings across ${best.lines.length} SKUs. ${metrics.activeDeals} dated offers are available in the planning snapshot. The plan includes qualifying discounts; optimization tests whether extra cases justify the cash. Check expiry dates and minimum quantities in Supplier Deals.` : 'No supplier order is selected. Include a SKU or increase the cash budget to compare eligible offers.';
   }
   if (/subscription|renewal/.test(text)) return `Confirmed renewals account for ${number(metrics.subscriptionUnits)} units over ${settings.horizon} days, separate from ${number(metrics.organicUnits)} organic demand units. Available and proposed stock covers ${number(metrics.subscriptionCoverage)}% of those renewals. Subscription First prioritizes that known demand when cash is limited.`;
   return `Buy ${money(metrics.spend)} across ${groups.length} suppliers for the selected ${settings.horizon}-day window. The plan captures ${money(metrics.savings)} in supplier offers, supports ${number(metrics.coverage)} days of coverage, and protects ${metrics.stockoutsPrevented} horizon shortages. Review ${metrics.stockoutsAfter} remaining shortages and delivery timing before approving a local draft.`;

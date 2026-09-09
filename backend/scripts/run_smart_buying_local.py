@@ -1,4 +1,4 @@
-"""Start the local investor prototype against a fresh disposable database."""
+"""Start an isolated local planning workspace against a fresh disposable database."""
 import os
 from pathlib import Path
 import sys
@@ -11,7 +11,7 @@ for key in list(os.environ):
     if key.upper().startswith(('WOOCOMMERCE_', 'GOOGLE_REPORTS_', 'SMTP_', 'MAP_', 'ROUTE_', 'OPERATIONS_ALERT_', 'REGISTRATION_', 'AUTH_', 'DATABASE_URL', 'APP_ENV', 'PONGO_TEST_POSTGRES_URL')):
         os.environ.pop(key)
 os.environ.update({
-    'DATABASE_URL': f'sqlite:///{runtime / "demo.db"}',
+    'DATABASE_URL': f'sqlite:///{runtime / "planning.db"}',
     'APP_ENV': 'development',
     'AUTH_REQUIRED': 'false',
     'REGISTRATION_ENABLED': 'false',
@@ -29,16 +29,16 @@ sys.path.insert(0, str(repository / 'backend'))
 from app.core.config import get_settings
 settings = get_settings()
 if settings.auth_required or settings.app_env != 'development':
-    raise RuntimeError('The demo launcher requires an isolated development environment.')
+    raise RuntimeError('The local launcher requires an isolated development environment.')
 if any((settings.woocommerce_base_url, settings.woocommerce_consumer_key,
     settings.woocommerce_consumer_secret, settings.google_reports_client_secret,
     settings.google_reports_refresh_token, settings.smtp_host, settings.map_api_key,
     settings.operations_alert_webhook_url)):
-    raise RuntimeError('External integration credentials must be empty for the local demo.')
+    raise RuntimeError('External integration credentials must be empty for the local workspace.')
 if any((settings.woocommerce_read_enabled, settings.woocommerce_writeback_enabled,
     settings.woocommerce_order_reconciliation_enabled, settings.woocommerce_stock_sync_jobs_enabled,
     settings.woocommerce_daily_full_stock_sync_enabled, settings.woocommerce_webhook_enabled)):
-    raise RuntimeError('External integrations must be disabled for the local demo.')
+    raise RuntimeError('External integrations must be disabled for the local workspace.')
 
 from alembic import command
 from alembic.config import Config

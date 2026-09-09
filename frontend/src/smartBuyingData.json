@@ -1,13 +1,13 @@
 {
   "asOf": "2026-09-09",
   "currency": "CAD",
-  "mode": "demo",
+  "mode": "snapshot",
   "taxRate": 0.05,
   "metadata": {
-    "disclosure": "Synthetic inventory, supplier relationships, barcodes, offers, and scorecards for local demonstration. No live accounts were accessed.",
+    "disclosure": "Reference inventory, supplier relationships, barcodes, offers, and scorecards prepared for scenario planning. Supplier accounts and live operational records are not connected to this snapshot.",
     "salesBasis": "sales30, sales60, sales90 are cumulative organic-only sellable units. subscription30 is separate confirmed demand.",
     "taxBasis": "Alberta 5% GST; recoverable tax is included in cash required and excluded from projected gross margin.",
-    "rebateBasis": "Rebate savings are assumed to reduce draft cash cost in this prototype. Confirm payment terms before purchasing.",
+    "rebateBasis": "Rebate savings are assumed to reduce draft cash cost in this planning snapshot. Confirm payment terms before purchasing.",
     "inventoryBasis": "Inventory quantities are sellable units, never supplier cases. Known inbound is assumed to arrive by supplier lead time.",
     "confidenceBasis": "Source confidence and SKU confidence are illustrative, not statistically calibrated."
   },
@@ -113,7 +113,7 @@
       "leadDays": 4,
       "trend": 14.8,
       "supplierUnitLabel": "2 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "acana-singles",
@@ -142,7 +142,7 @@
       "leadDays": 4,
       "trend": 13.6,
       "supplierUnitLabel": "2 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "orijen-original",
@@ -171,7 +171,7 @@
       "leadDays": 4,
       "trend": 8.2,
       "supplierUnitLabel": "2 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "acana-indoor",
@@ -200,7 +200,7 @@
       "leadDays": 4,
       "trend": 8.0,
       "supplierUnitLabel": "4 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "orijen-freeze",
@@ -229,7 +229,7 @@
       "leadDays": 4,
       "trend": -23.0,
       "supplierUnitLabel": "12 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "go-salmon",
@@ -258,7 +258,7 @@
       "leadDays": 5,
       "trend": 21.7,
       "supplierUnitLabel": "2 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "now-small",
@@ -287,7 +287,7 @@
       "leadDays": 5,
       "trend": 9.1,
       "supplierUnitLabel": "2 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "go-cat",
@@ -316,7 +316,7 @@
       "leadDays": 5,
       "trend": 16.9,
       "supplierUnitLabel": "4 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "now-wet",
@@ -345,7 +345,7 @@
       "leadDays": 5,
       "trend": 8.7,
       "supplierUnitLabel": "24/85g",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "go-digestion",
@@ -374,7 +374,7 @@
       "leadDays": 5,
       "trend": -19.2,
       "supplierUnitLabel": "2 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "rc-medium",
@@ -403,7 +403,7 @@
       "leadDays": 6,
       "trend": 11.1,
       "supplierUnitLabel": "2 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "rc-kitten",
@@ -432,7 +432,7 @@
       "leadDays": 6,
       "trend": 21.1,
       "supplierUnitLabel": "4 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "rc-indoor",
@@ -461,7 +461,7 @@
       "leadDays": 6,
       "trend": 9.1,
       "supplierUnitLabel": "2 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "rc-small",
@@ -490,7 +490,7 @@
       "leadDays": 6,
       "trend": -1.6,
       "supplierUnitLabel": "2 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "rc-wet",
@@ -519,7 +519,7 @@
       "leadDays": 6,
       "trend": 5.8,
       "supplierUnitLabel": "24/85g",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "greenies-regular",
@@ -548,7 +548,7 @@
       "leadDays": 7,
       "trend": 10.5,
       "supplierUnitLabel": "6 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "worlds-best",
@@ -577,7 +577,7 @@
       "leadDays": 7,
       "trend": 9.9,
       "supplierUnitLabel": "2 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "primal-beef",
@@ -606,7 +606,7 @@
       "leadDays": 7,
       "trend": 18.0,
       "supplierUnitLabel": "6 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "omega-oil",
@@ -635,7 +635,7 @@
       "leadDays": 7,
       "trend": -31.2,
       "supplierUnitLabel": "6 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     },
     {
       "id": "kong-classic",
@@ -664,7 +664,7 @@
       "leadDays": 7,
       "trend": -50.0,
       "supplierUnitLabel": "6 sellable units per case",
-      "unitEvidence": "Demo normalization: case quantity explicitly confirmed; barcode stored as text."
+      "unitEvidence": "Reference normalization: case quantity specified; barcode stored as text."
     }
   ],
   "deals": [
@@ -687,7 +687,7 @@
       "description": "Use the September discount for replenishment that will sell within 90 days.",
       "confidence": 95,
       "sourceId": "source-pdf",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "acana-singles-promo",
@@ -708,7 +708,7 @@
       "description": "Four-case minimum; offers do not stack.",
       "confidence": 91,
       "sourceId": "source-email",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "orijen-original-promo",
@@ -729,7 +729,7 @@
       "description": "Qualifying Original Dog bags only.",
       "confidence": 95,
       "sourceId": "source-portal",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "acana-cat-promo",
@@ -750,7 +750,7 @@
       "description": "Twelve sellable units minimum.",
       "confidence": 91,
       "sourceId": "source-website",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "orijen-treats",
@@ -771,7 +771,7 @@
       "description": "Evaluate velocity before adding the four-case minimum.",
       "confidence": 87,
       "sourceId": "source-newsletter",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "go-case-bonus",
@@ -792,7 +792,7 @@
       "description": "One free case per complete eleven delivered cases; ten are charged.",
       "confidence": 95,
       "sourceId": "source-pdf",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed.",
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed.",
       "buyCases": 10,
       "freeCases": 1
     },
@@ -815,7 +815,7 @@
       "description": "Offer applies to this bag size after the four-case minimum.",
       "confidence": 91,
       "sourceId": "source-email",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "go-cat-promo",
@@ -836,7 +836,7 @@
       "description": "Three cases qualify for the discount.",
       "confidence": 95,
       "sourceId": "source-portal",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "now-wet-case",
@@ -857,7 +857,7 @@
       "description": "24/85g means 24 individual 85 g cans; pricing normalized per can.",
       "confidence": 95,
       "sourceId": "source-pdf",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "go-gut-promo",
@@ -878,7 +878,7 @@
       "description": "Buyer-entered offer retained with review evidence.",
       "confidence": 87,
       "sourceId": "source-manual",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "royal-volume",
@@ -901,7 +901,7 @@
       "description": "Threshold uses supplier merchandise value before discounts; rebate accrues on eligible lines.",
       "confidence": 95,
       "sourceId": "source-portal",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "royal-kitten",
@@ -922,7 +922,7 @@
       "description": "Do not stack with the monthly volume rebate.",
       "confidence": 91,
       "sourceId": "source-email",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "royal-small",
@@ -943,7 +943,7 @@
       "description": "Four-case minimum on Small Adult bags.",
       "confidence": 95,
       "sourceId": "source-pdf",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "greenies-dental",
@@ -964,7 +964,7 @@
       "description": "Four cases qualify for the dental promotion.",
       "confidence": 87,
       "sourceId": "source-newsletter",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "litter-promo",
@@ -985,7 +985,7 @@
       "description": "Qualifying 12.7 kg bags only.",
       "confidence": 91,
       "sourceId": "source-website",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "primal-frozen",
@@ -1003,10 +1003,10 @@
       "productIds": [
         "primal-beef"
       ],
-      "description": "Cold-chain freight uses the supplier order freight in this demo.",
+      "description": "Cold-chain freight uses the supplier order freight in this planning snapshot.",
       "confidence": 95,
       "sourceId": "source-portal",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     },
     {
       "id": "omega-wellness",
@@ -1027,7 +1027,7 @@
       "description": "Slowing demand makes the minimum order unattractive.",
       "confidence": 87,
       "sourceId": "source-manual",
-      "evidence": "Synthetic promotion for the local investor prototype; no supplier account or live source was accessed."
+      "evidence": "Reference promotion used for purchasing scenarios; no supplier account or live source was accessed."
     }
   ],
   "activity": [
@@ -1063,72 +1063,72 @@
       "type": "pdf",
       "label": "Promotion PDFs",
       "supplierId": null,
-      "status": "Reviewed demo",
+      "status": "Reference snapshot",
       "lastUpdated": "2026-09-09T09:12:00Z",
       "offers": 4,
       "confidence": 95,
-      "notes": "Prepared demo evidence. Connect a reviewed adapter before collecting live data."
+      "notes": "Prepared reference evidence. Supplier connections are not enabled."
     },
     {
       "id": "source-portal",
       "type": "portal",
       "label": "Supplier portals",
       "supplierId": null,
-      "status": "Reviewed demo",
+      "status": "Reference snapshot",
       "lastUpdated": "2026-09-09T08:44:00Z",
       "offers": 4,
       "confidence": 95,
-      "notes": "Prepared demo evidence. Connect a reviewed adapter before collecting live data."
+      "notes": "Prepared reference evidence. Supplier connections are not enabled."
     },
     {
       "id": "source-email",
       "type": "email",
       "label": "Supplier email offers",
       "supplierId": null,
-      "status": "Reviewed demo",
+      "status": "Reference snapshot",
       "lastUpdated": "2026-09-09T08:30:00Z",
       "offers": 3,
       "confidence": 91,
-      "notes": "Prepared demo evidence. Connect a reviewed adapter before collecting live data."
+      "notes": "Prepared reference evidence. Supplier connections are not enabled."
     },
     {
       "id": "source-website",
       "type": "website",
       "label": "Supplier websites",
       "supplierId": null,
-      "status": "Reviewed demo",
+      "status": "Reference snapshot",
       "lastUpdated": "2026-09-09T08:15:00Z",
       "offers": 2,
       "confidence": 91,
-      "notes": "Prepared demo evidence. Connect a reviewed adapter before collecting live data."
+      "notes": "Prepared reference evidence. Supplier connections are not enabled."
     },
     {
       "id": "source-newsletter",
       "type": "newsletter",
       "label": "Supplier newsletters",
       "supplierId": null,
-      "status": "Reviewed demo",
+      "status": "Reference snapshot",
       "lastUpdated": "2026-09-08T17:30:00Z",
       "offers": 2,
       "confidence": 87,
-      "notes": "Prepared demo evidence. Connect a reviewed adapter before collecting live data."
+      "notes": "Prepared reference evidence. Supplier connections are not enabled."
     },
     {
       "id": "source-manual",
       "type": "manual",
       "label": "Buyer-entered offers",
       "supplierId": null,
-      "status": "Reviewed demo",
+      "status": "Reference snapshot",
       "lastUpdated": "2026-09-08T17:30:00Z",
       "offers": 2,
       "confidence": 87,
-      "notes": "Prepared demo evidence. Connect a reviewed adapter before collecting live data."
+      "notes": "Prepared reference evidence. Supplier connections are not enabled."
     }
   ],
   "subscriptionSchedule": {
     "cadenceDays": 30,
     "unitsPerRenewal": 1,
     "activeSubscriptions": 257,
-    "note": "Synthetic single-unit subscriptions on a 30-day cadence. Every active subscription renews once per 30-day window; product subscription30 is its count of active subscriptions. No live subscription schedules were accessed."
+    "note": "Reference single-unit subscriptions on a 30-day cadence. Every active subscription renews once per 30-day window; product subscription30 is its count of active subscriptions. No live subscription schedules were accessed."
   }
 }

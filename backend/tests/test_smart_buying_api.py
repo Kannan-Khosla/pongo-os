@@ -27,7 +27,7 @@ def draft_payload():
     }
 
 
-def test_smart_buying_demo_and_exports_are_authenticated_local_drafts(client, monkeypatch):
+def test_smart_buying_snapshot_and_exports_are_authenticated_planning_drafts(client, monkeypatch):
     def forbid_connection(*_args, **_kwargs):
         raise AssertionError("Smart Buying must not make external connections")
 
@@ -40,10 +40,10 @@ def test_smart_buying_demo_and_exports_are_authenticated_local_drafts(client, mo
 
     event.listen(client.test_engine, "before_cursor_execute", record_write)
     try:
-        demo = client.get("/api/smart-buying/demo")
-        assert demo.status_code == 200
-        assert demo.json()["mode"] == "demo"
-        assert len(demo.json()["products"]) == 20
+        snapshot = client.get("/api/smart-buying/snapshot")
+        assert snapshot.status_code == 200
+        assert snapshot.json()["mode"] == "snapshot"
+        assert len(snapshot.json()["products"]) == 20
 
         response = client.post("/api/smart-buying/export/csv", json=draft_payload())
         assert response.status_code == 200, response.text
@@ -63,26 +63,26 @@ def test_smart_buying_demo_and_exports_are_authenticated_local_drafts(client, mo
         assert pdf.headers["content-type"] == "application/pdf"
         with pdfplumber.open(BytesIO(pdf.content)) as document:
             text = "\n".join(page.extract_text() for page in document.pages)
-        assert "356.62" in text and "Local draft - not sent" in text
+        assert "356.62" in text and "Planning draft - not sent" in text
         assert not writes
     finally:
         event.remove(client.test_engine, "before_cursor_execute", record_write)
 
     client.post("/api/auth/logout")
-    assert client.get("/api/smart-buying/demo").status_code == 401
+    assert client.get("/api/smart-buying/snapshot").status_code == 401
     assert client.post("/api/smart-buying/export/csv", json=draft_payload()).status_code == 401
 
 
-def test_demo_account_can_export_but_cannot_transmit_purchase_orders(client):
+def test_read_only_account_can_export_but_cannot_transmit_purchase_orders(client):
     with Session(client.test_engine) as db:
         db.scalar(select(User).where(User.email == "pytest@example.com")).access_level = "demo"
         db.commit()
 
-    assert client.get("/api/smart-buying/demo").status_code == 200
+    assert client.get("/api/smart-buying/snapshot").status_code == 200
     for format in ("csv", "pdf"):
         response = client.post(f"/api/smart-buying/export/{format}", json=draft_payload())
         assert response.status_code == 200, response.text
-    assert client.post("/api/items", json={"SKU": "NO-DEMO-WRITE"}).status_code == 403
+    assert client.post("/api/items", json={"SKU": "NO-READONLY-WRITE"}).status_code == 403
     assert client.post("/api/smart-buying/send", json=draft_payload()).status_code in {404, 405}
 
 

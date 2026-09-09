@@ -54,7 +54,7 @@ function DealEvidence({ deal, data, lines, onInspectSku }) {
       </dl>
       <p className="sb-muted">Prices are normalized to one sellable unit. Case packs stay explicit; barcode, recipe, and size must match before an offer enters the plan.</p>
       <div className="sb-evidence-products">{lines.map((line) => <button className="sb-text-button" type="button" key={line.id} onClick={() => onInspectSku(line.id)}>{line.sku} · {line.name}<ArrowUpRight size={13} aria-hidden="true" /></button>)}</div>
-      <small>Demonstration evidence · no supplier connection is opened.</small>
+      <small>Reference evidence · supplier connections are not enabled.</small>
     </div>
   </details>;
 }
@@ -73,7 +73,7 @@ export function SupplierDeals({ data, plan, onApplyDeal, onInspectSku }) {
   const reset = () => { setSearch(''); setSupplierId('all'); setSource('all'); setType('all'); };
 
   return <div className="sb-stack">
-    <section className="sb-section-intro"><div><span className="sb-eyebrow">The right offer. At the right time.</span><h2>Offers matched to your buying plan</h2><p>Promotions matched to real buying needs, with the terms behind every recommendation.</p></div><span className="sb-badge sb-badge-blue"><BadgePercent size={15} aria-hidden="true" />{data.deals.length} offers evaluated</span></section>
+    <section className="sb-section-intro"><div><span className="sb-eyebrow">The right offer. At the right time.</span><h2>Offers matched to your buying plan</h2><p>Promotions matched to forecast buying needs, with the terms behind every recommendation.</p></div><span className="sb-badge sb-badge-blue"><BadgePercent size={15} aria-hidden="true" />{data.deals.length} offers evaluated</span></section>
     <div className="sb-summary-strip">
       <div><span>Supplier savings in your plan</span><strong>{money(plan.metrics.savings)}</strong></div>
       <div><span>Offers closing within 7 days</span><strong>{expiring.length}</strong></div>
@@ -143,7 +143,7 @@ export function SupplierIntelligence({ data, plan }) {
       <section className="sb-panel"><div className="sb-panel-heading"><div><h3>Supplier sources</h3><p>Inspect the evidence and matching rules for each input.</p></div><span className="sb-badge">{data.sources.length} sources</span></div><div className="sb-source-list">{data.sources.map((source) => {
         const Icon = sourceIcons[source.type.toLowerCase()] || FileText;
         return <button className={`sb-source-row ${sourceId === source.id ? 'is-selected' : ''}`} key={source.id} type="button" aria-expanded={sourceId === source.id} onClick={() => setSourceId(sourceId === source.id ? null : source.id)}><span className="sb-source-icon"><Icon size={19} aria-hidden="true" /></span><span><strong>{source.label}</strong><small>{source.offers} offers · {source.confidence}% confidence · {source.status}</small></span><ChevronRight size={16} aria-hidden="true" /></button>;
-      })}</div>{selectedSource && <section className="sb-source-evidence" aria-label={`${selectedSource.label} evidence`}><h4>{selectedSource.label}</h4><p>{selectedSource.notes}</p><dl><div><dt>Last captured</dt><dd>{dateLabel(selectedSource.lastUpdated)}</dd></div><div><dt>Source type</dt><dd>{titleCase(selectedSource.type)}</dd></div><div><dt>Confidence</dt><dd>{selectedSource.confidence}%</dd></div></dl><p>Supplier pack prices are converted to sellable-unit costs. Pongo SKU, barcode, recipe, and size are preserved; uncertain matches require review.</p><small>Local demonstration record. Reviewing this source does not access a website, inbox, or attachment.</small></section>}</section>
+      })}</div>{selectedSource && <section className="sb-source-evidence" aria-label={`${selectedSource.label} evidence`}><h4>{selectedSource.label}</h4><p>{selectedSource.notes}</p><dl><div><dt>Last captured</dt><dd>{dateLabel(selectedSource.lastUpdated)}</dd></div><div><dt>Source type</dt><dd>{titleCase(selectedSource.type)}</dd></div><div><dt>Confidence</dt><dd>{selectedSource.confidence}%</dd></div></dl><p>Supplier pack prices are converted to sellable-unit costs. Pongo SKU, barcode, recipe, and size are preserved; uncertain matches require review.</p><small>Reference record. Reviewing this source does not access a website, inbox, or attachment.</small></section>}</section>
       <section className="sb-panel"><div className="sb-panel-heading"><div><h3>Intelligence feed</h3><p>The signals influencing this buying cycle.</p></div><span className="sb-live-dot" aria-hidden="true" /></div><ol className="sb-activity-list">{data.activity.map((event) => <li key={event.id}><span className="sb-activity-dot" /><div><p>{event.text}</p><time>{event.time}</time></div></li>)}</ol></section>
     </div>
   </div>;

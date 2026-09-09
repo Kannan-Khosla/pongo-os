@@ -4,7 +4,7 @@ Pongo Inventory OS is a standalone internal inventory and operations system for 
 
 This is not a WordPress plugin, not a WooCommerce plugin, and not a shortcode app.
 
-The local **Smart Buying Intelligence** prototype adds purchasing forecasts,
+**Smart Buying Intelligence** adds purchasing forecasts,
 supplier offers, budget scenarios, and exportable draft POs. See
 [Smart Buying setup, calculation rules, and integration path](docs/SMART_BUYING.md).
 
@@ -16,7 +16,7 @@ supplier offers, budget scenarios, and exportable draft POs. See
 - Local dev DB: SQLite
 - Target production DB: PostgreSQL
 - Frontend: React with Vite
-- Deployment target: Heroku later
+- Deployment: Heroku
 - WooCommerce integration: backend-only REST API plus a signed order webhook
 
 ## Current Modules
@@ -54,7 +54,7 @@ Implemented locally:
 - Completed orders export
 - SKU Orders report
 - Selectable open-order delivery planning from the Pongo warehouse, balanced by estimated workload or explicitly assigned N/S/E/W/NE/NW/SE/SW/Central East/Central West zones across 1–50 drivers, with a responsive all-stop overview, shareable Google Maps navigation links, and separate completed-route records
-- Cookie-based staff login plus an isolated read-only demo role with mock data only
+- Cookie-based staff login plus an isolated read-only preview role with reference data only
 - Immutable, hash-verified report runs with interactive dashboards, CSV/PDF, Google Sheets, and audited email sharing
 - Resumable background full-catalog WooCommerce stock-sync jobs with progress, retry, resume, and cancel controls
 
@@ -269,23 +269,23 @@ Current local build now includes:
   workflows, or writing to WooCommerce.
 
 Still intentionally delayed:
-- Granular staff RBAC beyond the isolated demo role.
+- Granular staff RBAC beyond the isolated preview role.
 - Live WooCommerce credential/webhook contract checks outside the deployed application.
 - Purchase orders and supplier management.
 - Shipping labels, customer notifications, delivery issue logs,
   return-to-inventory workflows, provider-backed street-map tiles, address geocoding, and
   traffic-aware route optimization provider calls.
 
-## Demo Account
+## Preview Account
 
-Demo users can browse every normal workspace using a separate seeded mock
+Preview users can browse every normal workspace using a separate seeded reference
 database. They cannot read production records, save changes, publish reports,
 or access WooCommerce/Google integrations. Create or rotate an account after
 running migrations:
 
 ```bash
 cd backend
-.venv/bin/python scripts/create_demo_user.py --email demo@example.com
+.venv/bin/python scripts/create_demo_user.py --email preview@example.com
 ```
 
 The command prompts for a 12+ character password and refuses to convert an

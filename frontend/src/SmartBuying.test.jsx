@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SmartBuying from './SmartBuying';
 import data from './smartBuyingData.json';
-import { calculatePlan, defaults, money } from './smartBuyingEngine';
+import { calculatePlan, copilotAnswer, defaults, money } from './smartBuyingEngine';
 
 vi.mock('echarts', () => ({ init: () => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn(), on: vi.fn(), off: vi.fn() }) }));
 vi.mock('echarts/core', () => ({ use: vi.fn(), init: () => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn(), on: vi.fn(), off: vi.fn() }) }));
@@ -25,6 +25,18 @@ afterEach(() => {
 });
 
 describe('Smart Buying investor workflows', () => {
+  it('uses planning language across every view while retaining reference-data provenance', () => {
+    const { rerender } = render(<SmartBuying />);
+    for (const view of ['overview', 'purchase-plan', 'forecast', 'supplier-deals', 'opportunities', 'draft-pos', 'suppliers', 'scenarios']) {
+      rerender(<SmartBuying view={view} />);
+      expect(document.body.textContent).not.toMatch(/\b(demo|mock|prototype|demonstration)\b/i);
+      expect(screen.getByText('Planning intelligence · September reference snapshot · session drafts')).toBeVisible();
+    }
+    expect(data.mode).toBe('snapshot');
+    expect(data.metadata.disclosure).toContain('Supplier accounts and live operational records are not connected');
+    expect(data.sources.every((source) => source.notes.includes('Supplier connections are not enabled'))).toBe(true);
+  });
+
   it('renders the deterministic executive KPIs and all eight navigation destinations', () => {
     const plan = calculatePlan(data);
     render(<SmartBuying />);
@@ -134,6 +146,56 @@ describe('Smart Buying investor workflows', () => {
     expect(caseInput()).toHaveValue(cases);
     for (const line of budgeted.lines.slice(1)) expect(caseInput(line.name)).toHaveValue(line.cases);
     expect(metric('Proposed spend')).toHaveTextContent(money(expected.metrics.spend));
+  });
+
+  it('recalculates unpinned quantities after a policy change while preserving pins and exclusions', async () => {
+    const user = userEvent.setup();
+    const pinned = data.products[1];
+    const excluded = data.products[2];
+    render(<SmartBuying view="purchase-plan" />);
+    fireEvent.change(caseInput(), { target: { value: '8' } });
+    fireEvent.change(caseInput(pinned.name), { target: { value: '10' } });
+    await user.click(screen.getByRole('button', { name: `Pin ${pinned.name}` }));
+    await user.click(screen.getByRole('checkbox', { name: `Include ${excluded.name}` }));
+    await user.click(screen.getByRole('button', { name: '90 days' }));
+    const protectedRows = { [pinned.id]: { cases: 10, pinned: true }, [excluded.id]: { excluded: true } };
+    const extended = calculatePlan(data, { horizon: 90 }, protectedRows);
+    expect(caseInput()).toHaveValue(extended.lines[0].cases);
+    expect(caseInput(pinned.name)).toHaveValue(10);
+    expect(screen.getByRole('checkbox', { name: `Include ${excluded.name}` })).not.toBeChecked();
+    expect(metric('Proposed spend')).toHaveTextContent(money(extended.metrics.spend));
+    await user.click(screen.getByRole('button', { name: /^Cash Conservative/ }));
+    const conservative = calculatePlan(data, { horizon: 90, strategy: 'conservative' }, protectedRows);
+    expect(caseInput()).toHaveValue(conservative.lines[0].cases);
+    expect(metric('Proposed spend')).toHaveTextContent(money(conservative.metrics.spend));
+  });
+
+  it('applies the exact 20% reduction quoted by the copilot for the current edited basket', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<SmartBuying view="purchase-plan" />);
+    fireEvent.change(caseInput(), { target: { value: '100' } });
+    const edited = calculatePlan(data, {}, { [product.id]: { cases: 100 } });
+    const snapshot = Object.fromEntries(edited.lines.map((line) => [line.id, { cases: line.cases, pinned: line.pinned, excluded: line.excluded }]));
+    const budget = Math.round((edited.metrics.spend * .8 + Number.EPSILON) * 100) / 100;
+    const expected = calculatePlan(data, { ...defaults, budget, budgetMode: true, optimize: true }, snapshot);
+    rerender(<SmartBuying view="overview" />);
+    const question = 'What happens if I reduce this purchase by 20%?';
+    await user.click(screen.getByRole('button', { name: question }));
+    expect(screen.getByText(copilotAnswer(question, edited, data, defaults))).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Compare a 20% lower budget' }));
+    rerender(<SmartBuying view="purchase-plan" />);
+    expect(screen.getByRole('spinbutton', { name: 'Available buying budget' })).toHaveValue(budget);
+    expect(metric('Proposed spend')).toHaveTextContent(money(expected.metrics.spend));
+    for (const line of expected.lines) expect(caseInput(line.name)).toHaveValue(line.cases);
+  });
+
+  it('removes a minimum-sized purchase when the minus control would otherwise be a no-op', async () => {
+    const user = userEvent.setup();
+    render(<SmartBuying view="purchase-plan" />);
+    fireEvent.change(caseInput(), { target: { value: String(Math.ceil(product.moq / product.casePack)) } });
+    await user.click(screen.getByRole('button', { name: `Reduce ${product.name}` }));
+    expect(caseInput()).toHaveValue(0);
+    expect(screen.getByRole('button', { name: `Reduce ${product.name}` })).toBeDisabled();
   });
 
   it('previews and approves a draft without sending any supplier request', async () => {

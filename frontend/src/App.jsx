@@ -3441,7 +3441,7 @@ export default function App({ currentUser = null, onLogout = null }) {
           <div className="demo-mode-banner" role="status">
             <span className="demo-mode-message">
               <CheckCircle2 size={18} aria-hidden="true" />
-              <span><strong>Demo workspace</strong> Mock data only · Read-only · Production inventory is never shown or changed</span>
+              <span><strong>Preview workspace</strong> Reference data only · Read-only · Production inventory is never shown or changed</span>
             </span>
           </div>
         )}
@@ -3915,7 +3915,7 @@ function TopHeader({ meta, currentUser, onLogout, notifications = [], unreadCoun
             <div className="account-identity">
               <strong>{currentUser?.display_name || 'Pongo Staff'}</strong>
               {currentUser?.email && <small>{currentUser.email}</small>}
-              {currentUser?.access_level === 'demo' && <small className="account-access-level">Demo · mock data · read-only</small>}
+              {currentUser?.access_level === 'demo' && <small className="account-access-level">Preview · reference data · read-only</small>}
             </div>
             {onLogout && <button onClick={onLogout} type="button"><LogOut size={16} aria-hidden="true" /> Sign out</button>}
           </div>
@@ -4575,7 +4575,7 @@ function BusinessDashboardPage({ dashboard, loading, error, onRefresh, onRefresh
         <BusinessMetric
           label="Open Orders"
           value={wooOpenOrders.loading || wooOpenOrders.error ? '—' : wooOpenOrders.summary?.open_orders_count ?? '—'}
-          caption={wooOpenOrders.loading ? 'Loading live orders…' : wooOpenOrders.error || (wooOpenOrders.source !== 'woocommerce' && wooOpenOrders.source !== 'demo') ? 'Live orders unavailable' : wooOpenOrders.source === 'demo' ? 'Demo data' : 'Live WooCommerce · Processing only'}
+          caption={wooOpenOrders.loading ? 'Loading live orders…' : wooOpenOrders.error || (wooOpenOrders.source !== 'woocommerce' && wooOpenOrders.source !== 'demo') ? 'Live orders unavailable' : wooOpenOrders.source === 'demo' ? 'Reference data' : 'Live WooCommerce · Processing only'}
           live
           tone="green"
         />
@@ -13932,12 +13932,12 @@ function WooCatalogSyncPage({ route, configured, readOnly = false }) {
         <header className="form-card catalog-sync-hero">
           <div>
             <span className="integration-eyebrow">WooCommerce products</span>
-            <h2>Product updates are unavailable in the isolated demo.</h2>
-            <p>The demo uses sample products and cannot connect to Pongo's WooCommerce store. Sign in with an authorized staff account to view product updates.</p>
+            <h2>Product updates are not connected in this preview workspace.</h2>
+            <p>This preview uses reference products and cannot connect to Pongo's WooCommerce store. Sign in with an authorized staff account to view product updates.</p>
           </div>
           <div className="catalog-hero-action">
-            <div className="integration-health"><span className="integration-health-pulse" aria-hidden="true" /><div><strong>Demo isolation active</strong></div></div>
-            <a className="muted-button catalog-sync-button" href="#items"><Boxes size={18} aria-hidden="true" />Return to demo items</a>
+            <div className="integration-health"><span className="integration-health-pulse" aria-hidden="true" /><div><strong>Preview isolation active</strong></div></div>
+            <a className="muted-button catalog-sync-button" href="#items"><Boxes size={18} aria-hidden="true" />Return to preview items</a>
           </div>
         </header>
       </section>

@@ -1,4 +1,4 @@
-"""Local demonstration contract and verified draft exports; no operational writes."""
+"""Planning snapshot contract and validated draft exports; no operational writes."""
 
 import csv
 from datetime import date
@@ -12,8 +12,8 @@ from fastapi import HTTPException
 from app.schemas.smart_buying import SmartBuyingExportRequest
 
 
-def load_smart_buying_demo() -> dict:
-    # The frontend and backend intentionally share one versioned demo fixture.
+def load_smart_buying_snapshot() -> dict:
+    # The frontend and backend intentionally share one versioned planning snapshot.
     path = Path(__file__).resolve().parents[3] / "frontend/src/smartBuyingData.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -23,7 +23,7 @@ def money(value) -> Decimal:
 
 
 def export_purchase_draft(payload: SmartBuyingExportRequest) -> str:
-    data = load_smart_buying_demo()
+    data = load_smart_buying_snapshot()
     suppliers = {row["id"]: row for row in data["suppliers"]}
     products = {row["id"]: row for row in data["products"]}
     deals = {row["id"]: row for row in data["deals"]}
@@ -33,7 +33,7 @@ def export_purchase_draft(payload: SmartBuyingExportRequest) -> str:
             raise HTTPException(status_code=422, detail=message)
 
     require(payload.supplier_id in suppliers, "Select a supplier from the Smart Buying dataset.")
-    require(payload.as_of.isoformat() == data["asOf"], "The draft date must match the current demo snapshot.")
+    require(payload.as_of.isoformat() == data["asOf"], "The draft date must match the current planning snapshot.")
     supplier = suppliers[payload.supplier_id]
     for line in payload.lines:
         product = products.get(line.product_id)
@@ -85,7 +85,7 @@ def export_purchase_draft(payload: SmartBuyingExportRequest) -> str:
     writer = csv.writer(output)
     writer.writerow(["Record", "SKU", "Description", "Cases", "Units", "Unit Cost CAD", "Deal Discount", "Effective Unit Cost CAD", "Amount CAD", "Retail Value CAD", "Projected Gross Profit CAD"])
     for label, value in (
-        ("Status", "Local demonstration draft - not sent to supplier"),
+        ("Status", "Planning draft - not sent to supplier"),
         ("PO Number", payload.po_number),
         ("Supplier", supplier["name"]),
         ("Created Date", payload.as_of.isoformat()),
