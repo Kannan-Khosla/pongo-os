@@ -27,6 +27,8 @@ DEMO_SAFE_POST_PATHS = {
     "/api/scanner/cycle-count/preview",
     "/api/scanner/receiving/scan/preview",
     "/api/scanner/transfers/preview",
+    "/api/smart-buying/export/csv",
+    "/api/smart-buying/export/pdf",
 }
 
 

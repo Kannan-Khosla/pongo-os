@@ -43,6 +43,7 @@ import {
   Search,
   Settings,
   ShoppingCart,
+  Sparkles,
   SlidersHorizontal,
   StickyNote,
   Tag,
@@ -56,6 +57,12 @@ import {
 } from 'lucide-react';
 
 const ReportIntelligencePage = lazy(() => import('./ReportIntelligence'));
+const SmartBuyingPage = lazy(() => import('./SmartBuying'));
+const smartBuyingSubpages = [
+  ['overview', 'Overview'], ['purchase-plan', 'Purchase Plan'], ['forecast', 'Forecast'],
+  ['supplier-deals', 'Supplier Deals'], ['opportunities', 'Opportunities'],
+  ['draft-pos', 'Draft Purchase Orders'], ['suppliers', 'Supplier Intelligence'], ['scenarios', 'Scenario Simulator'],
+].map(([id, label]) => ({ id, label, href: `#/smart-buying/${id}` }));
 const DEFAULT_ROUTE_START_ADDRESS = '5855 99 Street NW, Edmonton, AB';
 const ROUTE_DIRECTIONS = ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW', 'Central East', 'Central West'];
 const ROUTE_ZONE_POSITIONS = {
@@ -562,6 +569,7 @@ const navItems = [
   { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'routes', label: 'Routes', icon: Route },
   { id: 'insights', label: 'Insights', icon: BarChart3 },
+  { id: 'smart-buying', label: 'Smart Buying', icon: Sparkles },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -569,7 +577,7 @@ const navigationGroups = [
   { id: 'command', label: 'Command', icon: LayoutDashboard, href: '#dashboard', pages: ['dashboard', 'inventory-overview'] },
   { id: 'commerce', label: 'Commerce', icon: ShoppingCart, href: '#/orders/open', pages: ['orders', 'routes'] },
   { id: 'warehouse', label: 'Warehouse', icon: Boxes, href: '#/inventory/all', pages: ['items', 'inventory', 'locations', 'receiving', 'scanner', 'cycle-count'] },
-  { id: 'intelligence', label: 'Intelligence', icon: BarChart3, href: '#insights', pages: ['insights', 'reports'] },
+  { id: 'intelligence', label: 'Intelligence', icon: BarChart3, href: '#/smart-buying/overview', pages: ['smart-buying', 'insights', 'reports'] },
   { id: 'system', label: 'System', icon: Settings, href: '#settings', pages: ['settings'] },
 ];
 
@@ -581,6 +589,7 @@ function navItemHref(item) {
   if (item.id === 'receiving') return '#/receiving/direct';
   if (item.id === 'reports') return `#/reports/inventory/${DEFAULT_REPORT_KEY}`;
   if (item.id === 'insights') return '#/insights/overview';
+  if (item.id === 'smart-buying') return '#/smart-buying/overview';
   if (item.id === 'routes') return '#/routes/live';
   return `#${item.id}`;
 }
@@ -711,6 +720,7 @@ function reportHref(report) {
 }
 
 const pageMeta = {
+  'smart-buying': { title: 'Smart Buying Intelligence', kicker: 'Intelligence / Smart Buying', tabs: [] },
   dashboard: {
     title: 'Dashboard',
     kicker: 'Business snapshot',
@@ -1285,6 +1295,10 @@ function parseHashRoute() {
   }
   const [path, queryString = ''] = hash.split('?');
   const query = new URLSearchParams(queryString);
+  if (path === 'smart-buying' || path.startsWith('smart-buying/')) {
+    const view = path.split('/')[1] || 'overview';
+    return { pageId: 'smart-buying', buyingView: smartBuyingSubpages.some((item) => item.id === view) ? view : 'overview' };
+  }
   if (path === 'items') {
     const requestedPage = Math.max(1, Number.parseInt(query.get('page') || '1', 10) || 1);
     const requestedPageSize = Number.parseInt(query.get('page_size') || '50', 10);
@@ -3438,7 +3452,7 @@ export default function App({ currentUser = null, onLogout = null }) {
         />
         <WooOrderSyncHealthWarning status={wooStatus} error={wooHealthError} route={route} />
         <main className="main-content" id="main-content" tabIndex={-1}>
-          <PageHeader meta={activeMeta} route={route} />
+          {route.pageId !== 'smart-buying' && <PageHeader meta={activeMeta} route={route} />}
           <PageBody
             route={route}
             readOnly={isDemo}
@@ -3627,6 +3641,7 @@ export default function App({ currentUser = null, onLogout = null }) {
 }
 
 function Sidebar({ activePage, route, onNavigate, isOpen, onClose }) {
+  const [buyingExpanded, setBuyingExpanded] = useState(activePage === 'smart-buying');
   const [ordersExpanded, setOrdersExpanded] = useState(activePage === 'orders');
   const [inventoryExpanded, setInventoryExpanded] = useState(activePage === 'inventory');
   const closeButtonRef = useRef(null);
@@ -3634,6 +3649,7 @@ function Sidebar({ activePage, route, onNavigate, isOpen, onClose }) {
   const activeGroup = navigationGroups.find((group) => group.pages.includes(activePage)) || navigationGroups[0];
 
   useEffect(() => {
+    if (activePage === 'smart-buying') setBuyingExpanded(true);
     if (activePage === 'orders') {
       setOrdersExpanded(true);
     }
@@ -3657,14 +3673,14 @@ function Sidebar({ activePage, route, onNavigate, isOpen, onClose }) {
     if (linkRect.top < containerRect.top || linkRect.bottom > containerRect.bottom) {
       activeLink.scrollIntoView?.({ block: 'nearest' });
     }
-  }, [activePage, route.inventoryView, route.ordersView, inventoryExpanded, ordersExpanded]);
+  }, [activePage, route.inventoryView, route.ordersView, route.buyingView, inventoryExpanded, ordersExpanded, buyingExpanded]);
 
   function renderNavItem(item) {
     const Icon = item.icon;
     const isActive = item.id === activePage;
-    const subpages = item.id === 'inventory' ? inventorySubpages : item.id === 'orders' ? orderSubpages : null;
-    const expanded = item.id === 'inventory' ? inventoryExpanded : ordersExpanded;
-    const toggleExpanded = item.id === 'inventory' ? setInventoryExpanded : setOrdersExpanded;
+    const subpages = item.id === 'smart-buying' ? smartBuyingSubpages : item.id === 'inventory' ? inventorySubpages : item.id === 'orders' ? orderSubpages : null;
+    const expanded = item.id === 'smart-buying' ? buyingExpanded : item.id === 'inventory' ? inventoryExpanded : ordersExpanded;
+    const toggleExpanded = item.id === 'smart-buying' ? setBuyingExpanded : item.id === 'inventory' ? setInventoryExpanded : setOrdersExpanded;
 
     if (subpages) {
       return (
@@ -3677,7 +3693,7 @@ function Sidebar({ activePage, route, onNavigate, isOpen, onClose }) {
           {expanded && (
             <div className="subnav-list" aria-label={`${item.label} sub-navigation`}>
               {subpages.map((subpage) => {
-                const activeView = item.id === 'inventory' ? route.inventoryView || 'all' : route.ordersView || 'open';
+                const activeView = item.id === 'smart-buying' ? route.buyingView || 'overview' : item.id === 'inventory' ? route.inventoryView || 'all' : route.ordersView || 'open';
                 const childActive = isActive && activeView === subpage.id;
                 return (
                   <a className={`subnav-link ${childActive ? 'active' : ''}`} href={subpage.href} key={subpage.id} aria-current={childActive ? 'page' : undefined} onClick={(event) => { event.preventDefault(); onNavigate(subpage.href); }}>
@@ -4194,6 +4210,9 @@ function PageBody({
   onRouteProviderAction,
   onPlanOpenOrderRoutes,
 }) {
+  if (route.pageId === 'smart-buying') {
+    return <Suspense fallback={<div className="table-empty" role="status">Preparing buying intelligence…</div>}><SmartBuyingPage view={route.buyingView || 'overview'} /></Suspense>;
+  }
   if (route.pageId === 'items') {
     return <ItemsPage route={route} items={items} pagination={itemsPagination} itemsLoading={itemsLoading} itemsError={itemsError} onLoadItems={onLoadItems} onRefreshItemFacets={onRefreshItemFacets} onSaveItem={onSaveItem} onCloneItem={onCloneItem} />;
   }

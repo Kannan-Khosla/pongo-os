@@ -4,6 +4,10 @@ Pongo Inventory OS is a standalone internal inventory and operations system for 
 
 This is not a WordPress plugin, not a WooCommerce plugin, and not a shortcode app.
 
+The local **Smart Buying Intelligence** prototype adds purchasing forecasts,
+supplier offers, budget scenarios, and exportable draft POs. See
+[Smart Buying setup, calculation rules, and integration path](docs/SMART_BUYING.md).
+
 ## Stack
 
 - Backend: FastAPI
